@@ -16,14 +16,8 @@ func main() {
 	defer config.C.DB.Close()
 
 	one_off := flag.Bool("oneoff", false, "Pass oneoff to only run once")
-	parse := flag.Bool("parse", false, "Pass parse to only parse the review file for testing/debugging.")
 	initOnly := flag.Bool("init", false, "Pass init to only only setup the org file.")
 	flag.Parse()
-	if *parse {
-		doc := org.GetOrgDocument("reviews.org", org.BaseOrgSerializer{}, config.C.OrgFileDir)
-		doc.PrintAll()
-		return
-	}
 
 	workflows_list := workflows.MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
 	ms := workflows.NewManagerService(

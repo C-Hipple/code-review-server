@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -106,6 +107,7 @@ func (db *DB) GetOrCreateSection(filename, sectionName string, indentLevel int) 
 		if err != nil {
 			return nil, err
 		}
+		slog.Info("Created new section", "filename", filename, "section", sectionName, "id", id)
 		section = Section{
 			ID:          id,
 			Filename:    filename,

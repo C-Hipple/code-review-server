@@ -400,7 +400,10 @@ func (oi OrgItem) LinesCount() int {
 }
 
 func (oi OrgItem) ID() string {
-	return oi.Details()[0]
+	if len(oi.Details()) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(oi.Details()[0])
 }
 
 func (oi OrgItem) CheckDone() bool {
@@ -408,7 +411,7 @@ func (oi OrgItem) CheckDone() bool {
 }
 
 func (oi OrgItem) Identifier() string {
-	return oi.details[0] + oi.details[1]
+	return oi.Repo() + oi.ID()
 }
 
 func findOrgTags(line string) []string {

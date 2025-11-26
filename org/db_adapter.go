@@ -1,6 +1,7 @@
 package org
 
 import (
+	"database/sql"
 	"fmt"
 	"gtdbot/database"
 	"log/slog"
@@ -34,9 +35,9 @@ func (d *DBOrgDocument) GetSection(sectionName string) (*DBSection, error) {
 		releaseCmd = bos.ReleaseCheckCommand
 	}
 	return &DBSection{
-		Section:            section,
-		DB:                 d.DB,
-		Serializer:         d.Serializer,
+		Section:             section,
+		DB:                  d.DB,
+		Serializer:          d.Serializer,
 		ReleaseCheckCommand: releaseCmd,
 	}, nil
 }
@@ -93,8 +94,8 @@ func (d *DBOrgDocument) UpdateDeserializedItemInSection(sectionName string, newI
 
 type DBSection struct {
 	*database.Section
-	DB         *database.DB
-	Serializer OrgSerializer
+	DB                  *database.DB
+	Serializer          OrgSerializer
 	ReleaseCheckCommand string
 }
 
@@ -111,8 +112,8 @@ func (s *DBSection) GetItems() ([]OrgTODO, error) {
 	items := make([]OrgTODO, len(dbItems))
 	for i, dbItem := range dbItems {
 		items[i] = &DBOrgItem{
-			Item:       dbItem,
-			Serializer: s.Serializer,
+			Item:        dbItem,
+			Serializer:  s.Serializer,
 			IndentLevel: s.IndentLevel,
 		}
 	}
@@ -121,15 +122,16 @@ func (s *DBSection) GetItems() ([]OrgTODO, error) {
 
 func (s *DBSection) AddItem(item OrgTODO) error {
 	identifier := item.Identifier()
+	slog.Info("Adding item with identifier: " + identifier)
 	status := item.GetStatus()
-	
+
 	// Get the full formatted title line (includes tags)
 	titleLine := item.ItemTitle(s.IndentLevel, s.ReleaseCheckCommand)
-	
+
 	// Extract tags and clean title
 	tags := extractTagsFromTitle(titleLine)
 	title := cleanTitle(titleLine)
-	
+
 	details := item.Details()
 
 	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, false)
@@ -138,15 +140,16 @@ func (s *DBSection) AddItem(item OrgTODO) error {
 
 func (s *DBSection) UpdateItem(item OrgTODO, archive bool) error {
 	identifier := item.Identifier()
+	slog.Info("updating item with identifier: " + identifier)
 	status := item.GetStatus()
-	
+
 	// Get the full formatted title line (includes tags)
 	titleLine := item.ItemTitle(s.IndentLevel, s.ReleaseCheckCommand)
-	
+
 	// Extract tags and clean title
 	tags := extractTagsFromTitle(titleLine)
 	title := cleanTitle(titleLine)
-	
+
 	details := item.Details()
 
 	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, archive)
@@ -165,8 +168,8 @@ func (s *DBSection) FindItem(item OrgTODO) (OrgTODO, error) {
 		return nil, err
 	}
 	return &DBOrgItem{
-		Item:       dbItem,
-		Serializer: s.Serializer,
+		Item:        dbItem,
+		Serializer:  s.Serializer,
 		IndentLevel: s.IndentLevel,
 	}, nil
 }
@@ -174,7 +177,7 @@ func (s *DBSection) FindItem(item OrgTODO) (OrgTODO, error) {
 // DBOrgItem adapts database.Item to OrgTODO interface
 type DBOrgItem struct {
 	*database.Item
-	Serializer OrgSerializer
+	Serializer  OrgSerializer
 	IndentLevel int
 }
 
@@ -262,7 +265,7 @@ func extractTagsFromTitle(titleLine string) []string {
 	tags := []string{}
 	// Look for tags in format :tag1:tag2: at the end
 	// Format is: ** STATUS Title\t\t:tag1:tag2: or ** STATUS Title :tag1:tag2:
-	
+
 	// Try to find tags after \t\t: or just :
 	tagStart := strings.Index(titleLine, "\t\t:")
 	if tagStart == -1 {
@@ -273,7 +276,7 @@ func extractTagsFromTitle(titleLine string) []string {
 	} else {
 		tagStart += 3 // Skip "\t\t:"
 	}
-	
+
 	if tagStart > 0 && tagStart < len(titleLine) {
 		tagPart := titleLine[tagStart:]
 		// Remove trailing newline if present
@@ -290,7 +293,7 @@ func extractTagsFromTitle(titleLine string) []string {
 func cleanTitle(titleLine string) string {
 	// Remove tags from title line
 	// Format is: ** STATUS Title\t\t:tag1:tag2: or ** STATUS Title :tag1:tag2:
-	
+
 	// Find where tags start
 	tagStart := strings.Index(titleLine, "\t\t:")
 	if tagStart == -1 {
@@ -299,11 +302,11 @@ func cleanTitle(titleLine string) string {
 			tagStart += 1 // Keep the space before :
 		}
 	}
-	
+
 	if tagStart > 0 {
 		titleLine = titleLine[:tagStart]
 	}
-	
+
 	// Remove the ** STATUS prefix to get just the title
 	parts := strings.Fields(titleLine)
 	if len(parts) >= 3 {
@@ -318,12 +321,16 @@ func CheckTODOInSectionDB(todo OrgTODO, section *DBSection) (bool, OrgTODO) {
 	identifier := todo.Identifier()
 	dbItem, err := section.DB.GetItem(section.ID, identifier)
 	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Error("Error checking TODO in DB", "identifier", identifier, "sectionID", section.ID, "error", err)
+		} else {
+			// slog.Debug("Item not found in DB", "identifier", identifier, "sectionID", section.ID)
+		}
 		return false, nil
 	}
 	return true, &DBOrgItem{
-		Item:       dbItem,
-		Serializer: section.Serializer,
+		Item:        dbItem,
+		Serializer:  section.Serializer,
 		IndentLevel: section.IndentLevel,
 	}
 }
-

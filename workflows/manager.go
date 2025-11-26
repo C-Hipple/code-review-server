@@ -181,6 +181,7 @@ func (ms ManagerService) Run(log *slog.Logger) {
 		close(ms.workflow_chan)
 	} else {
 		cycle_count := 0
+		log.Info("Starting service mode with sleep duration:" + ms.sleep_time.String())
 		for {
 			log.Info("Cycle", "count", cycle_count)
 			ms.RunOnce(log, &listener_wg)

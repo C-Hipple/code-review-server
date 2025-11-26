@@ -8,6 +8,7 @@ import (
 	"gtdbot/jira"
 	"gtdbot/org"
 	"log/slog"
+	"strconv"
 	"sync"
 )
 
@@ -105,6 +106,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 	db := config.C.DB
 	doc := org.NewDBOrgDocument(w.OrgFileName, db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand}, config.C.OrgFileDir)
 	section, err := doc.GetSection(w.SectionTitle)
+	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")

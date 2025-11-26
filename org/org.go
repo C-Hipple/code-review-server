@@ -1,9 +1,7 @@
 package org
 
 import (
-	"log/slog"
-	"os"
-	"path/filepath"
+	"errors"
 	"strings"
 )
 
@@ -20,56 +18,127 @@ type OrgTODO interface {
 	Identifier() string
 }
 
-func CleanHeader(line string) string {
-	line = strings.ReplaceAll(line, "*", "")
-	line = strings.ReplaceAll(line, "TODO", "")
-	line = strings.ReplaceAll(line, "DONE", "")
-	line = strings.TrimSpace(line)
-	if strings.Contains(line, "[") {
-		line = strings.Split(line, "[")[0]
-	}
-	return line
+type OrgSerializer interface {
+	Deserialize(item OrgTODO, indent_level int) []string
+	Serialize(lines []string, start_line int) (OrgTODO, error)
 }
 
-func CheckForHeader(section_name string, line string, stars string) bool {
-	// Need a better way of handling this,
-	prefix := strings.HasPrefix(line, stars+" TODO ") || strings.HasPrefix(line, stars+" DONE ")
-	return prefix && strings.Contains(line, section_name) && !strings.Contains(line, "CI Status")
+type BaseOrgSerializer struct {
+	ReleaseCheckCommand string
 }
 
-func GetOrgFile(filename string, orgFileDir string) *os.File {
-	orgFilePath := orgFileDir
-	if strings.HasPrefix(orgFilePath, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			slog.Error("Error getting home directory", "error", err)
-			os.Exit(1)
-		}
-		orgFilePath = filepath.Join(home, orgFilePath[2:])
-	}
+// Implement the OrgSerializer interface with our most generic structs / interfaces
 
-	orgFilePath = filepath.Join(orgFilePath, filename)
-
-	file, err := os.OpenFile(orgFilePath, os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		slog.Error("Error opening or creating org file", "file", orgFilePath, "error", err)
-		os.Exit(1)
-	}
-	return file
+func (bos BaseOrgSerializer) Deserialize(item OrgTODO, indent_level int) []string {
+	var result []string
+	result = append(result, item.ItemTitle(indent_level, bos.ReleaseCheckCommand))
+	result = append(result, item.Details()...)
+	return result
 }
 
-func CheckTODOInSection(todo OrgTODO, section Section) (int, OrgTODO) {
-	// returns the line number if it's found, otherwise returns -1
-	serializer := BaseOrgSerializer{}
-	at_line := section.StartLine + 1 // account for the section title
-	for _, line_item := range section.Items {
-		if strings.Contains(line_item.Summary(), todo.Summary()) {
-			return at_line, line_item
-		}
-		if line_item.Summary() == todo.Summary() {
-			return at_line, line_item
-		}
-		at_line += len(serializer.Deserialize(line_item, section.IndentLevel))
+func (bos BaseOrgSerializer) Serialize(lines []string, start_line int) (OrgTODO, error) {
+	// each one has the format ** TODO URL Title.  Check stars to allow for auxillary text between items
+	if len(lines) == 0 {
+		return OrgItem{}, errors.New("No Lines passed for serialization")
 	}
-	return -1, nil
+	status := findOrgStatus(lines[0])
+	tags := findOrgTags(lines[0])
+	return OrgItem{header: lines[0], status: status, details: lines[1:], tags: tags, start_line: start_line, lines_count: len(lines)}, nil
+}
+
+func findOrgStatus(line string) string {
+	for _, status := range GetOrgStatuses() {
+		if strings.Contains(line, status) {
+			return status
+		}
+	}
+	return ""
+}
+func GetOrgStatuses() []string {
+	return []string{"TODO", "DONE", "CANCELLED", "BLOCKED", "PROGRESS", "WAITING", "TENTATIVE", "DELEGATED"}
+}
+
+func findOrgTags(line string) []string {
+	splits := strings.Split(line, ":")
+	if len(splits) < 2 {
+		return []string{}
+	} else {
+		return splits[1 : len(splits)-1]
+	}
+
+}
+
+type OrgItem struct {
+	header      string
+	details     []string
+	status      string
+	tags        []string
+	start_line  int
+	lines_count int
+}
+
+func NewOrgItem(header string, details []string, status string, tags []string, start_line int, lines_count int) OrgItem {
+	return OrgItem{
+		header,
+		details,
+		status,
+		tags,
+		start_line,
+		lines_count,
+	}
+}
+
+// Implement the OrgTODO Interface for OrgItem
+func (oi OrgItem) ItemTitle(indent_level int, release_command_check string) string {
+	// This reads from the org file, so it'll still have the ** in it.
+	stripped_header := oi.header
+	if strings.HasPrefix(oi.header, "*") {
+		stripped_header = strings.Join(strings.Split(oi.header, "* ")[1:], "")
+	}
+	return strings.Repeat("*", indent_level) + " " + stripped_header
+}
+
+func (oi OrgItem) Details() []string {
+	return oi.details
+}
+
+// TODO: Implement? Better way?
+func (oi OrgItem) Repo() string {
+	for _, line := range oi.Details() {
+		if strings.HasPrefix(line, "Repo:") {
+			return strings.Split(line, ": ")[1]
+		}
+	}
+	return ""
+}
+
+func (oi OrgItem) GetStatus() string {
+	return oi.status
+}
+
+func (oi OrgItem) Summary() string {
+	return oi.header
+}
+
+func (oi OrgItem) StartLine() int {
+	return oi.start_line
+}
+
+func (oi OrgItem) LinesCount() int {
+	return oi.lines_count
+}
+
+func (oi OrgItem) ID() string {
+	if len(oi.Details()) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(oi.Details()[0])
+}
+
+func (oi OrgItem) CheckDone() bool {
+	return oi.GetStatus() == "DONE" || oi.GetStatus() == "CANCELLED"
+}
+
+func (oi OrgItem) Identifier() string {
+	return oi.Repo() + oi.ID()
 }

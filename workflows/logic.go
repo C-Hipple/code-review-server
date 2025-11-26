@@ -29,7 +29,7 @@ type FileChanges struct {
 	ChangeType     string
 	Filename       string
 	Item           org.OrgTODO
-	Section        org.Section
+	Section        org.DBSection
 	ItemSerializer org.OrgSerializer
 	OrgFileDir     string
 }
@@ -293,47 +293,6 @@ func getComments(owner string, repo string, number int) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRs(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, doc *org.OrgDocument, section *org.Section, change_wg *sync.WaitGroup, prune_command string, includeDiff bool) RunResult {
-	result := RunResult{}
-
-	// the index for both slices should match
-	seen_prs := []*github.PullRequest{}
-	pr_strings := []string{}
-	changes := []FileChanges{}
-
-	for _, pr := range prs {
-		pr_strings = append(pr_strings, fmt.Sprintf("%s-%v", *pr.Head.Repo.Name, pr.GetNumber()))
-		seen_prs = append(seen_prs, pr)
-		changes = append(changes, SyncTODOToSection(*doc, pr, *section, includeDiff))
-	}
-
-	if prune_command == "Delete" || prune_command == "Archive" {
-		// prune items that are not seen.  Use the PR string as the comparator
-		for _, item := range section.Items {
-			check_string := fmt.Sprintf("%s-%s", item.Repo(), item.ID())
-			if slices.Contains(pr_strings, check_string) {
-				continue
-			} else {
-				fileChange := FileChanges{
-					ChangeType:     prune_command,
-					Filename:       doc.Filename,
-					Item:           item,
-					Section:        *section,
-					ItemSerializer: doc.Serializer,
-					OrgFileDir:     doc.OrgFileDir,
-				}
-				changes = append(changes, fileChange)
-			}
-		}
-	}
-
-	for _, output := range changes {
-		result.Process(&output, changes_channel, change_wg)
-	}
-
-	return result
-}
-
 func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, doc *org.DBOrgDocument, section *org.DBSection, change_wg *sync.WaitGroup, prune_command string, includeDiff bool) RunResult {
 	result := RunResult{}
 
@@ -363,7 +322,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 						ChangeType:     prune_command,
 						Filename:       doc.Filename,
 						Item:           item,
-						Section:        org.Section{Name: section.Name(), IndentLevel: section.IndentLevel},
+						Section:        *section,
 						ItemSerializer: doc.Serializer,
 						OrgFileDir:     doc.OrgFileDir,
 					}
@@ -380,13 +339,14 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 	return result
 }
 
-func SyncTODOToSection(doc org.OrgDocument, pr *github.PullRequest, section org.Section, includeDiff bool) FileChanges {
+func SyncTODOToSectionDB(doc org.DBOrgDocument, pr *github.PullRequest, section org.DBSection, includeDiff bool) FileChanges {
 	pr_as_org := PRToOrgBridge{PR: pr, IncludeDiff: includeDiff}
-	at_line, _ := org.CheckTODOInSection(pr_as_org, section)
+	found, _ := org.CheckTODOInSectionDB(pr_as_org, &section)
 	changeType := "Addition"
-	if at_line != -1 {
+	if found {
 		// After a week we stop updating old ones
-		if pr_as_org.PR.GetMergedAt().After(time.Now().Add(-7 * 24 * time.Hour)) {
+		mergedAt := pr_as_org.PR.GetMergedAt()
+		if !mergedAt.IsZero() && mergedAt.After(time.Now().Add(-7*24*time.Hour)) {
 			changeType = "Update"
 		} else {
 			changeType = "No Change"
@@ -397,29 +357,6 @@ func SyncTODOToSection(doc org.OrgDocument, pr *github.PullRequest, section org.
 		Filename:       doc.Filename,
 		Item:           pr_as_org,
 		Section:        section,
-		ItemSerializer: doc.Serializer,
-		OrgFileDir:     doc.OrgFileDir,
-	}
-}
-
-func SyncTODOToSectionDB(doc org.DBOrgDocument, pr *github.PullRequest, section org.DBSection, includeDiff bool) FileChanges {
-	pr_as_org := PRToOrgBridge{PR: pr, IncludeDiff: includeDiff}
-	found, _ := org.CheckTODOInSectionDB(pr_as_org, &section)
-	changeType := "Addition"
-	if found {
-		// After a week we stop updating old ones
-		mergedAt := pr_as_org.PR.GetMergedAt()
-		if !mergedAt.IsZero() && mergedAt.After(time.Now().Add(-7 * 24 * time.Hour)) {
-			changeType = "Update"
-		} else {
-			changeType = "No Change"
-		}
-	}
-	return FileChanges{
-		ChangeType:     changeType,
-		Filename:       doc.Filename,
-		Item:           pr_as_org,
-		Section:        org.Section{Name: section.Name(), IndentLevel: section.IndentLevel},
 		ItemSerializer: doc.Serializer,
 		OrgFileDir:     doc.OrgFileDir,
 	}

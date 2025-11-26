@@ -81,7 +81,7 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 			continue
 		}
 		fileChange.Log(log)
-		key := fileChange.Filename + fileChange.Section.Name
+		key := fileChange.Filename + fileChange.Section.Name()
 		changesMap[key] = append(changesMap[key], fileChange.Deserialize())
 	}
 
@@ -110,11 +110,11 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 		doc := org.NewDBOrgDocument(deserializedChange.FileChange.Filename, db, deserializedChange.FileChange.ItemSerializer, deserializedChange.FileChange.OrgFileDir)
 		switch deserializedChange.FileChange.ChangeType {
 		case "Addition":
-			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name, deserializedChange.Lines)
+			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines)
 		case "Update", "Archive":
-			doc.UpdateDeserializedItemInSection(deserializedChange.FileChange.Section.Name, deserializedChange.FileChange.Item, deserializedChange.FileChange.ChangeType == "Archive", deserializedChange.Lines)
+			doc.UpdateDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item, deserializedChange.FileChange.ChangeType == "Archive", deserializedChange.Lines)
 		case "Delete":
-			doc.DeleteItemInSection(deserializedChange.FileChange.Section.Name, deserializedChange.FileChange.Item)
+			doc.DeleteItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item)
 		}
 		wg.Done()
 

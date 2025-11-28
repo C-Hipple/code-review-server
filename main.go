@@ -66,6 +66,15 @@ func runServer(log *slog.Logger) {
 				continue
 			}
 			fmt.Printf("hello %d\n", count)
+		} else if line == "getReviews" {
+			renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
+			content, err := renderer.RenderAllFilesToString()
+			if err != nil {
+				log.Error("Error rendering org files", "error", err)
+				fmt.Printf("ERROR: %s\n", err.Error())
+				continue
+			}
+			fmt.Print(content)
 		}
 	}
 	if err := scanner.Err(); err != nil {

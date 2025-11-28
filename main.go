@@ -15,14 +15,14 @@ func main() {
 	slog.Info("Starting!")
 	defer config.C.DB.Close()
 
-	one_off := flag.Bool("oneoff", false, "Pass oneoff to only run once")
+	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	initOnly := flag.Bool("init", false, "Pass init to only only setup the org file.")
 	flag.Parse()
 
 	workflows_list := workflows.MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
 	ms := workflows.NewManagerService(
 		workflows_list,
-		*one_off,
+		*oneOff,
 		config.C.SleepDuration,
 	)
 	ms.Initialize()

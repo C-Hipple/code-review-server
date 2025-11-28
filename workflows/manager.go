@@ -29,7 +29,7 @@ func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 type ManagerService struct {
 	Workflows     []Workflow
 	workflow_chan chan FileChanges
-	sleep_time    time.Duration
+	sleepTime    time.Duration
 	oneoff        bool
 }
 
@@ -122,7 +122,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 
 }
 
-func NewManagerService(workflows []Workflow, oneoff bool, sleep_time time.Duration) ManagerService {
+func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {
 	used_workflows := []Workflow{}
 	for _, wf := range workflows {
 		if strings.Contains(fmt.Sprintf("%T", wf), "ListMyPRsWorkflow") {
@@ -137,7 +137,7 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleep_time time.Durati
 	return ManagerService{
 		Workflows:     used_workflows,
 		workflow_chan: make(chan FileChanges),
-		sleep_time:    sleep_time,
+		sleepTime:    sleepTime,
 		oneoff:        oneoff,
 	}
 }
@@ -181,7 +181,7 @@ func (ms ManagerService) Run(log *slog.Logger) {
 		close(ms.workflow_chan)
 	} else {
 		cycle_count := 0
-		log.Info("Starting service mode with sleep duration:" + ms.sleep_time.String())
+		log.Info("Starting service mode with sleep duration:" + ms.sleepTime.String())
 		for {
 			log.Info("Cycle", "count", cycle_count)
 			ms.RunOnce(log, &listener_wg)
@@ -190,7 +190,7 @@ func (ms ManagerService) Run(log *slog.Logger) {
 			if err := renderer.RenderAllFiles(config.C.OrgFileDir); err != nil {
 				log.Error("Error rendering org files", "error", err)
 			}
-			time.Sleep(ms.sleep_time)
+			time.Sleep(ms.sleepTime)
 			cycle_count++
 		}
 	}

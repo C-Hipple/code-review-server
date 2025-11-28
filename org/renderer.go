@@ -2,7 +2,7 @@ package org
 
 import (
 	"fmt"
-	"gtdbot/database"
+	"codereviewserver/database"
 	"log/slog"
 	"os"
 	"path/filepath"

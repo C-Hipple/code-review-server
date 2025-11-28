@@ -1,4 +1,4 @@
-;;; gtdbot.el --- Tools for implementing Getting Things Done methodology in emacs -*- lexical-binding: t; -*-
+;;; codereverserver.el --- Tools for implementing Getting Things Done methodology in emacs -*- lexical-binding: t; -*-
 
 ;; Author: Chris Hipple
 ;; URL: https://github.com/C-Hipple/gtdbot
@@ -9,7 +9,7 @@
 
 ;;; Commentary:
 
-;; This package provides tooling for running gtdbot in (defined in the same repo, built with go) and for reviewing closed / archived tasks
+;; This package provides tooling for running codereverserver in (defined in the same repo, built with go) and for reviewing closed / archived tasks
 ;;
 ;; Usage:
 
@@ -19,10 +19,10 @@
 
 ;;; Code:
 (defvar gtdbot-sync-frequency 10
-  "How often gtdbot will sync reviews in service mode (seconds)")
+  "How often codereverserver will sync reviews in service mode (seconds)")
 
 (defvar gtdbot--timer nil
-  "The timer object when gtdbot is running as a service")
+  "The timer object when codereverserver is running as a service")
 
 (defvar gtdbot-review-files '("~/gtd/reviews.org" "~/gtd/full_reviews.org"))
 
@@ -53,25 +53,25 @@
             (org-update-statistics-cookies "ALL")
             (save-buffer)))
       (message (concat "file does not exist: " f))))
-  (message "gtdbot sync complete!"))
+  (message "codereverserver sync complete!"))
 
 ;;;###autoload
 (defun run-gtdbot-oneoff ()
-  "Runs gtdbot with the oneoff flag to update reviews.org"
+  "Runs codereverserver with the oneoff flag to update reviews.org"
   (interactive)
-  (message "gtdbot sync starting!")
+  (message "codereverserver sync starting!")
   (if-let ((async-buffer (get-buffer "*gtdbot-async")))
       (kill-buffer "*gtdbot-async*"))
 
   (if-let ((review-buffer (find-buffer-visiting "~/gtd/reviews.org")))
       (kill-buffer review-buffer))
 
-  (async-start-process "gtdbot-async" "gtdbot" 'gtdbot--callback "--oneoff"))
+  (async-start-process "gtdbot-async" "codereverserver" 'gtdbot--callback "--oneoff"))
 
 
 ;;;###autoload
 (defun run-gtdbot-service ()
-  "Runs gtdbot with the oneoff flag to update reviews.org"
+  "Runs codereverserver with the oneoff flag to update reviews.org"
   (interactive)
   (setq gtdbot--timer (run-with-timer 0 gtdbot-sync-frequency #'run-gtdbot-oneoff)))
 
@@ -83,9 +83,9 @@
 ;; Theese are testing helper functions to make development a little bit easier
 ;;;###autoload
 (defun run-gtdbot-parse-test()
-  "Runs gtdbot with the parse flag to check parsing reviews.org"
+  "Runs codereverserver with the parse flag to check parsing reviews.org"
   (interactive)
-  (async-shell-command "gtdbot --parse" "*gtdbot*"))
+  (async-shell-command "codereverserver --parse" "*gtdbot*"))
 
 ;; Below this point is the code for doing org agenda reviews in emacs
 ;; To be honest, I copied this from a blog which seems to have been since taken down and I can't find it.
@@ -187,4 +187,4 @@
 ;; Debug
 (define-key evil-normal-state-map (kbd ", r p") 'run-gtdbot-parse-test)
 
-(provide 'gtdbot)
+(provide 'codereverserver)

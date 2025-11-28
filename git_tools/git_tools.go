@@ -3,7 +3,7 @@ package git_tools
 import (
 	"context"
 	"fmt"
-	"gtdbot/config"
+	"codereviewserver/config"
 	"os"
 	"slices"
 	"strings"

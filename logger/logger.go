@@ -70,7 +70,7 @@ func (h *CustomHandler) WithGroup(name string) slog.Handler {
 }
 
 func New() *slog.Logger {
-	handler := NewCustomHandler(os.Stdout, &slog.HandlerOptions{
+	handler := NewCustomHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 	return slog.New(handler)

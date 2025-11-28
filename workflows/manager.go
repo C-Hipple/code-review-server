@@ -2,8 +2,8 @@ package workflows
 
 import (
 	"fmt"
-	"gtdbot/config"
-	"gtdbot/org"
+	"codereviewserver/config"
+	"codereviewserver/org"
 	"log/slog"
 	"strings"
 	"sync"
@@ -80,7 +80,7 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 			wg.Done()
 			continue
 		}
-		fileChange.Log(log)
+		fileChange.Report(log)
 		key := fileChange.Filename + fileChange.Section.Name()
 		changesMap[key] = append(changesMap[key], fileChange.Deserialize())
 	}
@@ -106,6 +106,7 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 
 func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	for deserializedChange := range channel {
+		log.Info("Doing deser change: " + deserializedChange.FileChange.Item.ID())
 		db := config.C.DB
 		doc := org.NewDBOrgDocument(deserializedChange.FileChange.Filename, db, deserializedChange.FileChange.ItemSerializer, deserializedChange.FileChange.OrgFileDir)
 		switch deserializedChange.FileChange.ChangeType {

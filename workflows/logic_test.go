@@ -1,7 +1,7 @@
 package workflows
 
 import (
-	"gtdbot/org"
+	"codereviewserver/org"
 	"strings"
 	"testing"
 )

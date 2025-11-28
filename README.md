@@ -1,6 +1,6 @@
-# gtdbot
+# codereverserver
 
-gtdbot is a service which runs highly configurable workflows to load github reviews which your are interested in locally to org-files.
+codereverserver is a service which runs highly configurable workflows to load github reviews which your are interested in locally to org-files.
 
 ## Installation
 
@@ -9,14 +9,14 @@ Binaries not provided.
 
 ```bash
 git clone git@github.com/C-Hipple/gtdbot
-cd gtdbot
+cd codereverserver
 go install
 ```
 
 
 ## Configuration
 
-gtdbot works from a toml config expected at the path `~/config/gtdbot.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
+codereverserver works from a toml config expected at the path `~/config/gtdbot.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
 
 
 ```bash
@@ -155,13 +155,13 @@ You can configure a release check command which is run when PRs are added to the
 example. If we have a program on our PATH variable named release-check, you should call it like this:
 
 ```
-$ release-check C-Hipple gtdbot abcdef
+$ release-check C-Hipple codereverserver abcdef
 released
 
-$ release-check C-Hipple gtdbot hijklm
+$ release-check C-Hipple codereverserver hijklm
 release-client
 
-$ release-check C-Hipple gtdbot nopqrs
+$ release-check C-Hipple codereverserver nopqrs
 merged
 ```
 
@@ -169,14 +169,14 @@ That string will then be put into the title line of the PR via the org-serialize
 
 ## Emacs integration
 
-This project ships with `gtdbot.el` for running and configuring this in emacs seamlessly.
+This project ships with `codereverserver.el` for running and configuring this in emacs seamlessly.
 
 ### Installation
 
 #### Spacemacs
 ```elisp
    ;; in dotspacemacs-additional-packages
-   (gtdbot :location (recipe
+   (codereverserver :location (recipe
                       :fetcher github
                       :repo "C-Hipple/gtdbot"
                       :files ("*.el")))

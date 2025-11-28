@@ -2,8 +2,8 @@ package workflows
 
 import (
 	"fmt"
-	"gtdbot/config"
-	"gtdbot/git_tools"
+	"codereviewserver/config"
+	"codereviewserver/git_tools"
 
 	"github.com/google/go-github/v48/github"
 )

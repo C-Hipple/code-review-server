@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"gtdbot/git_tools"
-	"gtdbot/org"
-	"gtdbot/utils"
+	"codereviewserver/git_tools"
+	"codereviewserver/org"
+	"codereviewserver/utils"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -39,7 +39,7 @@ type SerializedFileChange struct {
 	Lines      []string
 }
 
-func (fc FileChanges) Log(log *slog.Logger) {
+func (fc FileChanges) Report(log *slog.Logger) {
 	// log.Info("type", fc.ChangeType, "section", fc.Section.Name, "summary", fc.Item.Summary())
 	log.Info(fmt.Sprintf("[%s] %-20s - %s", fc.ChangeType[:2], fc.Section.Name, fc.Item.Summary()))
 }

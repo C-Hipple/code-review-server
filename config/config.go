@@ -1,7 +1,7 @@
 package config
 
 import (
-	"gtdbot/database"
+	"codereviewserver/database"
 	"os"
 	"path/filepath"
 	"time"
@@ -51,9 +51,14 @@ func init() {
 		GithubUsername string
 	}
 	home_dir, err := os.UserHomeDir()
-	the_bytes, err := os.ReadFile(filepath.Join(home_dir, ".config/gtdbot.toml"))
+	configPath := "~/.config/codereviewserver.toml"
+	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
-		panic(err)
+		// Fallback to home directory
+		the_bytes, err = os.ReadFile(filepath.Join(home_dir, ".config/codereviewserver.toml"))
+		if err != nil {
+			panic(err)
+		}
 	}
 	err = toml.Unmarshal(the_bytes, &intermediate_config)
 	if err != nil {
@@ -76,7 +81,7 @@ func init() {
 	}
 
 	// Initialize database
-	dbPath := filepath.Join(home_dir, ".config/gtdbot.db")
+	dbPath := filepath.Join(home_dir, ".config/codereviewserver.db")
 	db, err := database.NewDB(dbPath)
 	if err != nil {
 		panic(err)

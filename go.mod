@@ -1,4 +1,4 @@
-module gtdbot
+module codereviewserver
 
 go 1.22
 

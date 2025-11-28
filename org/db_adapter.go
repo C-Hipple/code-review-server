@@ -3,7 +3,7 @@ package org
 import (
 	"database/sql"
 	"fmt"
-	"gtdbot/database"
+    "codereviewserver/database"
 	"log/slog"
 	"strings"
 )
@@ -122,7 +122,7 @@ func (s *DBSection) GetItems() ([]OrgTODO, error) {
 
 func (s *DBSection) AddItem(item OrgTODO) error {
 	identifier := item.Identifier()
-	slog.Info("Adding item with identifier: " + identifier)
+	slog.Debug("Adding item with identifier: " + identifier)
 	status := item.GetStatus()
 
 	// Get the full formatted title line (includes tags)
@@ -135,12 +135,16 @@ func (s *DBSection) AddItem(item OrgTODO) error {
 	details := item.Details()
 
 	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, false)
+	if err != nil {
+		slog.Error("Failed Upsert: ", err)
+	}
+	slog.Debug("completed adding item: " + identifier)
 	return err
 }
 
 func (s *DBSection) UpdateItem(item OrgTODO, archive bool) error {
 	identifier := item.Identifier()
-	slog.Info("updating item with identifier: " + identifier)
+	slog.Debug("updating item with identifier: " + identifier)
 	status := item.GetStatus()
 
 	// Get the full formatted title line (includes tags)

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"codereviewserver/config"
+	"codereviewserver/logger"
+	"codereviewserver/org"
+	"codereviewserver/workflows"
 	"flag"
-	"gtdbot/config"
-	"gtdbot/logger"
-	"gtdbot/org"
-	"gtdbot/workflows"
+	"fmt"
 	"log/slog"
+	"os"
 )
 
 func main() {
@@ -17,7 +20,13 @@ func main() {
 
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	initOnly := flag.Bool("init", false, "Pass init to only only setup the org file.")
+	server := flag.Bool("server", false, "Run as an RPC server")
 	flag.Parse()
+
+	if *oneOff && *server {
+		slog.Error("Cannot run in both server and oneoff mode")
+		os.Exit(1)
+	}
 
 	workflows_list := workflows.MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
 	ms := workflows.NewManagerService(
@@ -36,5 +45,30 @@ func main() {
 		return
 	}
 
-	ms.Run(log)
+	if *server {
+		go ms.Run(log)
+		runServer(log)
+	} else {
+		ms.Run(log)
+	}
+}
+
+func runServer(log *slog.Logger) {
+	log.Info("Starting RPC Server on Stdin/Stdout")
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "hello" {
+			var count int
+			err := config.C.DB.QueryRow("SELECT COUNT(*) FROM sections").Scan(&count)
+			if err != nil {
+				log.Error("Error counting items", "error", err)
+				continue
+			}
+			fmt.Printf("hello %d\n", count)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Error("Error reading from stdin", "error", err)
+	}
 }

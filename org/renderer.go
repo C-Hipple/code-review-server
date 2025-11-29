@@ -1,16 +1,17 @@
 package org
 
 import (
-	"fmt"
 	"codereviewserver/database"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 type OrgRenderer struct {
-	db     *database.DB
+	db         *database.DB
 	serializer OrgSerializer
 }
 
@@ -21,13 +22,13 @@ func NewOrgRenderer(db *database.DB, serializer OrgSerializer) *OrgRenderer {
 	}
 }
 
-func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
+func (r *OrgRenderer) RenderFileToString(filename string) (string, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Filter sections for this filename and sort by ID to maintain order
+	// Filter sections for this filename
 	fileSections := []*database.Section{}
 	for _, section := range sections {
 		if section.Filename == filename {
@@ -37,8 +38,13 @@ func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
 
 	if len(fileSections) == 0 {
 		slog.Info("No sections found for file", "filename", filename)
-		return nil
+		return "", nil
 	}
+
+	// Sort sections by ID to maintain order
+	sort.Slice(fileSections, func(i, j int) bool {
+		return fileSections[i].ID < fileSections[j].ID
+	})
 
 	// Build the org file content
 	var content strings.Builder
@@ -47,7 +53,7 @@ func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
 		// Get items for this section
 		items, err := r.db.GetItemsBySection(section.ID)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		// Build section header
@@ -69,6 +75,15 @@ func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
 		content.WriteString("\n")
 	}
 
+	return content.String(), nil
+}
+
+func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
+	content, err := r.RenderFileToString(filename)
+	if err != nil {
+		return err
+	}
+
 	// Write to file
 	orgFilePath := orgFileDir
 	if strings.HasPrefix(orgFilePath, "~/") {
@@ -80,7 +95,7 @@ func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
 	}
 	orgFilePath = filepath.Join(orgFilePath, filename)
 
-	return os.WriteFile(orgFilePath, []byte(content.String()), 0644)
+	return os.WriteFile(orgFilePath, []byte(content), 0644)
 }
 
 func (r *OrgRenderer) buildSectionHeader(section *database.Section, items []*database.Item) string {
@@ -140,6 +155,53 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	return lines
 }
 
+func (r *OrgRenderer) RenderAllFilesToString() (string, error) {
+	slog.Error("Renderign all files to strings")
+	sections, err := r.db.GetAllSections()
+	if err != nil {
+		return "", err
+	}
+
+	// Group sections by filename
+	files := make(map[string][]*database.Section)
+	for _, section := range sections {
+		files[section.Filename] = append(files[section.Filename], section)
+	}
+
+	// Build combined content with file separators
+	var result strings.Builder
+	fileNames := make([]string, 0, len(files))
+	for filename := range files {
+		fileNames = append(fileNames, filename)
+	}
+	// Sort filenames for consistent output
+
+	for _, filename := range fileNames {
+		content, err := r.RenderFileToString(filename)
+		slog.Info("---------------CONTENT BEGIN -----------")
+		slog.Info(content)
+		slog.Info("---------------CONTENT END-----------")
+		if err != nil {
+			slog.Info("---------------Error rendering file-----------")
+			slog.Error(err.Error())
+			return "", fmt.Errorf("error rendering file %s: %w", filename, err)
+		}
+		// Always include file header if we have sections for this file
+		// Content might be just section headers if there are no items
+		if strings.TrimSpace(content) != "" {
+			result.WriteString(content)
+		}
+		result.WriteString("\n")
+	}
+
+	res := result.String()
+	slog.Info("--- RES START---")
+	slog.Info(res)
+	slog.Info("--- RES END ---")
+	return res, nil
+
+}
+
 func (r *OrgRenderer) RenderAllFiles(orgFileDir string) error {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
@@ -161,4 +223,3 @@ func (r *OrgRenderer) RenderAllFiles(orgFileDir string) error {
 
 	return nil
 }
-

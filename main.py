@@ -1,54 +1,54 @@
 import subprocess
 import time
+import json
 import sys
 
 def main():
     print("Starting codereviewserver...")
     # Start the server process
     process = subprocess.Popen(
-        ['./codereviewserver', '-server'],
+        ['codereviewserver', '-server'],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        # stderr=subprocess.STDOUT, # Merge stderr into stdout
+        stderr=sys.stderr,
         text=True,
         bufsize=1 # Line buffered
     )
 
     try:
-        # Give it a moment to initialize if needed, though we can just start reading/writing
-        responded = True
-        initialized = False
-        i = 0
+        # Wait a moment for the server to initialize
+        time.sleep(1)
 
-        while True:
-            print(i, responded, initialized)
-            if responded and initialized:
-                print("Sending 'hello' command...")
-                process.stdin.write("hello\n")
-                process.stdin.flush()
-                responded = False
+        # Send GetReviews request
+        request = {
+            "jsonrpc": "2.0",
+            "method": "RPCHandler.GetAllReviews",
+            "params": [],
+            "id": 1
+        }
+        print(f"Sending request: {json.dumps(request)}")
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.flush()
 
-            # Read output
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
-
-                line = line.strip()
-                print(f"Server output: {line}")
-                if "Starting RPC" in line:
-                    initialized = True
-
-
-                if line.startswith("hello "):
-                    print("SUCCESS: Received hello response")
-                    responded = True
-                break
-            i += 1
-            time.sleep(0.1)
-
-            # time.sleep(5)
-
+        # Read response
+        print("Waiting for response...")
+        response_line = process.stdout.readline()
+        if response_line:
+            try:
+                response = json.loads(response_line)
+                if "error" in response and response["error"]:
+                    print(f"RPC Error: {response['error']}")
+                elif "result" in response:
+                    print("SUCCESS: Received getReviews response")
+                    # The content is in response["result"]["Content"]
+                    # We might want to print it directly or handle it as needed
+                    with open("test.org", "w") as f:
+                        f.write(response["result"]["Content"])
+                    print("DONE CONTENT")
+            except json.JSONDecodeError as e:
+                print(f"Failed to decode JSON: {e}")
+        else:
+            print("No response received (EOF)")
 
     except KeyboardInterrupt:
         print("Interrupted")

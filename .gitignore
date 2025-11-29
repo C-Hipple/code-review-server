@@ -33,3 +33,6 @@ go.work.sum
 
 # built binary
 codereviewserver
+
+# test stuff
+test.org

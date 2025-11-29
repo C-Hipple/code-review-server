@@ -1,8 +1,8 @@
 package org
 
 import (
-	"fmt"
 	"codereviewserver/database"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,7 +11,7 @@ import (
 )
 
 type OrgRenderer struct {
-	db     *database.DB
+	db         *database.DB
 	serializer OrgSerializer
 }
 
@@ -156,6 +156,7 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 }
 
 func (r *OrgRenderer) RenderAllFilesToString() (string, error) {
+	slog.Error("Renderign all files to strings")
 	sections, err := r.db.GetAllSections()
 	if err != nil {
 		return "", err
@@ -174,23 +175,31 @@ func (r *OrgRenderer) RenderAllFilesToString() (string, error) {
 		fileNames = append(fileNames, filename)
 	}
 	// Sort filenames for consistent output
-	sort.Strings(fileNames)
 
 	for _, filename := range fileNames {
 		content, err := r.RenderFileToString(filename)
+		slog.Info("---------------CONTENT BEGIN -----------")
+		slog.Info(content)
+		slog.Info("---------------CONTENT END-----------")
 		if err != nil {
+			slog.Info("---------------Error rendering file-----------")
+			slog.Error(err.Error())
 			return "", fmt.Errorf("error rendering file %s: %w", filename, err)
 		}
 		// Always include file header if we have sections for this file
 		// Content might be just section headers if there are no items
-		result.WriteString(fmt.Sprintf("=== File: %s ===\n", filename))
 		if strings.TrimSpace(content) != "" {
 			result.WriteString(content)
 		}
 		result.WriteString("\n")
 	}
 
-	return result.String(), nil
+	res := result.String()
+	slog.Info("--- RES START---")
+	slog.Info(res)
+	slog.Info("--- RES END ---")
+	return res, nil
+
 }
 
 func (r *OrgRenderer) RenderAllFiles(orgFileDir string) error {
@@ -214,4 +223,3 @@ func (r *OrgRenderer) RenderAllFiles(orgFileDir string) error {
 
 	return nil
 }
-

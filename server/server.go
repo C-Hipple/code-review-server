@@ -2,6 +2,7 @@ package server
 
 import (
 	"codereviewserver/config"
+	"codereviewserver/git_tools"
 	"codereviewserver/org"
 	"fmt"
 	"log/slog"
@@ -73,18 +74,19 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	return nil
 }
 
-
 type GetPRstructArgs struct {
-	Repo string
-	Number int
+	Repo   string `json:"Repo"`
+	Owner  string `json:"Owner"`
+	Number int    `json:"Number"`
 }
 
 type GetPRReply struct {
 	Content string
 }
 
+func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 
-func (h *RPCHandler) Get(args *GetPRstructArgs, reply *GetPRReply) error {
-
+	diff := git_tools.GetPRDiff(git_tools.GetGithubClient(), args.Owner, args.Repo, args.Number)
+	reply.Content = diff
 	return nil
 }

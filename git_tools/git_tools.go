@@ -1,9 +1,9 @@
 package git_tools
 
 import (
+	"codereviewserver/config"
 	"context"
 	"fmt"
-	"codereviewserver/config"
 	"os"
 	"slices"
 	"strings"
@@ -68,6 +68,18 @@ func GetSpecificPRs(client *github.Client, owner string, repo string, pr_numbers
 		prs = append(prs, pr)
 	}
 	return prs
+}
+
+func GetPRDiff(client *github.Client, owner string, repo string, pr_number int) string {
+	// Calls out to the
+	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, pr_number, github.RawOptions{
+		Type: 1, // Diff format, not Patch format
+	})
+	if err != nil {
+		return fmt.Sprintf("%s", err)
+	}
+	return diff
+
 }
 
 func ApplyPRFilters(prs []*github.PullRequest, filters []PRFilter) []*github.PullRequest {

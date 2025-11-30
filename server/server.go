@@ -85,7 +85,6 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-
 	diff := git_tools.GetPRDiff(git_tools.GetGithubClient(), args.Owner, args.Repo, args.Number)
 	reply.Content = diff
 	return nil

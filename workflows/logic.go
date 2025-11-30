@@ -2,11 +2,11 @@ package workflows
 
 import (
 	"bytes"
-	"context"
-	"fmt"
 	"codereviewserver/git_tools"
 	"codereviewserver/org"
 	"codereviewserver/utils"
+	"context"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -266,9 +266,7 @@ func removePRBodySections(body *string) string {
 }
 
 func getComments(owner string, repo string, number int) (int, []string) {
-	client := git_tools.GetGithubClient()
-	opts := github.PullRequestListCommentsOptions{}
-	comments, _, err := client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+	comments, err := git_tools.GetPRComments(git_tools.GetGithubClient(), owner, repo, number)
 	comments = filterComments(comments)
 	trees := buildCommentTrees(comments)
 	// debugPrintCommentTree(trees)

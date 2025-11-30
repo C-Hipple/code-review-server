@@ -18,7 +18,7 @@ def main():
         bufsize=1,  # Line buffered
     )
 
-    get_pr_params = [{"Repo": "code-review-server", "Owner": "C-Hipple", "Number": 1}]
+    get_pr_params = [{"Repo": "gtdbot", "Owner": "C-Hipple", "Number": 25}]
 
     # send_request(process, "RPCHandler.GetAllReviews", [])
     send_request(process, "RPCHandler.GetPR", get_pr_params)

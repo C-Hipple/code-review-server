@@ -82,6 +82,17 @@ func GetPRDiff(client *github.Client, owner string, repo string, pr_number int) 
 
 }
 
+func GetPRComments(client *github.Client, owner string, repo string, number int) ([]*github.PullRequestComment, error) {
+	opts := github.PullRequestListCommentsOptions{}
+	comments, _, err := client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+	if err != nil {
+		// TODO: wump
+		// unwrap in production
+		return nil, err
+	}
+	return comments, nil
+}
+
 func ApplyPRFilters(prs []*github.PullRequest, filters []PRFilter) []*github.PullRequest {
 	for _, filter := range filters {
 		prs = filter(prs)

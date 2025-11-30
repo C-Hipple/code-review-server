@@ -1,21 +1,26 @@
-package org
+package server
 
 import (
 	"codereviewserver/database"
+	"codereviewserver/org"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/google/go-github/v48/github"
 )
 
 type OrgRenderer struct {
 	db         *database.DB
-	serializer OrgSerializer
+	serializer org.OrgSerializer
 }
 
-func NewOrgRenderer(db *database.DB, serializer OrgSerializer) *OrgRenderer {
+func NewOrgRenderer(db *database.DB) *OrgRenderer {
+	// TODO: Figure out if we still want different org serializers
+	serializer := org.BaseOrgSerializer{}
 	return &OrgRenderer{
 		db:         db,
 		serializer: serializer,
@@ -140,4 +145,21 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	lines = append(lines, details...)
 
 	return lines
+}
+
+func renderPullRequest(diff string, comments []*github.PullRequestComment) string {
+	var output strings.Builder
+	output.WriteString(diff)
+	for _, comment := range comments {
+		output.WriteString(formatComment(comment))
+	}
+	return output.String()
+}
+
+func formatComment(comment *github.PullRequestComment) string {
+	var formatted strings.Builder
+	formatted.WriteString("Comment By: " + comment.User.GetLogin() + "\n")
+	formatted.WriteString(comment.GetBody())
+	formatted.WriteString("\n------------------\n")
+	return formatted.String()
 }

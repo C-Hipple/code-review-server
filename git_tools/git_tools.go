@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/google/go-github/v48/github" // with go modules enabled (GO111MODULE=on or outside GOPATH)
+	"github.com/google/go-github/v48/github"
 	"golang.org/x/oauth2"
 )
 

@@ -3,7 +3,6 @@ package server
 import (
 	"codereviewserver/config"
 	"codereviewserver/git_tools"
-	"codereviewserver/org"
 	"fmt"
 	"log/slog"
 	"net/rpc"
@@ -64,7 +63,7 @@ type GetReviewsReply struct {
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
-	renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
+	renderer := NewOrgRenderer(config.C.DB)
 	content, err := renderer.RenderAllSectionsToString()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
@@ -81,11 +80,22 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
+	Okay    bool
 	Content string
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	diff := git_tools.GetPRDiff(git_tools.GetGithubClient(), args.Owner, args.Repo, args.Number)
-	reply.Content = diff
+	client := git_tools.GetGithubClient()
+	diff := git_tools.GetPRDiff(client, args.Owner, args.Repo, args.Number)
+	comments, err := git_tools.GetPRComments(client, args.Owner, args.Repo, args.Number)
+	if err != nil {
+		reply.Content = err.Error()
+		reply.Okay = false
+		return nil
+	}
+
+	output := renderPullRequest(diff, comments)
+	reply.Content = output
+	reply.Okay = true
 	return nil
 }

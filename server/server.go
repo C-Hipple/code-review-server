@@ -65,7 +65,7 @@ type GetReviewsReply struct {
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
-	content, err := renderer.RenderAllFilesToString()
+	content, err := renderer.RenderAllSectionsToString()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
 		return err

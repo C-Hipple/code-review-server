@@ -22,34 +22,21 @@ func NewOrgRenderer(db *database.DB, serializer OrgSerializer) *OrgRenderer {
 	}
 }
 
-func (r *OrgRenderer) RenderFileToString(filename string) (string, error) {
+func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
 		return "", err
 	}
 
-	// Filter sections for this filename
-	fileSections := []*database.Section{}
-	for _, section := range sections {
-		if section.Filename == filename {
-			fileSections = append(fileSections, section)
-		}
-	}
-
-	if len(fileSections) == 0 {
-		slog.Info("No sections found for file", "filename", filename)
-		return "", nil
-	}
-
 	// Sort sections by ID to maintain order
-	sort.Slice(fileSections, func(i, j int) bool {
-		return fileSections[i].ID < fileSections[j].ID
+	sort.Slice(sections, func(i, j int) bool {
+		return sections[i].ID < sections[j].ID
 	})
 
 	// Build the org file content
 	var content strings.Builder
 
-	for _, section := range fileSections {
+	for _, section := range sections {
 		// Get items for this section
 		items, err := r.db.GetItemsBySection(section.ID)
 		if err != nil {
@@ -79,7 +66,7 @@ func (r *OrgRenderer) RenderFileToString(filename string) (string, error) {
 }
 
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
-	content, err := r.RenderFileToString(filename)
+	content, err := r.RenderAllSectionsToString()
 	if err != nil {
 		return err
 	}
@@ -153,73 +140,4 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	lines = append(lines, details...)
 
 	return lines
-}
-
-func (r *OrgRenderer) RenderAllFilesToString() (string, error) {
-	slog.Error("Renderign all files to strings")
-	sections, err := r.db.GetAllSections()
-	if err != nil {
-		return "", err
-	}
-
-	// Group sections by filename
-	files := make(map[string][]*database.Section)
-	for _, section := range sections {
-		files[section.Filename] = append(files[section.Filename], section)
-	}
-
-	// Build combined content with file separators
-	var result strings.Builder
-	fileNames := make([]string, 0, len(files))
-	for filename := range files {
-		fileNames = append(fileNames, filename)
-	}
-	// Sort filenames for consistent output
-
-	for _, filename := range fileNames {
-		content, err := r.RenderFileToString(filename)
-		slog.Info("---------------CONTENT BEGIN -----------")
-		slog.Info(content)
-		slog.Info("---------------CONTENT END-----------")
-		if err != nil {
-			slog.Info("---------------Error rendering file-----------")
-			slog.Error(err.Error())
-			return "", fmt.Errorf("error rendering file %s: %w", filename, err)
-		}
-		// Always include file header if we have sections for this file
-		// Content might be just section headers if there are no items
-		if strings.TrimSpace(content) != "" {
-			result.WriteString(content)
-		}
-		result.WriteString("\n")
-	}
-
-	res := result.String()
-	slog.Info("--- RES START---")
-	slog.Info(res)
-	slog.Info("--- RES END ---")
-	return res, nil
-
-}
-
-func (r *OrgRenderer) RenderAllFiles(orgFileDir string) error {
-	sections, err := r.db.GetAllSections()
-	if err != nil {
-		return err
-	}
-
-	// Group sections by filename
-	files := make(map[string][]*database.Section)
-	for _, section := range sections {
-		files[section.Filename] = append(files[section.Filename], section)
-	}
-
-	// Render each file
-	for filename := range files {
-		if err := r.RenderFile(filename, orgFileDir); err != nil {
-			return fmt.Errorf("error rendering file %s: %w", filename, err)
-		}
-	}
-
-	return nil
 }

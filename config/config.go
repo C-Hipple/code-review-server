@@ -18,7 +18,6 @@ type RawWorkflow struct {
 	Repos               []string
 	JiraEpic            string
 	Filters             []string
-	OrgFileName         string
 	SectionTitle        string
 	PRState             string
 	ReleaseCheckCommand string
@@ -32,7 +31,6 @@ type Config struct {
 	Repos          []string
 	RawWorkflows   []RawWorkflow
 	SleepDuration  time.Duration
-	OrgFileDir     string
 	JiraDomain     string
 	GithubUsername string
 	DB             *database.DB
@@ -47,7 +45,6 @@ func init() {
 		JiraDomain     string
 		SleepDuration  int64
 		Workflows      []RawWorkflow
-		OrgFileDir     string
 		GithubUsername string
 	}
 	home_dir, err := os.UserHomeDir()
@@ -76,10 +73,6 @@ func init() {
 		parsed_sleep_duration = time.Duration(intermediate_config.SleepDuration) * time.Minute
 	}
 
-	if intermediate_config.OrgFileDir == "" {
-		intermediate_config.OrgFileDir = "~/"
-	}
-
 	// Initialize database
 	dbPath := filepath.Join(home_dir, ".config/codereviewserver.db")
 	db, err := database.NewDB(dbPath)
@@ -91,7 +84,6 @@ func init() {
 		Repos:          intermediate_config.Repos,
 		RawWorkflows:   intermediate_config.Workflows,
 		SleepDuration:  parsed_sleep_duration,
-		OrgFileDir:     intermediate_config.OrgFileDir,
 		JiraDomain:     intermediate_config.JiraDomain,
 		GithubUsername: intermediate_config.GithubUsername,
 		DB:             db,

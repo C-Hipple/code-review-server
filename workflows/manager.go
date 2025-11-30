@@ -1,9 +1,9 @@
 package workflows
 
 import (
-	"fmt"
 	"codereviewserver/config"
 	"codereviewserver/org"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -29,7 +29,7 @@ func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 type ManagerService struct {
 	Workflows     []Workflow
 	workflow_chan chan FileChanges
-	sleepTime    time.Duration
+	sleepTime     time.Duration
 	oneoff        bool
 }
 
@@ -81,7 +81,7 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 			continue
 		}
 		fileChange.Report(log)
-		key := fileChange.Filename + fileChange.Section.Name()
+		key := fileChange.Section.Name()
 		changesMap[key] = append(changesMap[key], fileChange.Deserialize())
 	}
 
@@ -108,7 +108,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 	for deserializedChange := range channel {
 		log.Info("Doing deser change: " + deserializedChange.FileChange.Item.ID())
 		db := config.C.DB
-		doc := org.NewDBOrgDocument(deserializedChange.FileChange.Filename, db, deserializedChange.FileChange.ItemSerializer, deserializedChange.FileChange.OrgFileDir)
+		doc := org.NewDBClient(db, deserializedChange.FileChange.ItemSerializer)
 		switch deserializedChange.FileChange.ChangeType {
 		case "Addition":
 			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines)
@@ -138,7 +138,7 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 	return ManagerService{
 		Workflows:     used_workflows,
 		workflow_chan: make(chan FileChanges),
-		sleepTime:    sleepTime,
+		sleepTime:     sleepTime,
 		oneoff:        oneoff,
 	}
 }
@@ -187,10 +187,6 @@ func (ms ManagerService) Run(log *slog.Logger) {
 			log.Info("Cycle", "count", cycle_count)
 			ms.RunOnce(log, &listener_wg)
 			// Render org files after each cycle
-			renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
-			if err := renderer.RenderAllFiles(config.C.OrgFileDir); err != nil {
-				log.Error("Error rendering org files", "error", err)
-			}
 			time.Sleep(ms.sleepTime)
 			cycle_count++
 		}
@@ -198,11 +194,6 @@ func (ms ManagerService) Run(log *slog.Logger) {
 	listener_wg.Done()
 	if waitTimeout(&listener_wg, 60*time.Second) {
 		log.Error("Listener waitgroup timed out waiting for changes to be applied")
-	}
-	// Final render after all changes are applied
-	renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
-	if err := renderer.RenderAllFiles(config.C.OrgFileDir); err != nil {
-		log.Error("Error rendering org files", "error", err)
 	}
 	log.Info("Exiting Service")
 }
@@ -213,7 +204,7 @@ func (ms *ManagerService) Initialize() {
 	db := config.C.DB
 	for _, wf := range ms.Workflows {
 		// Don't need to check release command here
-		doc := org.NewDBOrgDocument(wf.GetOrgFilename(), db, org.BaseOrgSerializer{ReleaseCheckCommand: ""}, config.C.OrgFileDir)
+		doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: ""})
 		doc.GetSection(wf.GetOrgSectionName())
 	}
 }

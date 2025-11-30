@@ -22,16 +22,13 @@ type Workflow interface {
 	GetName() string
 	Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
 	GetOrgSectionName() string
-	GetOrgFilename() string
 }
 
 type FileChanges struct {
 	ChangeType     string
-	Filename       string
 	Item           org.OrgTODO
 	Section        org.DBSection
 	ItemSerializer org.OrgSerializer
-	OrgFileDir     string
 }
 
 type SerializedFileChange struct {
@@ -40,8 +37,7 @@ type SerializedFileChange struct {
 }
 
 func (fc FileChanges) Report(log *slog.Logger) {
-	// log.Info("type", fc.ChangeType, "section", fc.Section.Name, "summary", fc.Item.Summary())
-	log.Info(fmt.Sprintf("[%s] %-20s - %s", fc.ChangeType[:2], fc.Section.Name, fc.Item.Summary()))
+	log.Info(fmt.Sprintf("[%s] %-20s - %s", fc.ChangeType[:2], fc.Section.Name(), fc.Item.Summary()))
 }
 
 func (fc *FileChanges) Deserialize() SerializedFileChange {
@@ -318,11 +314,9 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 				} else {
 					fileChange := FileChanges{
 						ChangeType:     prune_command,
-						Filename:       doc.Filename,
 						Item:           item,
 						Section:        *section,
 						ItemSerializer: doc.Serializer,
-						OrgFileDir:     doc.OrgFileDir,
 					}
 					changes = append(changes, fileChange)
 				}
@@ -352,11 +346,9 @@ func SyncTODOToSectionDB(doc org.DBOrgDocument, pr *github.PullRequest, section 
 	}
 	return FileChanges{
 		ChangeType:     changeType,
-		Filename:       doc.Filename,
 		Item:           pr_as_org,
 		Section:        section,
 		ItemSerializer: doc.Serializer,
-		OrgFileDir:     doc.OrgFileDir,
 	}
 }
 

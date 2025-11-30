@@ -8,25 +8,21 @@ import (
 	"strings"
 )
 
-// DBOrgDocument adapts the database to work with the existing OrgDocument interface
 type DBOrgDocument struct {
-	Filename   string
 	DB         *database.DB
 	Serializer OrgSerializer
 	OrgFileDir string
 }
 
-func NewDBOrgDocument(filename string, db *database.DB, serializer OrgSerializer, orgFileDir string) *DBOrgDocument {
+func NewDBClient(db *database.DB, serializer OrgSerializer) *DBOrgDocument {
 	return &DBOrgDocument{
-		Filename:   filename,
 		DB:         db,
 		Serializer: serializer,
-		OrgFileDir: orgFileDir,
 	}
 }
 
 func (d *DBOrgDocument) GetSection(sectionName string) (*DBSection, error) {
-	section, err := d.DB.GetOrCreateSection(d.Filename, sectionName, 2)
+	section, err := d.DB.GetOrCreateSection(sectionName, 2)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +132,7 @@ func (s *DBSection) AddItem(item OrgTODO) error {
 
 	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, false)
 	if err != nil {
-		slog.Error("Failed Upsert: ", err)
+		slog.Error("Failed Upsert: ", err.Error(), err)
 	}
 	slog.Debug("completed adding item: " + identifier)
 	return err

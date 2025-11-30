@@ -20,8 +20,8 @@ def main():
 
     get_pr_params = [{"Repo": "code-review-server", "Owner": "C-Hipple", "Number": 1}]
 
-    # send_request(process, "RPCHandler.GetAllReviews", [])
-    send_request(process, "RPCHandler.GetPR", get_pr_params)
+    send_request(process, "RPCHandler.GetAllReviews", [])
+    # send_request(process, "RPCHandler.GetPR", get_pr_params)
     read_response(process)
 
 

@@ -1,12 +1,12 @@
 package workflows
 
 import (
-	"errors"
-	"fmt"
 	"codereviewserver/config"
 	"codereviewserver/git_tools"
 	"codereviewserver/jira"
 	"codereviewserver/org"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -73,7 +73,7 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileC
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBOrgDocument(w.OrgFileName, db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand}, config.C.OrgFileDir)
+	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
 	section, err := doc.GetSection(w.SectionTitle)
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
@@ -104,7 +104,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 	prs := git_tools.GetManyRepoPRs(client, "open", w.Owner, w.Repos)
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBOrgDocument(w.OrgFileName, db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand}, config.C.OrgFileDir)
+	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
 	section, err := doc.GetSection(w.SectionTitle)
 	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
 	if err != nil {
@@ -158,7 +158,7 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBOrgDocument(w.OrgFileName, db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand}, config.C.OrgFileDir)
+	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
 	section, err := doc.GetSection(w.SectionTitle)
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
@@ -173,7 +173,6 @@ type ProjectListWorkflow struct {
 	Name                string
 	Owner               string
 	Repo                string
-	OrgFileName         string
 	Filters             []git_tools.PRFilter
 	SectionTitle        string
 	JiraDomain          string
@@ -187,10 +186,6 @@ func (w ProjectListWorkflow) GetName() string {
 	return w.Name
 }
 
-func (w ProjectListWorkflow) GetOrgFilename() string {
-	return w.OrgFileName
-}
-
 func (w ProjectListWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
@@ -198,7 +193,8 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C.DB
-	doc := org.NewDBOrgDocument(w.OrgFileName, db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand}, config.C.OrgFileDir)
+	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
+
 	section, err := doc.GetSection(w.SectionTitle)
 	if err != nil {
 		return RunResult{}, errors.New("Section Not Found")

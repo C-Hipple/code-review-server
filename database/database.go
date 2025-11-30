@@ -16,7 +16,6 @@ type DB struct {
 
 type Section struct {
 	ID          int64
-	Filename    string
 	SectionName string
 	IndentLevel int
 }
@@ -61,10 +60,9 @@ func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sections (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		filename TEXT NOT NULL,
 		section_name TEXT NOT NULL,
 		indent_level INTEGER NOT NULL DEFAULT 2,
-		UNIQUE(filename, section_name)
+		UNIQUE(section_name)
 	);
 
 	CREATE TABLE IF NOT EXISTS items (
@@ -88,17 +86,17 @@ func (db *DB) initSchema() error {
 	return err
 }
 
-func (db *DB) GetOrCreateSection(filename, sectionName string, indentLevel int) (*Section, error) {
+func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, filename, section_name, indent_level FROM sections WHERE filename = ? AND section_name = ?",
-		filename, sectionName,
-	).Scan(&section.ID, &section.Filename, &section.SectionName, &section.IndentLevel)
+		"SELECT id, section_name, indent_level FROM sections WHERE section_name = ?",
+		sectionName,
+	).Scan(&section.ID, &section.SectionName, &section.IndentLevel)
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (filename, section_name, indent_level) VALUES (?, ?, ?)",
-			filename, sectionName, indentLevel,
+			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?, ?)",
+			sectionName, indentLevel,
 		)
 		if err != nil {
 			return nil, err
@@ -107,10 +105,9 @@ func (db *DB) GetOrCreateSection(filename, sectionName string, indentLevel int) 
 		if err != nil {
 			return nil, err
 		}
-		slog.Info("Created new section", "filename", filename, "section", sectionName, "id", id)
+		slog.Info("Created new section", "section", sectionName, "id", id)
 		section = Section{
 			ID:          id,
-			Filename:    filename,
 			SectionName: sectionName,
 			IndentLevel: indentLevel,
 		}
@@ -122,12 +119,12 @@ func (db *DB) GetOrCreateSection(filename, sectionName string, indentLevel int) 
 	return &section, nil
 }
 
-func (db *DB) GetSection(filename, sectionName string) (*Section, error) {
+func (db *DB) GetSection(sectionName string) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, filename, section_name, indent_level FROM sections WHERE filename = ? AND section_name = ?",
-		filename, sectionName,
-	).Scan(&section.ID, &section.Filename, &section.SectionName, &section.IndentLevel)
+		"SELECT id, section_name, indent_level FROM sections WHERE section_name = ?",
+		sectionName,
+	).Scan(&section.ID, &section.SectionName, &section.IndentLevel)
 
 	if err != nil {
 		return nil, err
@@ -136,7 +133,7 @@ func (db *DB) GetSection(filename, sectionName string) (*Section, error) {
 }
 
 func (db *DB) GetAllSections() ([]*Section, error) {
-	rows, err := db.conn.Query("SELECT id, filename, section_name, indent_level FROM sections ORDER BY filename, section_name")
+	rows, err := db.conn.Query("SELECT id, section_name, indent_level FROM sections ORDER BY section_name")
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +142,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	var sections []*Section
 	for rows.Next() {
 		var section Section
-		if err := rows.Scan(&section.ID, &section.Filename, &section.SectionName, &section.IndentLevel); err != nil {
+		if err := rows.Scan(&section.ID, &section.SectionName, &section.IndentLevel); err != nil {
 			return nil, err
 		}
 		sections = append(sections, &section)

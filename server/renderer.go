@@ -199,6 +199,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 		}
 	}
 
+
 	// Parse the diff and insert comments inline
 	diffLines := strings.Split(diff, "\n")
 	result := []string{"*** Diff with Inline Comments\n"}

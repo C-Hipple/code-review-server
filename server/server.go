@@ -2,12 +2,12 @@ package server
 
 import (
 	"codereviewserver/config"
-	"codereviewserver/git_tools"
 	"fmt"
 	"log/slog"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+	"strings"
 )
 
 func RunServer(log *slog.Logger) {
@@ -85,17 +85,18 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	client := git_tools.GetGithubClient()
-	diff := git_tools.GetPRDiff(client, args.Owner, args.Repo, args.Number)
-	comments, err := git_tools.GetPRComments(client, args.Owner, args.Repo, args.Number)
-	if err != nil {
-		reply.Content = err.Error()
-		reply.Okay = false
-		return nil
-	}
+	// client := git_tools.GetGithubClient()
+	// diff := git_tools.GetPRDiff(client, args.Owner, args.Repo, args.Number)
+	// comments, err := git_tools.GetPRComments(client, args.Owner, args.Repo, args.Number)
+	// if err != nil {
+	//	reply.Content = err.Error()
+	//	reply.Okay = false
+	//	return nil
+	// }
 
-	output := renderPullRequest(diff, comments)
-	reply.Content = output
-	reply.Okay = true
+		diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
+		reply.Content = strings.Join(diffLines, "\n")
+
+		reply.Okay = true
 	return nil
 }

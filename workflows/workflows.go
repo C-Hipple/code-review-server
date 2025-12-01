@@ -106,11 +106,11 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 	db := config.C.DB
 	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
 	section, err := doc.GetSection(w.SectionTitle)
-	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
 	}
+	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
 	return result, nil
 }

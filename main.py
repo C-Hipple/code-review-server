@@ -2,7 +2,6 @@ import json
 import subprocess
 import sys
 import time
-from pprint import pprint
 from typing import Any
 
 
@@ -36,7 +35,7 @@ def send_request(process: Any, method: str, params: Any):
 def read_response(process: Any):
     try:
         # Wait a moment for the server to initialize
-        time.sleep(1)
+        time.sleep(3)
         # Read response
         print("Waiting for response...")
         response_line = process.stdout.readline()

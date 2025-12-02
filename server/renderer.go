@@ -190,88 +190,168 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 		return []string{"*** Diff\n", diff}, 0
 	}
 
-	// Build a map of comments by file path and line position
-	commentsByFileAndHunk := make(map[string][]*github.PullRequestComment)
-	for _, comment := range comments {
-		if comment.DiffHunk != nil {
-			key := *comment.Path + "::" + *comment.DiffHunk
-			commentsByFileAndHunk[key] = append(commentsByFileAndHunk[key], comment)
+	// Build comment trees first to group replies with their parents
+	allCommentTrees := buildCommentTreesFromList(comments)
+
+	// Build a map of comments by file path and line number
+	// Key: "filepath:line" or "filepath:" for general comments
+	// Value: slice of comment trees (each tree is a root comment with its replies)
+	commentsByFileAndLine := make(map[string][][]*github.PullRequestComment)
+	
+	for _, tree := range allCommentTrees {
+		if len(tree) == 0 {
+			continue
+		}
+		rootComment := tree[0]
+		
+		// Use the root comment's position for the entire tree
+		if rootComment.Path != nil {
+			filePath := *rootComment.Path
+			var key string
+			
+			if rootComment.Line != nil {
+				// Comment on a specific line
+				key = fmt.Sprintf("%s:%d", filePath, *rootComment.Line)
+			} else {
+				// General comment on the file (no specific line)
+				key = filePath + ":"
+			}
+			
+			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
-
 
 	// Parse the diff and insert comments inline
 	diffLines := strings.Split(diff, "\n")
 	result := []string{"*** Diff with Inline Comments\n"}
 
-	i := 0
-	for i < len(diffLines) {
+	currentFile := ""
+	var currentLineInFile int // Line number in the new file (after the diff)
+
+	// Track line numbers as we parse the diff
+	// When we see a hunk header like "@@ -10,5 +15,6 @@" it means:
+	// - Old file starts at line 10
+	// - New file starts at line 15
+	// We need to track the new file line numbers
+	// Context lines (space) and added lines (+) increment the new file line number
+	// Removed lines (-) do NOT increment the new file line number
+
+	for i := 0; i < len(diffLines); i++ {
 		line := diffLines[i]
 		result = append(result, line)
 
-		// Check if this is a diff hunk header (e.g., "@@ -1,5 +1,6 @@")
-		if strings.HasPrefix(line, "@@") {
-			// Collect the hunk context (next few lines that form the diff hunk)
-			hunkLines := []string{line}
-
-			// Look ahead to collect hunk context (typically 3-5 lines)
-			for j := i + 1; j < len(diffLines) && j < i+10; j++ {
-				nextLine := diffLines[j]
-				// Stop if we hit another hunk header or diff file header
-				if strings.HasPrefix(nextLine, "@@") || strings.HasPrefix(nextLine, "diff --git") {
-					break
-				}
-				hunkLines = append(hunkLines, nextLine)
+		// Track current file
+		if strings.HasPrefix(line, "diff --git") {
+			// Extract file path from "diff --git a/path b/path"
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				// parts[2] is "a/path", parts[3] is "b/path"
+				// Use the "b" path (new file)
+				filePath := strings.TrimPrefix(parts[3], "b/")
+				currentFile = filePath
+				currentLineInFile = 0
 			}
-
-			hunkText := strings.Join(hunkLines, "\n")
-
-			// Check for comments matching this hunk in any file
-			for path, commentsForHunk := range commentsByFileAndHunk {
-				parts := strings.Split(path, "::")
-				if len(parts) == 2 {
-					filePath := parts[0]
-					commentDiffHunk := parts[1]
-
-					// Check if the diff hunk matches or is similar
-					if strings.Contains(hunkText, strings.Split(commentDiffHunk, "\n")[0]) {
-						// Insert comments after the hunk
-						trees := buildCommentTreesFromList(commentsForHunk)
-						for _, tree := range trees {
-							result = append(result, "")
-							result = append(result, "    ┌─ REVIEW COMMENT ─────────────────")
-							result = append(result, fmt.Sprintf("    │ File: %s", filePath))
-							result = append(result, fmt.Sprintf("    │ %s", tree[0].CreatedAt.Format(time.DateTime)+" "+treeAuthorsFromList(tree)))
-							result = append(result, "    │")
-
-							for idx, comment := range tree {
-								cleanBody := escapeBody(comment.Body)
-								commentLines := strings.Split(cleanBody, "\n")
-
-								if idx == 0 {
-									result = append(result, fmt.Sprintf("    │ [%s]:", *comment.User.Login))
-								} else {
-									result = append(result, "    │")
-									result = append(result, fmt.Sprintf("    │ Reply by [%s]:", *comment.User.Login))
-								}
-
-								for _, bodyLine := range commentLines {
-									result = append(result, fmt.Sprintf("    │   %s", bodyLine))
-								}
-							}
-
-							result = append(result, "    └──────────────────────────────────")
-							result = append(result, "")
-						}
+		} else if strings.HasPrefix(line, "+++ b/") {
+			// Alternative way to get file path
+			filePath := strings.TrimPrefix(line, "+++ b/")
+			currentFile = filePath
+			currentLineInFile = 0
+		} else if strings.HasPrefix(line, "@@") {
+			// Parse hunk header: "@@ -oldStart,oldCount +newStart,newCount @@"
+			// Extract newStart to know where we are in the new file
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				hunkInfo := parts[1] // e.g., "-10,5+15,6" or "-10+15"
+				// Find the part after the +
+				if plusIdx := strings.Index(hunkInfo, "+"); plusIdx != -1 {
+					afterPlus := hunkInfo[plusIdx+1:]
+					// Extract the line number (before the comma if present)
+					if commaIdx := strings.Index(afterPlus, ","); commaIdx != -1 {
+						fmt.Sscanf(afterPlus[:commaIdx], "%d", &currentLineInFile)
+					} else {
+						fmt.Sscanf(afterPlus, "%d", &currentLineInFile)
 					}
+					// currentLineInFile now points to the first line of the hunk in the new file
+					// The hunk header itself doesn't correspond to a file line, so we don't check for comments here
 				}
+			}
+		} else if currentFile != "" {
+			// Process diff content lines
+			// Check what type of line this is
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				// Added line - exists in new file
+				// Check for comments on this line BEFORE incrementing
+				lineKey := fmt.Sprintf("%s:%d", currentFile, currentLineInFile)
+				if trees, ok := commentsByFileAndLine[lineKey]; ok {
+					for _, tree := range trees {
+						insertCommentTree(&result, tree, currentFile)
+					}
+					delete(commentsByFileAndLine, lineKey)
+				}
+				// Now increment for the next line
+				currentLineInFile++
+			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+				// Removed line - only in old file, don't increment new file line number
+				// Do nothing for line number tracking
+			} else if strings.HasPrefix(line, " ") {
+				// Context line (unchanged) - exists in both files
+				// Check for comments on this line BEFORE incrementing
+				lineKey := fmt.Sprintf("%s:%d", currentFile, currentLineInFile)
+				if trees, ok := commentsByFileAndLine[lineKey]; ok {
+					for _, tree := range trees {
+						insertCommentTree(&result, tree, currentFile)
+					}
+					delete(commentsByFileAndLine, lineKey)
+				}
+				// Now increment for the next line
+				currentLineInFile++
 			}
 		}
+	}
 
-		i++
+	// Insert any remaining comments (general file comments or comments we couldn't match)
+	for key, trees := range commentsByFileAndLine {
+		parts := strings.Split(key, ":")
+		if len(parts) >= 1 {
+			filePath := parts[0]
+			for _, tree := range trees {
+				insertCommentTree(&result, tree, filePath)
+			}
+		}
 	}
 
 	return result, len(comments)
+}
+
+func insertCommentTree(result *[]string, tree []*github.PullRequestComment, filePath string) {
+	if len(tree) == 0 {
+		return
+	}
+	
+	*result = append(*result, "")
+	*result = append(*result, "    ┌─ REVIEW COMMENT ─────────────────")
+	*result = append(*result, fmt.Sprintf("    │ File: %s", filePath))
+	*result = append(*result, fmt.Sprintf("    │ %s", tree[0].CreatedAt.Format(time.DateTime)+" "+treeAuthorsFromList(tree)))
+	*result = append(*result, "    │")
+
+	for idx, comment := range tree {
+		cleanBody := escapeBody(comment.Body)
+		commentLines := strings.Split(cleanBody, "\n")
+
+		if idx == 0 {
+			*result = append(*result, fmt.Sprintf("    │ [%s]:", *comment.User.Login))
+		} else {
+			*result = append(*result, "    │")
+			*result = append(*result, fmt.Sprintf("    │ Reply by [%s]:", *comment.User.Login))
+		}
+
+		for _, bodyLine := range commentLines {
+			*result = append(*result, fmt.Sprintf("    │   %s", bodyLine))
+		}
+	}
+
+	*result = append(*result, "    └──────────────────────────────────")
+	*result = append(*result, "")
 }
 
 func buildCommentTreesFromList(comments []*github.PullRequestComment) [][]*github.PullRequestComment {

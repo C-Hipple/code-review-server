@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,18 +198,33 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 	// Key: "filepath:line" or "filepath:" for general comments
 	// Value: slice of comment trees (each tree is a root comment with its replies)
 	commentsByFileAndLine := make(map[string][][]*github.PullRequestComment)
-	
+
 	for _, tree := range allCommentTrees {
+		for _, comment := range tree {
+			slog.Info("file: " + *comment.Path)
+			slog.Info("body : " + *comment.Body)
+			// slog.Info("subject type: " + comment.Get)
+			if comment.InReplyTo != nil {
+				slog.Info("Reply To: " + strconv.FormatInt(*comment.InReplyTo, 10))
+			}
+			if comment.StartLine != nil {
+				slog.Info("Reply To: " + strconv.Itoa(*comment.StartLine))
+			}
+			if comment.Line != nil {
+				slog.Info("Line : " + strconv.Itoa(*comment.Line))
+			}
+
+		}
 		if len(tree) == 0 {
 			continue
 		}
 		rootComment := tree[0]
-		
+
 		// Use the root comment's position for the entire tree
 		if rootComment.Path != nil {
 			filePath := *rootComment.Path
 			var key string
-			
+
 			if rootComment.Line != nil {
 				// Comment on a specific line
 				key = fmt.Sprintf("%s:%d", filePath, *rootComment.Line)
@@ -216,7 +232,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 				// General comment on the file (no specific line)
 				key = filePath + ":"
 			}
-			
+
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
@@ -282,6 +298,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 				// Added line - exists in new file
 				// Check for comments on this line BEFORE incrementing
 				lineKey := fmt.Sprintf("%s:%d", currentFile, currentLineInFile)
+				slog.Info(fmt.Sprintf("%s:%d", currentFile, currentLineInFile))
 				if trees, ok := commentsByFileAndLine[lineKey]; ok {
 					for _, tree := range trees {
 						insertCommentTree(&result, tree, currentFile)
@@ -291,9 +308,12 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) ([]strin
 				// Now increment for the next line
 				currentLineInFile++
 			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+
+				slog.Info(fmt.Sprintf("%s:%d", currentFile, currentLineInFile))
 				// Removed line - only in old file, don't increment new file line number
 				// Do nothing for line number tracking
 			} else if strings.HasPrefix(line, " ") {
+				slog.Info(fmt.Sprintf("%s:%d", currentFile, currentLineInFile))
 				// Context line (unchanged) - exists in both files
 				// Check for comments on this line BEFORE incrementing
 				lineKey := fmt.Sprintf("%s:%d", currentFile, currentLineInFile)
@@ -327,7 +347,7 @@ func insertCommentTree(result *[]string, tree []*github.PullRequestComment, file
 	if len(tree) == 0 {
 		return
 	}
-	
+
 	*result = append(*result, "")
 	*result = append(*result, "    ┌─ REVIEW COMMENT ─────────────────")
 	*result = append(*result, fmt.Sprintf("    │ File: %s", filePath))

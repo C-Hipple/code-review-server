@@ -95,7 +95,7 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section,
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?, ?)",
+			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?)",
 			sectionName, indentLevel,
 		)
 		if err != nil {

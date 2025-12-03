@@ -84,11 +84,11 @@ func InsertLinesInFile(file *os.File, new_lines []string, at_line_number int) (i
 func insertLines(existing_lines []string, new_lines []string, at_line_number int) string {
 	// slog.Debug("Inserting lines", "at_line_number", at_line_number)
 	// for i, out := range existing_lines {
-	// 	slog.Debug("existing_line", "index", i, "line", out)
+	//	slog.Debug("existing_line", "index", i, "line", out)
 	// }
 
 	// for i, out := range new_lines {
-	// 	slog.Debug("new_line", "index", i, "line", strings.TrimSpace(out))
+	//	slog.Debug("new_line", "index", i, "line", strings.TrimSpace(out))
 	// }
 	// Helper! for unit tests so we don't need to make a file
 	if at_line_number == -1 || at_line_number == len(existing_lines) {

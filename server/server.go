@@ -2,13 +2,13 @@ package server
 
 import (
 	"codereviewserver/config"
-	"codereviewserver/git_tools"
+	// "codereviewserver/git_tools"
 	"fmt"
 	"log/slog"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
-	"strings"
+	// "strings"
 )
 
 func RunServer(log *slog.Logger) {
@@ -86,21 +86,20 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	client := git_tools.GetGithubClient()
-	diff := git_tools.GetPRDiff(client, args.Owner, args.Repo, args.Number)
-	comments, err := git_tools.GetPRComments(client, args.Owner, args.Repo, args.Number)
-	if err != nil {
-		reply.Content = err.Error()
-		reply.Okay = false
-		return nil
-	}
+	// client := git_tools.GetGithubClient()
+	// diff := git_tools.GetPRDiff(client, args.Owner, args.Repo, args.Number)
+	// comments, err := git_tools.GetPRComments(client, args.Owner, args.Repo, args.Number)
+	// if err != nil {
+	// 	reply.Content = err.Error()
+	// 	reply.Okay = false
+	// 	return nil
+	// }
 
-	basic := renderPullRequest(diff, comments) + "\n=========\n"
+	// basic := renderPullRequest(diff, comments) + "\n=========\n"
 
-	reply.Okay = true
 
 	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-	reply.Content = basic + strings.Join(diffLines, "\n")
-	// reply.Okay = true
+	reply.Content = diffLines
+	reply.Okay = true
 	return nil
 }

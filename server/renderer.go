@@ -400,8 +400,8 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		comments = filterComments(comments)
 	}
 
-	// Fetch LocalComments from database and add them to the comments list
-	localComments, err := config.C.DB.GetAllLocalComments()
+	// Fetch LocalComments from database for this specific PR and add them to the comments list
+	localComments, err := config.C.DB.GetLocalCommentsForPR(owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		// Continue without local comments

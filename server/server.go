@@ -100,6 +100,9 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 }
 
 type AddCommentArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
 	Filename string
 	Position int64
 	Body     string
@@ -110,7 +113,27 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	commentID := config.C.DB.InsertLocalComment(args.Filename, args.Position, &args.Body)
+	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body)
 	reply.ID = commentID.ID
+	return nil
+}
+
+type RemovePRCommentsArgs struct {
+	Repo   string `json:"Repo"`
+	Owner  string `json:"Owner"`
+	Number int    `json:"Number"`
+}
+
+type RemovePRCommentsReply struct {
+	Okay bool
+}
+
+func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
+	err := config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error removing local comments", "error", err)
+		return err
+	}
+	reply.Okay = true
 	return nil
 }

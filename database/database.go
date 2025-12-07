@@ -33,6 +33,9 @@ type Item struct {
 
 type LocalComment struct {
 	ID       int64
+	Owner    string // GitHub owner/org
+	Repo     string // GitHub repository name
+	Number   int    // PR number
 	Filename string // going to be the rel file like src/main.rs
 	Postion  int64
 	Body     *string
@@ -87,6 +90,9 @@ func (db *DB) initSchema() error {
 
 		CREATE TABLE IF NOT EXISTS LocalComment (
 			id INTEGER PRIMARY KEY,
+			owner TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			number INTEGER NOT NULL,
 			filename TEXT NOT NULL,
 			position INTEGER NOT NULL,
 			body TEXT
@@ -111,10 +117,48 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
 	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
 	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
+	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	`
 
 	_, err := db.conn.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: Add PR columns to LocalComment table if they don't exist
+	// Check if owner column exists by querying pragma_table_info
+	var count int
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='owner'").Scan(&count)
+	if err == nil && count == 0 {
+		// Add the new columns
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN owner TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding owner column to LocalComment (may already exist)", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN repo TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding repo column to LocalComment (may already exist)", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN number INTEGER DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding number column to LocalComment (may already exist)", "error", err)
+		}
+		// Update existing rows that might have NULL values
+		_, err = db.conn.Exec("UPDATE LocalComment SET owner = '' WHERE owner IS NULL")
+		if err != nil {
+			slog.Warn("Error updating owner defaults", "error", err)
+		}
+		_, err = db.conn.Exec("UPDATE LocalComment SET repo = '' WHERE repo IS NULL")
+		if err != nil {
+			slog.Warn("Error updating repo defaults", "error", err)
+		}
+		_, err = db.conn.Exec("UPDATE LocalComment SET number = 0 WHERE number IS NULL")
+		if err != nil {
+			slog.Warn("Error updating number defaults", "error", err)
+		}
+	}
+
+	return nil
 }
 
 func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {
@@ -311,15 +355,15 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 	return err
 }
 
-func (db *DB) InsertLocalComment(filename string, position int64, body *string) LocalComment {
-	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (filename, position, body) VALUES (?, ?, ?)")
+func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string) LocalComment {
+	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body) VALUES (?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		slog.Error(err.Error())
 	}
 	defer stmt.Close()
 
 	// Execute the insertion
-	res, err := stmt.Exec(filename, position, body)
+	res, err := stmt.Exec(owner, repo, number, filename, position, body)
 	if err != nil {
 		slog.Error(err.Error())
 	}
@@ -330,12 +374,12 @@ func (db *DB) InsertLocalComment(filename string, position int64, body *string) 
 		slog.Error(err.Error())
 	}
 	return LocalComment{
-		id, filename, position, body,
+		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Postion: position, Body: body,
 	}
 }
 
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
-	rows, err := db.conn.Query("SELECT id, filename, position, body FROM LocalComment")
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body FROM LocalComment")
 	if err != nil {
 		return nil, err
 	}
@@ -344,12 +388,40 @@ func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)
 	}
 	return comments, rows.Err()
+}
+
+func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComment, error) {
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []LocalComment
+	for rows.Next() {
+		var comment LocalComment
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
+func (db *DB) DeleteAllLocalComments() error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment")
+	return err
+}
+
+func (db *DB) DeleteLocalCommentsForPR(owner, repo string, number int) error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+	return err
 }
 
 func (db *DB) GetPullRequest(prNumber int, repo string) (string, error) {

@@ -334,6 +334,24 @@ func (db *DB) InsertLocalComment(filename string, position int64, body *string) 
 	}
 }
 
+func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
+	rows, err := db.conn.Query("SELECT id, filename, position, body FROM LocalComment")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []LocalComment
+	for rows.Next() {
+		var comment LocalComment
+		if err := rows.Scan(&comment.ID, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
 func (db *DB) GetPullRequest(prNumber int, repo string) (string, error) {
 	var body string
 	err := db.conn.QueryRow(

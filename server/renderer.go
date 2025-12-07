@@ -154,7 +154,7 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	return lines
 }
 
-func renderPullRequest(diff string, comments []*github.PullRequestComment) string {
+func renderPullRequest(diff string, comments []PRComment) string {
 	var output strings.Builder
 	output.WriteString(diff)
 	for _, comment := range comments {
@@ -163,9 +163,9 @@ func renderPullRequest(diff string, comments []*github.PullRequestComment) strin
 	return output.String()
 }
 
-func formatComment(comment *github.PullRequestComment) string {
+func formatComment(comment PRComment) string {
 	var formatted strings.Builder
-	formatted.WriteString("Reviewed By: " + comment.User.GetLogin() + "\n")
+	formatted.WriteString("Reviewed By: " + comment.GetLogin() + "\n")
 	formatted.WriteString(comment.GetBody())
 	formatted.WriteString("\n------------------\n")
 	return formatted.String()
@@ -180,6 +180,120 @@ type PRComment interface {
 	GetPosition() string
 	GetInReplyTo() int64
 	GetPath() string
+	GetCreatedAt() time.Time
+}
+
+// GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
+type GitHubPRComment struct {
+	*github.PullRequestComment
+}
+
+// GetLogin returns the login of the comment author
+func (c *GitHubPRComment) GetLogin() string {
+	if c.User != nil {
+		return c.User.GetLogin()
+	}
+	return ""
+}
+
+// GetBody returns the comment body
+func (c *GitHubPRComment) GetBody() string {
+	return c.PullRequestComment.GetBody()
+}
+
+// GetID returns the comment ID as a string
+func (c *GitHubPRComment) GetID() string {
+	return strconv.FormatInt(c.PullRequestComment.GetID(), 10)
+}
+
+// GetPosition returns the comment position as a string
+func (c *GitHubPRComment) GetPosition() string {
+	if c.Position != nil {
+		return strconv.Itoa(*c.Position)
+	}
+	return ""
+}
+
+// GetInReplyTo returns the ID of the comment this is replying to
+func (c *GitHubPRComment) GetInReplyTo() int64 {
+	return c.PullRequestComment.GetInReplyTo()
+}
+
+// GetPath returns the file path of the comment
+func (c *GitHubPRComment) GetPath() string {
+	if c.Path != nil {
+		return *c.Path
+	}
+	return ""
+}
+
+// GetCreatedAt returns the creation time of the comment
+func (c *GitHubPRComment) GetCreatedAt() time.Time {
+	if c.CreatedAt != nil {
+		return *c.CreatedAt
+	}
+	return time.Time{}
+}
+
+// LocalPRComment wraps database.LocalComment to implement PRComment interface
+type LocalPRComment struct {
+	*database.LocalComment
+}
+
+// GetLogin returns an empty string for local comments (no author)
+func (c *LocalPRComment) GetLogin() string {
+	return "local"
+}
+
+// GetBody returns the comment body
+func (c *LocalPRComment) GetBody() string {
+	if c.Body != nil {
+		return *c.Body
+	}
+	return ""
+}
+
+// GetID returns the comment ID as a string
+func (c *LocalPRComment) GetID() string {
+	return strconv.FormatInt(c.ID, 10)
+}
+
+// GetPosition returns the comment position as a string
+func (c *LocalPRComment) GetPosition() string {
+	return strconv.FormatInt(c.Postion, 10)
+}
+
+// GetInReplyTo returns 0 for local comments (they don't reply to anything)
+func (c *LocalPRComment) GetInReplyTo() int64 {
+	return 0
+}
+
+// GetPath returns the file path of the comment
+func (c *LocalPRComment) GetPath() string {
+	return c.Filename
+}
+
+// GetCreatedAt returns zero time for local comments (no timestamp stored)
+func (c *LocalPRComment) GetCreatedAt() time.Time {
+	return time.Time{}
+}
+
+// convertToPRComments converts a slice of *github.PullRequestComment to []PRComment
+func convertToPRComments(comments []*github.PullRequestComment) []PRComment {
+	result := make([]PRComment, len(comments))
+	for i, comment := range comments {
+		result[i] = &GitHubPRComment{comment}
+	}
+	return result
+}
+
+// convertLocalCommentsToPRComments converts a slice of database.LocalComment to []PRComment
+func convertLocalCommentsToPRComments(localComments []database.LocalComment) []PRComment {
+	result := make([]PRComment, len(localComments))
+	for i := range localComments {
+		result[i] = &LocalPRComment{&localComments[i]}
+	}
+	return result
 }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {
@@ -239,7 +353,8 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 }
 
 func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff) (string, int) {
-	var comments []*github.PullRequestComment
+	var githubComments []*github.PullRequestComment
+	var comments []PRComment
 
 	// Check database first - skip API call if cached
 	cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
@@ -248,15 +363,13 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		// Continue to fetch from API
 	} else if cachedCommentsJSON != "" {
 		// Found in cache, unmarshal and use it
-		if err := json.Unmarshal([]byte(cachedCommentsJSON), &comments); err != nil {
+		if err := json.Unmarshal([]byte(cachedCommentsJSON), &githubComments); err != nil {
 			slog.Error("Error unmarshaling cached comments", "error", err)
 			// Continue to fetch from API
 		} else {
-			// Use cached comments
+			// Convert to PRComment interface
+			comments = convertToPRComments(githubComments)
 			comments = filterComments(comments)
-			if len(comments) == 0 {
-				return diff, 0
-			}
 			// Continue with processing cached comments
 		}
 	}
@@ -265,14 +378,14 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	if comments == nil {
 		opts := github.PullRequestListCommentsOptions{}
 		var apiErr error
-		comments, _, apiErr = client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+		githubComments, _, apiErr = client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
 		if apiErr != nil {
 			slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", apiErr)
 			return diff, 0
 		}
 
 		// Store the result in the database
-		commentsJSON, err := json.Marshal(comments)
+		commentsJSON, err := json.Marshal(githubComments)
 		if err != nil {
 			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", err)
 		} else {
@@ -282,10 +395,23 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 			}
 		}
 
+		// Convert to PRComment interface
+		comments = convertToPRComments(githubComments)
 		comments = filterComments(comments)
-		if len(comments) == 0 {
-			return diff, 0
-		}
+	}
+
+	// Fetch LocalComments from database and add them to the comments list
+	localComments, err := config.C.DB.GetAllLocalComments()
+	if err != nil {
+		slog.Error("Error fetching local comments", "error", err)
+		// Continue without local comments
+	} else {
+		localPRComments := convertLocalCommentsToPRComments(localComments)
+		comments = append(comments, localPRComments...)
+	}
+
+	if len(comments) == 0 {
+		return diff, 0
 	}
 
 	// Build comment trees first to group replies with their parents
@@ -294,23 +420,17 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	// Build a map of comments by file path and line number
 	// Key: "filepath:line" or "filepath:" for general comments
 	// Value: slice of comment trees (each tree is a root comment with its replies)
-	commentsByFileAndLine := make(map[string][][]*github.PullRequestComment)
+	commentsByFileAndLine := make(map[string][][]PRComment)
 
 	for _, tree := range allCommentTrees {
 		for _, comment := range tree {
-			slog.Info("file: " + *comment.Path)
-			slog.Info("body : " + *comment.Body)
-			// slog.Info("subject type: " + comment.Get)
-			if comment.InReplyTo != nil {
-				slog.Info("Reply To: " + strconv.FormatInt(*comment.InReplyTo, 10))
+			filePath := comment.GetPath()
+			body := comment.GetBody()
+			slog.Info("file: " + filePath)
+			slog.Info("body : " + body)
+			if comment.GetInReplyTo() != 0 {
+				slog.Info("Reply To: " + strconv.FormatInt(comment.GetInReplyTo(), 10))
 			}
-			if comment.StartLine != nil {
-				slog.Info("Reply To: " + strconv.Itoa(*comment.StartLine))
-			}
-			if comment.Line != nil {
-				slog.Info("Line : " + strconv.Itoa(*comment.Line))
-			}
-
 		}
 		if len(tree) == 0 {
 			continue
@@ -318,21 +438,21 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		rootComment := tree[0]
 
 		// Use the root comment's position for the entire tree
-		if rootComment.Path != nil {
-			filePath := *rootComment.Path
+		filePath := rootComment.GetPath()
+		if filePath != "" {
 			var key string
+			position := rootComment.GetPosition()
 
-			if rootComment.Line != nil {
+			if position != "" {
 				// Comment on a specific line
-				key = fmt.Sprintf("%s:%d", filePath, *rootComment.Position)
+				key = fmt.Sprintf("%s:%s", filePath, position)
 			} else {
 				// General comment on the file (no specific line)
 				key = filePath + ":"
 			}
 
-			slog.Info("Adding tree at key: " + key + *tree[0].Body)
+			slog.Info("Adding tree at key: " + key + rootComment.GetBody())
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
-
 		}
 	}
 	var builder strings.Builder
@@ -371,26 +491,29 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	return result, len(comments)
 }
 
-func buildCommentTree(tree []*github.PullRequestComment, filePath string) string {
+func buildCommentTree(tree []PRComment, filePath string) string {
 	var result []string // leftover from refactor
 	if len(tree) == 0 {
 		return ""
 	}
 
+	rootComment := tree[0]
+	commentIDInt, _ := strconv.ParseInt(rootComment.GetID(), 10, 64)
 	result = append(result, "    ┌─ REVIEW COMMENT ─────────────────")
 	result = append(result, fmt.Sprintf("    │ File: %s", filePath))
-	result = append(result, fmt.Sprintf("    │ %s : %d", tree[0].CreatedAt.Format(time.DateTime)+" "+treeAuthorsFromList(tree), tree[0].GetID()))
+	result = append(result, fmt.Sprintf("    │ %s : %d", rootComment.GetCreatedAt().Format(time.DateTime)+" "+treeAuthorsFromList(tree), commentIDInt))
 	result = append(result, "    │")
 
 	for idx, comment := range tree {
-		cleanBody := escapeBody(comment.Body)
+		cleanBody := escapeBodyString(comment.GetBody())
 		commentLines := strings.Split(cleanBody, "\n")
 
 		if idx == 0 {
-			result = append(result, fmt.Sprintf("    │ [%s]:", *comment.User.Login))
+			result = append(result, fmt.Sprintf("    │ [%s]:", comment.GetLogin()))
 		} else {
 			result = append(result, "    │")
-			result = append(result, fmt.Sprintf("    │ Reply by [%s]:[%d]", *comment.User.Login, comment.GetID()))
+			replyIDInt, _ := strconv.ParseInt(comment.GetID(), 10, 64)
+			result = append(result, fmt.Sprintf("    │ Reply by [%s]:[%d]", comment.GetLogin(), replyIDInt))
 		}
 
 		for _, bodyLine := range commentLines {
@@ -404,31 +527,37 @@ func buildCommentTree(tree []*github.PullRequestComment, filePath string) string
 	return strings.Join(result, "\n")
 }
 
-func buildCommentTreesFromList(comments []*github.PullRequestComment) [][]*github.PullRequestComment {
-	commentMap := make(map[int64]*github.PullRequestComment)
+func buildCommentTreesFromList(comments []PRComment) [][]PRComment {
+	commentMap := make(map[string]PRComment)
 	for _, c := range comments {
 		commentMap[c.GetID()] = c
 	}
 
-	output := [][]*github.PullRequestComment{}
-	processed := make(map[int64]bool)
+	output := [][]PRComment{}
+	processed := make(map[string]bool)
 
 	for _, comment := range comments {
-		if processed[comment.GetID()] {
+		commentID := comment.GetID()
+		if processed[commentID] {
 			continue
 		}
 
 		// If this is a root comment (no reply-to)
-		if comment.InReplyTo == nil || comment.GetInReplyTo() == 0 {
-			tree := []*github.PullRequestComment{comment}
-			processed[comment.GetID()] = true
+		if comment.GetInReplyTo() == 0 {
+			tree := []PRComment{comment}
+			processed[commentID] = true
 
 			// Find all replies to this comment
 			for _, potentialReply := range comments {
-				if !processed[potentialReply.GetID()] && potentialReply.InReplyTo != nil {
-					if potentialReply.GetInReplyTo() == comment.GetID() {
-						tree = append(tree, potentialReply)
-						processed[potentialReply.GetID()] = true
+				replyID := potentialReply.GetID()
+				if !processed[replyID] {
+					if potentialReply.GetInReplyTo() != 0 {
+						// Convert reply-to ID to string for comparison
+						replyToIDStr := strconv.FormatInt(potentialReply.GetInReplyTo(), 10)
+						if replyToIDStr == commentID {
+							tree = append(tree, potentialReply)
+							processed[replyID] = true
+						}
 					}
 				}
 			}
@@ -439,20 +568,21 @@ func buildCommentTreesFromList(comments []*github.PullRequestComment) [][]*githu
 
 	// Handle orphaned comments (replies without parents in this list)
 	for _, comment := range comments {
-		if !processed[comment.GetID()] {
-			output = append(output, []*github.PullRequestComment{comment})
-			processed[comment.GetID()] = true
+		commentID := comment.GetID()
+		if !processed[commentID] {
+			output = append(output, []PRComment{comment})
+			processed[commentID] = true
 		}
 	}
 
 	return output
 }
 
-func treeAuthorsFromList(tree []*github.PullRequestComment) string {
+func treeAuthorsFromList(tree []PRComment) string {
 	authors := []string{}
 	seen := make(map[string]bool)
 	for _, comment := range tree {
-		login := comment.User.GetLogin()
+		login := comment.GetLogin()
 		if _, ok := seen[login]; !ok {
 			authors = append(authors, login)
 			seen[login] = true
@@ -469,6 +599,19 @@ func escapeBody(body *string) string {
 	}
 
 	lines := strings.Split(*body, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return cleanLines(&lines)
+}
+
+func escapeBodyString(body string) string {
+	// Body comes in a single string with newlines and can have things that break orgmode like *
+	if body == "" {
+		return ""
+	}
+
+	lines := strings.Split(body, "\n")
 	if len(lines) == 0 {
 		return ""
 	}
@@ -508,10 +651,10 @@ func cleanEmptyEndingLines(lines *[]string) []string {
 	return (*lines)[:i+1]
 }
 
-func filterComments(comments []*github.PullRequestComment) []*github.PullRequestComment {
-	output := []*github.PullRequestComment{}
+func filterComments(comments []PRComment) []PRComment {
+	output := []PRComment{}
 	for _, comment := range comments {
-		if strings.Contains(*comment.User.Login, "advanced") {
+		if strings.Contains(comment.GetLogin(), "advanced") {
 			// I don't care about the lint warning stuff
 			continue
 		}

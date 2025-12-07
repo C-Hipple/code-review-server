@@ -109,12 +109,17 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID int64
+	ID      int64
+	Content string
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
 	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body)
 	reply.ID = commentID.ID
+
+	// Return the updated PR body
+	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
+	reply.Content = diffLines
 	return nil
 }
 
@@ -125,7 +130,8 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay bool
+	Okay    bool
+	Content string
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
@@ -135,5 +141,9 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 		return err
 	}
 	reply.Okay = true
+
+	// Return the updated PR body
+	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
+	reply.Content = diffLines
 	return nil
 }

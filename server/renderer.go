@@ -177,6 +177,7 @@ type PRComment interface {
 	GetID() string
 	GetPosition() string
 	GetInReplyTo() int64
+	GetPath() string
 }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {

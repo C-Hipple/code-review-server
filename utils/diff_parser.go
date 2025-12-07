@@ -5,12 +5,11 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"errors"
 )
 
 // FileMode represents the file status in a diff

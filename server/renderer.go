@@ -241,7 +241,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 
 			if rootComment.Line != nil {
 				// Comment on a specific line
-				key = fmt.Sprintf("%s:%d", filePath, *rootComment.Line)
+				key = fmt.Sprintf("%s:%d", filePath, *rootComment.Position)
 			} else {
 				// General comment on the file (no specific line)
 				key = filePath + ":"
@@ -260,11 +260,9 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 			builder.WriteString(hunk.HunkHeader)
 			for _, line := range hunk.WholeRange.Lines {
 				builder.WriteString(line.Render())
-				key := fmt.Sprintf("%s:%d", file.NewName, line.Number)
-				slog.Info("Checking key: " + key)
+				key := fmt.Sprintf("%s:%d", file.NewName, line.Position)
 				res, ok := commentsByFileAndLine[key]
 				if ok {
-					slog.Info("Found tree! at key: " + key)
 					for _, tree := range res {
 						tree_str := buildCommentTree(tree, file.NewName)
 						builder.WriteString(tree_str)
@@ -298,7 +296,7 @@ func buildCommentTree(tree []*github.PullRequestComment, filePath string) string
 
 	result = append(result, "    ┌─ REVIEW COMMENT ─────────────────")
 	result = append(result, fmt.Sprintf("    │ File: %s", filePath))
-	result = append(result, fmt.Sprintf("    │ %s", tree[0].CreatedAt.Format(time.DateTime)+" "+treeAuthorsFromList(tree)))
+	result = append(result, fmt.Sprintf("    │ %s : %d", tree[0].CreatedAt.Format(time.DateTime)+" "+treeAuthorsFromList(tree), tree[0].GetID()))
 	result = append(result, "    │")
 
 	for idx, comment := range tree {
@@ -309,7 +307,7 @@ func buildCommentTree(tree []*github.PullRequestComment, filePath string) string
 			result = append(result, fmt.Sprintf("    │ [%s]:", *comment.User.Login))
 		} else {
 			result = append(result, "    │")
-			result = append(result, fmt.Sprintf("    │ Reply by [%s]:", *comment.User.Login))
+			result = append(result, fmt.Sprintf("    │ Reply by [%s]:[%d]", *comment.User.Login, comment.GetID()))
 		}
 
 		for _, bodyLine := range commentLines {

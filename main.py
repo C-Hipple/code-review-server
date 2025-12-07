@@ -17,7 +17,8 @@ def main():
         bufsize=1,  # Line buffered
     )
 
-    get_pr_params = [{"Repo": "diff-lsp", "Owner": "C-Hipple", "Number": 14}]
+    # get_pr_params = [{"Repo": "diff-lsp", "Owner": "C-Hipple", "Number": 14}]
+    get_pr_params = [{"Repo": "gtdbot", "Owner": "C-Hipple", "Number": 9}]
 
     # send_request(process, "RPCHandler.GetAllReviews", [])
     send_request(process, "RPCHandler.GetPR", get_pr_params)

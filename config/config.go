@@ -2,6 +2,7 @@ package config
 
 import (
 	"codereviewserver/database"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,14 +49,13 @@ func init() {
 		GithubUsername string
 	}
 	home_dir, err := os.UserHomeDir()
-	configPath := "~/.config/codereviewserver.toml"
+	if err != nil {
+		panic(fmt.Sprintf("Failed to get home directory: %v", err))
+	}
+	configPath := filepath.Join(home_dir, ".config/codereviewserver.toml")
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
-		// Fallback to home directory
-		the_bytes, err = os.ReadFile(filepath.Join(home_dir, ".config/codereviewserver.toml"))
-		if err != nil {
-			panic(err)
-		}
+		panic(fmt.Sprintf("Failed to read config file at %s: %v", configPath, err))
 	}
 	err = toml.Unmarshal(the_bytes, &intermediate_config)
 	if err != nil {

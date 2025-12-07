@@ -92,8 +92,25 @@ func (db *DB) initSchema() error {
 			body TEXT
 		);
 
+	CREATE TABLE IF NOT EXISTS PullRequests (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		latest_sha TEXT NOT NULL,
+		body TEXT NOT NULL,
+		UNIQUE(pr_number, repo, latest_sha)
+	);
+
+	CREATE TABLE IF NOT EXISTS PRComments (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		comments_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
+	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
+	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -315,6 +332,60 @@ func (db *DB) InsertLocalComment(filename string, position int64, body *string) 
 	return LocalComment{
 		id, filename, position, body,
 	}
+}
+
+func (db *DB) GetPullRequest(prNumber int, repo string) (string, error) {
+	var body string
+	err := db.conn.QueryRow(
+		"SELECT body FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		prNumber, repo,
+	).Scan(&body)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return body, nil
+}
+
+func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, body string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PullRequests (pr_number, repo, latest_sha, body)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
+			body = excluded.body`,
+		prNumber, repo, latestSha, body,
+	)
+	return err
+}
+
+func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
+	var commentsJSON string
+	err := db.conn.QueryRow(
+		"SELECT comments_json FROM PRComments WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&commentsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return commentsJSON, nil
+}
+
+func (db *DB) UpsertPRComments(prNumber int, repo, commentsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRComments (pr_number, repo, comments_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			comments_json = excluded.comments_json`,
+		prNumber, repo, commentsJSON,
+	)
+	return err
 }
 
 func (item *Item) GetDetails() ([]string, error) {

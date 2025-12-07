@@ -1,11 +1,13 @@
 package server
 
 import (
+	"codereviewserver/config"
 	"codereviewserver/database"
 	"codereviewserver/git_tools"
 	"codereviewserver/org"
 	"codereviewserver/utils"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -183,7 +185,31 @@ type PRComment interface {
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {
 	client := git_tools.GetGithubClient()
 
-	// Get the diff
+	// Check database first - skip API call if cached
+	cachedBody, err := config.C.DB.GetPullRequest(number, repo)
+	if err != nil {
+		slog.Error("Error checking database for PR", "pr", number, "repo", repo, "error", err)
+		// Continue to fetch from API
+	} else if cachedBody != "" {
+		// Found in cache, parse and process it
+		parsedDiff, err := utils.Parse(cachedBody)
+		if err != nil {
+			slog.Error("Error parsing cached diff", "error", err)
+			// Continue to fetch from API
+		} else {
+			// Process cached diff with comments
+			return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff)
+		}
+	}
+
+	// Not in cache or error occurred, fetch from API
+	// Get the PR object to get the latest SHA for storage (future feature)
+	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+	latestSha := ""
+	if err == nil && pr.Head != nil && pr.Head.SHA != nil {
+		latestSha = *pr.Head.SHA
+	}
+
 	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
 	parsedDiff, err := utils.Parse(diff)
 	if err != nil {
@@ -203,17 +229,63 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 		return "", 0
 	}
 
-	// Get comments
-	opts := github.PullRequestListCommentsOptions{}
-	comments, _, err := client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
-	if err != nil {
-		slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", err)
-		return diff, 0
+	// Store the result in the database (with latest_sha for future feature)
+	if err := config.C.DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
+		slog.Error("Error storing PR in database", "pr", number, "repo", repo, "error", err)
+		// Continue even if storage fails
 	}
 
-	comments = filterComments(comments)
-	if len(comments) == 0 {
-		return diff, 0
+	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff)
+}
+
+func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff) (string, int) {
+	var comments []*github.PullRequestComment
+
+	// Check database first - skip API call if cached
+	cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
+	if err != nil {
+		slog.Error("Error checking database for PR comments", "pr", number, "repo", repo, "error", err)
+		// Continue to fetch from API
+	} else if cachedCommentsJSON != "" {
+		// Found in cache, unmarshal and use it
+		if err := json.Unmarshal([]byte(cachedCommentsJSON), &comments); err != nil {
+			slog.Error("Error unmarshaling cached comments", "error", err)
+			// Continue to fetch from API
+		} else {
+			// Use cached comments
+			comments = filterComments(comments)
+			if len(comments) == 0 {
+				return diff, 0
+			}
+			// Continue with processing cached comments
+		}
+	}
+
+	// Not in cache or error occurred, fetch from API
+	if comments == nil {
+		opts := github.PullRequestListCommentsOptions{}
+		var apiErr error
+		comments, _, apiErr = client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+		if apiErr != nil {
+			slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", apiErr)
+			return diff, 0
+		}
+
+		// Store the result in the database
+		commentsJSON, err := json.Marshal(comments)
+		if err != nil {
+			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", err)
+		} else {
+			if err := config.C.DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+				slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
+				// Continue even if storage fails
+			}
+		}
+
+		comments = filterComments(comments)
+		if len(comments) == 0 {
+			return diff, 0
+		}
 	}
 
 	// Build comment trees first to group replies with their parents

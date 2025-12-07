@@ -169,6 +169,16 @@ func formatComment(comment *github.PullRequestComment) string {
 	return formatted.String()
 }
 
+// Comments can either be from Github which are submitted
+// or LocalComments which are not yet submitted.
+type PRComment interface {
+	GetLogin() string
+	GetBody() string
+	GetID() string
+	GetPosition() string
+	GetInReplyTo() int64
+}
+
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {
 	client := git_tools.GetGithubClient()
 

@@ -11,6 +11,11 @@ import (
 	// "strings"
 )
 
+// testing mutable state
+// RPC handler is recreated for each request, it's not stateful across requests
+// simulate a db lol
+var CurrentCount int
+
 func RunServer(log *slog.Logger) {
 	server := rpc.NewServer()
 	handler := &RPCHandler{Log: log}
@@ -42,8 +47,8 @@ type RPCHandler struct {
 
 type HelloArgs struct{}
 type HelloReply struct {
-	Message string
 	Count   int
+	Content string
 }
 
 func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
@@ -53,8 +58,10 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 		h.Log.Error("Error counting items", "error", err)
 		return err
 	}
-	reply.Message = fmt.Sprintf("hello %d", count)
+	CurrentCount += count
+	reply.Content = fmt.Sprintf("hello %d", CurrentCount)
 	reply.Count = count
+
 	return nil
 }
 
@@ -89,5 +96,21 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
 	reply.Content = diffLines
 	reply.Okay = true
+	return nil
+}
+
+type AddCommentArgs struct {
+	Filename string
+	Position int64
+	Body     string
+}
+
+type AddCommentReply struct {
+	ID int64
+}
+
+func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
+	commentID := config.C.DB.InsertLocalComment(args.Filename, args.Position, &args.Body)
+	reply.ID = commentID.ID
 	return nil
 }

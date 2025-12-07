@@ -31,6 +31,13 @@ type Item struct {
 	Archived    bool
 }
 
+type LocalComment struct {
+	ID       int64
+	Filename string // going to be the rel file like src/main.rs
+	Postion  int64
+	Body     *string
+}
+
 func NewDB(dbPath string) (*DB, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
@@ -77,6 +84,13 @@ func (db *DB) initSchema() error {
 		UNIQUE(section_id, identifier),
 		FOREIGN KEY(section_id) REFERENCES sections(id) ON DELETE CASCADE
 	);
+
+		CREATE TABLE IF NOT EXISTS LocalComment (
+			id INTEGER PRIMARY KEY,
+			filename TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			body TEXT
+		);
 
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
@@ -278,6 +292,29 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 	query := "DELETE FROM items WHERE section_id = ? AND identifier NOT IN (" + placeholders + ")"
 	_, err := db.conn.Exec(query, args...)
 	return err
+}
+
+func (db *DB) InsertLocalComment(filename string, position int64, body *string) LocalComment {
+	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (filename, position, body) VALUES (?, ?, ?)")
+	if err != nil {
+		slog.Error(err.Error())
+	}
+	defer stmt.Close()
+
+	// Execute the insertion
+	res, err := stmt.Exec(filename, position, body)
+	if err != nil {
+		slog.Error(err.Error())
+	}
+
+	// Get the last inserted ID
+	id, err := res.LastInsertId()
+	if err != nil {
+		slog.Error(err.Error())
+	}
+	return LocalComment{
+		id, filename, position, body,
+	}
 }
 
 func (item *Item) GetDetails() ([]string, error) {

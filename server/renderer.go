@@ -332,8 +332,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 		for _, diffFile := range parsedDiff.Files {
 			slog.Info("parsed file:" + diffFile.NewName)
 			for _, hunk := range diffFile.Hunks {
-				slog.Info("Parsed Hunnk: " + hunk.HunkHeader)
-				slog.Info("Parsed Hunnk: " + strconv.Itoa(hunk.NewRange.Start))
+				slog.Info("Parsed Hunnk: " + hunk.RangeHeader())
 			}
 		}
 	}
@@ -460,7 +459,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		builder.WriteString(file.DiffHeader)
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
-			builder.WriteString(hunk.HunkHeader)
+			builder.WriteString(hunk.RangeHeader()) // TODO: hunk.HunkHeader shows the context
 			for _, line := range hunk.WholeRange.Lines {
 				builder.WriteString(line.Render())
 				key := fmt.Sprintf("%s:%d", file.NewName, line.Position)

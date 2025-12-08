@@ -313,3 +313,15 @@ func isSourceLine(line string) bool {
 func (hunk *DiffHunk) Length() int {
 	return len(hunk.WholeRange.Lines) + 1
 }
+
+// String returns the string representation of the hunk header
+func (hunk *DiffHunk) RangeHeader() string {
+	header := ""
+	if hunk.HunkHeader != "" {
+		header = " " + hunk.HunkHeader
+	}
+	return fmt.Sprintf("@@ -%d,%d +%d,%d @@%s",
+		hunk.OrigRange.Start, hunk.OrigRange.Length,
+		hunk.NewRange.Start, hunk.NewRange.Length,
+		header)
+}

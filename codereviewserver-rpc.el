@@ -155,6 +155,41 @@ CALLBACK is a function to call with the result."
        (display-buffer buffer)
        (message "Reviews loaded into '* Reviews *' buffer")))))
 
+(defun codereviewserver-rpc-get-review (owner repo number)
+  "Call the GetPR RPC method for OWNER/REPO PR NUMBER and display the result."
+  (interactive "sOwner: \nsRepo: \nnPR Number: ")
+  (unless (and codereviewserver-rpc--process
+               (process-live-p codereviewserver-rpc--process))
+    (codereviewserver-rpc-start-server)
+    (sleep-for 0.5))
+
+  (codereviewserver-rpc--send-request
+   "RPCHandler.GetPR"
+   (vector (list (cons 'Owner owner)
+                 (cons 'Repo repo)
+                 (cons 'Number number)))
+   (lambda (result)
+     (let ((content (cdr (assq 'Content result)))
+           (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
+       (with-current-buffer buffer
+         (erase-buffer)
+         (insert (or content ""))
+         (goto-char (point-min)))
+       (display-buffer buffer)
+       (message "Review loaded into buffer")))))
+
+(defun codereviewserver-rpc-get-review-from-line ()
+  "Parse a GitHub PR URL from the current line and call codereviewserver-rpc-get-review.
+The line should contain a URL in the format https://github.com/OWNER/REPO/pull/NUMBER"
+  (interactive)
+  (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+    (if (string-match "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)" line)
+        (let ((owner (match-string 1 line))
+              (repo (match-string 2 line))
+              (number (string-to-number (match-string 3 line))))
+          (codereviewserver-rpc-get-review owner repo number))
+      (error "Could not find GitHub PR URL on current line"))))
+
 (provide 'codereviewserver-rpc)
 
 ;;; codereviewserver-rpc.el ends here

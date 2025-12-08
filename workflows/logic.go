@@ -2,10 +2,12 @@ package workflows
 
 import (
 	"bytes"
+	"codereviewserver/config"
 	"codereviewserver/git_tools"
 	"codereviewserver/org"
 	"codereviewserver/utils"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -264,6 +266,20 @@ func removePRBodySections(body *string) string {
 func getComments(owner string, repo string, number int) (int, []string) {
 	comments, err := git_tools.GetPRComments(git_tools.GetGithubClient(), owner, repo, number)
 	comments = filterComments(comments)
+	
+	// Store the result in the database
+	if err == nil {
+		commentsJSON, marshalErr := json.Marshal(comments)
+		if marshalErr != nil {
+			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", marshalErr)
+		} else {
+			if err := config.C.DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+				slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
+				// Continue even if storage fails
+			}
+		}
+	}
+	
 	trees := buildCommentTrees(comments)
 	// debugPrintCommentTree(trees)
 
@@ -433,11 +449,26 @@ func getCIStatus(owner string, repo string, branch string) ([]string, string) {
 
 func getPRDiff(owner string, repo string, number int) []string {
 	client := git_tools.GetGithubClient()
+	
+	// Get the PR object to get the latest SHA for storage
+	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+	latestSha := ""
+	if err == nil && pr.Head != nil && pr.Head.SHA != nil {
+		latestSha = *pr.Head.SHA
+	}
+	
 	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
 	if err != nil {
 		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		return []string{}
 	}
+	
+	// Store the result in the database
+	if err := config.C.DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
+		slog.Error("Error storing PR diff in database", "pr", number, "repo", repo, "error", err)
+		// Continue even if storage fails
+	}
+	
 	return []string{"*** Diff\n", diff}
 }
 

@@ -478,6 +478,22 @@ func (db *DB) UpsertPRComments(prNumber int, repo, commentsJSON string) error {
 	return err
 }
 
+func (db *DB) DeletePRComments(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRComments WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
+func (db *DB) DeletePullRequests(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
 func (item *Item) GetDetails() ([]string, error) {
 	var details []string
 	if err := json.Unmarshal([]byte(item.DetailsJSON), &details); err != nil {

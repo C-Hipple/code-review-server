@@ -2,7 +2,8 @@ package server
 
 import (
 	"codereviewserver/config"
-	// "codereviewserver/git_tools"
+	"codereviewserver/git_tools"
+	"context"
 	"fmt"
 	"log/slog"
 	"net/rpc"
@@ -93,8 +94,15 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
+	client := git_tools.GetGithubClient()
+	pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+	}
+
 	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-	reply.Content = diffLines
+
+	reply.Content = header + diffLines
 	reply.Okay = true
 	return nil
 }
@@ -116,6 +124,27 @@ type AddCommentReply struct {
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
 	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body)
 	reply.ID = commentID.ID
+
+	// Return the updated PR body
+	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
+	reply.Content = diffLines
+	return nil
+}
+
+type SetFeedbackArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
+	Body     string
+}
+
+type SetFeedbackReply struct {
+	ID      int64
+	Content string
+}
+
+func (h *RPCHandler) SetFeedback(args *AddCommentArgs, reply *AddCommentReply) error {
+	config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 
 	// Return the updated PR body
 	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)

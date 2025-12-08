@@ -98,6 +98,14 @@ func (db *DB) initSchema() error {
 			body TEXT
 		);
 
+		CREATE TABLE IF NOT EXISTS Feedback (
+			id INTEGER PRIMARY KEY,
+			owner TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			number INTEGER NOT NULL,
+			body TEXT
+		);
+
 	CREATE TABLE IF NOT EXISTS PullRequests (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -110,6 +118,13 @@ func (db *DB) initSchema() error {
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
 		comments_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
+	CREATE TABLE IF NOT EXISTS RequestedReviewers (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		reviewers_json TEXT NOT NULL,
 		UNIQUE(pr_number, repo)
 	);
 
@@ -378,6 +393,23 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 	}
 }
 
+func (db *DB) InsertFeedback(owner, repo string, number int, body *string) {
+	stmt, err := db.conn.Prepare(
+		`INSERT INTO Feedback (owner, repo, number, body) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			body = excluded.body`,
+	)
+	if err != nil {
+		slog.Error(err.Error())
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(owner, repo, number, body)
+	if err != nil {
+		slog.Error(err.Error())
+	}
+}
+
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body FROM LocalComment")
 	if err != nil {
@@ -490,6 +522,33 @@ func (db *DB) DeletePullRequests(prNumber int, repo string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",
 		prNumber, repo,
+	)
+	return err
+}
+
+func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
+	var reviewersJSON string
+	err := db.conn.QueryRow(
+		"SELECT reviewers_json FROM RequestedReviewers WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&reviewersJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return reviewersJSON, nil
+}
+
+func (db *DB) UpsertRequestedReviewers(prNumber int, repo, reviewersJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO RequestedReviewers (pr_number, repo, reviewers_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			reviewers_json = excluded.reviewers_json`,
+		prNumber, repo, reviewersJSON,
 	)
 	return err
 }

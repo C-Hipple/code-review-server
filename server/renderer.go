@@ -287,6 +287,7 @@ func convertToPRComments(comments []*github.PullRequestComment) []PRComment {
 	return result
 }
 
+
 // convertLocalCommentsToPRComments converts a slice of database.LocalComment to []PRComment
 func convertLocalCommentsToPRComments(localComments []database.LocalComment) []PRComment {
 	result := make([]PRComment, len(localComments))
@@ -294,6 +295,34 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 		result[i] = &LocalPRComment{&localComments[i]}
 	}
 	return result
+}
+
+func GetFullPRResponse(owner string, repo string, number int) (string, error) {
+	commettedDiff, _ := GetPRDiffWithInlineComments(owner, repo, number)
+	// Get requested reviewers
+	reviewers, err := GetRequestedReviewers(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching requested reviewers", "error", err)
+	}
+	reviewersStr := ""
+	for _, reviewer := range reviewers {
+		if reviewersStr != "" {
+			reviewersStr += ", "
+		}
+		reviewersStr += reviewer.GetLogin()
+	}
+
+	var header string
+	if pr != nil {
+		header = fmt.Sprintf("Title: %s\nProject: %s\nAuthor: %s\nState: %s\nReviewers: %s\n\n",
+			pr.GetTitle(),
+			args.Repo,
+			pr.User.GetLogin(),
+			pr.GetState(),
+			reviewersStr)
+	}
+
+
 }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {
@@ -332,8 +361,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 		for _, diffFile := range parsedDiff.Files {
 			slog.Info("parsed file:" + diffFile.NewName)
 			for _, hunk := range diffFile.Hunks {
-				slog.Info("Parsed Hunnk: " + hunk.HunkHeader)
-				slog.Info("Parsed Hunnk: " + strconv.Itoa(hunk.NewRange.Start))
+				slog.Info("Parsed Hunnk: " + hunk.RangeHeader())
 			}
 		}
 	}
@@ -460,7 +488,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		builder.WriteString(file.DiffHeader)
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
-			builder.WriteString(hunk.HunkHeader)
+			builder.WriteString(hunk.RangeHeader()) // TODO: hunk.HunkHeader shows the context
 			for _, line := range hunk.WholeRange.Lines {
 				builder.WriteString(line.Render())
 				key := fmt.Sprintf("%s:%d", file.NewName, line.Position)
@@ -661,4 +689,38 @@ func filterComments(comments []PRComment) []PRComment {
 		output = append(output, comment)
 	}
 	return output
+}
+
+func GetRequestedReviewers(owner, repo string, number int) ([]*github.User, error) {
+	client := git_tools.GetGithubClient()
+
+	cachedReviewersJSON, err := config.C.DB.GetRequestedReviewers(number, repo)
+	if err != nil {
+		slog.Error("Error checking database for requested reviewers", "pr", number, "repo", repo, "error", err)
+	} else if cachedReviewersJSON != "" {
+		var reviewers []*github.User
+		if err := json.Unmarshal([]byte(cachedReviewersJSON), &reviewers); err != nil {
+			slog.Error("Error unmarshaling cached reviewers", "error", err)
+		} else {
+			return reviewers, nil
+		}
+	}
+
+	reviewers, _, err := client.PullRequests.ListReviewers(context.Background(), owner, repo, number, nil)
+	// TODO: Show status of already done reviews.
+	// reviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repo, number, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	reviewersJSON, err := json.Marshal(reviewers.Users)
+	if err != nil {
+		slog.Error("Error marshaling reviewers for storage", "error", err)
+	} else {
+		if err := config.C.DB.UpsertRequestedReviewers(number, repo, string(reviewersJSON)); err != nil {
+			slog.Error("Error storing requested reviewers in database", "error", err)
+		}
+	}
+
+	return reviewers.Users, nil
 }

@@ -2,8 +2,6 @@ package server
 
 import (
 	"codereviewserver/config"
-	"codereviewserver/git_tools"
-	"context"
 	"fmt"
 	"log/slog"
 	"net/rpc"

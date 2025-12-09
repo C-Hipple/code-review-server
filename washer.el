@@ -26,3 +26,16 @@
   (font-lock-remove-keywords nil
                              '(("^@@.*" 0 'my-blue-line-face t)))
   (font-lock-flush))
+
+(defface washer-review-comment-face
+  '((t (:foreground "blue" :background "cyan")))
+  "Face for review comments."
+  :group 'my-custom-highlights)
+
+(defun highlight-review-comments ()
+  "Highlight review comment blocks."
+  (interactive)
+  (font-lock-add-keywords nil
+                          '((".*[┌└].*" 0 'washer-review-comment-face t)
+                            ("^    │.*" 0 'washer-review-comment-face t)))
+  (font-lock-flush))

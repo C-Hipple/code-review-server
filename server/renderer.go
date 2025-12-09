@@ -298,12 +298,23 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 }
 
 func GetFullPRResponse(owner string, repo string, number int) (string, error) {
-	commettedDiff, _ := GetPRDiffWithInlineComments(owner, repo, number)
-	// Get requested reviewers
-	reviewers, err := GetRequestedReviewers(args.Owner, args.Repo, args.Number)
+	client := git_tools.GetGithubClient()
+
+	// Fetch PR details
+	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
 	if err != nil {
-		h.Log.Error("Error fetching requested reviewers", "error", err)
+		slog.Error("Error fetching PR details", "error", err)
+		return "", err
 	}
+
+	// Get requested reviewers
+	reviewers, err := GetRequestedReviewers(owner, repo, number)
+	if err != nil {
+		slog.Error("Error fetching requested reviewers", "error", err)
+		// Continue without reviewers rather than failing
+		reviewers = []*github.User{}
+	}
+
 	reviewersStr := ""
 	for _, reviewer := range reviewers {
 		if reviewersStr != "" {
@@ -312,17 +323,25 @@ func GetFullPRResponse(owner string, repo string, number int) (string, error) {
 		reviewersStr += reviewer.GetLogin()
 	}
 
+	// Build header
 	var header string
 	if pr != nil {
+		authorLogin := ""
+		if pr.User != nil {
+			authorLogin = pr.User.GetLogin()
+		}
 		header = fmt.Sprintf("Title: %s\nProject: %s\nAuthor: %s\nState: %s\nReviewers: %s\n\n",
 			pr.GetTitle(),
-			args.Repo,
-			pr.User.GetLogin(),
+			repo,
+			authorLogin,
 			pr.GetState(),
 			reviewersStr)
 	}
 
+	// Get diff with inline comments
+	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number)
 
+	return header + diffLines, nil
 }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {

@@ -94,15 +94,13 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	client := git_tools.GetGithubClient()
-	pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
+		return err
 	}
 
-	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-
-	reply.Content = header + diffLines
+	reply.Content = content
 	reply.Okay = true
 	return nil
 }
@@ -126,8 +124,12 @@ func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) er
 	reply.ID = commentID.ID
 
 	// Return the updated PR body
-	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-	reply.Content = diffLines
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
 	return nil
 }
 
@@ -143,12 +145,16 @@ type SetFeedbackReply struct {
 	Content string
 }
 
-func (h *RPCHandler) SetFeedback(args *AddCommentArgs, reply *AddCommentReply) error {
+func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
 	config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 
 	// Return the updated PR body
-	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-	reply.Content = diffLines
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
 	return nil
 }
 
@@ -172,7 +178,11 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 	reply.Okay = true
 
 	// Return the updated PR body
-	diffLines, _ := GetPRDiffWithInlineComments(args.Owner, args.Repo, args.Number)
-	reply.Content = diffLines
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"codereviewserver/server"
 	"codereviewserver/workflows"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 )
@@ -17,7 +18,18 @@ func main() {
 
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	serverFlag := flag.Bool("server", false, "Run as an RPC server")
+	testFlag := flag.Bool("test", false, "Run in test mode")
 	flag.Parse()
+
+	if *testFlag {
+		content, err := server.GetFullPRResponse("C-Hipple", "gtdbot", 9, false)
+		if err != nil {
+			slog.Error("Error getting PR response", "error", err)
+			os.Exit(1)
+		}
+		fmt.Println(content)
+		return
+	}
 
 	if *oneOff && *serverFlag {
 		slog.Error("Cannot run in both server and oneoff mode")

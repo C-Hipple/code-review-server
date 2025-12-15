@@ -2,11 +2,6 @@
   "Custom highlighting configurations."
   :group 'faces)
 
-;; 1. Define a custom face (color/style)
-(defface my-blue-line-face
-  '((t (:foreground "white" :background "blue" :weight bold)))
-  "Face for highlighting lines starting with @@."
-  :group 'my-custom-highlights)
 
 ;; 2. Define the function to apply the highlighting
 (defun highlight-at-at-lines-blue ()
@@ -14,21 +9,16 @@
   (interactive)
   (font-lock-add-keywords nil
                           '(("^@@.*" 0 'magit-diff-hunk-heading-highlight t)))
-  ;; Or if I actually want the blue line one
-  ;; '(("^@@.*" 0 'my-blue-line-face t)))
-  ;; Refresh the highlighting to see changes immediately
   (font-lock-flush))
 
-(defun unhighlight-at-at-lines ()
-  "Remove the highlighting for '@@' lines in the current buffer."
-  (interactive)
-  ;; would need to change this
-  (font-lock-remove-keywords nil
-                             '(("^@@.*" 0 'my-blue-line-face t)))
-  (font-lock-flush))
+
+(defface washer-review-comment-seperator-face
+  '((t (:foreground "red" :weight bold)))
+  "Face for review comments."
+  :group 'my-custom-highlights)
 
 (defface washer-review-comment-face
-  '((t (:foreground "blue" :background "cyan")))
+  '((t (:foreground "#d7af5f" :weight bold)))
   "Face for review comments."
   :group 'my-custom-highlights)
 
@@ -36,8 +26,8 @@
   "Highlight review comment blocks."
   (interactive)
   (font-lock-add-keywords nil
-                          '((".*[┌└].*" 0 'washer-review-comment-face t)
-                            ("^    │.*" 0 'washer-review-comment-face t)))
+                          '((".*[┌└].*" 0 'washer-review-comment-seperator-face t)
+                            ("^    │\ .*" 0 'washer-review-comment-comment-face t)))
   (font-lock-flush))
 
 (provide 'washer)

@@ -236,7 +236,10 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (repo codereviewserver-client--comment-repo)
         (number codereviewserver-client--comment-number)
         (filename codereviewserver-client--comment-filename)
-        (position codereviewserver-client--comment-position))
+        (reply-to-id codereviewserver-client--comment-reply-to-id)
+        (position (if codereviewserver-client--comment-reply-to-id
+                      nil
+                    codereviewserver-client--comment-position)))
     (codereviewserver-client--send-request
      "RPCHandler.AddComment"
      (vector (list (cons 'Owner owner)
@@ -244,7 +247,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                    (cons 'Number number)
                    (cons 'Filename filename)
                    (cons 'Position position)
-                   (cons 'ReplyToID codereviewserver-client--comment-reply-to-id)
+                   (cons 'ReplyToID reply-to-id)
                    (cons 'Body body)))
      (lambda (result)
        (let ((content (cdr (assq 'Content result)))

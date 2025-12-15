@@ -297,7 +297,7 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 	return result
 }
 
-func GetFullPRResponse(owner string, repo string, number int) (string, error) {
+func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (string, error) {
 	client := git_tools.GetGithubClient()
 
 	// Fetch PR details
@@ -308,7 +308,7 @@ func GetFullPRResponse(owner string, repo string, number int) (string, error) {
 	}
 
 	// Get requested reviewers
-	reviewers, err := GetRequestedReviewers(owner, repo, number)
+	reviewers, err := GetRequestedReviewers(owner, repo, number, skipCache)
 	if err != nil {
 		slog.Error("Error fetching requested reviewers", "error", err)
 		// Continue without reviewers rather than failing
@@ -339,28 +339,31 @@ func GetFullPRResponse(owner string, repo string, number int) (string, error) {
 	}
 
 	// Get diff with inline comments
-	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number)
+	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number, skipCache)
 
 	return header + diffLines, nil
 }
 
-func GetPRDiffWithInlineComments(owner string, repo string, number int) (string, int) {
+
+func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool) (string, int) {
 	client := git_tools.GetGithubClient()
 
 	// Check database first - skip API call if cached
-	cachedBody, err := config.C.DB.GetPullRequest(number, repo)
-	if err != nil {
-		slog.Error("Error checking database for PR", "pr", number, "repo", repo, "error", err)
-		// Continue to fetch from API
-	} else if cachedBody != "" {
-		// Found in cache, parse and process it
-		parsedDiff, err := utils.Parse(cachedBody)
+	if !skipCache {
+		cachedBody, err := config.C.DB.GetPullRequest(number, repo)
 		if err != nil {
-			slog.Error("Error parsing cached diff", "error", err)
+			slog.Error("Error checking database for PR", "pr", number, "repo", repo, "error", err)
 			// Continue to fetch from API
-		} else {
-			// Process cached diff with comments
-			return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff)
+		} else if cachedBody != "" {
+			// Found in cache, parse and process it
+			parsedDiff, err := utils.Parse(cachedBody)
+			if err != nil {
+				slog.Error("Error parsing cached diff", "error", err)
+				// Continue to fetch from API
+			} else {
+				// Process cached diff with comments
+				return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff, skipCache)
+			}
 		}
 	}
 
@@ -396,28 +399,31 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int) (string,
 		// Continue even if storage fails
 	}
 
-	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff)
+	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache)
 }
 
-func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff) (string, int) {
+
+func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool) (string, int) {
 	var githubComments []*github.PullRequestComment
 	var comments []PRComment
 
 	// Check database first - skip API call if cached
-	cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
-	if err != nil {
-		slog.Error("Error checking database for PR comments", "pr", number, "repo", repo, "error", err)
-		// Continue to fetch from API
-	} else if cachedCommentsJSON != "" {
-		// Found in cache, unmarshal and use it
-		if err := json.Unmarshal([]byte(cachedCommentsJSON), &githubComments); err != nil {
-			slog.Error("Error unmarshaling cached comments", "error", err)
+	if !skipCache {
+		cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
+		if err != nil {
+			slog.Error("Error checking database for PR comments", "pr", number, "repo", repo, "error", err)
 			// Continue to fetch from API
-		} else {
-			// Convert to PRComment interface
-			comments = convertToPRComments(githubComments)
-			comments = filterComments(comments)
-			// Continue with processing cached comments
+		} else if cachedCommentsJSON != "" {
+			// Found in cache, unmarshal and use it
+			if err := json.Unmarshal([]byte(cachedCommentsJSON), &githubComments); err != nil {
+				slog.Error("Error unmarshaling cached comments", "error", err)
+				// Continue to fetch from API
+			} else {
+				// Convert to PRComment interface
+				comments = convertToPRComments(githubComments)
+				comments = filterComments(comments)
+				// Continue with processing cached comments
+			}
 		}
 	}
 
@@ -710,18 +716,20 @@ func filterComments(comments []PRComment) []PRComment {
 	return output
 }
 
-func GetRequestedReviewers(owner, repo string, number int) ([]*github.User, error) {
+func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*github.User, error) {
 	client := git_tools.GetGithubClient()
 
-	cachedReviewersJSON, err := config.C.DB.GetRequestedReviewers(number, repo)
-	if err != nil {
-		slog.Error("Error checking database for requested reviewers", "pr", number, "repo", repo, "error", err)
-	} else if cachedReviewersJSON != "" {
-		var reviewers []*github.User
-		if err := json.Unmarshal([]byte(cachedReviewersJSON), &reviewers); err != nil {
-			slog.Error("Error unmarshaling cached reviewers", "error", err)
-		} else {
-			return reviewers, nil
+	if !skipCache {
+		cachedReviewersJSON, err := config.C.DB.GetRequestedReviewers(number, repo)
+		if err != nil {
+			slog.Error("Error checking database for requested reviewers", "pr", number, "repo", repo, "error", err)
+		} else if cachedReviewersJSON != "" {
+			var reviewers []*github.User
+			if err := json.Unmarshal([]byte(cachedReviewersJSON), &reviewers); err != nil {
+				slog.Error("Error unmarshaling cached reviewers", "error", err)
+			} else {
+				return reviewers, nil
+			}
 		}
 	}
 

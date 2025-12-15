@@ -2,11 +2,14 @@ package server
 
 import (
 	"codereviewserver/config"
+	"codereviewserver/git_tools"
 	"fmt"
 	"log/slog"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+
+	"github.com/google/go-github/v48/github"
 	// "strings"
 )
 
@@ -92,7 +95,7 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
@@ -104,12 +107,13 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 }
 
 type AddCommentArgs struct {
-	Owner    string `json:"Owner"`
-	Repo     string `json:"Repo"`
-	Number   int    `json:"Number"`
-	Filename string
-	Position int64
-	Body     string
+	Owner     string `json:"Owner"`
+	Repo      string `json:"Repo"`
+	Number    int    `json:"Number"`
+	Filename  string
+	Position  int64
+	Body      string
+	ReplyToID *int64
 }
 
 type AddCommentReply struct {
@@ -118,11 +122,11 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body)
+	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	reply.ID = commentID.ID
 
 	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
@@ -147,7 +151,7 @@ func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply)
 	config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 
 	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
@@ -176,11 +180,108 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 	reply.Okay = true
 
 	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number)
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 	reply.Content = content
+	return nil
+}
+
+type SubmitReviewArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	Event  string `json:"Event"` // APPROVE, REQUEST_CHANGES, or COMMENT
+	Body   string `json:"Body"`  // Top-level review body (optional)
+}
+
+type SubmitReviewReply struct {
+	Okay    bool
+	Content string
+}
+
+func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
+	// 1. Fetch Local Comments
+	comments, err := config.C.DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching local comments", "error", err)
+		return err
+	}
+
+	// 2. Construct Review Request
+	var reviewComments []*github.DraftReviewComment
+	for _, c := range comments {
+		// Only include top-level comments (ReplyToID is nil) for now
+		if c.ReplyToID == nil && c.Body != nil {
+			// Note: We are using int here, but github library expects int (not int64) for Position usually?
+			// Checking go-github struct definition: Position *int. Our DB has Postion int64.
+			pos := int(c.Postion)
+			body := *c.Body
+			reviewComments = append(reviewComments, &github.DraftReviewComment{
+				Path:     &c.Filename,
+				Position: &pos,
+				Body:     &body,
+			})
+		}
+	}
+
+	reviewRequest := &github.PullRequestReviewRequest{
+		Event:    &args.Event,
+		Comments: reviewComments,
+	}
+	if args.Body != "" {
+		reviewRequest.Body = &args.Body
+	}
+
+	// 3. Submit to GitHub
+	client := git_tools.GetGithubClient()
+	err = git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest)
+	if err != nil {
+		h.Log.Error("Error submitting review to GitHub", "error", err)
+		return err
+	}
+
+	// 4. Clean up Local Comments
+	// Only delete the comments we successfully submitted?
+	// For MVP, we delete all local comments for this PR because we assume they were part of the review.
+	err = config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error deleting local comments after submission", "error", err)
+		// We don't return error here because submission succeeded, but we log it.
+	}
+
+	reply.Okay = true
+
+	// 5. Return Updated Content
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
+	return nil
+}
+
+type SyncPRArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+}
+
+type SyncPRReply struct {
+	Okay    bool
+	Content string
+}
+
+func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, true)
+	if err != nil {
+		h.Log.Error("Error processing SyncPR", "error", err)
+		return err
+	}
+	reply.Content = content
+	reply.Okay = true
 	return nil
 }

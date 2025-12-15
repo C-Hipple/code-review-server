@@ -39,3 +39,5 @@
                           '((".*[┌└].*" 0 'washer-review-comment-face t)
                             ("^    │.*" 0 'washer-review-comment-face t)))
   (font-lock-flush))
+
+(provide 'washer)

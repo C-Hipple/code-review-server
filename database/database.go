@@ -32,13 +32,14 @@ type Item struct {
 }
 
 type LocalComment struct {
-	ID       int64
-	Owner    string // GitHub owner/org
-	Repo     string // GitHub repository name
-	Number   int    // PR number
-	Filename string // going to be the rel file like src/main.rs
-	Postion  int64
-	Body     *string
+	ID        int64
+	Owner     string    // GitHub owner/org
+	Repo      string    // GitHub repository name
+	Number    int       // PR number
+	Filename  string    // going to be the rel file like src/main.rs
+	Postion   int64
+	Body      *string
+	ReplyToID *int64    // ID of the comment being replied to, or nil if top-level
 }
 
 func NewDB(dbPath string) (*DB, error) {
@@ -95,7 +96,8 @@ func (db *DB) initSchema() error {
 			number INTEGER NOT NULL,
 			filename TEXT NOT NULL,
 			position INTEGER NOT NULL,
-			body TEXT
+			body TEXT,
+			reply_to_id INTEGER
 		);
 
 		CREATE TABLE IF NOT EXISTS Feedback (
@@ -145,7 +147,7 @@ func (db *DB) initSchema() error {
 	var count int
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='owner'").Scan(&count)
 	if err == nil && count == 0 {
-		// Add the new columns
+		// Add the new columns (Legacy migration code kept for completeness)
 		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN owner TEXT DEFAULT ''")
 		if err != nil {
 			slog.Warn("Error adding owner column to LocalComment (may already exist)", "error", err)
@@ -170,6 +172,15 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("UPDATE LocalComment SET number = 0 WHERE number IS NULL")
 		if err != nil {
 			slog.Warn("Error updating number defaults", "error", err)
+		}
+	}
+	
+	// Migration: Add reply_to_id column
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='reply_to_id'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN reply_to_id INTEGER DEFAULT NULL")
+		if err != nil {
+			slog.Warn("Error adding reply_to_id column to LocalComment", "error", err)
 		}
 	}
 
@@ -370,15 +381,15 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 	return err
 }
 
-func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string) LocalComment {
-	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body) VALUES (?, ?, ?, ?, ?, ?)")
+func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) LocalComment {
+	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body, reply_to_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		slog.Error(err.Error())
 	}
 	defer stmt.Close()
 
 	// Execute the insertion
-	res, err := stmt.Exec(owner, repo, number, filename, position, body)
+	res, err := stmt.Exec(owner, repo, number, filename, position, body, replyToID)
 	if err != nil {
 		slog.Error(err.Error())
 	}
@@ -389,7 +400,7 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 		slog.Error(err.Error())
 	}
 	return LocalComment{
-		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Postion: position, Body: body,
+		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Postion: position, Body: body, ReplyToID: replyToID,
 	}
 }
 
@@ -411,7 +422,7 @@ func (db *DB) InsertFeedback(owner, repo string, number int, body *string) {
 }
 
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
-	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body FROM LocalComment")
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment")
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +431,7 @@ func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body, &comment.ReplyToID); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)
@@ -429,7 +440,7 @@ func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 }
 
 func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComment, error) {
-	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +449,7 @@ func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComm
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body, &comment.ReplyToID); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)

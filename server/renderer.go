@@ -263,8 +263,11 @@ func (c *LocalPRComment) GetPosition() string {
 	return strconv.FormatInt(c.Postion, 10)
 }
 
-// GetInReplyTo returns 0 for local comments (they don't reply to anything)
+// GetInReplyTo returns the ID of the comment this is replying to, or 0 if it's a root comment
 func (c *LocalPRComment) GetInReplyTo() int64 {
+	if c.ReplyToID != nil {
+		return *c.ReplyToID
+	}
 	return 0
 }
 

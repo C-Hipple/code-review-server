@@ -22,12 +22,30 @@
   "Face for review comments."
   :group 'my-custom-highlights)
 
+(defface washer-file-header-face
+  '((t (:foreground "cyan" :weight bold :height 1.3)))
+  "Face for file headers."
+  :group 'my-custom-highlights)
+
+(defface washer-summary-face
+  '((t (:foreground "#b58900" :weight bold :height 1.3)))
+  "Face for PR summary items."
+  :group 'my-custom-highlights)
+
+(defface washer-section-heading-face
+  '((t (:foreground "#cb4b16" :weight bold :height 1.3)))
+  "Face for major section headings."
+  :group 'my-custom-highlights)
+
 (defun highlight-review-comments ()
-  "Highlight review comment blocks."
+  "Highlight review comment blocks and file headers."
   (interactive)
   (font-lock-add-keywords nil
                           '((".*[┌└].*" 0 'washer-review-comment-seperator-face t)
-                            ("^    │\ .*" 0 'washer-review-comment-comment-face t)))
+                            ("^    │ .*" 0 'washer-review-comment-face t)
+                            ("^\\(modified\\|deleted\\|new file\\).*" 0 'washer-file-header-face t)
+                            ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\):.*" 0 'washer-summary-face t)
+                            ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)))
   (font-lock-flush))
 
 (provide 'washer)

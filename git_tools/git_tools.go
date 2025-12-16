@@ -277,8 +277,19 @@ func FilterPRsByAssignedTeam(prs []*github.PullRequest, target_team string) []*g
 	return filtered
 }
 
+
 func SubmitReview(client *github.Client, owner string, repo string, number int, review *github.PullRequestReviewRequest) error {
 	ctx := context.Background()
 	_, _, err := client.PullRequests.CreateReview(ctx, owner, repo, number, review)
+	return err
+}
+
+func SubmitReply(client *github.Client, owner string, repo string, number int, body string, replyToID int64) error {
+	ctx := context.Background()
+	comment := &github.PullRequestComment{
+		Body:      &body,
+		InReplyTo: &replyToID,
+	}
+	_, _, err := client.PullRequests.CreateComment(ctx, owner, repo, number, comment)
 	return err
 }

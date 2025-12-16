@@ -302,9 +302,10 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 
 func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (string, error) {
 	client := git_tools.GetGithubClient()
+	ctx := context.Background()
 
 	// Fetch PR details
-	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching PR details", "error", err)
 		return "", err
@@ -326,25 +327,119 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 		reviewersStr += reviewer.GetLogin()
 	}
 
-	// Build header
-	var header string
-	if pr != nil {
-		authorLogin := ""
-		if pr.User != nil {
-			authorLogin = pr.User.GetLogin()
-		}
-		header = fmt.Sprintf("Title: %s\nProject: %s\nAuthor: %s\nState: %s\nReviewers: %s\n\n",
-			pr.GetTitle(),
-			repo,
-			authorLogin,
-			pr.GetState(),
-			reviewersStr)
+	// Fetch Commits
+	commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
+	if err != nil {
+		slog.Error("Error fetching commits", "error", err)
 	}
+
+	// Fetch Conversation (Issue Comments)
+	issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, number, nil)
+	if err != nil {
+		slog.Error("Error fetching conversation", "error", err)
+	}
+
+	// Build the response
+	var sb strings.Builder
+
+	// Header
+	sb.WriteString(fmt.Sprintf("#%d: %s\n", number, pr.GetTitle()))
+	sb.WriteString(fmt.Sprintf("Author: \t@%s\n", pr.User.GetLogin()))
+	sb.WriteString(fmt.Sprintf("Title: \t%s\n", pr.GetTitle()))
+	sb.WriteString(fmt.Sprintf("State: \t%s\n", pr.GetState()))
+
+	headRef := ""
+	if pr.Head != nil {
+		headRef = pr.Head.GetRef()
+	}
+	baseRef := ""
+	if pr.Base != nil {
+		baseRef = pr.Base.GetRef()
+	}
+	sb.WriteString(fmt.Sprintf("Refs: \t%s ... %s\n", baseRef, headRef))
+
+	milestone := "No milestone"
+	if pr.Milestone != nil {
+		milestone = pr.Milestone.GetTitle()
+	}
+	sb.WriteString(fmt.Sprintf("Milestone: \t%s\n", milestone))
+
+	labels := "None yet"
+	if len(pr.Labels) > 0 {
+		var labelNames []string
+		for _, l := range pr.Labels {
+			labelNames = append(labelNames, l.GetName())
+		}
+		labels = strings.Join(labelNames, ", ")
+	}
+	sb.WriteString(fmt.Sprintf("Labels: \t%s\n", labels))
+	sb.WriteString("Projects: \tNone yet\n")
+	sb.WriteString(fmt.Sprintf("Draft: \t%t\n", pr.GetDraft()))
+
+	assignees := "No one -- Assign yourself"
+	if len(pr.Assignees) > 0 {
+		var names []string
+		for _, u := range pr.Assignees {
+			names = append(names, u.GetLogin())
+		}
+		assignees = strings.Join(names, ", ")
+	}
+	sb.WriteString(fmt.Sprintf("Assignees: \t%s\n", assignees))
+	sb.WriteString("Suggested-Reviewers: No suggestions\n")
+	sb.WriteString(fmt.Sprintf("Reviewers: \t%s\n\n", reviewersStr))
+
+	// Commits
+	sb.WriteString(fmt.Sprintf("Commits (%d)\n", len(commits)))
+	for _, c := range commits {
+		sha := c.GetSHA()
+		if len(sha) > 7 {
+			sha = sha[:7]
+		}
+		msg := c.Commit.GetMessage()
+		if idx := strings.Index(msg, "\n"); idx != -1 {
+			msg = msg[:idx]
+		}
+		sb.WriteString(fmt.Sprintf("%s %s\n", sha, msg))
+	}
+	sb.WriteString("\n")
+
+	// Description
+	sb.WriteString("Description\n\n")
+	body := pr.GetBody()
+	if body == "" {
+		sb.WriteString("No description provided.\n")
+	} else {
+		sb.WriteString(escapeBodyString(body) + "\n")
+	}
+	sb.WriteString("\n")
+
+	// Your Review Feedback
+	sb.WriteString("Your Review Feedback\nLeave a comment here.\n\n")
+
+	// Conversation
+	sb.WriteString("Conversation\n")
+	if len(issueComments) == 0 {
+		sb.WriteString("No conversation found.\n")
+	} else {
+		for _, c := range issueComments {
+			sb.WriteString(fmt.Sprintf("From: %s\n", c.User.GetLogin()))
+			sb.WriteString(escapeBodyString(c.GetBody()))
+			sb.WriteString("\n\n")
+		}
+	}
+	sb.WriteString("\n")
+
+	// Files Changed Header
+	fileCount := pr.GetChangedFiles()
+	additions := pr.GetAdditions()
+	deletions := pr.GetDeletions()
+	sb.WriteString(fmt.Sprintf("Files changed (%d files; %d additions, %d deletions)\n\n", fileCount, additions, deletions))
 
 	// Get diff with inline comments
 	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number, skipCache)
+	sb.WriteString(diffLines)
 
-	return header + diffLines, nil
+	return sb.String(), nil
 }
 
 
@@ -513,7 +608,15 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	}
 	var builder strings.Builder
 	for _, file := range parsedDiff.Files {
-		builder.WriteString(file.DiffHeader)
+		status := "modified"
+		filename := file.NewName
+		if file.Mode == utils.DELETED {
+			status = "deleted"
+			filename = file.OrigName
+		} else if file.Mode == utils.NEW {
+			status = "new file"
+		}
+		builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
 			builder.WriteString(hunk.RangeHeader()) // TODO: hunk.HunkHeader shows the context

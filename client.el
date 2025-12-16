@@ -179,10 +179,46 @@ CALLBACK is a function to call with the result."
        (display-buffer buffer)
        (message "Reviews loaded into '* Reviews *' buffer")))))
 
+(defun codereviewserver-client-toggle-section ()
+  "Toggle visibility of the section under the current file header."
+  (interactive)
+  (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+    (if (string-match "^\\(modified\\|deleted\\|new file\\) +.*$" line-content)
+        (let* ((start (line-end-position))
+               (end (save-excursion
+                      (forward-line 1)
+                      (if (re-search-forward "^\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+                          (match-beginning 0)
+                        (point-max))))
+               (overlays (overlays-in start end))
+               (found-overlay nil))
+          (dolist (ov overlays)
+            (when (overlay-get ov 'codereview-hide)
+              (delete-overlay ov)
+              (setq found-overlay t)))
+          (unless found-overlay
+            (let ((ov (make-overlay start end)))
+              (overlay-put ov 'codereview-hide t)
+              (overlay-put ov 'invisible 'codereview-hide)
+              (overlay-put ov 'before-string "...\n"))))
+      (message "Not on a section header"))))
+
+(defvar my-code-review-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "TAB") 'codereviewserver-client-toggle-section)
+    (define-key map (kbd "<tab>") 'codereviewserver-client-toggle-section)
+    (define-key map (kbd "c") 'codereviewserver-client-add-comment)
+    (define-key map (kbd "C-c C-c") 'codereviewserver-client-submit-review)
+    (define-key map (kbd "g") 'codereviewserver-client-sync-pr)
+    (define-key map (kbd "q") 'quit-window)
+    map)
+  "Keymap for `my-code-review-mode`.")
+
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
   "Major mode for viewing code reviews."
   (highlight-at-at-lines-blue)
-  (highlight-review-comments))
+  (highlight-review-comments)
+  (add-to-invisibility-spec '(codereview-hide . t)))
 
 (defun codereviewserver-client-get-review (owner repo number)
   "Call the GetPR RPC method for OWNER/REPO PR NUMBER and display the result."
@@ -201,10 +237,13 @@ CALLBACK is a function to call with the result."
      (let ((content (cdr (assq 'Content result)))
            (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
        (with-current-buffer buffer
-         (erase-buffer)
-         (insert (or content ""))
-         (goto-char (point-min))
-         (my-code-review-mode))
+         (let ((inhibit-read-only t))
+           (erase-buffer)
+           (insert (or content ""))
+           (goto-char (point-min))
+           (delta-wash)
+           (my-code-review-mode)
+           (setq buffer-read-only t)))
        (display-buffer buffer)
        (message "Review loaded into buffer")))))
 
@@ -258,7 +297,9 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                (erase-buffer)
                (insert (or content ""))
                (goto-char (point-min))
-               (my-code-review-mode))))
+               (delta-wash)
+               (my-code-review-mode)
+               (setq buffer-read-only t))))
          (message "Comment added successfully")
          (kill-buffer-and-window))))))
 
@@ -269,7 +310,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 (defun codereviewserver-client--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."
   (save-excursion
-    (let ((search-bound (save-excursion 
+    (let ((search-bound (save-excursion
                           (forward-line 1)
                           (if (re-search-forward "^diff --git" nil t)
                               (match-beginning 0)
@@ -288,7 +329,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (reply-to-id nil)
         (target-line (line-number-at-pos))
         (first-hunk-line-num nil))
-    
+
     ;; 1. Check for Reply ID (must be done before moving point)
     (save-excursion
       (end-of-line) ;; Ensure we catch the header if we are on it
@@ -300,7 +341,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                   (forward-line 2) ;; ID is on the 3rd line of the block
                   (let ((id-line (buffer-substring-no-properties (point) (line-end-position))))
                     (if (string-match " : \\([0-9]+\\)$" id-line)
-                        (progn 
+                        (progn
                           (setq reply-to-id (string-to-number (match-string 1 id-line)))
                           (message "Found Reply-To ID: %d" reply-to-id))
                       (message "Could not find ID in comment block line: '%s'" id-line))))
@@ -326,7 +367,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 
       (when (and filename first-hunk-line-num)
         (goto-char (point-min))
-        (forward-line (1- first-hunk-line-num)) 
+        (forward-line (1- first-hunk-line-num))
         (let ((count 0))
           (forward-line 1)
           (while (<= (line-number-at-pos) target-line)
@@ -335,16 +376,16 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                 (setq count (1+ count))))
             (forward-line 1))
           (setq position count))))
-    
+
     (list owner repo number filename position reply-to-id)))
 
 (defun codereviewserver-client-add-comment (owner repo number filename position &optional reply-to-id)
   "Open a buffer to add a comment to a review.
 If called interactively, attempts to guess parameters from context."
-  (interactive 
+  (interactive
    (let ((ctx (codereviewserver-client--get-comment-context)))
      (unless (and (nth 0 ctx) (nth 3 ctx) (nth 4 ctx))
-       (error "Could not determine context (Owner: %s, File: %s, Pos: %s). Are you in a review buffer?" 
+       (error "Could not determine context (Owner: %s, File: %s, Pos: %s). Are you in a review buffer?"
               (nth 0 ctx) (nth 3 ctx) (nth 4 ctx)))
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number))))
@@ -394,7 +435,9 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                (erase-buffer)
                (insert (or content ""))
                (goto-char (point-min))
-               (my-code-review-mode))))
+               (delta-wash)
+               (my-code-review-mode)
+               (setq buffer-read-only t))))
          (message "Review submitted successfully!"))))))
 
 (defun codereviewserver-client-sync-pr ()
@@ -426,7 +469,9 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                (erase-buffer)
                (insert (or content ""))
                (goto-char (point-min))
-               (my-code-review-mode))))
+               (delta-wash)
+               (my-code-review-mode)
+               (setq buffer-read-only t))))
          (message "Review synced successfully!"))))))
 
 (provide 'codereviewserver-client)

@@ -211,12 +211,19 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 
 	// 2. Construct Review Request
+	client := git_tools.GetGithubClient()
 	var reviewComments []*github.DraftReviewComment
 	for _, c := range comments {
-		// Only include top-level comments (ReplyToID is nil) for now
-		if c.ReplyToID == nil && c.Body != nil {
-			// Note: We are using int here, but github library expects int (not int64) for Position usually?
-			// Checking go-github struct definition: Position *int. Our DB has Postion int64.
+		if c.Body == nil {
+			continue
+		}
+		if c.ReplyToID != nil {
+			err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, *c.ReplyToID)
+			if err != nil {
+				h.Log.Error("Error submitting reply", "error", err)
+			}
+		} else {
+			// Top-level comments
 			pos := int(c.Postion)
 			body := *c.Body
 			reviewComments = append(reviewComments, &github.DraftReviewComment{
@@ -236,7 +243,6 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 
 	// 3. Submit to GitHub
-	client := git_tools.GetGithubClient()
 	err = git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest)
 	if err != nil {
 		h.Log.Error("Error submitting review to GitHub", "error", err)

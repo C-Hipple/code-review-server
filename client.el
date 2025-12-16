@@ -183,30 +183,78 @@ CALLBACK is a function to call with the result."
   "Toggle visibility of the section under the current file header."
   (interactive)
   (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-    (if (string-match "^\\(modified\\|deleted\\|new file\\) +.*$" line-content)
-        (let* ((start (line-end-position))
-               (end (save-excursion
-                      (forward-line 1)
-                      (if (re-search-forward "^\\(modified\\|deleted\\|new file\\) +.*$" nil t)
-                          (match-beginning 0)
-                        (point-max))))
-               (overlays (overlays-in start end))
-               (found-overlay nil))
+    (if (string-match "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" line-content)
+        (let* ((header-text-end (line-end-position))
+               (next-line-start (save-excursion (forward-line 1) (point)))
+               (content-end (save-excursion
+                              (forward-line 1)
+                              (if (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+                                  (1- (match-beginning 0))
+                                (point-max))))
+               (overlays (overlays-in header-text-end content-end))
+               (found-collapsed nil))
           (dolist (ov overlays)
             (when (overlay-get ov 'codereview-hide)
               (delete-overlay ov)
-              (setq found-overlay t)))
-          (unless found-overlay
-            (let ((ov (make-overlay start end)))
-              (overlay-put ov 'codereview-hide t)
-              (overlay-put ov 'invisible 'codereview-hide)
-              (overlay-put ov 'before-string "...\n"))))
+              (setq found-collapsed t)))
+          (unless found-collapsed
+            ;; 1. Ellipsis on the newline
+            (when (< header-text-end next-line-start)
+              (let ((ov (make-overlay header-text-end next-line-start)))
+                (overlay-put ov 'codereview-hide t)
+                ;; (overlay-put ov 'display "...")
+                ))
+            ;; 2. Hide content
+            (when (< next-line-start content-end)
+              (let ((ov (make-overlay next-line-start content-end)))
+                (overlay-put ov 'codereview-hide t)
+                (overlay-put ov 'invisible 'codereview-hide)))))
       (message "Not on a section header"))))
+
+(defun codereviewserver-client-collapse-all-sections ()
+  "Collapse all file sections in the current buffer."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+      (let* ((header-text-end (line-end-position))
+             (next-line-start (save-excursion (forward-line 1) (point)))
+             (content-end (save-excursion
+                            (forward-line 1)
+                            (if (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+                                (1- (match-beginning 0))
+                              (point-max)))))
+        ;; Check if already collapsed
+        (let ((overlays (overlays-in header-text-end content-end))
+              (already-collapsed nil))
+          (dolist (ov overlays)
+            (when (overlay-get ov 'codereview-hide)
+              (setq already-collapsed t)))
+
+          (unless already-collapsed
+            (when (< header-text-end next-line-start)
+              (let ((ov (make-overlay header-text-end next-line-start)))
+                (overlay-put ov 'codereview-hide t)
+                ;; (overlay-put ov 'display "...\n")
+                ))
+            (when (< next-line-start content-end)
+              (let ((ov (make-overlay next-line-start content-end)))
+                (overlay-put ov 'codereview-hide t)
+                (overlay-put ov 'invisible 'codereview-hide)))))))))
+
+(defun codereviewserver-client-expand-all-sections ()
+  "Expand all file sections in the current buffer."
+  (interactive)
+  (save-excursion
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'codereview-hide)
+        (delete-overlay ov)))))
 
 (defvar my-code-review-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "TAB") 'codereviewserver-client-toggle-section)
     (define-key map (kbd "<tab>") 'codereviewserver-client-toggle-section)
+    (define-key map (kbd "<backtab>") 'codereviewserver-client-collapse-all-sections)
     (define-key map (kbd "c") 'codereviewserver-client-add-comment)
     (define-key map (kbd "C-c C-c") 'codereviewserver-client-submit-review)
     (define-key map (kbd "g") 'codereviewserver-client-sync-pr)

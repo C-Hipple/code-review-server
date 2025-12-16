@@ -421,8 +421,15 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	if len(issueComments) == 0 {
 		sb.WriteString("No conversation found.\n")
 	} else {
-		for _, c := range issueComments {
-			sb.WriteString(fmt.Sprintf("From: %s\n", c.User.GetLogin()))
+		for i, c := range issueComments {
+			if i > 0 {
+				sb.WriteString("--------------------------------------------------------------------------------\n")
+			}
+			dateStr := ""
+			if c.CreatedAt != nil {
+				dateStr = c.CreatedAt.Format(time.DateTime)
+			}
+			sb.WriteString(fmt.Sprintf("From: %s at %s\n", c.User.GetLogin(), dateStr))
 			sb.WriteString(escapeBodyString(c.GetBody()))
 			sb.WriteString("\n\n")
 		}

@@ -44,7 +44,7 @@ Returns the process handle."
         (setq codereviewserver-client--process
               (make-process :name "codereviewserver-client"
                             :buffer "*codereviewserver-client*"
-                            :command '("codereviewserver" "-server")
+                            :command '("crs" "-server")
                             :connection-type 'pipe
                             :coding 'utf-8
                             :stderr stderr-buffer

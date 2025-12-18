@@ -2,8 +2,8 @@ package workflows
 
 import (
 	"fmt"
-	"codereviewserver/config"
-	"codereviewserver/git_tools"
+	"crs/config"
+	"crs/git_tools"
 
 	"github.com/google/go-github/v48/github"
 )

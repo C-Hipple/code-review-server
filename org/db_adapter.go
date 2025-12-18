@@ -3,7 +3,7 @@ package org
 import (
 	"database/sql"
 	"fmt"
-    "codereviewserver/database"
+    "crs/database"
 	"log/slog"
 	"strings"
 )

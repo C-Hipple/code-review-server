@@ -1,10 +1,10 @@
 package main
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/logger"
-	"codereviewserver/server"
-	"codereviewserver/workflows"
+	"crs/config"
+	"crs/logger"
+	"crs/server"
+	"crs/workflows"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -12,8 +12,16 @@ import (
 )
 
 func main() {
+	fmt.Println("here")
 	log := logger.New()
 	slog.SetDefault(log)
+	slog.Info("starting")
+
+	// Initialize configuration
+	if err := config.Initialize(); err != nil {
+		slog.Error("Failed to initialize configuration", "error", err)
+		os.Exit(1)
+	}
 	defer config.C.DB.Close()
 
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")

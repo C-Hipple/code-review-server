@@ -60,6 +60,7 @@ func NewDB(dbPath string) (*DB, error) {
 		return nil, err
 	}
 
+	slog.Info("Database connection established and schema initialized", "path", dbPath)
 	return db, nil
 }
 

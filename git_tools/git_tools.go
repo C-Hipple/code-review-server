@@ -1,7 +1,7 @@
 package git_tools
 
 import (
-	"codereviewserver/config"
+	"crs/config"
 	"context"
 	"fmt"
 	"os"

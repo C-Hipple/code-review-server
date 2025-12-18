@@ -2,10 +2,10 @@ package workflows
 
 import (
 	"bytes"
-	"codereviewserver/config"
-	"codereviewserver/git_tools"
-	"codereviewserver/org"
-	"codereviewserver/utils"
+	"crs/config"
+	"crs/git_tools"
+	"crs/org"
+	"crs/utils"
 	"context"
 	"encoding/json"
 	"fmt"

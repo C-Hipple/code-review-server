@@ -1,7 +1,7 @@
 package workflows
 
 import (
-	"codereviewserver/org"
+	"crs/org"
 	"log/slog"
 	"os"
 	"testing"

@@ -1,8 +1,8 @@
 package workflows
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/org"
+	"crs/config"
+	"crs/org"
 	"fmt"
 	"log/slog"
 	"strings"

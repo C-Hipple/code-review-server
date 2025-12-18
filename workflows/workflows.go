@@ -1,10 +1,10 @@
 package workflows
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/git_tools"
-	"codereviewserver/jira"
-	"codereviewserver/org"
+	"crs/config"
+	"crs/git_tools"
+	"crs/jira"
+	"crs/org"
 	"errors"
 	"fmt"
 	"log/slog"

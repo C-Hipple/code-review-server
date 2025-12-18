@@ -1,11 +1,11 @@
 package server
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/database"
-	"codereviewserver/git_tools"
-	"codereviewserver/org"
-	"codereviewserver/utils"
+	"crs/config"
+	"crs/database"
+	"crs/git_tools"
+	"crs/org"
+	"crs/utils"
 	"context"
 	"encoding/json"
 	"fmt"

@@ -37,7 +37,7 @@ type LocalComment struct {
 	Repo      string    // GitHub repository name
 	Number    int       // PR number
 	Filename  string    // going to be the rel file like src/main.rs
-	Postion   int64
+	Position  int64
 	Body      *string
 	ReplyToID *int64    // ID of the comment being replied to, or nil if top-level
 }
@@ -129,6 +129,14 @@ func (db *DB) initSchema() error {
 		repo TEXT NOT NULL,
 		reviewers_json TEXT NOT NULL,
 		UNIQUE(pr_number, repo)
+	);
+
+	CREATE TABLE IF NOT EXISTS CIStatus (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		sha TEXT NOT NULL,
+		status_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo, sha)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
@@ -401,7 +409,7 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 		slog.Error(err.Error())
 	}
 	return LocalComment{
-		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Postion: position, Body: body, ReplyToID: replyToID,
+		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Position: position, Body: body, ReplyToID: replyToID,
 	}
 }
 
@@ -432,7 +440,7 @@ func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body, &comment.ReplyToID); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)
@@ -450,7 +458,7 @@ func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComm
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Postion, &comment.Body, &comment.ReplyToID); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)
@@ -561,6 +569,33 @@ func (db *DB) UpsertRequestedReviewers(prNumber int, repo, reviewersJSON string)
 		 ON CONFLICT(pr_number, repo) DO UPDATE SET
 			reviewers_json = excluded.reviewers_json`,
 		prNumber, repo, reviewersJSON,
+	)
+	return err
+}
+
+func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error) {
+	var statusJSON string
+	err := db.conn.QueryRow(
+		"SELECT status_json FROM CIStatus WHERE pr_number = ? AND repo = ? AND sha = ?",
+		prNumber, repo, sha,
+	).Scan(&statusJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return statusJSON, nil
+}
+
+func (db *DB) UpsertCIStatus(prNumber int, repo, sha, statusJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO CIStatus (pr_number, repo, sha, status_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+			status_json = excluded.status_json`,
+		prNumber, repo, sha, statusJSON,
 	)
 	return err
 }

@@ -293,3 +293,15 @@ func SubmitReply(client *github.Client, owner string, repo string, number int, b
 	_, _, err := client.PullRequests.CreateComment(ctx, owner, repo, number, comment)
 	return err
 }
+
+func GetCombinedStatus(client *github.Client, owner, repo, ref string) (*github.CombinedStatus, error) {
+	ctx := context.Background()
+	status, _, err := client.Repositories.GetCombinedStatus(ctx, owner, repo, ref, nil)
+	return status, err
+}
+
+func GetCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListCheckRunsResults, error) {
+	ctx := context.Background()
+	checkRuns, _, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, nil)
+	return checkRuns, err
+}

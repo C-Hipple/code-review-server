@@ -260,7 +260,7 @@ func (c *LocalPRComment) GetID() string {
 
 // GetPosition returns the comment position as a string
 func (c *LocalPRComment) GetPosition() string {
-	return strconv.FormatInt(c.Postion, 10)
+	return strconv.FormatInt(c.Position, 10)
 }
 
 // GetInReplyTo returns the ID of the comment this is replying to, or 0 if it's a root comment
@@ -386,7 +386,62 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	}
 	sb.WriteString(fmt.Sprintf("Assignees: \t%s\n", assignees))
 	sb.WriteString("Suggested-Reviewers: No suggestions\n")
-	sb.WriteString(fmt.Sprintf("Reviewers: \t%s\n\n", reviewersStr))
+	sb.WriteString(fmt.Sprintf("Reviewers: \t%s\n", reviewersStr))
+
+	// CI Status
+	if pr.Head != nil && pr.Head.SHA != nil {
+		status, err := GetLatestCIStatus(owner, repo, number, *pr.Head.SHA, skipCache)
+		if err != nil {
+			slog.Error("Error fetching CI status", "error", err)
+			sb.WriteString("CI Status: \tError fetching status\n")
+		} else if status != nil {
+			total := 0
+			success := 0
+			var failures []string
+			overallState := "success"
+
+			// Process classic statuses
+			if status.Status != nil {
+				if status.Status.GetState() != "success" && status.Status.GetState() != "" {
+					overallState = status.Status.GetState()
+				}
+				total += status.Status.GetTotalCount()
+				for _, s := range status.Status.Statuses {
+					if s.GetState() == "success" {
+						success++
+					} else if s.GetState() == "failure" {
+						failures = append(failures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
+					}
+				}
+			}
+
+			// Process check runs
+			if status.CheckRuns != nil {
+				total += status.CheckRuns.GetTotal()
+				for _, cr := range status.CheckRuns.CheckRuns {
+					if cr.GetConclusion() == "success" {
+						success++
+					} else {
+						if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
+							overallState = "failure"
+							failures = append(failures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
+						}
+					}
+				}
+			}
+
+			if total == 0 && overallState == "success" {
+				overallState = "pending"
+			}
+
+			summary := fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
+			sb.WriteString(fmt.Sprintf("CI Status: \t%s\n", summary))
+			for _, failure := range failures {
+				sb.WriteString(fmt.Sprintf("  - %s\n", failure))
+			}
+		}
+	}
+	sb.WriteString("\n")
 
 	// Commits
 	sb.WriteString(fmt.Sprintf("Commits (%d)\n", len(commits)))
@@ -863,4 +918,59 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*g
 	}
 
 	return reviewers.Users, nil
+}
+
+type CombinedPRStatus struct {
+	Status    *github.CombinedStatus       `json:"status"`
+	CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
+}
+
+func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache bool) (*CombinedPRStatus, error) {
+	client := git_tools.GetGithubClient()
+
+	if !skipCache {
+		cachedStatusJSON, err := config.C.DB.GetCIStatus(prNumber, repo, sha)
+		if err != nil {
+			slog.Error("Error checking database for CI status", "pr", prNumber, "repo", repo, "sha", sha, "error", err)
+		} else if cachedStatusJSON != "" {
+			var combined CombinedPRStatus
+			if err := json.Unmarshal([]byte(cachedStatusJSON), &combined); err != nil {
+				// Fallback for old cache format
+				var status github.CombinedStatus
+				if err := json.Unmarshal([]byte(cachedStatusJSON), &status); err == nil {
+					combined.Status = &status
+					return &combined, nil
+				}
+				slog.Error("Error unmarshaling cached CI status", "error", err)
+			} else {
+				return &combined, nil
+			}
+		}
+	}
+
+	status, err := git_tools.GetCombinedStatus(client, owner, repo, sha)
+	if err != nil {
+		slog.Error("Error fetching combined status", "error", err)
+	}
+
+	checkRuns, err := git_tools.GetCheckRuns(client, owner, repo, sha)
+	if err != nil {
+		slog.Error("Error fetching check runs", "error", err)
+	}
+
+	combined := &CombinedPRStatus{
+		Status:    status,
+		CheckRuns: checkRuns,
+	}
+
+	statusJSON, err := json.Marshal(combined)
+	if err != nil {
+		slog.Error("Error marshaling CI status for storage", "error", err)
+	} else {
+		if err := config.C.DB.UpsertCIStatus(prNumber, repo, sha, string(statusJSON)); err != nil {
+			slog.Error("Error storing CI status in database", "error", err)
+		}
+	}
+
+	return combined, nil
 }

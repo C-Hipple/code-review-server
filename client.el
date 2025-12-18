@@ -29,6 +29,10 @@
 (defvar codereviewserver-client--response-buffer ""
   "Buffer for accumulating partial JSON-RPC responses.")
 
+(defvar codereviewserver-client--section-header-regexp
+  "^\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\) +.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
+  "Regexp to match section headers in the code review buffer.")
+
 ;;;###autoload
 (defun codereviewserver-client-start-server ()
   "Start the codereviewserver JSON-RPC server process.
@@ -180,15 +184,15 @@ CALLBACK is a function to call with the result."
        (message "Reviews loaded into '* Reviews *' buffer")))))
 
 (defun codereviewserver-client-toggle-section ()
-  "Toggle visibility of the section under the current file header."
+  "Toggle visibility of the section under the current header."
   (interactive)
   (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-    (if (string-match "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" line-content)
+    (if (string-match codereviewserver-client--section-header-regexp line-content)
         (let* ((header-text-end (line-end-position))
                (next-line-start (save-excursion (forward-line 1) (point)))
                (content-end (save-excursion
                               (forward-line 1)
-                              (if (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+                              (if (re-search-forward codereviewserver-client--section-header-regexp nil t)
                                   (1- (match-beginning 0))
                                 (point-max))))
                (overlays (overlays-in header-text-end content-end))
@@ -212,16 +216,16 @@ CALLBACK is a function to call with the result."
       (message "Not on a section header"))))
 
 (defun codereviewserver-client-collapse-all-sections ()
-  "Collapse all file sections in the current buffer."
+  "Collapse all sections in the current buffer."
   (interactive)
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+    (while (re-search-forward codereviewserver-client--section-header-regexp nil t)
       (let* ((header-text-end (line-end-position))
              (next-line-start (save-excursion (forward-line 1) (point)))
              (content-end (save-excursion
                             (forward-line 1)
-                            (if (re-search-forward "^\\(?:\\.\\.\\.\\)?\\(modified\\|deleted\\|new file\\) +.*$" nil t)
+                            (if (re-search-forward codereviewserver-client--section-header-regexp nil t)
                                 (1- (match-beginning 0))
                               (point-max)))))
         ;; Check if already collapsed
@@ -243,7 +247,7 @@ CALLBACK is a function to call with the result."
                 (overlay-put ov 'invisible 'codereview-hide)))))))))
 
 (defun codereviewserver-client-expand-all-sections ()
-  "Expand all file sections in the current buffer."
+  "Expand all sections in the current buffer."
   (interactive)
   (save-excursion
     (dolist (ov (overlays-in (point-min) (point-max)))
@@ -268,6 +272,18 @@ CALLBACK is a function to call with the result."
   (highlight-review-comments)
   (add-to-invisibility-spec '(codereview-hide . t)))
 
+(defun codereviewserver-client--render-and-update (buffer content)
+  "Render CONTENT into BUFFER and update it, preserving point."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)
+          (old-pos (point)))
+      (erase-buffer)
+      (insert (or content ""))
+      (delta-wash)
+      (my-code-review-mode)
+      (goto-char (min old-pos (point-max)))
+      (setq buffer-read-only t))))
+
 (defun codereviewserver-client-get-review (owner repo number)
   "Call the GetPR RPC method for OWNER/REPO PR NUMBER and display the result."
   (interactive "sOwner: \nsRepo: \nnPR Number: ")
@@ -284,18 +300,11 @@ CALLBACK is a function to call with the result."
    (lambda (result)
      (let ((content (cdr (assq 'Content result)))
            (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
-       (with-current-buffer buffer
-         (let ((inhibit-read-only t))
-           (erase-buffer)
-           (insert (or content ""))
-           (goto-char (point-min))
-           (delta-wash)
-           (my-code-review-mode)
-           (setq buffer-read-only t)))
+       (codereviewserver-client--render-and-update buffer content)
        (display-buffer buffer)
        (message "Review loaded into buffer")))))
 
-(defun codereviewserver-client-get-review-from-line ()
+(defun codereviewserver-client-start-review-at-point ()
   "Parse a GitHub PR URL from the current line and call codereviewserver-client-get-review.
 The line should contain a URL in the format https://github.com/OWNER/REPO/pull/NUMBER"
   (interactive)
@@ -327,29 +336,24 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (position (if codereviewserver-client--comment-reply-to-id
                       nil
                     codereviewserver-client--comment-position)))
-    (codereviewserver-client--send-request
-     "RPCHandler.AddComment"
-     (vector (list (cons 'Owner owner)
-                   (cons 'Repo repo)
-                   (cons 'Number number)
-                   (cons 'Filename filename)
-                   (cons 'Position position)
-                   (cons 'ReplyToID reply-to-id)
-                   (cons 'Body body)))
-     (lambda (result)
-       (let ((content (cdr (assq 'Content result)))
-             (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-         (when review-buffer
-           (with-current-buffer review-buffer
-             (let ((inhibit-read-only t))
-               (erase-buffer)
-               (insert (or content ""))
-               (goto-char (point-min))
-               (delta-wash)
-               (my-code-review-mode)
-               (setq buffer-read-only t))))
-         (message "Comment added successfully")
-         (kill-buffer-and-window))))))
+    (if (string-match-p "\\`[[:space:]\n]*\\'" body)
+        (message "Comment is empty, not submitting.")
+      (codereviewserver-client--send-request
+       "RPCHandler.AddComment"
+       (vector (list (cons 'Owner owner)
+                     (cons 'Repo repo)
+                     (cons 'Number number)
+                     (cons 'Filename filename)
+                     (cons 'Position position)
+                     (cons 'ReplyToID reply-to-id)
+                     (cons 'Body body)))
+       (lambda (result)
+         (let ((content (cdr (assq 'Content result)))
+               (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (when review-buffer
+             (codereviewserver-client--render-and-update review-buffer content))
+           (message "Comment added successfully")
+           (kill-buffer-and-window)))))))
 
 (define-derived-mode comment-edit-mode markdown-mode "Code Review Comment"
   "Major mode for editing code review comments."
@@ -359,10 +363,12 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
   "Find the line number of the first hunk header after point, bounded by the next file header."
   (save-excursion
     (let ((search-bound (save-excursion
+                          (goto-char (point))
                           (forward-line 1)
-                          (if (re-search-forward "^diff --git" nil t)
+                          (if (re-search-forward "^\\(?:modified\\|deleted\\|new file\\)[[:space:]]+" nil t)
                               (match-beginning 0)
                             (point-max)))))
+      (goto-char (point))
       (if (re-search-forward "^@@ .* @@" search-bound t)
           (line-number-at-pos)
         nil))))
@@ -404,10 +410,11 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 
     ;; 3. Find Filename and Position
     (save-excursion
+      (end-of-line)
       ;; Search backward for file header
-      (if (re-search-backward "^diff --git a/.* b/\\(.*\\)$" nil t)
+      (if (re-search-backward "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.+?\\)[[:space:]]*$" nil t)
           (progn
-            (setq filename (match-string 1))
+            (setq filename (match-string 2))
             (setq first-hunk-line-num (codereviewserver-client--find-first-hunk-line))
             (unless first-hunk-line-num
               (message "No hunk header found for file %s" filename)))
@@ -433,8 +440,8 @@ If called interactively, attempts to guess parameters from context."
   (interactive
    (let ((ctx (codereviewserver-client--get-comment-context)))
      (unless (and (nth 0 ctx) (nth 3 ctx) (nth 4 ctx))
-       (error "Could not determine context (Owner: %s, File: %s, Pos: %s). Are you in a review buffer?"
-              (nth 0 ctx) (nth 3 ctx) (nth 4 ctx)))
+       (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S). Buffer: %S"
+              (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (buffer-name)))
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number))))
     (with-current-buffer buffer
@@ -478,14 +485,7 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
        (let ((content (cdr (assq 'Content result)))
              (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (with-current-buffer review-buffer
-             (let ((inhibit-read-only t))
-               (erase-buffer)
-               (insert (or content ""))
-               (goto-char (point-min))
-               (delta-wash)
-               (my-code-review-mode)
-               (setq buffer-read-only t))))
+           (codereviewserver-client--render-and-update review-buffer content))
          (message "Review submitted successfully!"))))))
 
 (defun codereviewserver-client-sync-pr ()
@@ -512,14 +512,7 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
        (let ((content (cdr (assq 'Content result)))
              (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (with-current-buffer review-buffer
-             (let ((inhibit-read-only t))
-               (erase-buffer)
-               (insert (or content ""))
-               (goto-char (point-min))
-               (delta-wash)
-               (my-code-review-mode)
-               (setq buffer-read-only t))))
+           (codereviewserver-client--render-and-update review-buffer content))
          (message "Review synced successfully!"))))))
 
 (provide 'codereviewserver-client)

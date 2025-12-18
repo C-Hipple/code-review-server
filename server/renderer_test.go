@@ -21,7 +21,7 @@ func TestFormatComment(t *testing.T) {
 				},
 				Body: github.String("This is a test comment"),
 			},
-			expected: "Comment By: testuser\nThis is a test comment\n------------------\n",
+			expected: "Reviewed By: testuser\nThis is a test comment\n------------------\n",
 		},
 		{
 			name: "comment with newlines",
@@ -31,7 +31,7 @@ func TestFormatComment(t *testing.T) {
 				},
 				Body: github.String("Line 1\nLine 2\nLine 3"),
 			},
-			expected: "Comment By: reviewer\nLine 1\nLine 2\nLine 3\n------------------\n",
+			expected: "Reviewed By: reviewer\nLine 1\nLine 2\nLine 3\n------------------\n",
 		},
 		{
 			name: "empty comment body",
@@ -41,13 +41,13 @@ func TestFormatComment(t *testing.T) {
 				},
 				Body: github.String(""),
 			},
-			expected: "Comment By: user\n\n------------------\n",
+			expected: "Reviewed By: user\n\n------------------\n",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatComment(tt.comment)
+			result := formatComment(&GitHubPRComment{tt.comment})
 			if result != tt.expected {
 				t.Errorf("formatComment() = %q, want %q", result, tt.expected)
 			}
@@ -102,14 +102,14 @@ func TestFilterComments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := filterComments(tt.comments)
+			result := filterComments(convertToPRComments(tt.comments))
 			if len(result) != tt.expected {
 				t.Errorf("filterComments() returned %d comments, want %d", len(result), tt.expected)
 			}
 			// Verify no advanced users in result
 			for _, comment := range result {
-				if strings.Contains(*comment.User.Login, "advanced") {
-					t.Errorf("filterComments() did not filter out advanced user: %s", *comment.User.Login)
+				if strings.Contains(comment.GetLogin(), "advanced") {
+					t.Errorf("filterComments() did not filter out advanced user: %s", comment.GetLogin())
 				}
 			}
 		})
@@ -205,7 +205,7 @@ func TestBuildCommentTreesFromList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildCommentTreesFromList(tt.comments)
+			result := buildCommentTreesFromList(convertToPRComments(tt.comments))
 			if len(result) != tt.expected {
 				t.Errorf("buildCommentTreesFromList() returned %d trees, want %d", len(result), tt.expected)
 			}
@@ -276,7 +276,7 @@ func TestTreeAuthorsFromList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := treeAuthorsFromList(tt.tree)
+			result := treeAuthorsFromList(convertToPRComments(tt.tree))
 			if result != tt.expected {
 				t.Errorf("treeAuthorsFromList() = %q, want %q", result, tt.expected)
 			}
@@ -463,7 +463,7 @@ func TestRenderPullRequest(t *testing.T) {
 		},
 	}
 
-	result := renderPullRequest(diff, comments)
+	result := renderPullRequest(diff, convertToPRComments(comments))
 	
 	// Should contain the diff
 	if !strings.Contains(result, diff) {
@@ -471,10 +471,10 @@ func TestRenderPullRequest(t *testing.T) {
 	}
 	
 	// Should contain both comments
-	if !strings.Contains(result, "Comment By: user1") {
+	if !strings.Contains(result, "Reviewed By: user1") {
 		t.Error("renderPullRequest() should contain first comment")
 	}
-	if !strings.Contains(result, "Comment By: user2") {
+	if !strings.Contains(result, "Reviewed By: user2") {
 		t.Error("renderPullRequest() should contain second comment")
 	}
 	
@@ -525,7 +525,7 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 		},
 	}
 
-	trees := buildCommentTreesFromList(comments)
+	trees := buildCommentTreesFromList(convertToPRComments(comments))
 	
 	// Should have at least 3 trees (may be more due to nested replies being orphaned)
 	if len(trees) < 3 {
@@ -540,19 +540,19 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 	for _, tree := range trees {
 		if len(tree) > 0 {
 			rootID := tree[0].GetID()
-			if rootID == 1 {
+			if rootID == "1" {
 				tree1Found = true
 				// Tree 1 should have at least 2 comments (root + direct reply)
 				if len(tree) < 2 {
 					t.Errorf("Tree 1 should have at least 2 comments, got %d", len(tree))
 				}
-			} else if rootID == 3 {
+			} else if rootID == "3" {
 				tree2Found = true
 				// Tree 2 should have 1 comment
 				if len(tree) != 1 {
 					t.Errorf("Tree 2 should have 1 comment, got %d", len(tree))
 				}
-			} else if rootID == 4 {
+			} else if rootID == "4" {
 				tree3Found = true
 				// Tree 3 should have at least 2 comments (root + direct reply, nested reply may be separate)
 				if len(tree) < 2 {

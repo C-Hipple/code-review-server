@@ -224,7 +224,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			}
 		} else {
 			// Top-level comments
-			pos := int(c.Postion)
+			pos := int(c.Position)
 			body := *c.Body
 			reviewComments = append(reviewComments, &github.DraftReviewComment{
 				Path:     &c.Filename,

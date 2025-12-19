@@ -1,7 +1,7 @@
 package workflows
 
 import (
-	"fmt"
+	"log/slog"
 	"crs/config"
 	"crs/git_tools"
 
@@ -99,7 +99,7 @@ func BuildFiltersList(names []string) []git_tools.PRFilter {
 	for _, name := range names {
 		filter_func := filter_func_map[name]
 		if filter_func == nil {
-			fmt.Println("Warning: Unmatched filter function ", name)
+			slog.Warn("Unmatched filter function", "name", name)
 			continue
 		}
 		filters = append(filters, filter_func)

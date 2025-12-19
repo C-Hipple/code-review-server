@@ -4,6 +4,7 @@ import (
 	"crs/config"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -30,8 +31,7 @@ func GetPRs(client *github.Client, state string, owner string, repo string) []*g
 	for {
 		new_prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &options)
 		if err != nil {
-			fmt.Println("Error!", err)
-			//os.Exit(1)
+			slog.Error("Error listing PRs", "error", err)
 			break
 		}
 		prs = append(prs, new_prs...)
@@ -63,7 +63,7 @@ func GetSpecificPRs(client *github.Client, owner string, repo string, pr_numbers
 	for _, number := range pr_numbers {
 		pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
 		if err != nil {
-			fmt.Printf("Error Getting PR: %s/%s/%v: %v\n", owner, repo, number, err)
+			slog.Error("Error Getting PR", "owner", owner, "repo", repo, "number", number, "error", err)
 		}
 		prs = append(prs, pr)
 	}
@@ -217,7 +217,7 @@ func GetGithubClient() *github.Client {
 	ctx := context.Background()
 	token := os.Getenv("GTDBOT_GITHUB_TOKEN")
 	if token == "" {
-		fmt.Println("Error! No Github Token!")
+		slog.Error("Error! No Github Token!")
 		os.Exit(1)
 	}
 
@@ -258,7 +258,7 @@ func UpdatePRBody(pr *github.PullRequest, new_body string) bool {
 
 	pr, _, err := client.PullRequests.Edit(ctx, *pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, *pr.Number, pr)
 	if err != nil {
-		fmt.Println(err)
+		slog.Error("Error editing PR", "error", err)
 		return false
 	}
 	return true

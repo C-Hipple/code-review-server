@@ -12,7 +12,6 @@ import (
 )
 
 func main() {
-	fmt.Println("here")
 	log := logger.New()
 	slog.SetDefault(log)
 	slog.Info("starting")

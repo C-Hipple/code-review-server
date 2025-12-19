@@ -30,7 +30,7 @@
   "Buffer for accumulating partial JSON-RPC responses.")
 
 (defvar codereviewserver-client--section-header-regexp
-  "^\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\) +.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
+  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
 
 ;;;###autoload
@@ -362,16 +362,27 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 (defun codereviewserver-client--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."
   (save-excursion
-    (let ((search-bound (save-excursion
-                          (goto-char (point))
-                          (forward-line 1)
-                          (if (re-search-forward "^\\(?:modified\\|deleted\\|new file\\)[[:space:]]+" nil t)
-                              (match-beginning 0)
-                            (point-max)))))
-      (goto-char (point))
-      (if (re-search-forward "^@@ .* @@" search-bound t)
-          (line-number-at-pos)
-        nil))))
+    (let* ((start-pos (point))
+           (search-bound (save-excursion
+                           (forward-line 1)
+                           (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+" nil t)
+                               (match-beginning 0)
+                             (point-max)))))
+      (message "Searching for hunk between line %d and %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound))
+      ;; Diagnostic: Log the start of each line
+      (save-excursion
+        (goto-char start-pos)
+        (while (< (point) search-bound)
+          (message "Line %d start: [%S]" (line-number-at-pos) (buffer-substring-no-properties (line-beginning-position) (min (line-end-position) (+ (line-beginning-position) 15))))
+          (forward-line 1)))
+      (goto-char start-pos)
+      (if (search-forward "@@" search-bound t)
+          (let ((hunk-line (line-number-at-pos)))
+            (message "Found hunk header at line %d" hunk-line)
+            hunk-line)
+        (progn
+          (message "Failed to find hunk header between line %d and %d. Bound pos: %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound) search-bound)
+          nil)))))
 
 (defun codereviewserver-client--get-comment-context ()
   "Extract owner, repo, number, filename, position and reply-to-id from current review buffer."
@@ -403,16 +414,18 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 
     ;; 2. Parse Owner, Repo, Number
     (let ((name (buffer-name)))
-      (when (string-match "\\* Review \\([^/]+\\)/\\([^ ]+\\) #\\([0-9]+\\) \\*" name)
-        (setq owner (match-string 1 name))
-        (setq repo (match-string 2 name))
-        (setq number (string-to-number (match-string 3 name)))))
+      (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+          (progn
+            (setq owner (match-string 1 name))
+            (setq repo (match-string 2 name))
+            (setq number (string-to-number (match-string 3 name))))
+        (message "Could not parse review context from buffer name: %S" name)))
 
     ;; 3. Find Filename and Position
     (save-excursion
       (end-of-line)
-      ;; Search backward for file header
-      (if (re-search-backward "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.+?\\)[[:space:]]*$" nil t)
+      ;; Search backward for file header, requiring that it doesn't start with space (to skip comment blocks)
+      (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
           (progn
             (setq filename (match-string 2))
             (setq first-hunk-line-num (codereviewserver-client--find-first-hunk-line))
@@ -427,21 +440,24 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           (forward-line 1)
           (while (<= (line-number-at-pos) target-line)
             (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-              (unless (string-match-p "^    [│┌└]" line-content)
+              ;; Skip lines that are part of a comment block (allowing for ANSI codes)
+              (unless (string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
                 (setq count (1+ count))))
             (forward-line 1))
           (setq position count))))
 
-    (list owner repo number filename position reply-to-id)))
+    (let ((ctx (list owner repo number filename position reply-to-id)))
+      (message "Context extracted: %S" ctx)
+      ctx)))
 
 (defun codereviewserver-client-add-comment (owner repo number filename position &optional reply-to-id)
   "Open a buffer to add a comment to a review.
 If called interactively, attempts to guess parameters from context."
   (interactive
    (let ((ctx (codereviewserver-client--get-comment-context)))
-     (unless (and (nth 0 ctx) (nth 3 ctx) (nth 4 ctx))
-       (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S). Buffer: %S"
-              (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (buffer-name)))
+     (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx)))
+       (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S). Buffer: %S"
+              (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (buffer-name)))
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number))))
     (with-current-buffer buffer

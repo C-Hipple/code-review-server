@@ -2,7 +2,7 @@ package git_tools
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/go-github/v48/github"
@@ -20,7 +20,7 @@ func GetNotifications() []*github.Notification {
 	options := github.NotificationListOptions{}
 	notifications, _, err := client.Activity.ListNotifications(context.Background(), &options)
 	if err != nil {
-		fmt.Println("Error gathering nofications: {)", err)
+		slog.Error("Error gathering notifications", "error", err)
 	}
 	return notifications
 }

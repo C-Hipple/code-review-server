@@ -681,7 +681,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
-			builder.WriteString(hunk.RangeHeader()) // TODO: hunk.HunkHeader shows the context
+			builder.WriteString(hunk.RangeHeader() + "\n")
 			for _, line := range hunk.WholeRange.Lines {
 				builder.WriteString(line.Render())
 				key := fmt.Sprintf("%s:%d", file.NewName, line.Position)

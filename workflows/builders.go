@@ -32,7 +32,7 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) Wor
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repo:                raw.Repo,
-		Filters:             BuildFiltersList(raw.Filters),
+		Filters:             BuildFiltersList(raw),
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
@@ -46,7 +46,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) Wo
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repos:               *repos,
-		Filters:             BuildFiltersList(raw.Filters),
+		Filters:             BuildFiltersList(raw),
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
@@ -60,7 +60,7 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repos:               *repos,
-		Filters:             BuildFiltersList(raw.Filters),
+		Filters:             BuildFiltersList(raw),
 		PRState:             raw.PRState,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
@@ -77,7 +77,7 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) Workfl
 		Repo:                raw.Repo,
 		JiraDomain:          jiraDomain,
 		JiraEpic:            raw.JiraEpic,
-		Filters:             BuildFiltersList(raw.Filters),
+		Filters:             BuildFiltersList(raw),
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
@@ -90,13 +90,18 @@ var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullR
 	"FilterMyReviewRequested": git_tools.FilterMyReviewRequested,
 	"FilterNotDraft":          git_tools.FilterNotDraft,
 	"FilterIsDraft":           git_tools.FilterIsDraft,
-	"FilterMyTeamRequested":   git_tools.FilterMyTeamRequested,
 	"FilterNotMyPRs":          git_tools.FilterNotMyPRs,
 }
 
-func BuildFiltersList(names []string) []git_tools.PRFilter {
+func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 	filters := []git_tools.PRFilter{}
-	for _, name := range names {
+
+	// Automatically add team filter if Teams is configured
+	if len(raw.Teams) > 0 {
+		filters = append(filters, git_tools.MakeTeamFilters(raw.Teams))
+	}
+
+	for _, name := range raw.Filters {
 		filter_func := filter_func_map[name]
 		if filter_func == nil {
 			slog.Warn("Unmatched filter function", "name", name)

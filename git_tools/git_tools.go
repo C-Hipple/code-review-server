@@ -176,7 +176,7 @@ func MakeTeamFilters(teams []string) func([]*github.PullRequest) []*github.PullR
 		filtered := []*github.PullRequest{}
 		for _, pr := range prs {
 			for _, team := range pr.RequestedTeams {
-				if slices.Contains(teams, *team.Name) {
+				if slices.Contains(teams, *team.Slug) {
 					filtered = append(filtered, pr)
 					break
 				}
@@ -184,20 +184,6 @@ func MakeTeamFilters(teams []string) func([]*github.PullRequest) []*github.PullR
 		}
 		return filtered
 	}
-}
-
-func FilterMyTeamRequested(prs []*github.PullRequest) []*github.PullRequest {
-	teams := []string{"growth-pod-review", "purchase-pod-review", "growth-and-purchase-pod", "coreteam-review", "chat-pod-review-backend", "creator-team", "affiliate-program-experts", "email-experts", "identity-experts"}
-	filtered := []*github.PullRequest{}
-	for _, pr := range prs {
-		for _, team := range pr.RequestedTeams {
-			if slices.Contains(teams, *team.Slug) {
-				filtered = append(filtered, pr)
-				break
-			}
-		}
-	}
-	return filtered
 }
 
 func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {

@@ -26,6 +26,7 @@ type RawWorkflow struct {
 	Prune               string
 	GithubUsername      string
 	IncludeDiff         bool
+	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
 }
 
 // Define your classes

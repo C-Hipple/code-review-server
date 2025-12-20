@@ -623,10 +623,6 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		comments = append(comments, localPRComments...)
 	}
 
-	if len(comments) == 0 {
-		return diff, 0
-	}
-
 	// Build comment trees first to group replies with their parents
 	allCommentTrees := buildCommentTreesFromList(comments)
 

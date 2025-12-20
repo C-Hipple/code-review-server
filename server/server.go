@@ -135,6 +135,67 @@ func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) er
 	return nil
 }
 
+type EditCommentArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	ID     int64  `json:"ID"`
+	Body   string `json:"Body"`
+}
+
+type EditCommentReply struct {
+	Okay    bool
+	Content string
+}
+
+func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
+	err := config.C.DB.UpdateLocalComment(args.ID, args.Body)
+	if err != nil {
+		h.Log.Error("Error updating local comment", "error", err)
+		return err
+	}
+	reply.Okay = true
+
+	// Return the updated PR body
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
+	return nil
+}
+
+type DeleteCommentArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	ID     int64  `json:"ID"`
+}
+
+type DeleteCommentReply struct {
+	Okay    bool
+	Content string
+}
+
+func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
+	err := config.C.DB.DeleteLocalComment(args.ID)
+	if err != nil {
+		h.Log.Error("Error deleting local comment", "error", err)
+		return err
+	}
+	reply.Okay = true
+
+	// Return the updated PR body
+	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+	reply.Content = content
+	return nil
+}
+
 type SetFeedbackArgs struct {
 	Owner    string `json:"Owner"`
 	Repo     string `json:"Repo"`

@@ -259,7 +259,8 @@ CALLBACK is a function to call with the result."
     (define-key map (kbd "TAB") 'codereviewserver-client-toggle-section)
     (define-key map (kbd "<tab>") 'codereviewserver-client-toggle-section)
     (define-key map (kbd "<backtab>") 'codereviewserver-client-collapse-all-sections)
-    (define-key map (kbd "c") 'codereviewserver-client-add-comment)
+    (define-key map (kbd "c") 'codereviewserver-client-add-or-edit-comment)
+    (define-key map (kbd "d") 'codereviewserver-client-delete-local-comment)
     (define-key map (kbd "C-c C-c") 'codereviewserver-client-submit-review)
     (define-key map (kbd "g") 'codereviewserver-client-sync-pr)
     (define-key map (kbd "q") 'quit-window)
@@ -323,6 +324,8 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
 (defvar-local codereviewserver-client--comment-filename nil)
 (defvar-local codereviewserver-client--comment-position nil)
 (defvar-local codereviewserver-client--comment-reply-to-id nil)
+(defvar-local codereviewserver-client--comment-editing-id nil
+  "When non-nil, we're editing an existing local comment with this ID.")
 
 (defun codereviewserver-client-submit-comment ()
   "Submit the comment in the current buffer."
@@ -333,27 +336,45 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (number codereviewserver-client--comment-number)
         (filename codereviewserver-client--comment-filename)
         (reply-to-id codereviewserver-client--comment-reply-to-id)
+        (editing-id codereviewserver-client--comment-editing-id)
         (position (if codereviewserver-client--comment-reply-to-id
                       nil
                     codereviewserver-client--comment-position)))
     (if (string-match-p "\\`[[:space:]\n]*\\'" body)
         (message "Comment is empty, not submitting.")
-      (codereviewserver-client--send-request
-       "RPCHandler.AddComment"
-       (vector (list (cons 'Owner owner)
-                     (cons 'Repo repo)
-                     (cons 'Number number)
-                     (cons 'Filename filename)
-                     (cons 'Position position)
-                     (cons 'ReplyToID reply-to-id)
-                     (cons 'Body body)))
-       (lambda (result)
-         (let ((content (cdr (assq 'Content result)))
-               (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-           (when review-buffer
-             (codereviewserver-client--render-and-update review-buffer content))
-           (message "Comment added successfully")
-           (kill-buffer-and-window)))))))
+      (if editing-id
+          ;; Editing an existing local comment
+          (codereviewserver-client--send-request
+           "RPCHandler.EditComment"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)
+                         (cons 'ID editing-id)
+                         (cons 'Body body)))
+           (lambda (result)
+             (let ((content (cdr (assq 'Content result)))
+                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+               (when review-buffer
+                 (codereviewserver-client--render-and-update review-buffer content))
+               (message "Comment updated successfully")
+               (kill-buffer-and-window))))
+        ;; Adding a new comment
+        (codereviewserver-client--send-request
+         "RPCHandler.AddComment"
+         (vector (list (cons 'Owner owner)
+                       (cons 'Repo repo)
+                       (cons 'Number number)
+                       (cons 'Filename filename)
+                       (cons 'Position position)
+                       (cons 'ReplyToID reply-to-id)
+                       (cons 'Body body)))
+         (lambda (result)
+           (let ((content (cdr (assq 'Content result)))
+                 (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+             (when review-buffer
+               (codereviewserver-client--render-and-update review-buffer content))
+             (message "Comment added successfully")
+             (kill-buffer-and-window))))))))
 
 (define-derived-mode comment-edit-mode markdown-mode "Code Review Comment"
   "Major mode for editing code review comments."
@@ -385,31 +406,61 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           nil)))))
 
 (defun codereviewserver-client--get-comment-context ()
-  "Extract owner, repo, number, filename, position and reply-to-id from current review buffer."
+  "Extract owner, repo, number, filename, position, reply-to-id, and local comment edit info.
+Returns a list: (owner repo number filename position reply-to-id local-comment-id local-comment-body).
+If on a local comment, local-comment-id and local-comment-body will be set."
   (let ((owner nil)
         (repo nil)
         (number nil)
         (filename nil)
         (position nil)
         (reply-to-id nil)
+        (local-comment-id nil)
+        (local-comment-body nil)
         (target-line (line-number-at-pos))
         (first-hunk-line-num nil))
 
-    ;; 1. Check for Reply ID (must be done before moving point)
+    ;; 1. Check if inside a comment block and extract info
     (save-excursion
-      (end-of-line) ;; Ensure we catch the header if we are on it
+      (end-of-line)
       (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
         (when (string-match-p "^    [│┌└]" line-content)
           (save-excursion
             (if (re-search-backward "^    ┌─ REVIEW COMMENT" nil t)
-                (progn
+                (let ((block-start (point)))
                   (forward-line 2) ;; ID is on the 3rd line of the block
                   (let ((id-line (buffer-substring-no-properties (point) (line-end-position))))
-                    (if (string-match " : \\([0-9]+\\)$" id-line)
-                        (progn
-                          (setq reply-to-id (string-to-number (match-string 1 id-line)))
-                          (message "Found Reply-To ID: %d" reply-to-id))
-                      (message "Could not find ID in comment block line: '%s'" id-line))))
+                    (when (string-match " : \\([0-9]+\\)$" id-line)
+                      (setq reply-to-id (string-to-number (match-string 1 id-line)))
+                      (message "Found Reply-To ID: %d" reply-to-id)))
+                  ;; Check if this is a local comment by looking for [local]:
+                  (goto-char block-start)
+                  (let ((block-end (save-excursion
+                                     (if (re-search-forward "^    └" nil t)
+                                         (point)
+                                       (point-max)))))
+                    (when (re-search-forward "^    │ \\[local\\]:" block-end t)
+                      ;; This is a local comment - extract its ID from line 3
+                      (goto-char block-start)
+                      (forward-line 2)
+                      (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+                        (when (string-match " : \\([0-9]+\\)$" header-line)
+                          (setq local-comment-id (string-to-number (match-string 1 header-line)))
+                          (message "Found local comment ID: %d" local-comment-id)
+                          ;; Clear reply-to-id since we're editing, not replying
+                          (setq reply-to-id nil)))
+                      ;; Extract the body - lines after [local]: until end of block or next reply
+                      (goto-char block-start)
+                      (when (re-search-forward "^    │ \\[local\\]:" block-end t)
+                        (forward-line 1)
+                        (let ((body-lines nil))
+                          (while (and (< (point) block-end)
+                                      (looking-at "^    │   \\(.*\\)$"))
+                            (push (match-string 1) body-lines)
+                            (forward-line 1))
+                          (when body-lines
+                            (setq local-comment-body
+                                  (string-join (nreverse body-lines) "\n"))))))))
               (message "Could not find start of comment block"))))))
 
     ;; 2. Parse Owner, Repo, Number
@@ -446,20 +497,23 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
             (forward-line 1))
           (setq position count))))
 
-    (let ((ctx (list owner repo number filename position reply-to-id)))
+    (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body)))
       (message "Context extracted: %S" ctx)
       ctx)))
 
-(defun codereviewserver-client-add-comment (owner repo number filename position &optional reply-to-id)
-  "Open a buffer to add a comment to a review.
+(defun codereviewserver-client-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body)
+  "Open a buffer to add or edit a comment on a review.
+If on a local comment, opens it for editing with the existing body pre-filled.
 If called interactively, attempts to guess parameters from context."
   (interactive
    (let ((ctx (codereviewserver-client--get-comment-context)))
-     (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx)))
-       (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S). Buffer: %S"
-              (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (buffer-name)))
+     ;; For editing, we need local-comment-id; for adding, we need position or reply-to-id
+     (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx) (nth 6 ctx)))
+       (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S, LocalID: %S). Buffer: %S"
+              (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (nth 6 ctx) (buffer-name)))
      ctx))
-  (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number))))
+  (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number)))
+        (editing (not (null local-comment-id))))
     (with-current-buffer buffer
       (comment-edit-mode)
       (erase-buffer)
@@ -468,10 +522,80 @@ If called interactively, attempts to guess parameters from context."
       (setq codereviewserver-client--comment-number number)
       (setq codereviewserver-client--comment-filename filename)
       (setq codereviewserver-client--comment-position position)
-      (setq codereviewserver-client--comment-reply-to-id reply-to-id))
+      (setq codereviewserver-client--comment-reply-to-id reply-to-id)
+      (setq codereviewserver-client--comment-editing-id local-comment-id)
+      ;; If editing, pre-populate with existing body
+      (when (and editing local-comment-body)
+        (insert local-comment-body)))
     (switch-to-buffer-other-window buffer)
+    (when editing
+      (message "Editing local comment %d" local-comment-id))
     (when (fboundp 'evil-insert-state)
       (evil-insert-state))))
+
+;; Alias for backwards compatibility
+(defalias 'codereviewserver-client-add-comment 'codereviewserver-client-add-or-edit-comment)
+
+(defun codereviewserver-client--get-local-comment-at-point ()
+  "Get the local comment ID at point, or nil if not on a local comment.
+Returns a plist with :id, :owner, :repo, :number if on a local comment."
+  (let ((owner nil)
+        (repo nil)
+        (number nil)
+        (local-comment-id nil))
+    ;; Parse Owner, Repo, Number from buffer name
+    (let ((name (buffer-name)))
+      (when (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+        (setq owner (match-string 1 name))
+        (setq repo (match-string 2 name))
+        (setq number (string-to-number (match-string 3 name)))))
+    ;; Check if inside a local comment block
+    (save-excursion
+      (end-of-line)
+      (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+        (when (string-match-p "^    [│┌└]" line-content)
+          (when (re-search-backward "^    ┌─ REVIEW COMMENT" nil t)
+            (let ((block-start (point))
+                  (block-end (save-excursion
+                               (if (re-search-forward "^    └" nil t)
+                                   (point)
+                                 (point-max)))))
+              ;; Check if this block contains [local]:
+              (when (save-excursion
+                      (re-search-forward "^    │ \\[local\\]:" block-end t))
+                ;; Extract the ID from line 3 of the block
+                (goto-char block-start)
+                (forward-line 2)
+                (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+                  (when (string-match " : \\([0-9]+\\)$" header-line)
+                    (setq local-comment-id (string-to-number (match-string 1 header-line)))))))))))
+    (when (and owner repo number local-comment-id)
+      (list :id local-comment-id :owner owner :repo repo :number number))))
+
+(defun codereviewserver-client-delete-local-comment ()
+  "Delete the local comment at point.
+If not on a local comment, displays a warning message."
+  (interactive)
+  (let ((comment-info (codereviewserver-client--get-local-comment-at-point)))
+    (if (not comment-info)
+        (message "Not on a local comment")
+      (let ((id (plist-get comment-info :id))
+            (owner (plist-get comment-info :owner))
+            (repo (plist-get comment-info :repo))
+            (number (plist-get comment-info :number)))
+        (when (yes-or-no-p (format "Delete local comment %d? " id))
+          (codereviewserver-client--send-request
+           "RPCHandler.DeleteComment"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)
+                         (cons 'ID id)))
+           (lambda (result)
+             (let ((content (cdr (assq 'Content result)))
+                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+               (when review-buffer
+                 (codereviewserver-client--render-and-update review-buffer content))
+               (message "Local comment deleted")))))))))
 
 (defun codereviewserver-client-submit-review (event body)
   "Submit a review with EVENT and optional BODY.

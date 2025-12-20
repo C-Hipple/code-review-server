@@ -476,6 +476,16 @@ func (db *DB) DeleteLocalCommentsForPR(owner, repo string, number int) error {
 	return err
 }
 
+func (db *DB) UpdateLocalComment(id int64, body string) error {
+	_, err := db.conn.Exec("UPDATE LocalComment SET body = ? WHERE id = ?", body, id)
+	return err
+}
+
+func (db *DB) DeleteLocalComment(id int64) error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE id = ?", id)
+	return err
+}
+
 func (db *DB) GetPullRequest(prNumber int, repo string) (string, error) {
 	var body string
 	err := db.conn.QueryRow(

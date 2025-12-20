@@ -1,4 +1,4 @@
-;;; codereviewserver-client.el --- JSON-RPC client for codereviewserver -*- lexical-binding: t; -*-
+;;; crs-client.el --- JSON-RPC client for codereviewserver -*- lexical-binding: t; -*-
 
 ;; Author: Chris Hipple
 ;; Version: 0.1.0
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; This package provides JSON-RPC client functionality for codereviewserver.
+;; This package provides JSON-RPC client functionality for crs (codereviewserver).
 ;; It allows starting the server process and making RPC calls to it.
 
 ;;; Code:
@@ -17,94 +17,94 @@
 (require 'washer)
 (require 'markdown-mode)
 
-(defvar codereviewserver-client--process nil
-  "The process handle for the codereviewserver JSON-RPC server.")
+(defvar crs--process nil
+  "The process handle for the crs JSON-RPC server.")
 
-(defvar codereviewserver-client--request-id 1
+(defvar crs--request-id 1
   "Counter for JSON-RPC request IDs.")
 
-(defvar codereviewserver-client--pending-requests (make-hash-table :test 'equal)
+(defvar crs--pending-requests (make-hash-table :test 'equal)
   "Hash table mapping request IDs to callback functions.")
 
-(defvar codereviewserver-client--response-buffer ""
+(defvar crs--response-buffer ""
   "Buffer for accumulating partial JSON-RPC responses.")
 
-(defvar codereviewserver-client--section-header-regexp
+(defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
 
 ;;;###autoload
-(defun codereviewserver-client-start-server ()
-  "Start the codereviewserver JSON-RPC server process.
+(defun crs-start-server ()
+  "Start the crs JSON-RPC server process.
 Returns the process handle."
   (interactive)
-  (if (and codereviewserver-client--process
-           (process-live-p codereviewserver-client--process))
+  (if (and crs--process
+           (process-live-p crs--process))
       (progn
         (message "Server is already running")
-        codereviewserver-client--process)
+        crs--process)
     (progn
-      (let ((stderr-buffer (get-buffer-create "*codereviewserver-client-stderr*")))
-        (setq codereviewserver-client--process
-              (make-process :name "codereviewserver-client"
-                            :buffer "*codereviewserver-client*"
+      (let ((stderr-buffer (get-buffer-create "*crs-client-stderr*")))
+        (setq crs--process
+              (make-process :name "crs-client"
+                            :buffer "*crs-client*"
                             :command '("crs" "-server")
                             :connection-type 'pipe
                             :coding 'utf-8
                             :stderr stderr-buffer
                             :noquery t))
 
-        (set-process-filter codereviewserver-client--process 'codereviewserver-client--process-filter)
-        (set-process-sentinel codereviewserver-client--process 'codereviewserver-client--process-sentinel)
+        (set-process-filter crs--process 'crs--process-filter)
+        (set-process-sentinel crs--process 'crs--process-sentinel)
 
         ;; Give the process a moment to start up
         (sleep-for 0.2)
 
         ;; Check if process is still alive after startup
-        (unless (process-live-p codereviewserver-client--process)
+        (unless (process-live-p crs--process)
           (let ((stderr-content (with-current-buffer stderr-buffer (buffer-string))))
             (error "Server process died immediately. Stderr: %s" stderr-content)))))
 
-    (message "Started codereviewserver JSON-RPC server")
-    codereviewserver-client--process))
+    (message "Started crs JSON-RPC server")
+    crs--process))
 
 ;;;###autoload
-(defun codereviewserver-client-shutdown-server ()
-  "Stop the codereviewserver JSON-RPC server process if it is running."
+(defun crs-shutdown-server ()
+  "Stop the crs JSON-RPC server process if it is running."
   (interactive)
-  (if (and codereviewserver-client--process
-           (process-live-p codereviewserver-client--process))
+  (if (and crs--process
+           (process-live-p crs--process))
       (progn
-        (delete-process codereviewserver-client--process)
-        (setq codereviewserver-client--process nil)
-        (message "Stopped codereviewserver JSON-RPC server"))
+        (delete-process crs--process)
+        (setq crs--process nil)
+        (message "Stopped crs JSON-RPC server"))
     (message "Server is not running")))
 
 ;;;###autoload
-(defun codereviewserver-client-restart-server ()
-  "Restart the codereviewserver JSON-RPC server process.
+(defun crs-restart-server ()
+  "Restart the crs JSON-RPC server process.
 Stops the existing server if running, then starts a new one.
 Useful after recompiling the Go server binary."
   (interactive)
-  (codereviewserver-client-shutdown-server)
+  (crs-shutdown-server)
   (sleep-for 0.2)  ; Give the process a moment to fully shut down
-  (codereviewserver-client-start-server))
+  (crs-start-server))
 
-(defun codereviewserver-client--process-filter (process output)
+(defun crs--process-filter (process output)
   "Filter function for processing JSON-RPC responses from the server."
-  (setq codereviewserver-client--response-buffer
-        (concat codereviewserver-client--response-buffer output))
+  (setq crs--response-buffer
+        (concat crs--response-buffer output))
 
   ;; Process complete lines (JSON-RPC uses newline-delimited JSON)
-  (while (string-match "\n" codereviewserver-client--response-buffer)
-    (let ((line (substring codereviewserver-client--response-buffer 0 (match-beginning 0))))
-      (setq codereviewserver-client--response-buffer
-            (substring codereviewserver-client--response-buffer (match-end 0)))
+  (while (string-match "\n" crs--response-buffer)
+    (let ((line (substring crs--response-buffer 0 (match-beginning 0))))
+      (setq crs--response-buffer
+            (substring crs--response-buffer (match-end 0)))
 
       (when (> (length line) 0)
-        (codereviewserver-client--handle-response line)))))
+        (crs--handle-response line)))))
 
-(defun codereviewserver-client--handle-response (response-line)
+(defun crs--handle-response (response-line)
   "Handle a single JSON-RPC response line."
   (condition-case err
       (let ((response (json-read-from-string response-line)))
@@ -113,63 +113,63 @@ Useful after recompiling the Go server binary."
               (error (cdr (assq 'error response))))
           (if error
               (message "JSON-RPC Error: %s" (cdr (assq 'message error)))
-            (let ((callback (gethash id codereviewserver-client--pending-requests)))
+            (let ((callback (gethash id crs--pending-requests)))
               (when callback
-                (remhash id codereviewserver-client--pending-requests)
+                (remhash id crs--pending-requests)
                 (funcall callback result))))))
     (error
      (message "Error parsing JSON-RPC response: %s" err))))
 
-(defun codereviewserver-client--process-sentinel (process event)
-  "Sentinel function for the codereviewserver process."
+(defun crs--process-sentinel (process event)
+  "Sentinel function for the crs process."
   (when (memq (process-status process) '(exit signal))
     (let ((buffer (process-buffer process))
-          (stderr-buffer (get-buffer "*codereviewserver-client-stderr*")))
+          (stderr-buffer (get-buffer "*crs-client-stderr*")))
       (when buffer
         (with-current-buffer buffer
           (let ((output (buffer-string)))
             (when (> (length output) 0)
-              (message "codereviewserver stdout: %s" output)))))
+              (message "crs stdout: %s" output)))))
       (when stderr-buffer
         (with-current-buffer stderr-buffer
           (let ((stderr-output (buffer-string)))
             (when (> (length stderr-output) 0)
-              (message "codereviewserver stderr: %s" stderr-output))))))
-    (setq codereviewserver-client--process nil)
-    (message "codereviewserver process %s" event)))
+              (message "crs stderr: %s" stderr-output))))))
+    (setq crs--process nil)
+    (message "crs process %s" event)))
 
-(defun codereviewserver-client--send-request (method params callback)
+(defun crs--send-request (method params callback)
   "Send a JSON-RPC request to the server.
 METHOD is the method name (e.g., 'RPCHandler.GetAllReviews').
 PARAMS is the parameters array.
 CALLBACK is a function to call with the result."
-  (unless (and codereviewserver-client--process
-               (process-live-p codereviewserver-client--process))
-    (error "Server is not running. Call codereviewserver-client-start-server first"))
+  (unless (and crs--process
+               (process-live-p crs--process))
+    (error "Server is not running. Call crs-start-server first"))
 
-  (let ((id codereviewserver-client--request-id))
-    (setq codereviewserver-client--request-id (1+ codereviewserver-client--request-id))
+  (let ((id crs--request-id))
+    (setq crs--request-id (1+ crs--request-id))
 
-    (puthash id callback codereviewserver-client--pending-requests)
+    (puthash id callback crs--pending-requests)
 
     (let ((request (json-encode `((jsonrpc . "2.0")
                                   (method . ,method)
                                   (params . ,params)
                                   (id . ,id)))))
-      (process-send-string codereviewserver-client--process
+      (process-send-string crs--process
                            (concat request "\n")))))
 
 ;;;###autoload
-(defun codereviewserver-client-get-reviews ()
+(defun crs-get-reviews ()
   "Call the GetAllReviews RPC method and display the result in '* Reviews *' buffer."
   (interactive)
-  (unless (and codereviewserver-client--process
-               (process-live-p codereviewserver-client--process))
-    (codereviewserver-client-start-server)
+  (unless (and crs--process
+               (process-live-p crs--process))
+    (crs-start-server)
     ;; Give the server a moment to start
     (sleep-for 0.5))
 
-  (codereviewserver-client--send-request
+  (crs--send-request
    "RPCHandler.GetAllReviews"
    (vector)
    (lambda (result)
@@ -183,16 +183,16 @@ CALLBACK is a function to call with the result."
        (display-buffer buffer)
        (message "Reviews loaded into '* Reviews *' buffer")))))
 
-(defun codereviewserver-client-toggle-section ()
+(defun crs-toggle-section ()
   "Toggle visibility of the section under the current header."
   (interactive)
   (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-    (if (string-match codereviewserver-client--section-header-regexp line-content)
+    (if (string-match crs--section-header-regexp line-content)
         (let* ((header-text-end (line-end-position))
                (next-line-start (save-excursion (forward-line 1) (point)))
                (content-end (save-excursion
                               (forward-line 1)
-                              (if (re-search-forward codereviewserver-client--section-header-regexp nil t)
+                              (if (re-search-forward crs--section-header-regexp nil t)
                                   (1- (match-beginning 0))
                                 (point-max))))
                (overlays (overlays-in header-text-end content-end))
@@ -215,17 +215,17 @@ CALLBACK is a function to call with the result."
                 (overlay-put ov 'invisible 'codereview-hide)))))
       (message "Not on a section header"))))
 
-(defun codereviewserver-client-collapse-all-sections ()
+(defun crs-collapse-all-sections ()
   "Collapse all sections in the current buffer."
   (interactive)
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward codereviewserver-client--section-header-regexp nil t)
+    (while (re-search-forward crs--section-header-regexp nil t)
       (let* ((header-text-end (line-end-position))
              (next-line-start (save-excursion (forward-line 1) (point)))
              (content-end (save-excursion
                             (forward-line 1)
-                            (if (re-search-forward codereviewserver-client--section-header-regexp nil t)
+                            (if (re-search-forward crs--section-header-regexp nil t)
                                 (1- (match-beginning 0))
                               (point-max)))))
         ;; Check if already collapsed
@@ -246,7 +246,7 @@ CALLBACK is a function to call with the result."
                 (overlay-put ov 'codereview-hide t)
                 (overlay-put ov 'invisible 'codereview-hide)))))))))
 
-(defun codereviewserver-client-expand-all-sections ()
+(defun crs-expand-all-sections ()
   "Expand all sections in the current buffer."
   (interactive)
   (save-excursion
@@ -254,18 +254,16 @@ CALLBACK is a function to call with the result."
       (when (overlay-get ov 'codereview-hide)
         (delete-overlay ov)))))
 
-(defvar my-code-review-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "TAB") 'codereviewserver-client-toggle-section)
-    (define-key map (kbd "<tab>") 'codereviewserver-client-toggle-section)
-    (define-key map (kbd "<backtab>") 'codereviewserver-client-collapse-all-sections)
-    (define-key map (kbd "c") 'codereviewserver-client-add-or-edit-comment)
-    (define-key map (kbd "d") 'codereviewserver-client-delete-local-comment)
-    (define-key map (kbd "C-c C-c") 'codereviewserver-client-submit-review)
-    (define-key map (kbd "g") 'codereviewserver-client-sync-pr)
-    (define-key map (kbd "q") 'quit-window)
-    map)
-  "Keymap for `my-code-review-mode`.")
+(defvar-keymap my-code-review-mode-map
+  "TAB" #'crs-toggle-section
+  "<tab>" #'crs-toggle-section
+  "<backtab>" #'crs-collapse-all-sections
+  "c" #'crs-add-or-edit-comment
+  "d" #'crs-delete-local-comment
+  "C-c C-c" #'crs-submit-review
+  "g" #'crs-sync-pr
+  "q" #'quit-window
+  :doc "Keymap for `my-code-review-mode`.")
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
   "Major mode for viewing code reviews."
@@ -273,8 +271,36 @@ CALLBACK is a function to call with the result."
   (highlight-review-comments)
   (add-to-invisibility-spec '(codereview-hide . t)))
 
-(defun codereviewserver-client--render-and-update (buffer content)
-  "Render CONTENT into BUFFER and update it, preserving point."
+;; Override evil-mode keybindings - define keys for normal and visual states
+(when (fboundp 'evil-define-key)
+  ;; Define keys for normal state
+  (evil-define-key 'normal my-code-review-mode-map
+    "TAB" #'crs-toggle-section
+    "<tab>" #'crs-toggle-section
+    "<backtab>" #'crs-collapse-all-sections
+    "c" #'crs-add-or-edit-comment
+    "d" #'crs-delete-local-comment
+    "C-c C-c" #'crs-submit-review
+    "g" #'crs-sync-pr
+    "q" #'quit-window)
+  ;; Define keys for visual state
+  (evil-define-key 'visual my-code-review-mode-map
+    "TAB" #'crs-toggle-section
+    "<tab>" #'crs-toggle-section
+    "<backtab>" #'crs-collapse-all-sections
+    "c" #'crs-add-or-edit-comment
+    "d" #'crs-delete-local-comment
+    "C-c C-c" #'crs-submit-review
+    "g" #'crs-sync-pr
+    "q" #'quit-window)
+  ;; Define keys for insert state
+  (evil-define-key 'insert my-code-review-mode-map
+    "C-c C-c" #'crs-submit-review))
+
+(defun crs--render-and-update (buffer content &optional target-line)
+  "Render CONTENT into BUFFER and update it, preserving point or moving to TARGET-LINE.
+If TARGET-LINE is provided, move to that line number after rendering.
+Otherwise, try to preserve the old point position."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
           (old-pos (point)))
@@ -282,18 +308,26 @@ CALLBACK is a function to call with the result."
       (insert (or content ""))
       (delta-wash)
       (my-code-review-mode)
-      (goto-char (min old-pos (point-max)))
+      (if target-line
+          ;; Move to the specified line number
+          (progn
+            (goto-char (point-min))
+            (forward-line (1- target-line))
+            (when (> (point) (point-max))
+              (goto-char (point-max))))
+        ;; Fall back to preserving old position
+        (goto-char (min old-pos (point-max))))
       (setq buffer-read-only t))))
 
-(defun codereviewserver-client-get-review (owner repo number)
+(defun crs-get-review (owner repo number)
   "Call the GetPR RPC method for OWNER/REPO PR NUMBER and display the result."
   (interactive "sOwner: \nsRepo: \nnPR Number: ")
-  (unless (and codereviewserver-client--process
-               (process-live-p codereviewserver-client--process))
-    (codereviewserver-client-start-server)
+  (unless (and crs--process
+               (process-live-p crs--process))
+    (crs-start-server)
     (sleep-for 0.5))
 
-  (codereviewserver-client--send-request
+  (crs--send-request
    "RPCHandler.GetPR"
    (vector (list (cons 'Owner owner)
                  (cons 'Repo repo)
@@ -301,12 +335,12 @@ CALLBACK is a function to call with the result."
    (lambda (result)
      (let ((content (cdr (assq 'Content result)))
            (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
-       (codereviewserver-client--render-and-update buffer content)
+       (crs--render-and-update buffer content)
        (display-buffer buffer)
        (message "Review loaded into buffer")))))
 
-(defun codereviewserver-client-start-review-at-point ()
-  "Parse a GitHub PR URL from the current line and call codereviewserver-client-get-review.
+(defun crs-start-review-at-point ()
+  "Parse a GitHub PR URL from the current line and call crs-get-review.
 The line should contain a URL in the format https://github.com/OWNER/REPO/pull/NUMBER"
   (interactive)
   (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
@@ -314,37 +348,39 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (let ((owner (match-string 1 line))
               (repo (match-string 2 line))
               (number (string-to-number (match-string 3 line))))
-          (codereviewserver-client-get-review owner repo number))
+          (crs-get-review owner repo number))
       (error "Could not find GitHub PR URL on current line"))))
 
 
-(defvar-local codereviewserver-client--comment-owner nil)
-(defvar-local codereviewserver-client--comment-repo nil)
-(defvar-local codereviewserver-client--comment-number nil)
-(defvar-local codereviewserver-client--comment-filename nil)
-(defvar-local codereviewserver-client--comment-position nil)
-(defvar-local codereviewserver-client--comment-reply-to-id nil)
-(defvar-local codereviewserver-client--comment-editing-id nil
+(defvar-local crs--comment-owner nil)
+(defvar-local crs--comment-repo nil)
+(defvar-local crs--comment-number nil)
+(defvar-local crs--comment-filename nil)
+(defvar-local crs--comment-position nil)
+(defvar-local crs--comment-reply-to-id nil)
+(defvar-local crs--comment-editing-id nil
   "When non-nil, we're editing an existing local comment with this ID.")
+(defvar-local crs--comment-original-line nil
+  "The line number in the review buffer where the comment was started.")
 
-(defun codereviewserver-client-submit-comment ()
+(defun crs-submit-comment ()
   "Submit the comment in the current buffer."
   (interactive)
   (let ((body (buffer-string))
-        (owner codereviewserver-client--comment-owner)
-        (repo codereviewserver-client--comment-repo)
-        (number codereviewserver-client--comment-number)
-        (filename codereviewserver-client--comment-filename)
-        (reply-to-id codereviewserver-client--comment-reply-to-id)
-        (editing-id codereviewserver-client--comment-editing-id)
-        (position (if codereviewserver-client--comment-reply-to-id
+        (owner crs--comment-owner)
+        (repo crs--comment-repo)
+        (number crs--comment-number)
+        (filename crs--comment-filename)
+        (reply-to-id crs--comment-reply-to-id)
+        (editing-id crs--comment-editing-id)
+        (position (if crs--comment-reply-to-id
                       nil
-                    codereviewserver-client--comment-position)))
+                    crs--comment-position)))
     (if (string-match-p "\\`[[:space:]\n]*\\'" body)
         (message "Comment is empty, not submitting.")
       (if editing-id
           ;; Editing an existing local comment
-          (codereviewserver-client--send-request
+          (crs--send-request
            "RPCHandler.EditComment"
            (vector (list (cons 'Owner owner)
                          (cons 'Repo repo)
@@ -353,13 +389,14 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                          (cons 'Body body)))
            (lambda (result)
              (let ((content (cdr (assq 'Content result)))
-                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
+                   (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
                (when review-buffer
-                 (codereviewserver-client--render-and-update review-buffer content))
+                 (crs--render-and-update review-buffer content original-line))
                (message "Comment updated successfully")
                (kill-buffer-and-window))))
         ;; Adding a new comment
-        (codereviewserver-client--send-request
+        (crs--send-request
          "RPCHandler.AddComment"
          (vector (list (cons 'Owner owner)
                        (cons 'Repo repo)
@@ -370,17 +407,18 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                        (cons 'Body body)))
          (lambda (result)
            (let ((content (cdr (assq 'Content result)))
-                 (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
+                 (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
              (when review-buffer
-               (codereviewserver-client--render-and-update review-buffer content))
+               (crs--render-and-update review-buffer content original-line))
              (message "Comment added successfully")
              (kill-buffer-and-window))))))))
 
 (define-derived-mode comment-edit-mode markdown-mode "Code Review Comment"
   "Major mode for editing code review comments."
-  (local-set-key (kbd "C-c C-c") 'codereviewserver-client-submit-comment))
+  (local-set-key (kbd "C-c C-c") 'crs-submit-comment))
 
-(defun codereviewserver-client--find-first-hunk-line ()
+(defun crs--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."
   (save-excursion
     (let* ((start-pos (point))
@@ -405,7 +443,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           (message "Failed to find hunk header between line %d and %d. Bound pos: %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound) search-bound)
           nil)))))
 
-(defun codereviewserver-client--get-comment-context ()
+(defun crs--get-comment-context ()
   "Extract owner, repo, number, filename, position, reply-to-id, and local comment edit info.
 Returns a list: (owner repo number filename position reply-to-id local-comment-id local-comment-body).
 If on a local comment, local-comment-id and local-comment-body will be set."
@@ -479,7 +517,7 @@ If on a local comment, local-comment-id and local-comment-body will be set."
       (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
           (progn
             (setq filename (match-string 2))
-            (setq first-hunk-line-num (codereviewserver-client--find-first-hunk-line))
+            (setq first-hunk-line-num (crs--find-first-hunk-line))
             (unless first-hunk-line-num
               (message "No hunk header found for file %s" filename)))
         (message "No file header found"))
@@ -501,29 +539,31 @@ If on a local comment, local-comment-id and local-comment-body will be set."
       (message "Context extracted: %S" ctx)
       ctx)))
 
-(defun codereviewserver-client-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body)
+(defun crs-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body)
   "Open a buffer to add or edit a comment on a review.
 If on a local comment, opens it for editing with the existing body pre-filled.
 If called interactively, attempts to guess parameters from context."
   (interactive
-   (let ((ctx (codereviewserver-client--get-comment-context)))
+   (let ((ctx (crs--get-comment-context)))
      ;; For editing, we need local-comment-id; for adding, we need position or reply-to-id
      (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx) (nth 6 ctx)))
        (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S, LocalID: %S). Buffer: %S"
               (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (nth 6 ctx) (buffer-name)))
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number)))
-        (editing (not (null local-comment-id))))
+        (editing (not (null local-comment-id)))
+        (original-line (line-number-at-pos)))
     (with-current-buffer buffer
       (comment-edit-mode)
       (erase-buffer)
-      (setq codereviewserver-client--comment-owner owner)
-      (setq codereviewserver-client--comment-repo repo)
-      (setq codereviewserver-client--comment-number number)
-      (setq codereviewserver-client--comment-filename filename)
-      (setq codereviewserver-client--comment-position position)
-      (setq codereviewserver-client--comment-reply-to-id reply-to-id)
-      (setq codereviewserver-client--comment-editing-id local-comment-id)
+      (setq crs--comment-owner owner)
+      (setq crs--comment-repo repo)
+      (setq crs--comment-number number)
+      (setq crs--comment-filename filename)
+      (setq crs--comment-position position)
+      (setq crs--comment-reply-to-id reply-to-id)
+      (setq crs--comment-editing-id local-comment-id)
+      (setq crs--comment-original-line original-line)
       ;; If editing, pre-populate with existing body
       (when (and editing local-comment-body)
         (insert local-comment-body)))
@@ -534,9 +574,9 @@ If called interactively, attempts to guess parameters from context."
       (evil-insert-state))))
 
 ;; Alias for backwards compatibility
-(defalias 'codereviewserver-client-add-comment 'codereviewserver-client-add-or-edit-comment)
+(defalias 'crs-add-comment 'crs-add-or-edit-comment)
 
-(defun codereviewserver-client--get-local-comment-at-point ()
+(defun crs--get-local-comment-at-point ()
   "Get the local comment ID at point, or nil if not on a local comment.
 Returns a plist with :id, :owner, :repo, :number if on a local comment."
   (let ((owner nil)
@@ -572,11 +612,11 @@ Returns a plist with :id, :owner, :repo, :number if on a local comment."
     (when (and owner repo number local-comment-id)
       (list :id local-comment-id :owner owner :repo repo :number number))))
 
-(defun codereviewserver-client-delete-local-comment ()
+(defun crs-delete-local-comment ()
   "Delete the local comment at point.
 If not on a local comment, displays a warning message."
   (interactive)
-  (let ((comment-info (codereviewserver-client--get-local-comment-at-point)))
+  (let ((comment-info (crs--get-local-comment-at-point)))
     (if (not comment-info)
         (message "Not on a local comment")
       (let ((id (plist-get comment-info :id))
@@ -584,7 +624,7 @@ If not on a local comment, displays a warning message."
             (repo (plist-get comment-info :repo))
             (number (plist-get comment-info :number)))
         (when (yes-or-no-p (format "Delete local comment %d? " id))
-          (codereviewserver-client--send-request
+          (crs--send-request
            "RPCHandler.DeleteComment"
            (vector (list (cons 'Owner owner)
                          (cons 'Repo repo)
@@ -594,10 +634,10 @@ If not on a local comment, displays a warning message."
              (let ((content (cdr (assq 'Content result)))
                    (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
                (when review-buffer
-                 (codereviewserver-client--render-and-update review-buffer content))
+                 (crs--render-and-update review-buffer content))
                (message "Local comment deleted")))))))))
 
-(defun codereviewserver-client-submit-review (event body)
+(defun crs-submit-review (event body)
   "Submit a review with EVENT and optional BODY.
 EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
   (interactive
@@ -614,7 +654,7 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
             (setq number (string-to-number (match-string 3 name))))
         (error "Not in a valid review buffer")))
 
-    (codereviewserver-client--send-request
+    (crs--send-request
      "RPCHandler.SubmitReview"
      (vector (list (cons 'Owner owner)
                    (cons 'Repo repo)
@@ -625,10 +665,10 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
        (let ((content (cdr (assq 'Content result)))
              (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (codereviewserver-client--render-and-update review-buffer content))
+           (crs--render-and-update review-buffer content))
          (message "Review submitted successfully!"))))))
 
-(defun codereviewserver-client-sync-pr ()
+(defun crs-sync-pr ()
   "Sync the PR in the current buffer with the server."
   (interactive)
   (let ((owner nil)
@@ -643,7 +683,7 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
         (error "Not in a valid review buffer")))
 
     (message "Syncing PR %s/%s #%d..." owner repo number)
-    (codereviewserver-client--send-request
+    (crs--send-request
      "RPCHandler.SyncPR"
      (vector (list (cons 'Owner owner)
                    (cons 'Repo repo)
@@ -652,9 +692,9 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
        (let ((content (cdr (assq 'Content result)))
              (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (codereviewserver-client--render-and-update review-buffer content))
+           (crs--render-and-update review-buffer content))
          (message "Review synced successfully!"))))))
 
-(provide 'codereviewserver-client)
+(provide 'crs-client)
 
-;;; codereviewserver-client.el ends here
+;;; crs-client.el ends here

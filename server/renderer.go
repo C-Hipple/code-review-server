@@ -346,7 +346,6 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	sb.WriteString(fmt.Sprintf("#%d: %s\n", number, pr.GetTitle()))
 	sb.WriteString(fmt.Sprintf("Author: \t@%s\n", pr.User.GetLogin()))
 	sb.WriteString(fmt.Sprintf("Title: \t%s\n", pr.GetTitle()))
-	sb.WriteString(fmt.Sprintf("State: \t%s\n", pr.GetState()))
 
 	headRef := ""
 	if pr.Head != nil {
@@ -356,7 +355,8 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	if pr.Base != nil {
 		baseRef = pr.Base.GetRef()
 	}
-	sb.WriteString(fmt.Sprintf("Refs: \t%s ... %s\n", baseRef, headRef))
+	sb.WriteString(fmt.Sprintf("Refs:  %s ... %s\n", baseRef, headRef))
+	sb.WriteString(fmt.Sprintf("State: \t%s\n", pr.GetState()))
 
 	milestone := "No milestone"
 	if pr.Milestone != nil {

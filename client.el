@@ -261,9 +261,12 @@ CALLBACK is a function to call with the result."
   "c" #'crs-add-or-edit-comment
   "d" #'crs-delete-local-comment
   "C-c C-c" #'crs-submit-review
+  ;; "ra" #'crs-approve-review
+  ;; "rc" #'crs-comment-review
+  ;; "rr" #'crs-request-changes-review
   "g" #'crs-sync-pr
   "q" #'quit-window
-  :doc "Keymap for `my-code-review-mode`.")
+  )
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
   "Major mode for viewing code reviews."
@@ -281,7 +284,10 @@ CALLBACK is a function to call with the result."
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
     "C-c C-c" #'crs-submit-review
-    "g" #'crs-sync-pr
+    "ra" #'crs-approve-review
+    "rc" #'crs-comment-review
+    "rr" #'crs-request-changes-review
+    "rg" #'crs-sync-pr
     "q" #'quit-window)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -291,7 +297,10 @@ CALLBACK is a function to call with the result."
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
     "C-c C-c" #'crs-submit-review
-    "g" #'crs-sync-pr
+    "ra" #'crs-approve-review
+    "rc" #'crs-comment-review
+    "rr" #'crs-request-changes-review
+    "rg" #'crs-sync-pr
     "q" #'quit-window)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -336,7 +345,7 @@ Otherwise, try to preserve the old point position."
      (let ((content (cdr (assq 'Content result)))
            (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
        (crs--render-and-update buffer content)
-       (display-buffer buffer)
+       (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
 
 (defun crs-start-review-at-point ()
@@ -414,9 +423,34 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
              (message "Comment added successfully")
              (kill-buffer-and-window))))))))
 
+(defun crs-abort-comment ()
+  "Abort the comment in the current buffer."
+  (interactive)
+  (kill-buffer-and-window)
+  (message "Comment aborted."))
+
 (define-derived-mode comment-edit-mode markdown-mode "Code Review Comment"
   "Major mode for editing code review comments."
-  (local-set-key (kbd "C-c C-c") 'crs-submit-comment))
+  (local-set-key (kbd "C-c C-c") 'crs-submit-comment)
+  (local-set-key (kbd "C-c C-k") 'crs-abort-comment))
+
+(when (fboundp 'evil-define-key)
+  (evil-define-key 'normal comment-edit-mode-map
+    "C-c C-c" #'crs-submit-comment
+    "C-c C-k" #'crs-abort-comment
+    ", c" #'crs-submit-comment
+    ", k" #'crs-abort-comment
+    )
+  (evil-define-key 'insert comment-edit-mode-map
+    "C-c C-c" #'crs-submit-comment
+    "C-c C-k" #'crs-abort-comment
+    ", c" #'crs-submit-comment
+    ", k" #'crs-abort-comment)
+  (evil-define-key 'visual comment-edit-mode-map
+    "C-c C-c" #'crs-submit-comment
+    "C-c C-k" #'crs-abort-comment
+    ", c" #'crs-submit-comment
+    ", k" #'crs-abort-comment))
 
 (defun crs--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."
@@ -668,6 +702,21 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
            (crs--render-and-update review-buffer content))
          (message "Review submitted successfully!"))))))
 
+(defun crs-approve-review (body)
+  "Approve the review with optional BODY."
+  (interactive "sApprove Body: ")
+  (crs-submit-review "APPROVE" body))
+
+(defun crs-comment-review (body)
+  "Comment on the review with optional BODY."
+  (interactive "sComment Body: ")
+  (crs-submit-review "COMMENT" body))
+
+(defun crs-request-changes-review (body)
+  "Request changes on the review with optional BODY."
+  (interactive "sRequest Changes Body: ")
+  (crs-submit-review "REQUEST_CHANGES" body))
+
 (defun crs-sync-pr ()
   "Sync the PR in the current buffer with the server."
   (interactive)
@@ -695,6 +744,32 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
            (crs--render-and-update review-buffer content))
          (message "Review synced successfully!"))))))
 
+(defun crs--switch-and-fetch (project-name branch-name)
+  "Switch to the project directory, fetch, and checkout the branch.
+PROJECT-NAME is the name of the project directory in ~/
+BRANCH-NAME is the name of the branch to checkout."
+  (let ((project-dir (expand-file-name (concat "~/" project-name))))
+    (when (file-directory-p project-dir)
+      (cd project-dir)
+      (shell-command (concat "git fetch && git checkout " branch-name)))
+    (unless (file-directory-p project-dir)
+      (error "Project directory %s not found" project-dir))))
+
+
+(defun crs--get-ref-name ()
+  "Extract the branch name from the current crs buffer.
+TODO: This doesn't match if the root branch has a special char in it."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (let ((found-ref ""))
+      (when (re-search-forward "Refs:\\s+\\([^[:space:]]+\\)\\s+\\.\\.\\.\\s+\\(.+\\)$" nil t)
+        (setq found-ref (match-string 2)))
+      found-ref)))
+
+(defun crs-checkout-current-project ()
+  (interactive)
+  (crs--switch-and-fetch (projectile-project-name) (crs--get-ref-name)))
 (provide 'crs-client)
 
 ;;; crs-client.el ends here

@@ -318,8 +318,7 @@ func TestEscapeBody(t *testing.T) {
 		{
 			name:     "lines with asterisks",
 			body:     github.String("* Point 1\n* Point 2\nNormal text"),
-			expected: "- Point 1\n- Point 2\nNormal text",
-		},
+			expected: "- Point 1\n- Point 2\nNormal text",ema
 		{
 			name:     "text with trailing empty lines",
 			body:     github.String("Content\n\n\n"),

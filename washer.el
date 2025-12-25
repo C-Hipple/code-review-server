@@ -22,6 +22,11 @@
   "Face for review comments."
   :group 'my-custom-highlights)
 
+(defface washer-outdated-face
+  '((t (:foreground "#ffaf00" :weight bold)))
+  "Face for outdated markers."
+  :group 'my-custom-highlights)
+
 (defface washer-file-header-face
   '((t (:foreground "cyan" :weight bold :height 1.3)))
   "Face for file headers."
@@ -41,11 +46,26 @@
   "Highlight review comment blocks and file headers."
   (interactive)
   (font-lock-add-keywords nil
-                          '((".*[┌└].*" 0 'washer-review-comment-seperator-face t)
+                          '(
+                            (".*[┌└][^[]*" 0 'washer-review-comment-seperator-face t)
+                            ;; TODO: fix
+                            ("\\[OUTDATED\\]" 0 'washer-outdated-face t)
+                            ("\\[OUTDATED\\]\\([─ ]*\\)$" 1 'washer-review-comment-seperator-face t)
                             ("^    │ .*" 0 'washer-review-comment-face t)
                             ("^\\(modified\\|deleted\\|new file\\).*" 0 'washer-file-header-face t)
                             ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\):.*" 0 'washer-summary-face t)
                             ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)))
   (font-lock-flush))
+
+;;;###autoload
+(defun delta-wash()
+  "interactive of the call to magit delta function if you have magit-delta or code-review installed."
+  (interactive)
+  (cond ((fboundp 'magit-delta-call-delta-and-convert-ansi-escape-sequences)
+         (magit-delta-call-delta-and-convert-ansi-escape-sequences))
+        ((fboundp 'code-review-delta-call-delta)
+         (code-review-delta-call-delta))
+        (t
+         (message "You do not have a delta washer installed!"))))
 
 (provide 'washer)

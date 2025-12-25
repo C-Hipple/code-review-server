@@ -486,20 +486,21 @@ func (db *DB) DeleteLocalComment(id int64) error {
 	return err
 }
 
-func (db *DB) GetPullRequest(prNumber int, repo string) (string, error) {
+func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) {
 	var body string
+	var sha string
 	err := db.conn.QueryRow(
-		"SELECT body FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
 		prNumber, repo,
-	).Scan(&body)
+	).Scan(&body, &sha)
 
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return body, nil
+	return body, sha, nil
 }
 
 func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, body string) error {

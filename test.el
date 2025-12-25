@@ -7,6 +7,8 @@
 https://github.com/IAmTomShaw/f1-race-replay/pull/18
 (crs-get-reviews)
 
+(crs-shutdown-server)
+
 
 (defun  hurr()
   (interactive)

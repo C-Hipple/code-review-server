@@ -181,6 +181,8 @@ type PRComment interface {
 	GetInReplyTo() int64
 	GetPath() string
 	GetCreatedAt() time.Time
+	IsOutdated() bool
+	GetCommitID() string
 }
 
 // GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
@@ -235,6 +237,19 @@ func (c *GitHubPRComment) GetCreatedAt() time.Time {
 	return time.Time{}
 }
 
+func (c *GitHubPRComment) IsOutdated() bool {
+	// A comment is outdated if it targetted a line (OriginalPosition/Line != nil)
+	// but is no longer attached to the current diff (Position == nil).
+	return c.Position == nil && (c.OriginalPosition != nil || c.OriginalLine != nil)
+}
+
+func (c *GitHubPRComment) GetCommitID() string {
+	if c.CommitID != nil {
+		return *c.CommitID
+	}
+	return ""
+}
+
 // LocalPRComment wraps database.LocalComment to implement PRComment interface
 type LocalPRComment struct {
 	*database.LocalComment
@@ -279,6 +294,14 @@ func (c *LocalPRComment) GetPath() string {
 // GetCreatedAt returns zero time for local comments (no timestamp stored)
 func (c *LocalPRComment) GetCreatedAt() time.Time {
 	return time.Time{}
+}
+
+func (c *LocalPRComment) IsOutdated() bool {
+	return false
+}
+
+func (c *LocalPRComment) GetCommitID() string {
+	return ""
 }
 
 // convertToPRComments converts a slice of *github.PullRequestComment to []PRComment
@@ -510,7 +533,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 
 	// Check database first - skip API call if cached
 	if !skipCache {
-		cachedBody, err := config.C.DB.GetPullRequest(number, repo)
+		cachedBody, cachedSha, err := config.C.DB.GetPullRequest(number, repo)
 		if err != nil {
 			slog.Error("Error checking database for PR", "pr", number, "repo", repo, "error", err)
 			// Continue to fetch from API
@@ -522,7 +545,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 				// Continue to fetch from API
 			} else {
 				// Process cached diff with comments
-				return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff, skipCache)
+				return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff, skipCache, cachedSha)
 			}
 		}
 	}
@@ -554,16 +577,11 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 	}
 
 	// Store the result in the database (with latest_sha for future feature)
-	if err := config.C.DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
-		slog.Error("Error storing PR in database", "pr", number, "repo", repo, "error", err)
-		// Continue even if storage fails
-	}
-
-	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache)
+	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
 }
 
 
-func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool) (string, int) {
+func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
 	var githubComments []*github.PullRequestComment
 	var comments []PRComment
 
@@ -660,7 +678,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 				key = filePath + ":"
 			}
 
-			slog.Info("Adding tree at key: " + key + rootComment.GetBody())
+			slog.Info("Adding tree at key: " + key + " (Outdated: " + strconv.FormatBool(rootComment.IsOutdated()) + ")")
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
@@ -675,19 +693,45 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 			status = "new file"
 		}
 		builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
+
+		// Render any comments specifically for this file header (No position)
+		fileKey := filename + ":"
+		if res, ok := commentsByFileAndLine[fileKey]; ok {
+			for _, tree := range res {
+				tree_str := buildCommentTree(tree, filename, false)
+				builder.WriteString(tree_str)
+			}
+			delete(commentsByFileAndLine, fileKey)
+		}
+
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
 			builder.WriteString(hunk.RangeHeader() + "\n")
 			for _, line := range hunk.WholeRange.Lines {
 				builder.WriteString(line.Render())
-				key := fmt.Sprintf("%s:%d", file.NewName, line.Position)
+				key := fmt.Sprintf("%s:%d", filename, line.Position)
 				res, ok := commentsByFileAndLine[key]
 				if ok {
 					for _, tree := range res {
-						tree_str := buildCommentTree(tree, file.NewName)
+						// Double check if it's outdated vs the current head
+						isOutdated := tree[0].IsOutdated() || (tree[0].GetCommitID() != "" && tree[0].GetCommitID() != latestSha)
+						tree_str := buildCommentTree(tree, filename, isOutdated)
 						builder.WriteString(tree_str)
 					}
+					delete(commentsByFileAndLine, key)
 				}
+			}
+		}
+
+		// After all hunks, render any "orphaned" comments for this file (those that had a position but no matching line)
+		for key, trees := range commentsByFileAndLine {
+			if strings.HasPrefix(key, filename+":") {
+				for _, tree := range trees {
+					// These are orphaned/outdated by definition since they didn't match a line
+					tree_str := buildCommentTree(tree, filename, true)
+					builder.WriteString(tree_str)
+				}
+				delete(commentsByFileAndLine, key)
 			}
 		}
 	}
@@ -708,7 +752,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	return result, len(comments)
 }
 
-func buildCommentTree(tree []PRComment, filePath string) string {
+func buildCommentTree(tree []PRComment, filePath string, forceOutdated bool) string {
 	var result []string // leftover from refactor
 	if len(tree) == 0 {
 		return ""
@@ -716,7 +760,13 @@ func buildCommentTree(tree []PRComment, filePath string) string {
 
 	rootComment := tree[0]
 	commentIDInt, _ := strconv.ParseInt(rootComment.GetID(), 10, 64)
-	result = append(result, "    ┌─ REVIEW COMMENT ─────────────────")
+	header := "    ┌─ REVIEW COMMENT ─────────────────"
+	if forceOutdated || rootComment.IsOutdated() {
+		header = "    ┌─ REVIEW COMMENT [OUTDATED] ──────"
+	} else if rootComment.GetPosition() == "" {
+		header = "    ┌─ FILE COMMENT ───────────────────"
+	}
+	result = append(result, header)
 	result = append(result, fmt.Sprintf("    │ File: %s", filePath))
 	result = append(result, fmt.Sprintf("    │ %s : %d", rootComment.GetCreatedAt().Format(time.DateTime)+" "+treeAuthorsFromList(tree), commentIDInt))
 	result = append(result, "    │")

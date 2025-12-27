@@ -131,7 +131,7 @@ func (prb PRToOrgBridge) GetStatus() string {
 func (prb PRToOrgBridge) Details() []string {
 	details := []string{}
 	details = append(details, fmt.Sprintf("%d\n", prb.PR.GetNumber()))
-	details = append(details, "Repo: "+*prb.PR.Head.Repo.Name)
+	details = append(details, "Repo: "+prb.PR.Base.Repo.GetFullName())
 	details = append(details, fmt.Sprintf("%s\n", prb.PR.GetHTMLURL()))
 	details = append(details, fmt.Sprintf("Title: %s\n", prb.PR.GetTitle()))
 

@@ -1,0 +1,213 @@
+import { spawn } from "bun";
+
+import { resolve } from "path";
+const SERVER_PATH = resolve(process.cwd(), "../codereviewserver");
+
+interface JsonRpcRequest {
+    method: string;
+    params: any[];
+    id: number | string;
+}
+
+interface JsonRpcResponse {
+    result?: any;
+    error?: any;
+    id: number | string;
+}
+
+class RpcBridge {
+    private proc: any;
+    private pending = new Map<string | number, { resolve: (val: any) => void; reject: (err: any) => void }>();
+    private buffer = "";
+
+    constructor() {
+        this.proc = spawn([SERVER_PATH, "--server"], {
+            cwd: "..", // Run from project root
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "inherit",
+            env: {
+                ...process.env,
+                HOME: "/home/chris"
+            }
+        });
+
+        this.readLoop();
+    }
+
+    private async readLoop() {
+        const reader = this.proc.stdout.getReader();
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                this.handleChunk(new TextDecoder().decode(value));
+            }
+        } catch (e) {
+            console.error("Error reading from server:", e);
+        }
+    }
+
+    private handleChunk(chunk: string) {
+        this.buffer += chunk;
+
+        let depth = 0;
+        let start = 0;
+        let inString = false;
+        let escape = false;
+
+        for (let i = 0; i < this.buffer.length; i++) {
+            const char = this.buffer[i];
+
+            if (escape) {
+                escape = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                escape = true;
+                continue;
+            }
+
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString) {
+                if (char === '{') {
+                    if (depth === 0) start = i;
+                    depth++;
+                } else if (char === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        // Found a complete object
+                        const jsonStr = this.buffer.substring(start, i + 1);
+                        try {
+                            const obj = JSON.parse(jsonStr);
+                            this.handleResponse(obj);
+                        } catch (e) {
+                            console.error("Failed to parse JSON:", jsonStr, e);
+                        }
+                        // Remove processed part
+                        this.buffer = this.buffer.substring(i + 1);
+                        i = -1; // Restart scanning from 0
+                    }
+                }
+            }
+        }
+    }
+
+    private handleResponse(res: JsonRpcResponse) {
+        if (res.id !== undefined && this.pending.has(res.id)) {
+            const { resolve, reject } = this.pending.get(res.id)!;
+            this.pending.delete(res.id);
+            if (res.error) {
+                reject(res.error);
+            } else {
+                resolve(res.result);
+            }
+        }
+    }
+
+    public call(method: string, params: any[]): Promise<any> {
+        const id = Date.now() + Math.random();
+        const req: JsonRpcRequest = { method, params, id };
+
+        return new Promise((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+            const data = JSON.stringify(req);
+            // Go's jsonrpc (JSON-RPC 1.0) expects newline-delimited JSON.
+            this.proc.stdin.write(data + "\n");
+        });
+    }
+}
+
+const bridge = new RpcBridge();
+
+const CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE, PATCH",
+    "Access-Control-Allow-Headers": "Content-Type",
+};
+
+Bun.serve({
+    port: 3000,
+    async fetch(req) {
+        const url = new URL(req.url);
+
+        // CORS
+        if (req.method === "OPTIONS") {
+            return new Response(null, {
+                headers: CORS_HEADERS,
+            });
+        }
+
+        // Helper to handle RPC calls
+        const handleRpc = async (method: string, params: any[]) => {
+            try {
+                const result = await bridge.call(method, params);
+                return new Response(JSON.stringify({ result }), {
+                    headers: {
+                        ...CORS_HEADERS,
+                        "Content-Type": "application/json",
+                    },
+                });
+            } catch (err) {
+                console.error(`RPC Error (${method}):`, err);
+                return new Response(JSON.stringify({ error: err }), {
+                    status: 500,
+                    headers: {
+                        ...CORS_HEADERS,
+                        "Content-Type": "application/json",
+                    },
+                });
+            }
+        };
+
+        // Specialized Handlers for the "New JSON Format"
+        if (url.pathname === "/api/get-pr" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.GetPR", [body]);
+        }
+
+        if (url.pathname === "/api/add-comment" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.AddComment", [body]);
+        }
+
+        if (url.pathname === "/api/edit-comment" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.EditComment", [body]);
+        }
+
+        if (url.pathname === "/api/delete-comment" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.DeleteComment", [body]);
+        }
+
+        if (url.pathname === "/api/sync-pr" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.SyncPR", [body]);
+        }
+
+        if (url.pathname === "/api/submit-review" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.SubmitReview", [body]);
+        }
+
+        if (url.pathname === "/api/reviews" && req.method === "POST") {
+            return handleRpc("RPCHandler.GetAllReviews", [{}]);
+        }
+
+        // Generic legacy RPC endpoint
+        if (url.pathname === "/api/rpc" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc(body.method, body.params);
+        }
+
+        return new Response("Not Found", { status: 404 });
+    },
+});
+
+console.log("Bun server running on http://localhost:3000");

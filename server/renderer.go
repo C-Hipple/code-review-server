@@ -185,6 +185,40 @@ type PRComment interface {
 	GetCommitID() string
 }
 
+type CommentJSON struct {
+	ID        string    `json:"id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	Path      string    `json:"path"`
+	Position  string    `json:"position"`
+	InReplyTo int64     `json:"in_reply_to"`
+	CreatedAt time.Time `json:"created_at"`
+	Outdated  bool      `json:"outdated"`
+}
+
+type PRMetadata struct {
+	Number      int      `json:"number"`
+	Title       string   `json:"title"`
+	Author      string   `json:"author"`
+	BaseRef     string   `json:"base_ref"`
+	HeadRef     string   `json:"head_ref"`
+	State       string   `json:"state"`
+	Milestone   string   `json:"milestone"`
+	Labels      []string `json:"labels"`
+	Assignees   []string `json:"assignees"`
+	Reviewers   []string `json:"reviewers"`
+	Draft       bool     `json:"draft"`
+	CIStatus    string   `json:"ci_status"`
+	CIFailures  []string `json:"ci_failures"`
+	Description string   `json:"description"`
+}
+
+type PRDetails struct {
+	Metadata PRMetadata    `json:"metadata"`
+	Diff     string        `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
 // GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
 type GitHubPRComment struct {
 	*github.PullRequestComment
@@ -321,6 +355,143 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 		result[i] = &LocalPRComment{&localComments[i]}
 	}
 	return result
+}
+
+func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDetails, error) {
+	client := git_tools.GetGithubClient()
+	ctx := context.Background()
+
+	// 1. Fetch PR details
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Fetch Metadata (Reviewers, Commits, CI)
+	reviewers, _ := GetRequestedReviewers(owner, repo, number, skipCache)
+	reviewerLogins := []string{}
+	for _, r := range reviewers {
+		reviewerLogins = append(reviewerLogins, r.GetLogin())
+	}
+
+	var ciStatus string
+	var ciFailures []string
+	if pr.Head != nil && pr.Head.SHA != nil {
+		status, err := GetLatestCIStatus(owner, repo, number, *pr.Head.SHA, skipCache)
+		if err == nil && status != nil {
+			total := 0
+			success := 0
+			overallState := "success"
+			if status.Status != nil {
+				if status.Status.GetState() != "success" && status.Status.GetState() != "" {
+					overallState = status.Status.GetState()
+				}
+				total += status.Status.GetTotalCount()
+				for _, s := range status.Status.Statuses {
+					if s.GetState() == "success" {
+						success++
+					} else if s.GetState() == "failure" {
+						ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
+					}
+				}
+			}
+			if status.CheckRuns != nil {
+				total += status.CheckRuns.GetTotal()
+				for _, cr := range status.CheckRuns.CheckRuns {
+					if cr.GetConclusion() == "success" {
+						success++
+					} else {
+						if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
+							overallState = "failure"
+							ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
+						}
+					}
+				}
+			}
+			if total == 0 && overallState == "success" {
+				overallState = "pending"
+			}
+			ciStatus = fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
+		}
+	}
+
+	labels := []string{}
+	for _, l := range pr.Labels {
+		labels = append(labels, l.GetName())
+	}
+
+	assignees := []string{}
+	for _, u := range pr.Assignees {
+		assignees = append(assignees, u.GetLogin())
+	}
+
+	metadata := PRMetadata{
+		Number:      number,
+		Title:       pr.GetTitle(),
+		Author:      pr.User.GetLogin(),
+		BaseRef:     pr.Base.GetRef(),
+		HeadRef:     pr.Head.GetRef(),
+		State:       pr.GetState(),
+		Labels:      labels,
+		Assignees:   assignees,
+		Reviewers:   reviewerLogins,
+		Draft:       pr.GetDraft(),
+		CIStatus:    ciStatus,
+		CIFailures:  ciFailures,
+		Description: pr.GetBody(),
+	}
+	if pr.Milestone != nil {
+		metadata.Milestone = pr.Milestone.GetTitle()
+	}
+
+	// 3. Fetch Diff
+	diff, _, err := client.PullRequests.GetRaw(ctx, owner, repo, number, github.RawOptions{Type: github.Diff})
+	if err != nil {
+		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
+	}
+
+	// 4. Fetch Comments (GitHub + Local)
+	var githubComments []*github.PullRequestComment
+	if !skipCache {
+		cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
+		if err == nil && cachedCommentsJSON != "" {
+			json.Unmarshal([]byte(cachedCommentsJSON), &githubComments)
+		}
+	}
+	if githubComments == nil {
+		opts := github.PullRequestListCommentsOptions{}
+		githubComments, _, _ = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
+		if githubComments != nil {
+			commentsJSON, _ := json.Marshal(githubComments)
+			config.C.DB.UpsertPRComments(number, repo, string(commentsJSON))
+		}
+	}
+
+	comments := convertToPRComments(githubComments)
+	comments = filterComments(comments)
+
+	localComments, _ := config.C.DB.GetLocalCommentsForPR(owner, repo, number)
+	comments = append(comments, convertLocalCommentsToPRComments(localComments)...)
+
+	commentJSONs := []CommentJSON{}
+	for _, c := range comments {
+		commentJSONs = append(commentJSONs, CommentJSON{
+			ID:        c.GetID(),
+			Author:    c.GetLogin(),
+			Body:      c.GetBody(),
+			Path:      c.GetPath(),
+			Position:  c.GetPosition(),
+			InReplyTo: c.GetInReplyTo(),
+			CreatedAt: c.GetCreatedAt(),
+			Outdated:  c.IsOutdated(),
+		})
+	}
+
+	return &PRDetails{
+		Metadata: metadata,
+		Diff:     diff,
+		Comments: commentJSONs,
+	}, nil
 }
 
 func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (string, error) {

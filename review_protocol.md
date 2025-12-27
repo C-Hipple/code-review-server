@@ -10,6 +10,16 @@ This document describes the JSON-RPC API exposed by the code review server. The 
 
 All methods are exposed under the `RPCHandler` namespace (e.g., `RPCHandler.GetPR`).
 
+## Lifecycle and Process Management
+
+Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle:
+
+1.  **Spawning**: The client should start the `codereviewserver` binary as a child process.
+2.  **Environment**: Ensure `GTDBOT_GITHUB_TOKEN` is set in the environment if required.
+3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
+4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
+5.  **Termination**: The server will terminate when its `stdin` is closed or when it receives an interrupt signal (SIGINT/SIGTERM).
+
 ---
 
 ## Methods
@@ -59,10 +69,32 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `Number` | int    | Yes      | Pull request number                  |
 
 **Reply** (`GetPRReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if the request succeeded                 |
-| `Content` | string | Full PR response (diff, comments, metadata)     |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if the request succeeded                 |
+| `Content`  | string       | Formatted PR response (diff, comments, metadata)|
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
+
+#### Rendered Comment Format
+
+Comments are rendered inline within the diff or at the file headers. They use a boxed format with special headers to indicate their type:
+
+- **Regular Review Comment**: Indicates a comment on a specific line in the current version of the code.
+  ```
+  ┌─ REVIEW COMMENT ─────────────────
+  ```
+- **Outdated Review Comment**: Indicates a comment that was made on a previous version of the code that no longer matches the current head or position.
+  ```
+  ┌─ REVIEW COMMENT [OUTDATED] ──────
+  ```
+- **File Comment**: Indicates a comment made on the file as a whole, rather than a specific line.
+  ```
+  ┌─ FILE COMMENT ───────────────────
+  ```
+
+Each comment block includes the file path, timestamp, author(s), and comment ID, followed by the conversation thread.
 
 ---
 
@@ -78,10 +110,13 @@ Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
 | `Number` | int    | Yes      | Pull request number                  |
 
 **Reply** (`SyncPRReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if the request succeeded                 |
-| `Content` | string | Full PR response (freshly fetched)              |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if the request succeeded                 |
+| `Content`  | string       | Formatted PR response (freshly fetched)         |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -101,10 +136,13 @@ Adds a new local (pending) comment to a pull request. The comment is stored loca
 | `ReplyToID` | *int64  | No       | If replying to an existing comment, the comment ID       |
 
 **Reply** (`AddCommentReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `ID`      | int64  | Local ID of the newly created comment           |
-| `Content` | string | Updated PR content with the new comment         |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `ID`       | int64        | Local ID of the newly created comment           |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -122,10 +160,13 @@ Edits an existing local (pending) comment.
 | `Body`   | string | Yes      | New body text for the comment        |
 
 **Reply** (`EditCommentReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if the edit succeeded                    |
-| `Content` | string | Updated PR content                              |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if the edit succeeded                    |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -142,10 +183,13 @@ Deletes a local (pending) comment.
 | `ID`     | int64  | Yes      | Local comment ID to delete           |
 
 **Reply** (`DeleteCommentReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if deletion succeeded                    |
-| `Content` | string | Updated PR content                              |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if deletion succeeded                    |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -162,10 +206,13 @@ Sets the top-level feedback/review body for a pull request.
 | `Body`   | string | Yes      | Feedback/review body text            |
 
 **Reply** (`SetFeedbackReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `ID`      | int64  | ID of the feedback entry                        |
-| `Content` | string | Updated PR content                              |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `ID`       | int64        | ID of the feedback entry                        |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -181,10 +228,13 @@ Removes all local (pending) comments for a specific pull request.
 | `Number` | int    | Yes      | Pull request number                  |
 
 **Reply** (`RemovePRCommentsReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if removal succeeded                     |
-| `Content` | string | Updated PR content                              |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if removal succeeded                     |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -206,10 +256,13 @@ Submits a review to GitHub. This will:
 | `Body`   | string | No       | Top-level review body (optional)                         |
 
 **Reply** (`SubmitReviewReply`):
-| Field     | Type   | Description                                     |
-|-----------|--------|-------------------------------------------------|
-| `Okay`    | bool   | `true` if submission succeeded                  |
-| `Content` | string | Updated PR content (reflecting GitHub state)    |
+| Field      | Type         | Description                                     |
+|------------|--------------|-------------------------------------------------|
+| `Okay`     | bool         | `true` if submission succeeded                  |
+| `Content`  | string       | Formatted updated PR content                    |
+| `metadata` | PRMetadata   | Structured PR metadata                          |
+| `diff`     | string       | Raw diff content                                |
+| `comments` | []CommentJSON| List of structured PR comments                  |
 
 ---
 
@@ -251,8 +304,27 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
 ```json
 {
   "result": {
-    "Okay": true,
-    "Content": "... rendered PR content ..."
+    "okay": true,
+    "content": "... formatted PR content ...",
+    "metadata": {
+      "number": 42,
+      "title": "Example PR",
+      "author": "octocat",
+      "state": "open",
+      "description": "PR description..."
+    },
+    "diff": "--- a/file.txt\n+++ b/file.txt\n...",
+    "comments": [
+      {
+        "id": "12345",
+        "author": "octocat",
+        "body": "Nice catch!",
+        "path": "file.txt",
+        "position": "5",
+        "created_at": "2023-01-01T12:00:00Z",
+        "outdated": false
+      }
+    ]
   },
   "error": null,
   "id": 1

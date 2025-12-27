@@ -90,18 +90,25 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	reply.Okay = true
 	return nil
 }
@@ -117,21 +124,28 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID      int64
-	Content string
+	ID       int64       `json:"id"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
 	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	reply.ID = commentID.ID
 
-	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -144,8 +158,11 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
@@ -156,13 +173,17 @@ func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply)
 	}
 	reply.Okay = true
 
-	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -174,8 +195,11 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
@@ -186,13 +210,17 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 	}
 	reply.Okay = true
 
-	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -204,20 +232,27 @@ type SetFeedbackArgs struct {
 }
 
 type SetFeedbackReply struct {
-	ID      int64
-	Content string
+	ID       int64       `json:"id"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
 	config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 
-	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -228,8 +263,11 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
@@ -240,13 +278,17 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 	}
 	reply.Okay = true
 
-	// Return the updated PR body
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -259,8 +301,11 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -321,13 +366,17 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 
 	reply.Okay = true
 
-	// 5. Return Updated Content
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	return nil
 }
 
@@ -338,17 +387,25 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay    bool
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
-	content, err := GetFullPRResponse(args.Owner, args.Repo, args.Number, true)
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		h.Log.Error("Error processing SyncPR", "error", err)
 		return err
 	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, true)
 	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
 	reply.Okay = true
 	return nil
 }

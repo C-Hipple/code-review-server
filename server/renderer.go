@@ -211,6 +211,7 @@ type PRMetadata struct {
 	CIStatus    string   `json:"ci_status"`
 	CIFailures  []string `json:"ci_failures"`
 	Description string   `json:"description"`
+	URL         string   `json:"url"`
 }
 
 type PRDetails struct {
@@ -273,8 +274,10 @@ func (c *GitHubPRComment) GetCreatedAt() time.Time {
 
 func (c *GitHubPRComment) IsOutdated() bool {
 	// A comment is outdated if it targetted a line (OriginalPosition/Line != nil)
-	// but is no longer attached to the current diff (Position == nil).
-	return c.Position == nil && (c.OriginalPosition != nil || c.OriginalLine != nil)
+	// but is no longer attached to the current diff.
+	// We check for Position == nil OR Line == nil to handle cases where the API
+	// returns a valid Position (in the hunk) but no mapped Line in the file.
+	return (c.Position == nil || c.Line == nil) && (c.OriginalPosition != nil || c.OriginalLine != nil)
 }
 
 func (c *GitHubPRComment) GetCommitID() string {
@@ -439,15 +442,39 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		CIStatus:    ciStatus,
 		CIFailures:  ciFailures,
 		Description: pr.GetBody(),
+		URL:         pr.GetHTMLURL(),
 	}
 	if pr.Milestone != nil {
 		metadata.Milestone = pr.Milestone.GetTitle()
 	}
 
 	// 3. Fetch Diff
-	diff, _, err := client.PullRequests.GetRaw(ctx, owner, repo, number, github.RawOptions{Type: github.Diff})
-	if err != nil {
-		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
+	var diff string
+	if !skipCache {
+		cachedDiff, _, err := config.C.DB.GetPullRequest(number, repo)
+		if err == nil && cachedDiff != "" {
+			diff = cachedDiff
+		}
+	}
+	if diff == "" {
+		d, _, err := client.PullRequests.GetRaw(ctx, owner, repo, number, github.RawOptions{Type: github.Diff})
+		if err != nil {
+			slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
+		} else {
+			diff = d
+			// Store in cache
+			latestSha := ""
+			if pr.Head != nil && pr.Head.SHA != nil {
+				latestSha = *pr.Head.SHA
+			}
+			config.C.DB.UpsertPullRequest(number, repo, latestSha, diff)
+		}
+	}
+
+	parsedDiff, _ := utils.Parse(diff)
+	formattedDiff := diff
+	if parsedDiff != nil {
+		formattedDiff = formatDiff(parsedDiff)
 	}
 
 	// 4. Fetch Comments (GitHub + Local)
@@ -489,7 +516,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	return &PRDetails{
 		Metadata: metadata,
-		Diff:     diff,
+		Diff:     formattedDiff,
 		Comments: commentJSONs,
 	}, nil
 }
@@ -550,6 +577,7 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 		baseRef = pr.Base.GetRef()
 	}
 	sb.WriteString(fmt.Sprintf("Refs:  %s ... %s\n", baseRef, headRef))
+	sb.WriteString(fmt.Sprintf("URL:   %s\n", pr.GetHTMLURL()))
 	sb.WriteString(fmt.Sprintf("State: \t%s\n", pr.GetState()))
 
 	milestone := "No milestone"
@@ -692,14 +720,14 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	sb.WriteString(fmt.Sprintf("Files changed (%d files; %d additions, %d deletions)\n\n", fileCount, additions, deletions))
 
 	// Get diff with inline comments
-	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number, skipCache)
+	diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number, skipCache, pr)
 	sb.WriteString(diffLines)
 
 	return sb.String(), nil
 }
 
 
-func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool) (string, int) {
+func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
 	client := git_tools.GetGithubClient()
 
 	// Check database first - skip API call if cached
@@ -722,11 +750,16 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 	}
 
 	// Not in cache or error occurred, fetch from API
-	// Get the PR object to get the latest SHA for storage (future feature)
-	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+	// Use the provided PR object if available to get the latest SHA
 	latestSha := ""
-	if err == nil && pr.Head != nil && pr.Head.SHA != nil {
+	if pr != nil && pr.Head != nil && pr.Head.SHA != nil {
 		latestSha = *pr.Head.SHA
+	} else {
+		// If no PR provided, fetch briefly
+		p, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+		if err == nil && p.Head != nil && p.Head.SHA != nil {
+			latestSha = *p.Head.SHA
+		}
 	}
 
 	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
@@ -853,62 +886,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
-	var builder strings.Builder
-	for _, file := range parsedDiff.Files {
-		status := "modified"
-		filename := file.NewName
-		if file.Mode == utils.DELETED {
-			status = "deleted"
-			filename = file.OrigName
-		} else if file.Mode == utils.NEW {
-			status = "new file"
-		}
-		builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
-
-		// Render any comments specifically for this file header (No position)
-		fileKey := filename + ":"
-		if res, ok := commentsByFileAndLine[fileKey]; ok {
-			for _, tree := range res {
-				tree_str := buildCommentTree(tree, filename, false)
-				builder.WriteString(tree_str)
-			}
-			delete(commentsByFileAndLine, fileKey)
-		}
-
-		for _, hunk := range file.Hunks {
-			builder.WriteString("\n")
-			builder.WriteString(hunk.RangeHeader() + "\n")
-			for _, line := range hunk.WholeRange.Lines {
-				builder.WriteString(line.Render())
-				key := fmt.Sprintf("%s:%d", filename, line.Position)
-				res, ok := commentsByFileAndLine[key]
-				if ok {
-					for _, tree := range res {
-						// Double check if it's outdated vs the current head
-						isOutdated := tree[0].IsOutdated() || (tree[0].GetCommitID() != "" && tree[0].GetCommitID() != latestSha)
-						tree_str := buildCommentTree(tree, filename, isOutdated)
-						builder.WriteString(tree_str)
-					}
-					delete(commentsByFileAndLine, key)
-				}
-			}
-		}
-
-		// After all hunks, render any "orphaned" comments for this file (those that had a position but no matching line)
-		for key, trees := range commentsByFileAndLine {
-			if strings.HasPrefix(key, filename+":") {
-				for _, tree := range trees {
-					// These are orphaned/outdated by definition since they didn't match a line
-					tree_str := buildCommentTree(tree, filename, true)
-					builder.WriteString(tree_str)
-				}
-				delete(commentsByFileAndLine, key)
-			}
-		}
-	}
-
-	// TODO redo insertCommentTree to also work with the builder
-	result := builder.String()
+	result := formatDiff(parsedDiff)
 	// Insert any remaining comments (general file comments or comments we couldn't match)
 	// for key, trees := range commentsByFileAndLine {
 	//	parts := strings.Split(key, ":")
@@ -963,6 +941,30 @@ func buildCommentTree(tree []PRComment, filePath string, forceOutdated bool) str
 	result = append(result, "")
 
 	return strings.Join(result, "\n")
+}
+
+func formatDiff(diff *utils.Diff) string {
+	var builder strings.Builder
+	for _, file := range diff.Files {
+		status := "modified"
+		filename := file.NewName
+		if file.Mode == utils.DELETED {
+			status = "deleted"
+			filename = file.OrigName
+		} else if file.Mode == utils.NEW {
+			status = "new file"
+		}
+		builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
+
+		for _, hunk := range file.Hunks {
+			builder.WriteString("\n")
+			builder.WriteString(hunk.RangeHeader() + "\n")
+			for _, line := range hunk.WholeRange.Lines {
+				builder.WriteString(line.Render())
+			}
+		}
+	}
+	return builder.String()
 }
 
 func buildCommentTreesFromList(comments []PRComment) [][]PRComment {

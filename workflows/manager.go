@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"os"
+	"path/filepath"
+	"syscall"
 )
 
 // waitTimeout waits for the WaitGroup for the specified duration.
@@ -173,6 +176,23 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 
 func (ms ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
+
+	// Advisory lock to prevent multiple concurrent syncs
+	home, err := os.UserHomeDir()
+	if err == nil {
+		lockPath := filepath.Join(home, ".config/codereviewserver_sync.lock")
+		lockFile, err := os.Create(lockPath)
+		if err == nil {
+			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err != nil {
+				log.Warn("Another instance is already running background sync, skipping sync in this process.")
+				lockFile.Close()
+				return
+			}
+			defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			defer lockFile.Close()
+		}
+	}
 
 	if ms.oneoff {
 		var listener_wg sync.WaitGroup

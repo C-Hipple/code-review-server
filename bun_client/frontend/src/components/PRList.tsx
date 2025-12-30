@@ -21,8 +21,8 @@ export default function PRList({ onOpenReview }: PRListProps) {
     const loadList = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<{ Content: string }>('RPCHandler.GetAllReviews', [{}]);
-            setContent(res.Content || '');
+            const res = await rpcCall<{ content: string }>('RPCHandler.GetAllReviews', [{}]);
+            setContent(res.content || '');
         } catch (e) {
             console.error(e);
             setContent('Error loading list.');

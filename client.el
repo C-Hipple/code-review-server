@@ -16,6 +16,8 @@
 (require 'json)
 (require 'washer)
 (require 'markdown-mode)
+(require 'seq)
+(require 'subr-x)
 
 (defvar crs--process nil
   "The process handle for the crs JSON-RPC server.")
@@ -106,13 +108,14 @@ Useful after recompiling the Go server binary."
 
 (defun crs--handle-response (response-line)
   "Handle a single JSON-RPC response line."
+  (message "DEBUG crs response: %s" response-line)
   (condition-case err
       (let ((response (json-read-from-string response-line)))
         (let ((id (cdr (assq 'id response)))
               (result (cdr (assq 'result response)))
               (error (cdr (assq 'error response))))
           (if error
-              (message "JSON-RPC Error: %s" (cdr (assq 'message error)))
+              (message "JSON-RPC Error: %s" (if (stringp error) error (cdr (assq 'message error))))
             (let ((callback (gethash id crs--pending-requests)))
               (when callback
                 (remhash id crs--pending-requests)
@@ -306,15 +309,165 @@ CALLBACK is a function to call with the result."
   (evil-define-key 'insert my-code-review-mode-map
     "C-c C-c" #'crs-submit-review))
 
+(defun crs--index-comments (comments)
+  "Convert the list of comment objects into a hash table keyed by 'file:position'."
+  (let ((map (make-hash-table :test 'equal)))
+    (seq-do (lambda (comment)
+              (let* ((file (cdr (assq 'path comment)))
+                     (pos (cdr (assq 'position comment))) ;; String or nil
+                     (key (if (and pos (not (string= pos "")))
+                              (format "%s:%s" file pos)
+                            (format "%s:" file))))
+                (puthash key (cons comment (gethash key map)) map)))
+            comments)
+    ;; Reverse lists to keep order
+    (maphash (lambda (k v) (puthash k (nreverse v) map)) map)
+    map))
+
+(defun crs--render-comment-tree (comments)
+  "Render a list of comments (presumably a thread) into a string."
+  (if (null comments)
+      ""
+    (let* ((root (car comments))
+           (replies (cdr comments))
+           (outdated (eq (cdr (assq 'outdated root)) t))
+           (file (cdr (assq 'path root)))
+           (id (cdr (assq 'id root)))
+           (created (cdr (assq 'created_at root)))
+           (author (cdr (assq 'author root)))
+           (header (cond (outdated "    ┌─ REVIEW COMMENT [OUTDATED] ──────")
+                         ((not (cdr (assq 'position root))) "    ┌─ FILE COMMENT ───────────────────")
+                         (t "    ┌─ REVIEW COMMENT ─────────────────")))
+           (lines (list "    │"
+                        (format "    │ %s : %s" (or created "") (or id "")) ;; Simplification: not merging authors
+                        (format "    │ File: %s" file)
+                        header)))
+      ;; Render root comment
+      (push (format "    │ [%s]:" (or author "local")) lines)
+      (dolist (line (split-string (or (cdr (assq 'body root)) "") "\n"))
+        (push (format "    │   %s" line) lines))
+      
+      ;; Render replies
+      (dolist (reply replies)
+        (push "    │" lines)
+        (let ((r-author (cdr (assq 'author reply)))
+              (r-id (cdr (assq 'id reply))))
+          (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
+          (dolist (line (split-string (or (cdr (assq 'body reply)) "") "\n"))
+            (push (format "    │   %s" line) lines))))
+      
+      (push "    └──────────────────────────────────" lines)
+      (push "" lines)
+      (mapconcat #'identity (nreverse lines) "\n"))))
+
+(defun crs--render-diff (diff-content comment-map)
+  "Render the diff string with interleaved comments.
+DIFF-CONTENT is the raw diff string.
+COMMENT-MAP is a hash table of comments."
+  (with-temp-buffer
+    (insert (or diff-content ""))
+    (goto-char (point-min))
+    (let ((current-file nil)
+          (position 0)
+          (first-hunk-seen nil)
+          (result-buffer (generate-new-buffer " *crs-render-temp*")))
+      (save-current-buffer
+        (dolist (line (split-string (buffer-string) "\n"))
+          (cond
+           ;; File Header Start
+           ((string-prefix-p "diff " line)
+            (setq current-file nil)
+            (setq first-hunk-seen nil)
+            (with-current-buffer result-buffer (insert line "\n")))
+
+           ;; New Format File Header
+           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+            (setq current-file (match-string 2 line))
+            (setq first-hunk-seen nil)
+            (with-current-buffer result-buffer (insert line "\n")))
+           
+           ;; Extract Filename
+           ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+            (setq current-file (match-string 1 line))
+            (with-current-buffer result-buffer (insert line "\n")))
+           
+           ;; Hunk Header
+           ((string-prefix-p "@@ " line)
+            (if (not first-hunk-seen)
+                (progn
+                  (setq position 0)
+                  (setq first-hunk-seen t)
+                  ;; Check for file comments (position nil/empty)
+                  (when current-file
+                    (let ((comments (gethash (format "%s:" current-file) comment-map)))
+                      (when comments
+                        ;; Group by generic buckets or just render all
+                        (with-current-buffer result-buffer
+                          (insert (crs--render-comment-tree comments)))))))
+              (setq position (1+ position)))
+            (with-current-buffer result-buffer (insert line "\n")))
+           
+           ;; Content Line
+           ((and first-hunk-seen 
+                 (or (string-prefix-p "+" line)
+                     (string-prefix-p "-" line)
+                     (string-prefix-p " " line)))
+            (setq position (1+ position))
+            (with-current-buffer result-buffer (insert line "\n"))
+            ;; Check for comments at this position
+            (when current-file
+              (let ((key (format "%s:%d" current-file position)))
+                (let ((comments (gethash key comment-map)))
+                  (when comments
+                    ;; TODO: Better threading logic. For now, group by InReplyTo? 
+                    ;; The server does fancy grouping. Here we just take the list which might be flat.
+                    ;; But crs--index-comments stacks them. 
+                    ;; Ideally we should group them by thread ID.
+                    ;; Simplification: Render each comment as a separate block/tree unless we group them.
+                    ;; We'll just render them all.
+                     (with-current-buffer result-buffer
+                       (dolist (c comments)
+                         (insert (crs--render-comment-tree (list c))))))))))
+
+           ;; Other header lines (index, ---, etc)
+           (t
+            (with-current-buffer result-buffer (insert line "\n"))))))
+      
+      (with-current-buffer result-buffer
+        (let ((str (buffer-string)))
+          (kill-buffer result-buffer)
+          str)))))
+
+(defun crs--render-pr-from-json (result)
+  "Render the PR content from the JSON result."
+  (let* ((metadata (cdr (assq 'metadata result)))
+         (diff (cdr (assq 'diff result)))
+         (comments (cdr (assq 'comments result)))
+         (comment-map (crs--index-comments comments))
+         ;; Use the 'content' field for the preamble (header + conversation)
+         ;; BUT strip any existing diff part from it
+         (raw-content (cdr (assq 'content result)))
+         (preamble (if raw-content
+                       (if (string-match "Files changed (.*)\n\n" raw-content)
+                           (substring raw-content 0 (match-end 0))
+                         raw-content)
+                     "")))
+    (concat
+     preamble
+     (crs--render-diff diff comment-map))))
+
 (defun crs--render-and-update (buffer content &optional target-line)
-  "Render CONTENT into BUFFER and update it, preserving point or moving to TARGET-LINE.
-If TARGET-LINE is provided, move to that line number after rendering.
-Otherwise, try to preserve the old point position."
+  "Render CONTENT (which can be a string or a JSON-RPC result alist) into BUFFER."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
           (old-pos (point)))
       (erase-buffer)
-      (insert (or content ""))
+      
+      (if (stringp content)
+          (insert content)
+        ;; Assume it's the JSON result object
+        (insert (crs--render-pr-from-json content)))
+      
       (delta-wash)
       (my-code-review-mode)
       (if target-line
@@ -342,9 +495,10 @@ Otherwise, try to preserve the old point position."
                  (cons 'Repo repo)
                  (cons 'Number number)))
    (lambda (result)
-     (let ((content (cdr (assq 'Content result)))
-           (buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
-       (crs--render-and-update buffer content)
+     (message "DEBUG GetPR result: %S" result)
+     (let ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
+       ;; Pass the whole result to crs--render-and-update
+       (crs--render-and-update buffer result)
        (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
 
@@ -397,11 +551,10 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                          (cons 'ID editing-id)
                          (cons 'Body body)))
            (lambda (result)
-             (let ((content (cdr (assq 'Content result)))
-                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
+             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
                    (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
                (when review-buffer
-                 (crs--render-and-update review-buffer content original-line))
+                 (crs--render-and-update review-buffer result original-line))
                (message "Comment updated successfully")
                (kill-buffer-and-window))))
         ;; Adding a new comment
@@ -415,11 +568,10 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                        (cons 'ReplyToID reply-to-id)
                        (cons 'Body body)))
          (lambda (result)
-           (let ((content (cdr (assq 'Content result)))
-                 (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
+           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
                  (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
              (when review-buffer
-               (crs--render-and-update review-buffer content original-line))
+               (crs--render-and-update review-buffer result original-line))
              (message "Comment added successfully")
              (kill-buffer-and-window))))))))
 
@@ -665,10 +817,9 @@ If not on a local comment, displays a warning message."
                          (cons 'Number number)
                          (cons 'ID id)))
            (lambda (result)
-             (let ((content (cdr (assq 'Content result)))
-                   (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
                (when review-buffer
-                 (crs--render-and-update review-buffer content))
+                 (crs--render-and-update review-buffer result))
                (message "Local comment deleted")))))))))
 
 (defun crs-submit-review (event body)
@@ -696,10 +847,9 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                    (cons 'Event event)
                    (cons 'Body body)))
      (lambda (result)
-       (let ((content (cdr (assq 'Content result)))
-             (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+       (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (crs--render-and-update review-buffer content))
+           (crs--render-and-update review-buffer result))
          (message "Review submitted successfully!"))))))
 
 (defun crs-approve-review (body)
@@ -738,10 +888,9 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                    (cons 'Repo repo)
                    (cons 'Number number)))
      (lambda (result)
-       (let ((content (cdr (assq 'Content result)))
-             (review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+       (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (crs--render-and-update review-buffer content))
+           (crs--render-and-update review-buffer result))
          (message "Review synced successfully!"))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)

@@ -49,12 +49,24 @@ func NewDB(dbPath string) (*DB, error) {
 		return nil, err
 	}
 
-	conn, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1")
+	conn, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1&_busy_timeout=30000")
 	if err != nil {
 		return nil, err
 	}
 
 	db := &DB{conn: conn}
+	conn.SetMaxOpenConns(1)
+	
+	// Enable WAL mode and other optimizations
+	_, err = conn.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		slog.Error("Failed to enable WAL mode", "error", err)
+	}
+	_, err = conn.Exec("PRAGMA synchronous=NORMAL;")
+	if err != nil {
+		slog.Error("Failed to set synchronous mode", "error", err)
+	}
+
 	if err := db.initSchema(); err != nil {
 		conn.Close()
 		return nil, err
@@ -106,7 +118,8 @@ func (db *DB) initSchema() error {
 			owner TEXT NOT NULL,
 			repo TEXT NOT NULL,
 			number INTEGER NOT NULL,
-			body TEXT
+			body TEXT,
+			UNIQUE(owner, repo, number)
 		);
 
 	CREATE TABLE IF NOT EXISTS PullRequests (
@@ -295,9 +308,11 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		return nil, err
 	}
 
+	// Try to get the last inserted ID. 
+	// In SQLite with ON CONFLICT DO UPDATE, LastInsertId() might be 0 if no row was inserted.
 	id, err := result.LastInsertId()
-	if err != nil {
-		// If update happened, get the existing ID
+	if err != nil || id == 0 {
+		// Get the existing ID
 		var existingID int64
 		err := db.conn.QueryRow(
 			"SELECT id FROM items WHERE section_id = ? AND identifier = ?",
@@ -390,44 +405,50 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 	return err
 }
 
-func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) LocalComment {
+func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) (LocalComment, error) {
 	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body, reply_to_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("Failed to prepare statement", "error", err)
+		return LocalComment{}, err
 	}
 	defer stmt.Close()
 
 	// Execute the insertion
 	res, err := stmt.Exec(owner, repo, number, filename, position, body, replyToID)
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("Failed to execute insertion", "error", err)
+		return LocalComment{}, err
 	}
 
 	// Get the last inserted ID
 	id, err := res.LastInsertId()
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("Failed to get last insert ID", "error", err)
+		return LocalComment{}, err
 	}
 	return LocalComment{
 		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Position: position, Body: body, ReplyToID: replyToID,
-	}
+	}, nil
 }
 
-func (db *DB) InsertFeedback(owner, repo string, number int, body *string) {
+func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error {
 	stmt, err := db.conn.Prepare(
 		`INSERT INTO Feedback (owner, repo, number, body) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		 ON CONFLICT(owner, repo, number) DO UPDATE SET
 			body = excluded.body`,
 	)
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("Failed to prepare feedback statement", "error", err)
+		return err
 	}
 	defer stmt.Close()
 
 	_, err = stmt.Exec(owner, repo, number, body)
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("Failed to execute feedback insertion", "error", err)
+		return err
 	}
+	return nil
 }
 
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {

@@ -33,7 +33,7 @@
 
 ## Architecture
 
-- **Backend (`server.ts`)**: Spawns the `codereviewserver` binary and bridges JSON-RPC communication over stdio. Exposes HTTP POST `/api/rpc`.
+- **Backend (`server.ts`)**: Spawns the `crs` binary and bridges JSON-RPC communication over stdio. Exposes HTTP POST `/api/rpc`.
 - **Frontend (`frontend/`)**: React application interacting with the Bun backend.
 
 ## Features

@@ -69,7 +69,7 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 
 type GetReviewsArgs struct{}
 type GetReviewsReply struct {
-	Content string
+	Content string `json:"content"`
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
@@ -132,8 +132,12 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	commentID := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
-	reply.ID = commentID.ID
+	comment, err := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
+	if err != nil {
+		h.Log.Error("Error inserting local comment", "error", err)
+		return err
+	}
+	reply.ID = comment.ID
 
 	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
@@ -240,7 +244,11 @@ type SetFeedbackReply struct {
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
-	config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
+	err := config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
+	if err != nil {
+		h.Log.Error("Error inserting feedback", "error", err)
+		return err
+	}
 
 	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {

@@ -7,8 +7,28 @@ interface ReviewProps {
     number: number;
 }
 
+interface Comment {
+    id: string;
+    author: string;
+    body: string;
+    path: string;
+    position: string;
+    in_reply_to: number;
+    created_at: string;
+    outdated: boolean;
+}
+
+interface PRResponse {
+    content: string;
+    diff: string;
+    comments: Comment[];
+    metadata: any;
+}
+
 export default function Review({ owner, repo, number }: ReviewProps) {
     const [content, setContent] = useState<string>('');
+    const [diff, setDiff] = useState<string>('');
+    const [comments, setComments] = useState<Comment[]>([]);
     const [loading, setLoading] = useState(false);
 
     // UI State
@@ -33,12 +53,14 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const loadPR = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<{ Content: string }>('RPCHandler.GetPR', [{
+            const res = await rpcCall<PRResponse>('RPCHandler.GetPR', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number
             }]);
-            setContent(res.Content);
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
         } catch (e) {
             console.error(e);
             setContent('Error loading PR.');
@@ -50,12 +72,14 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const handleSync = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<{ Content: string }>('RPCHandler.SyncPR', [{
+            const res = await rpcCall<PRResponse>('RPCHandler.SyncPR', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number
             }]);
-            setContent(res.Content);
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
         } catch (e) {
             console.error(e);
         } finally {
@@ -74,7 +98,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const handleAddComment = async () => {
         if (!filename || !position || !commentBody) return;
         try {
-            const res = await rpcCall<{ Content: string }>('RPCHandler.AddComment', [{
+            const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number,
@@ -82,7 +106,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 Position: parseInt(position, 10),
                 Body: commentBody
             }]);
-            setContent(res.Content);
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
             resetCommentForm();
         } catch (e) {
             console.error(e);
@@ -92,14 +118,16 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
     const handleSubmitReview = async () => {
         try {
-            const res = await rpcCall<{ Content: string }>('RPCHandler.SubmitReview', [{
+            const res = await rpcCall<PRResponse>('RPCHandler.SubmitReview', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number,
                 Event: reviewEvent,
                 Body: reviewBody
             }]);
-            setContent(res.Content);
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
             setSubmitting(false);
         } catch (e) {
             console.error(e);
@@ -109,40 +137,37 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
     // Parse content to identify clickable lines
     const parseContent = () => {
-        if (!content) return [];
-
-        const lines = content.split('\n');
         const parsedLines: { text: string, file: string | null, pos: number | null, clickable: boolean }[] = [];
 
-        let currentFile: string | null = null;
-        let currentPos = 0;
-        let inComment = false;
-        let foundFirstHunkInFile = false;
-
-        console.log("Parsing content, total lines:", lines.length);
-
-        for (const rawLine of lines) {
-            const line = rawLine.replace(/\r$/, '');
-            let clickable = false;
-            let pos: number | null = null;
-            let file: string | null = null;
-
-            // Detect comment blocks
-            if (line.match(/^\s*┌─/)) {
-                inComment = true;
+        // 1. Add Preamble from content (header, description, conversation)
+        if (content) {
+            const preambleMatch = content.match(/^(?:.*?\n)*?Files changed \(.*?\)\n\n/);
+            const preamble = preambleMatch ? preambleMatch[0] : content;
+            const lines = preamble.split('\n');
+            for (const line of lines) {
+                parsedLines.push({ text: line, file: null, pos: null, clickable: false });
             }
+        }
 
-            if (!inComment) {
-                // Improved file header detection
+        // 2. Add Diff lines and track positions for comments
+        if (diff) {
+            const lines = diff.split('\n');
+            let currentFile: string | null = null;
+            let currentPos = 0;
+            let foundFirstHunkInFile = false;
+
+            for (const rawLine of lines) {
+                const line = rawLine.replace(/\r$/, '');
+                let clickable = false;
+                let pos: number | null = null;
+                let file: string | null = null;
+
                 const fileMatch = line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
                 if (fileMatch) {
-                    const matchedFile = fileMatch[2].trim();
-                    currentFile = matchedFile;
+                    currentFile = fileMatch[2].trim();
                     currentPos = 0;
                     foundFirstHunkInFile = false;
-                    console.log("Detected file header:", matchedFile);
                 } else if (currentFile) {
-                    // Check if it's a diff line
                     const isHunkHeader = line.startsWith('@@');
                     const isSourceLine = line.length > 0 && ['+', '-', ' '].includes(line[0]);
 
@@ -153,7 +178,6 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         } else {
                             currentPos++;
                         }
-                        // Hunk header itself is a clickable position 
                         pos = currentPos;
                         file = currentFile;
                         clickable = true;
@@ -164,21 +188,15 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         clickable = true;
                     }
                 }
+                parsedLines.push({ text: line, file, pos, clickable });
             }
-
-            // End of comment block
-            if (line.match(/^\s*└─/)) {
-                inComment = false;
-            }
-
-            parsedLines.push({ text: line, file, pos, clickable });
         }
+
         return parsedLines;
     };
 
     const handleLineClick = (idx: number, file: string, pos: number) => {
         if (activeLineIndex === idx) {
-            // Toggle off if clicking same line
             setActiveLineIndex(null);
             setFilename('');
             setPosition('');
@@ -186,8 +204,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setFilename(file);
             setPosition(pos.toString());
             setActiveLineIndex(idx);
-            setShowCommentModal(false); // Ensure modal is closed
-            setCommentBody(''); // Clear previous comment body
+            setShowCommentModal(false);
+            setCommentBody('');
         }
     };
 
@@ -199,28 +217,51 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             const line = item.text;
             let style: React.CSSProperties = { color: 'var(--text-primary)', padding: '0 5px', whiteSpace: 'pre' };
 
-            // Stylize based on content
             if (line.startsWith('+') && !line.startsWith('+++')) style = { ...style, color: 'var(--success)', background: 'rgba(35, 134, 54, 0.15)' };
             else if (line.startsWith('-') && !line.startsWith('---')) style = { ...style, color: 'var(--danger)', background: 'rgba(218, 54, 51, 0.15)' };
             else if (line.startsWith('@@')) style = { ...style, color: 'var(--accent)' };
-            else if (line.indexOf('REVIEW COMMENT') !== -1) style = { ...style, color: 'var(--warning)' };
 
             if (item.clickable) {
                 style = { ...style, cursor: 'pointer' };
             }
 
             const isInlineActive = activeLineIndex === idx;
+            const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
+            const rootComments = lineComments.filter(c => !c.in_reply_to);
 
             return (
                 <div key={idx}>
                     <div
                         style={{ ...style, borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent' }}
-                        onClick={() => item.clickable && item.file && item.pos && handleLineClick(idx, item.file, item.pos)}
+                        onClick={() => item.clickable && item.file && item.pos !== null && handleLineClick(idx, item.file, item.pos)}
                         className={item.clickable ? 'hover-line' : ''}
                         title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
                     >
                         {line}
                     </div>
+                    {rootComments.map(rc => {
+                        const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
+                        return (
+                            <div key={rc.id} style={{
+                                margin: '10px 20px',
+                                border: '1px solid var(--border)',
+                                borderRadius: '6px',
+                                background: 'var(--bg-primary)',
+                                overflow: 'hidden'
+                            }}>
+                                <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                                    <span>{rc.author} commented</span>
+                                    <span>ID: {rc.id}</span>
+                                </div>
+                                {thread.map(c => (
+                                    <div key={c.id} style={{ padding: '10px', borderBottom: c.id !== thread[thread.length - 1].id ? '1px solid var(--border)' : 'none' }}>
+                                        {c !== rc && <div style={{ fontSize: '11px', color: 'var(--accent)', marginBottom: '5px' }}>Reply by {c.author}:</div>}
+                                        <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        );
+                    })}
                     {isInlineActive && (
                         <div style={{
                             padding: '10px 20px',

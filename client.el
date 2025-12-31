@@ -346,7 +346,7 @@ CALLBACK is a function to call with the result."
       (push (format "    │ [%s]:" (or author "local")) lines)
       (dolist (line (split-string (or (cdr (assq 'body root)) "") "\n"))
         (push (format "    │   %s" line) lines))
-      
+
       ;; Render replies
       (dolist (reply replies)
         (push "    │" lines)
@@ -355,7 +355,7 @@ CALLBACK is a function to call with the result."
           (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
           (dolist (line (split-string (or (cdr (assq 'body reply)) "") "\n"))
             (push (format "    │   %s" line) lines))))
-      
+
       (push "    └──────────────────────────────────" lines)
       (push "" lines)
       (mapconcat #'identity (nreverse lines) "\n"))))
@@ -385,12 +385,12 @@ COMMENT-MAP is a hash table of comments."
             (setq current-file (match-string 2 line))
             (setq first-hunk-seen nil)
             (with-current-buffer result-buffer (insert line "\n")))
-           
+
            ;; Extract Filename
            ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
             (setq current-file (match-string 1 line))
             (with-current-buffer result-buffer (insert line "\n")))
-           
+
            ;; Hunk Header
            ((string-prefix-p "@@ " line)
             (if (not first-hunk-seen)
@@ -406,9 +406,9 @@ COMMENT-MAP is a hash table of comments."
                           (insert (crs--render-comment-tree comments)))))))
               (setq position (1+ position)))
             (with-current-buffer result-buffer (insert line "\n")))
-           
+
            ;; Content Line
-           ((and first-hunk-seen 
+           ((and first-hunk-seen
                  (or (string-prefix-p "+" line)
                      (string-prefix-p "-" line)
                      (string-prefix-p " " line)))
@@ -419,20 +419,20 @@ COMMENT-MAP is a hash table of comments."
               (let ((key (format "%s:%d" current-file position)))
                 (let ((comments (gethash key comment-map)))
                   (when comments
-                    ;; TODO: Better threading logic. For now, group by InReplyTo? 
+                    ;; TODO: Better threading logic. For now, group by InReplyTo?
                     ;; The server does fancy grouping. Here we just take the list which might be flat.
-                    ;; But crs--index-comments stacks them. 
+                    ;; But crs--index-comments stacks them.
                     ;; Ideally we should group them by thread ID.
                     ;; Simplification: Render each comment as a separate block/tree unless we group them.
                     ;; We'll just render them all.
-                     (with-current-buffer result-buffer
-                       (dolist (c comments)
-                         (insert (crs--render-comment-tree (list c))))))))))
+                    (with-current-buffer result-buffer
+                      (dolist (c comments)
+                        (insert (crs--render-comment-tree (list c))))))))))
 
            ;; Other header lines (index, ---, etc)
            (t
             (with-current-buffer result-buffer (insert line "\n"))))))
-      
+
       (with-current-buffer result-buffer
         (let ((str (buffer-string)))
           (kill-buffer result-buffer)
@@ -462,12 +462,12 @@ COMMENT-MAP is a hash table of comments."
     (let ((inhibit-read-only t)
           (old-pos (point)))
       (erase-buffer)
-      
+
       (if (stringp content)
           (insert content)
         ;; Assume it's the JSON result object
         (insert (crs--render-pr-from-json content)))
-      
+
       (delta-wash)
       (my-code-review-mode)
       (if target-line
@@ -630,6 +630,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           nil)))))
 
 (defun crs--get-comment-context ()
+  (interactive)
   "Extract owner, repo, number, filename, position, reply-to-id, and local comment edit info.
 Returns a list: (owner repo number filename position reply-to-id local-comment-id local-comment-body).
 If on a local comment, local-comment-id and local-comment-body will be set."
@@ -716,13 +717,16 @@ If on a local comment, local-comment-id and local-comment-body will be set."
           (while (<= (line-number-at-pos) target-line)
             (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
               ;; Skip lines that are part of a comment block (allowing for ANSI codes)
-              (unless (string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
+              ;; Also skip hunk headers (@@ lines)
+              (unless (or (string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
+                          (string-match-p "^@@" line-content))
                 (setq count (1+ count))))
             (forward-line 1))
           (setq position count))))
 
     (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body)))
       (message "Context extracted: %S" ctx)
+      (message (concat "Position:" (prin1-to-string position)))
       ctx)))
 
 (defun crs-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body)

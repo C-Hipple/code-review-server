@@ -2,7 +2,9 @@ package server
 
 import (
 	"crs/config"
+	"crs/database"
 	"crs/git_tools"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/rpc"
@@ -103,6 +105,26 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
+
+	// Trigger async plugin execution
+	commentsJSON := "[]"
+	if len(details.Comments) > 0 {
+		// Use the already fetched comments if available, but they are structs here.
+		// We can try to get the raw JSON from DB or marshal them back.
+		// For simplicity/performance, let's grab the raw JSON from DB since GetPRDetails usually gets it.
+		// Check GetPRDetails implementation if needed, but for now retrieving it from DB is safest 
+		// to match what the user might expect (raw data).
+		// Actually, GetPRDetails returns parsed structs. 
+		// We can get the raw comments JSON from DB
+		rawComments, _ := config.C.DB.GetPRComments(args.Number, args.Repo)
+		if rawComments != "" {
+			commentsJSON = rawComments
+		}
+	}
+	
+	// Run plugins in background
+	metadataJSON, _ := json.Marshal(details.Metadata)
+	go RunPlugins(args.Owner, args.Repo, args.Number, details.Diff, commentsJSON, string(metadataJSON))
 
 	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
@@ -415,5 +437,36 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
 	reply.Okay = true
+	return nil
+}
+
+type ListPluginsArgs struct{}
+type ListPluginsReply struct {
+	Plugins []config.Plugin `json:"plugins"`
+}
+
+func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply) error {
+	reply.Plugins = config.C.Plugins
+	return nil
+}
+
+type GetPluginOutputArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+}
+
+type GetPluginOutputReply struct {
+	Output map[string]database.PluginResult `json:"output"`
+}
+
+// GetPluginOutput returns all stored plugin outputs for the given PR
+func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPluginOutputReply) error {
+	results, err := config.C.DB.GetPluginResults(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching plugin results", "error", err)
+		return err
+	}
+	reply.Output = results
 	return nil
 }

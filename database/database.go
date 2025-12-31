@@ -205,8 +205,79 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding reply_to_id column to LocalComment", "error", err)
 		}
 	}
+	// Migration: Add status column to PluginResults if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='status'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN status TEXT DEFAULT 'success'") // Default for existing rows
+		if err != nil {
+			slog.Warn("Error adding status column to PluginResults", "error", err)
+		}
+	}
+
+	pluginResultsSchema := `
+	CREATE TABLE IF NOT EXISTS PluginResults (
+		id INTEGER PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		plugin_name TEXT NOT NULL,
+		result TEXT NOT NULL,
+		status TEXT DEFAULT 'success',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number, plugin_name)
+	);
+	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
+	`
+	_, err = db.conn.Exec(pluginResultsSchema)
+	if err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName string, result string, status string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(owner, repo, pr_number, plugin_name) DO UPDATE SET
+			result = excluded.result,
+			status = excluded.status,
+			updated_at = excluded.updated_at`,
+		owner, repo, prNumber, pluginName, result, status,
+	)
+	return err
+}
+
+type PluginResult struct {
+	Result string `json:"result"`
+	Status string `json:"status"`
+}
+
+func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]PluginResult, error) {
+	rows, err := db.conn.Query(
+		"SELECT plugin_name, result, status FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make(map[string]PluginResult)
+	for rows.Next() {
+		var name, content, status string
+		// Handle potential NULL status for very old records if migration failed somewhat, though we set default.
+		// Actually, Scan handles basic types.
+		if err := rows.Scan(&name, &content, &status); err != nil {
+			return nil, err
+		}
+		results[name] = PluginResult{
+			Result: content,
+			Status: status,
+		}
+	}
+	return results, nil
 }
 
 func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {

@@ -29,6 +29,15 @@ type RawWorkflow struct {
 	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
 }
 
+// Plugin defines the configuration for an installed plugin
+type Plugin struct {
+	Name            string
+	Command         string
+	IncludeDiff     bool
+	IncludeHeaders  bool
+	IncludeComments bool
+}
+
 // Define your classes
 type Config struct {
 	Repos          []string
@@ -36,6 +45,7 @@ type Config struct {
 	SleepDuration  time.Duration
 	JiraDomain     string
 	GithubUsername string
+	Plugins        []Plugin
 	DB             *database.DB
 }
 
@@ -50,6 +60,7 @@ func Initialize() error {
 		SleepDuration  int64
 		Workflows      []RawWorkflow
 		GithubUsername string
+		Plugins        []Plugin
 	}
 	home_dir, err := os.UserHomeDir()
 	if err != nil {
@@ -95,6 +106,7 @@ func Initialize() error {
 		SleepDuration:  parsed_sleep_duration,
 		JiraDomain:     intermediate_config.JiraDomain,
 		GithubUsername: intermediate_config.GithubUsername,
+		Plugins:        intermediate_config.Plugins,
 		DB:             db,
 	}
 	return nil

@@ -456,6 +456,42 @@ COMMENT-MAP is a hash table of comments."
      preamble
      (crs--render-diff diff comment-map))))
 
+(defun crs--simplify-diff-headers ()
+  "Replace standard git diff headers with a simplified 'modified filename' format.
+This must be called after delta-wash."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^diff --git a/\\(.*\\) b/.*$" nil t)
+      (let* ((filename (match-string 1))
+             (start (match-beginning 0))
+             (type "modified")
+             (limit (save-excursion
+                      (if (re-search-forward "^diff --git" nil t)
+                          (match-beginning 0)
+                        (point-max)))))
+
+        (save-excursion
+          (when (re-search-forward "^new file mode" limit t)
+            (setq type "new file"))
+          (goto-char start)
+          (when (re-search-forward "^deleted file mode" limit t)
+            (setq type "deleted")))
+
+        (let ((end-marker-pos
+               (save-excursion
+                 (or (re-search-forward "^\\+\\+\\+ .*\n" limit t)
+                     (re-search-forward "^Binary files .*\n" limit t)))))
+
+          (if end-marker-pos
+              (progn
+                (delete-region start end-marker-pos)
+                (let ((pad (cond ((string= type "modified") "     ")
+                                 ((string= type "new file") "     ")
+                                 ((string= type "deleted")  "      ")
+                                 (t "     "))))
+                  (insert (format "%s%s%s\n" type pad filename))))
+            (message "Could not find end of header for %s" filename)))))))
+
 (defun crs--render-and-update (buffer content &optional target-line)
   "Render CONTENT (which can be a string or a JSON-RPC result alist) into BUFFER."
   (with-current-buffer buffer
@@ -469,16 +505,20 @@ COMMENT-MAP is a hash table of comments."
         (insert (crs--render-pr-from-json content)))
 
       (delta-wash)
+      (crs--simplify-diff-headers)
       (my-code-review-mode)
-      (if target-line
-          ;; Move to the specified line number
-          (progn
-            (goto-char (point-min))
-            (forward-line (1- target-line))
-            (when (> (point) (point-max))
-              (goto-char (point-max))))
-        ;; Fall back to preserving old position
-        (goto-char (min old-pos (point-max))))
+      (let ((final-pos (if target-line
+                           (progn
+                             (goto-char (point-min))
+                             (forward-line (1- target-line))
+                             (if (> (point) (point-max))
+                                 (point-max)
+                               (point)))
+                         (min old-pos (point-max)))))
+        (goto-char final-pos)
+        ;; Also update point in any windows showing this buffer
+        (dolist (win (get-buffer-window-list buffer nil t))
+          (set-window-point win final-pos)))
       (setq buffer-read-only t))))
 
 (defun crs-get-review (owner repo number)
@@ -536,6 +576,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
         (filename crs--comment-filename)
         (reply-to-id crs--comment-reply-to-id)
         (editing-id crs--comment-editing-id)
+        (original-line crs--comment-original-line)
         (position (if crs--comment-reply-to-id
                       nil
                     crs--comment-position)))
@@ -551,8 +592,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                          (cons 'ID editing-id)
                          (cons 'Body body)))
            (lambda (result)
-             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
-                   (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
+             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
                (when review-buffer
                  (crs--render-and-update review-buffer result original-line))
                (message "Comment updated successfully")
@@ -568,8 +608,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
                        (cons 'ReplyToID reply-to-id)
                        (cons 'Body body)))
          (lambda (result)
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number)))
-                 (original-line (with-current-buffer (current-buffer) crs--comment-original-line)))
+           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
              (when review-buffer
                (crs--render-and-update review-buffer result original-line))
              (message "Comment added successfully")

@@ -18,6 +18,8 @@
 ;; For using the review functionality, open one of your files called out in org-agenda list and then call (org-agenda).  There you will have a new binding of R to enter your review periods.
 
 ;;; Code:
+(require 'washer)
+
 (defvar gtdbot-sync-frequency 10
   "How often codereverserver will sync reviews in service mode (seconds)")
 
@@ -26,16 +28,6 @@
 
 (defvar gtdbot-review-files '("~/gtd/reviews.org" "~/gtd/full_reviews.org"))
 
-;;;###autoload
-(defun delta-wash()
-  "interactive of the call to magit delta function if you have magit-delta or code-review installed."
-  (interactive)
-  (cond ((fboundp 'magit-delta-call-delta-and-convert-ansi-escape-sequences)
-         (magit-delta-call-delta-and-convert-ansi-escape-sequences))
-        ((fboundp 'code-review-delta-call-delta)
-         (code-review-delta-call-delta))
-        (t
-         (message "You do not have a delta washer installed!"))))
 
 (defun gtdbot--callback (x)
   ;; TODO: Allow for setting the reviews file

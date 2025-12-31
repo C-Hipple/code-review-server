@@ -1,15 +1,22 @@
 package server
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/git_tools"
-	"codereviewserver/org"
+	"crs/config"
+	"crs/git_tools"
 	"fmt"
 	"log/slog"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+
+	"github.com/google/go-github/v48/github"
+	// "strings"
 )
+
+// testing mutable state
+// RPC handler is recreated for each request, it's not stateful across requests
+// simulate a db lol
+var CurrentCount int
 
 func RunServer(log *slog.Logger) {
 	server := rpc.NewServer()
@@ -42,8 +49,8 @@ type RPCHandler struct {
 
 type HelloArgs struct{}
 type HelloReply struct {
-	Message string
 	Count   int
+	Content string
 }
 
 func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
@@ -53,18 +60,20 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 		h.Log.Error("Error counting items", "error", err)
 		return err
 	}
-	reply.Message = fmt.Sprintf("hello %d", count)
+	CurrentCount += count
+	reply.Content = fmt.Sprintf("hello %d", CurrentCount)
 	reply.Count = count
+
 	return nil
 }
 
 type GetReviewsArgs struct{}
 type GetReviewsReply struct {
-	Content string
+	Content string `json:"content"`
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
-	renderer := org.NewOrgRenderer(config.C.DB, org.BaseOrgSerializer{})
+	renderer := NewOrgRenderer(config.C.DB)
 	content, err := renderer.RenderAllSectionsToString()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
@@ -81,12 +90,330 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Content string
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
 
-	diff := git_tools.GetPRDiff(git_tools.GetGithubClient(), args.Owner, args.Repo, args.Number)
-	reply.Content = diff
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.Okay = true
+	return nil
+}
+
+type AddCommentArgs struct {
+	Owner     string `json:"Owner"`
+	Repo      string `json:"Repo"`
+	Number    int    `json:"Number"`
+	Filename  string
+	Position  int64
+	Body      string
+	ReplyToID *int64
+}
+
+type AddCommentReply struct {
+	ID       int64       `json:"id"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
+	comment, err := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
+	if err != nil {
+		h.Log.Error("Error inserting local comment", "error", err)
+		return err
+	}
+	reply.ID = comment.ID
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type EditCommentArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	ID     int64  `json:"ID"`
+	Body   string `json:"Body"`
+}
+
+type EditCommentReply struct {
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
+	err := config.C.DB.UpdateLocalComment(args.ID, args.Body)
+	if err != nil {
+		h.Log.Error("Error updating local comment", "error", err)
+		return err
+	}
+	reply.Okay = true
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type DeleteCommentArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	ID     int64  `json:"ID"`
+}
+
+type DeleteCommentReply struct {
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
+	err := config.C.DB.DeleteLocalComment(args.ID)
+	if err != nil {
+		h.Log.Error("Error deleting local comment", "error", err)
+		return err
+	}
+	reply.Okay = true
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type SetFeedbackArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
+	Body     string
+}
+
+type SetFeedbackReply struct {
+	ID       int64       `json:"id"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
+	err := config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
+	if err != nil {
+		h.Log.Error("Error inserting feedback", "error", err)
+		return err
+	}
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type RemovePRCommentsArgs struct {
+	Repo   string `json:"Repo"`
+	Owner  string `json:"Owner"`
+	Number int    `json:"Number"`
+}
+
+type RemovePRCommentsReply struct {
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
+	err := config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error removing local comments", "error", err)
+		return err
+	}
+	reply.Okay = true
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type SubmitReviewArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	Event  string `json:"Event"` // APPROVE, REQUEST_CHANGES, or COMMENT
+	Body   string `json:"Body"`  // Top-level review body (optional)
+}
+
+type SubmitReviewReply struct {
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
+	// 1. Fetch Local Comments
+	comments, err := config.C.DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error fetching local comments", "error", err)
+		return err
+	}
+
+	// 2. Construct Review Request
+	client := git_tools.GetGithubClient()
+	var reviewComments []*github.DraftReviewComment
+	for _, c := range comments {
+		if c.Body == nil {
+			continue
+		}
+		if c.ReplyToID != nil {
+			err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, *c.ReplyToID)
+			if err != nil {
+				h.Log.Error("Error submitting reply", "error", err)
+			}
+		} else {
+			// Top-level comments
+			pos := int(c.Position)
+			body := *c.Body
+			reviewComments = append(reviewComments, &github.DraftReviewComment{
+				Path:     &c.Filename,
+				Position: &pos,
+				Body:     &body,
+			})
+		}
+	}
+
+	reviewRequest := &github.PullRequestReviewRequest{
+		Event:    &args.Event,
+		Comments: reviewComments,
+	}
+	if args.Body != "" {
+		reviewRequest.Body = &args.Body
+	}
+
+	// 3. Submit to GitHub
+	err = git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest)
+	if err != nil {
+		h.Log.Error("Error submitting review to GitHub", "error", err)
+		return err
+	}
+
+	// 4. Clean up Local Comments
+	// Only delete the comments we successfully submitted?
+	// For MVP, we delete all local comments for this PR because we assume they were part of the review.
+	err = config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error deleting local comments after submission", "error", err)
+		// We don't return error here because submission succeeded, but we log it.
+	}
+
+	reply.Okay = true
+
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	return nil
+}
+
+type SyncPRArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+}
+
+type SyncPRReply struct {
+	Okay     bool        `json:"okay"`
+	Content  string      `json:"content"`
+	Metadata *PRMetadata `json:"metadata"`
+	Diff     string      `json:"diff"`
+	Comments []CommentJSON `json:"comments"`
+}
+
+func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, true)
+	if err != nil {
+		h.Log.Error("Error processing SyncPR", "error", err)
+		return err
+	}
+
+	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, true)
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.Okay = true
 	return nil
 }

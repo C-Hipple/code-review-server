@@ -31,6 +31,17 @@ type Item struct {
 	Archived    bool
 }
 
+type LocalComment struct {
+	ID        int64
+	Owner     string    // GitHub owner/org
+	Repo      string    // GitHub repository name
+	Number    int       // PR number
+	Filename  string    // going to be the rel file like src/main.rs
+	Position  int64
+	Body      *string
+	ReplyToID *int64    // ID of the comment being replied to, or nil if top-level
+}
+
 func NewDB(dbPath string) (*DB, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
@@ -38,17 +49,30 @@ func NewDB(dbPath string) (*DB, error) {
 		return nil, err
 	}
 
-	conn, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1")
+	conn, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1&_busy_timeout=30000")
 	if err != nil {
 		return nil, err
 	}
 
 	db := &DB{conn: conn}
+	conn.SetMaxOpenConns(1)
+	
+	// Enable WAL mode and other optimizations
+	_, err = conn.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		slog.Error("Failed to enable WAL mode", "error", err)
+	}
+	_, err = conn.Exec("PRAGMA synchronous=NORMAL;")
+	if err != nil {
+		slog.Error("Failed to set synchronous mode", "error", err)
+	}
+
 	if err := db.initSchema(); err != nil {
 		conn.Close()
 		return nil, err
 	}
 
+	slog.Info("Database connection established and schema initialized", "path", dbPath)
 	return db, nil
 }
 
@@ -78,12 +102,111 @@ func (db *DB) initSchema() error {
 		FOREIGN KEY(section_id) REFERENCES sections(id) ON DELETE CASCADE
 	);
 
+		CREATE TABLE IF NOT EXISTS LocalComment (
+			id INTEGER PRIMARY KEY,
+			owner TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			number INTEGER NOT NULL,
+			filename TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			body TEXT,
+			reply_to_id INTEGER
+		);
+
+		CREATE TABLE IF NOT EXISTS Feedback (
+			id INTEGER PRIMARY KEY,
+			owner TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			number INTEGER NOT NULL,
+			body TEXT,
+			UNIQUE(owner, repo, number)
+		);
+
+	CREATE TABLE IF NOT EXISTS PullRequests (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		latest_sha TEXT NOT NULL,
+		body TEXT NOT NULL,
+		UNIQUE(pr_number, repo, latest_sha)
+	);
+
+	CREATE TABLE IF NOT EXISTS PRComments (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		comments_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
+	CREATE TABLE IF NOT EXISTS RequestedReviewers (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		reviewers_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
+	CREATE TABLE IF NOT EXISTS CIStatus (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		sha TEXT NOT NULL,
+		status_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo, sha)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
+	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
+	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
+	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	`
 
 	_, err := db.conn.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: Add PR columns to LocalComment table if they don't exist
+	// Check if owner column exists by querying pragma_table_info
+	var count int
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='owner'").Scan(&count)
+	if err == nil && count == 0 {
+		// Add the new columns (Legacy migration code kept for completeness)
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN owner TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding owner column to LocalComment (may already exist)", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN repo TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding repo column to LocalComment (may already exist)", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN number INTEGER DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding number column to LocalComment (may already exist)", "error", err)
+		}
+		// Update existing rows that might have NULL values
+		_, err = db.conn.Exec("UPDATE LocalComment SET owner = '' WHERE owner IS NULL")
+		if err != nil {
+			slog.Warn("Error updating owner defaults", "error", err)
+		}
+		_, err = db.conn.Exec("UPDATE LocalComment SET repo = '' WHERE repo IS NULL")
+		if err != nil {
+			slog.Warn("Error updating repo defaults", "error", err)
+		}
+		_, err = db.conn.Exec("UPDATE LocalComment SET number = 0 WHERE number IS NULL")
+		if err != nil {
+			slog.Warn("Error updating number defaults", "error", err)
+		}
+	}
+	
+	// Migration: Add reply_to_id column
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='reply_to_id'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN reply_to_id INTEGER DEFAULT NULL")
+		if err != nil {
+			slog.Warn("Error adding reply_to_id column to LocalComment", "error", err)
+		}
+	}
+
+	return nil
 }
 
 func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {
@@ -95,7 +218,7 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section,
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?, ?)",
+			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?)",
 			sectionName, indentLevel,
 		)
 		if err != nil {
@@ -185,9 +308,11 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		return nil, err
 	}
 
+	// Try to get the last inserted ID. 
+	// In SQLite with ON CONFLICT DO UPDATE, LastInsertId() might be 0 if no row was inserted.
 	id, err := result.LastInsertId()
-	if err != nil {
-		// If update happened, get the existing ID
+	if err != nil || id == 0 {
+		// Get the existing ID
 		var existingID int64
 		err := db.conn.QueryRow(
 			"SELECT id FROM items WHERE section_id = ? AND identifier = ?",
@@ -277,6 +402,233 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 
 	query := "DELETE FROM items WHERE section_id = ? AND identifier NOT IN (" + placeholders + ")"
 	_, err := db.conn.Exec(query, args...)
+	return err
+}
+
+func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) (LocalComment, error) {
+	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body, reply_to_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		slog.Error("Failed to prepare statement", "error", err)
+		return LocalComment{}, err
+	}
+	defer stmt.Close()
+
+	// Execute the insertion
+	res, err := stmt.Exec(owner, repo, number, filename, position, body, replyToID)
+	if err != nil {
+		slog.Error("Failed to execute insertion", "error", err)
+		return LocalComment{}, err
+	}
+
+	// Get the last inserted ID
+	id, err := res.LastInsertId()
+	if err != nil {
+		slog.Error("Failed to get last insert ID", "error", err)
+		return LocalComment{}, err
+	}
+	return LocalComment{
+		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Position: position, Body: body, ReplyToID: replyToID,
+	}, nil
+}
+
+func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error {
+	stmt, err := db.conn.Prepare(
+		`INSERT INTO Feedback (owner, repo, number, body) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, number) DO UPDATE SET
+			body = excluded.body`,
+	)
+	if err != nil {
+		slog.Error("Failed to prepare feedback statement", "error", err)
+		return err
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(owner, repo, number, body)
+	if err != nil {
+		slog.Error("Failed to execute feedback insertion", "error", err)
+		return err
+	}
+	return nil
+}
+
+func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []LocalComment
+	for rows.Next() {
+		var comment LocalComment
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
+func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComment, error) {
+	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []LocalComment
+	for rows.Next() {
+		var comment LocalComment
+		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
+			return nil, err
+		}
+		comments = append(comments, comment)
+	}
+	return comments, rows.Err()
+}
+
+func (db *DB) DeleteAllLocalComments() error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment")
+	return err
+}
+
+func (db *DB) DeleteLocalCommentsForPR(owner, repo string, number int) error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+	return err
+}
+
+func (db *DB) UpdateLocalComment(id int64, body string) error {
+	_, err := db.conn.Exec("UPDATE LocalComment SET body = ? WHERE id = ?", body, id)
+	return err
+}
+
+func (db *DB) DeleteLocalComment(id int64) error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE id = ?", id)
+	return err
+}
+
+func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) {
+	var body string
+	var sha string
+	err := db.conn.QueryRow(
+		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		prNumber, repo,
+	).Scan(&body, &sha)
+
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return body, sha, nil
+}
+
+func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, body string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PullRequests (pr_number, repo, latest_sha, body)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
+			body = excluded.body`,
+		prNumber, repo, latestSha, body,
+	)
+	return err
+}
+
+func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
+	var commentsJSON string
+	err := db.conn.QueryRow(
+		"SELECT comments_json FROM PRComments WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&commentsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return commentsJSON, nil
+}
+
+func (db *DB) UpsertPRComments(prNumber int, repo, commentsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRComments (pr_number, repo, comments_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			comments_json = excluded.comments_json`,
+		prNumber, repo, commentsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRComments(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRComments WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
+func (db *DB) DeletePullRequests(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
+func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
+	var reviewersJSON string
+	err := db.conn.QueryRow(
+		"SELECT reviewers_json FROM RequestedReviewers WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&reviewersJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return reviewersJSON, nil
+}
+
+func (db *DB) UpsertRequestedReviewers(prNumber int, repo, reviewersJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO RequestedReviewers (pr_number, repo, reviewers_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			reviewers_json = excluded.reviewers_json`,
+		prNumber, repo, reviewersJSON,
+	)
+	return err
+}
+
+func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error) {
+	var statusJSON string
+	err := db.conn.QueryRow(
+		"SELECT status_json FROM CIStatus WHERE pr_number = ? AND repo = ? AND sha = ?",
+		prNumber, repo, sha,
+	).Scan(&statusJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return statusJSON, nil
+}
+
+func (db *DB) UpsertCIStatus(prNumber int, repo, sha, statusJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO CIStatus (pr_number, repo, sha, status_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+			status_json = excluded.status_json`,
+		prNumber, repo, sha, statusJSON,
+	)
 	return err
 }
 

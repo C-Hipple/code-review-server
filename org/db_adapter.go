@@ -3,7 +3,7 @@ package org
 import (
 	"database/sql"
 	"fmt"
-    "codereviewserver/database"
+    "crs/database"
 	"log/slog"
 	"strings"
 )
@@ -59,6 +59,28 @@ func (d *DBOrgDocument) DeleteItemInSection(sectionName string, itemToDelete Org
 	if err != nil {
 		return err
 	}
+	
+	// Extract repo and PR number to clean up associated data
+	repo := itemToDelete.Repo()
+	prIDStr := itemToDelete.ID()
+	
+	// Try to parse PR number and clean up associated data
+	if repo != "" && prIDStr != "" {
+		var prNumber int
+		if _, parseErr := fmt.Sscanf(prIDStr, "%d", &prNumber); parseErr == nil {
+			// Delete associated PR comments and diffs
+			if err := d.DB.DeletePRComments(prNumber, repo); err != nil {
+				slog.Warn("Error deleting PR comments", "pr", prNumber, "repo", repo, "error", err)
+				// Continue even if cleanup fails
+			}
+			if err := d.DB.DeletePullRequests(prNumber, repo); err != nil {
+				slog.Warn("Error deleting PR diffs", "pr", prNumber, "repo", repo, "error", err)
+				// Continue even if cleanup fails
+			}
+			// Note: LocalComments are deleted separately via RPC calls, not here
+		}
+	}
+	
 	return section.DeleteItem(itemToDelete)
 }
 

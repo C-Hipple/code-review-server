@@ -3,6 +3,7 @@ package jira
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,7 +59,7 @@ func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
 
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
+		slog.Error("Error creating request", "error", err)
 		return []int{}
 	}
 	req.URL.RawQuery = params.Encode()
@@ -69,23 +70,23 @@ func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error making request:", err)
+		slog.Error("Error making request", "error", err)
 		return []int{}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println("Error getting JIRA search!")
+		slog.Error("Error getting JIRA search")
 		// Read the response body to get the error message.
 		body := make([]byte, 1024)
 		n, _ := resp.Body.Read(body) // We ignore the error here.
-		fmt.Println(string(body[:n]))
+		slog.Error("JIRA response body", "content", string(body[:n]))
 		return []int{}
 	}
 
 	var data JiraSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		fmt.Println("Error decoding JSON:", err)
+		slog.Error("Error decoding JSON", "error", err)
 		return []int{}
 	}
 

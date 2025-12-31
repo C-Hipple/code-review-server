@@ -50,6 +50,7 @@ SectionTitle: str
 ReleaseCommandCheck: str
 Prune: string
 IncludeDiff: bool
+Teams: list[str]
 ```
 
 The `GithubUsername` can be set at the top level of the config file. If a workflow does not have a `GithubUsername` set, it will inherit the top-level setting. This is useful for setting a default user for all workflows.
@@ -112,13 +113,40 @@ Prune = "Delete"
 
 ## Filters
 
-Each workflow can the available filters:
+Each workflow can use the available filters:
 
-*   `FilterMyReviewRequested`
-*   `FilterNotDraft`
-*   `FilterIsDraft`
-*   `FilterMyTeamRequested`
-*   `FilterNotMyPRs`
+*   `FilterMyReviewRequested` - PRs where you are personally requested as a reviewer
+*   `FilterNotDraft` - Exclude draft PRs
+*   `FilterIsDraft` - Only include draft PRs
+*   `FilterNotMyPRs` - Exclude PRs authored by you
+
+### Team-Based Filtering
+
+You can filter PRs by team reviewers by adding a `Teams` field to your workflow configuration. When `Teams` is specified, only PRs where one of those teams is requested as a reviewer will be included. Each workflow can specify its own list of teams, allowing different workflows to target different teams.
+
+```toml
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Growth Team Reviews"
+Owner = "your-org"
+Filters = ["FilterNotDraft"]
+Teams = ["growth-pod-review", "growth-and-purchase-pod"]
+OrgFileName = "reviews.org"
+SectionTitle = "Growth Team Reviews"
+Prune = "Archive"
+
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Backend Team Reviews"
+Owner = "your-org"
+Filters = ["FilterNotDraft"]
+Teams = ["backend-team", "api-reviewers"]
+OrgFileName = "reviews.org"
+SectionTitle = "Backend Reviews"
+Prune = "Archive"
+```
+
+Note: The `Teams` field uses team **slugs** (the URL-safe identifier), not display names. You can find a team's slug in the GitHub URL when viewing the team page.
 
 
 ## JIRA Integration

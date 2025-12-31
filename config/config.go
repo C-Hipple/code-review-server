@@ -1,7 +1,9 @@
 package config
 
 import (
-	"codereviewserver/database"
+	"crs/database"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +26,7 @@ type RawWorkflow struct {
 	Prune               string
 	GithubUsername      string
 	IncludeDiff         bool
+	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
 }
 
 // Define your classes
@@ -38,8 +41,9 @@ type Config struct {
 
 var C Config
 
-func init() {
-
+// Initialize loads the configuration from the config file and initializes the database.
+// This should be called from main() to allow proper error handling.
+func Initialize() error {
 	var intermediate_config struct {
 		Repos          []string
 		JiraDomain     string
@@ -48,18 +52,17 @@ func init() {
 		GithubUsername string
 	}
 	home_dir, err := os.UserHomeDir()
-	configPath := "~/.config/codereviewserver.toml"
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+	configPath := filepath.Join(home_dir, ".config/codereviewserver.toml")
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
-		// Fallback to home directory
-		the_bytes, err = os.ReadFile(filepath.Join(home_dir, ".config/codereviewserver.toml"))
-		if err != nil {
-			panic(err)
-		}
+		return fmt.Errorf("failed to read config file at %s: %w", configPath, err)
 	}
 	err = toml.Unmarshal(the_bytes, &intermediate_config)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	for i := range intermediate_config.Workflows {
@@ -75,10 +78,16 @@ func init() {
 
 	// Initialize database
 	dbPath := filepath.Join(home_dir, ".config/codereviewserver.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		slog.Info("Found database file", "path", dbPath)
+	} else {
+		slog.Info("Setting up database file", "path", dbPath)
+	}
 	db, err := database.NewDB(dbPath)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to initialize database: %w", err)
 	}
+	slog.Info("Database initialized successfully")
 
 	C = Config{
 		Repos:          intermediate_config.Repos,
@@ -88,4 +97,5 @@ func init() {
 		GithubUsername: intermediate_config.GithubUsername,
 		DB:             db,
 	}
+	return nil
 }

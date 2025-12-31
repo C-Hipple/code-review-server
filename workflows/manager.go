@@ -1,13 +1,16 @@
 package workflows
 
 import (
-	"codereviewserver/config"
-	"codereviewserver/org"
+	"crs/config"
+	"crs/org"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
+	"os"
+	"path/filepath"
+	"syscall"
 )
 
 // waitTimeout waits for the WaitGroup for the specified duration.
@@ -173,27 +176,57 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 
 func (ms ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
-	var listener_wg sync.WaitGroup
-	listener_wg.Add(1)
-	go ListenChanges(log, ms.workflow_chan, &listener_wg)
+
+	// Advisory lock to prevent multiple concurrent syncs
+	home, err := os.UserHomeDir()
+	if err == nil {
+		lockPath := filepath.Join(home, ".config/codereviewserver_sync.lock")
+		lockFile, err := os.Create(lockPath)
+		if err == nil {
+			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err != nil {
+				log.Warn("Another instance is already running background sync, skipping sync in this process.")
+				lockFile.Close()
+				return
+			}
+			defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			defer lockFile.Close()
+		}
+	}
+
 	if ms.oneoff {
+		var listener_wg sync.WaitGroup
+		listener_wg.Add(1)
+		go ListenChanges(log, ms.workflow_chan, &listener_wg)
+
 		log.Info("Running Once")
 		ms.RunOnce(log, &listener_wg)
 		close(ms.workflow_chan)
+		listener_wg.Done()
+		if waitTimeout(&listener_wg, 60*time.Second) {
+			log.Error("Listener waitgroup timed out waiting for changes to be applied")
+		}
 	} else {
 		cycle_count := 0
 		log.Info("Starting service mode with sleep duration:" + ms.sleepTime.String())
 		for {
 			log.Info("Cycle", "count", cycle_count)
-			ms.RunOnce(log, &listener_wg)
+			var cycle_wg sync.WaitGroup
+			cycle_wg.Add(1)
+			ms.workflow_chan = make(chan FileChanges)
+
+			go ListenChanges(log, ms.workflow_chan, &cycle_wg)
+			ms.RunOnce(log, &cycle_wg)
+			close(ms.workflow_chan)
+			cycle_wg.Done()
+
+			if waitTimeout(&cycle_wg, 60*time.Second) {
+				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
+			}
 			// Render org files after each cycle
 			time.Sleep(ms.sleepTime)
 			cycle_count++
 		}
-	}
-	listener_wg.Done()
-	if waitTimeout(&listener_wg, 60*time.Second) {
-		log.Error("Listener waitgroup timed out waiting for changes to be applied")
 	}
 	log.Info("Exiting Service")
 }

@@ -1,0 +1,19 @@
+.hover-line:hover {
+    filter: brightness(1.2);
+    outline: 1px solid var(--border);
+}
+
+.pr-item-card:hover {
+    border-color: var(--accent) !important;
+    transform: translateX(4px);
+    background: var(--bg-tertiary) !important;
+}
+
+.pr-item-card button:hover {
+    filter: brightness(1.1);
+    transform: scale(1.05);
+}
+
+.pr-item-card button:active {
+    transform: scale(0.95);
+}

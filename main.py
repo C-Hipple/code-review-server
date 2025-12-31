@@ -2,7 +2,6 @@ import json
 import subprocess
 import sys
 import time
-from pprint import pprint
 from typing import Any
 
 
@@ -18,11 +17,14 @@ def main():
         bufsize=1,  # Line buffered
     )
 
-    get_pr_params = [{"Repo": "code-review-server", "Owner": "C-Hipple", "Number": 1}]
+    # get_pr_params = [{"Repo": "diff-lsp", "Owner": "C-Hipple", "Number": 14}]
+    get_pr_params = [{"Repo": "gtdbot", "Owner": "C-Hipple", "Number": 9}]
 
-    send_request(process, "RPCHandler.GetAllReviews", [])
-    # send_request(process, "RPCHandler.GetPR", get_pr_params)
+    # send_request(process, "RPCHandler.Hello", [])
+    # send_request(process, "RPCHandler.GetAllReviews", [])
+    send_request(process, "RPCHandler.GetPR", get_pr_params)
     read_response(process)
+    # read_response(process)
 
 
 def send_request(process: Any, method: str, params: Any):
@@ -36,7 +38,7 @@ def send_request(process: Any, method: str, params: Any):
 def read_response(process: Any):
     try:
         # Wait a moment for the server to initialize
-        time.sleep(1)
+        time.sleep(3)
         # Read response
         print("Waiting for response...")
         response_line = process.stdout.readline()

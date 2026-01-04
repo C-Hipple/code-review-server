@@ -92,10 +92,10 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -112,19 +112,24 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 		// Use the already fetched comments if available, but they are structs here.
 		// We can try to get the raw JSON from DB or marshal them back.
 		// For simplicity/performance, let's grab the raw JSON from DB since GetPRDetails usually gets it.
-		// Check GetPRDetails implementation if needed, but for now retrieving it from DB is safest 
+		// Check GetPRDetails implementation if needed, but for now retrieving it from DB is safest
 		// to match what the user might expect (raw data).
-		// Actually, GetPRDetails returns parsed structs. 
+		// Actually, GetPRDetails returns parsed structs.
 		// We can get the raw comments JSON from DB
 		rawComments, _ := config.C.DB.GetPRComments(args.Number, args.Repo)
 		if rawComments != "" {
 			commentsJSON = rawComments
 		}
 	}
+
+	// Extract SHA from metadata - we need to get it from the PR
+	// The SHA is stored when we cache the diff, but we need to retrieve it
+	// Let's get it from the database or fetch it fresh
+	_, sha, _ := config.C.DB.GetPullRequest(args.Number, args.Repo)
 	
-	// Run plugins in background
+	// Run plugins in background with SHA
 	metadataJSON, _ := json.Marshal(details.Metadata)
-	go RunPlugins(args.Owner, args.Repo, args.Number, details.Diff, commentsJSON, string(metadataJSON))
+	go RunPlugins(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON))
 
 	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
@@ -146,10 +151,10 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID       int64       `json:"id"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	ID       int64         `json:"id"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -184,10 +189,10 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -221,10 +226,10 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -251,17 +256,17 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 }
 
 type SetFeedbackArgs struct {
-	Owner    string `json:"Owner"`
-	Repo     string `json:"Repo"`
-	Number   int    `json:"Number"`
-	Body     string
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	Body   string
 }
 
 type SetFeedbackReply struct {
-	ID       int64       `json:"id"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	ID       int64         `json:"id"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -293,10 +298,10 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -331,10 +336,10 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 
@@ -417,10 +422,10 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay     bool        `json:"okay"`
-	Content  string      `json:"content"`
-	Metadata *PRMetadata `json:"metadata"`
-	Diff     string      `json:"diff"`
+	Okay     bool          `json:"okay"`
+	Content  string        `json:"content"`
+	Metadata *PRMetadata   `json:"metadata"`
+	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
 }
 

@@ -946,9 +946,6 @@ func buildCommentTree(tree []PRComment, filePath string, forceOutdated bool) str
 func formatDiff(diff *utils.Diff) string {
 	var builder strings.Builder
 	for _, file := range diff.Files {
-		// TEMP: Trying out using the raw git diff headers
-		// the reason is for the delta washer.
-		// 
 		// status := "modified"
 		// filename := file.NewName
 		// if file.Mode == utils.DELETED {

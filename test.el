@@ -3,9 +3,11 @@
 (crs-get-review "C-Hipple" "gtdbot" 9)
 (crs-get-review "C-Hipple" "gtdbot" 11)
 (crs-get-review "C-Hipple" "diff-lsp" 6)
+(crs-get-review "C-Hipple" "diff-lsp" 15)
 (crs-get-review "IAmTomShaw" "f1-race-replay" 18)
 https://github.com/IAmTomShaw/f1-race-replay/pull/18
 (crs-get-reviews)
+(crs-list-plugins)
 
 (crs-shutdown-server)
 

@@ -195,6 +195,23 @@ merged
 
 That string will then be put into the title line of the PR via the org-serializer.
 
+## Plugins
+
+You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
+
+Add plugins to your `codereviewserver.toml` using `[[Plugins]]` tables:
+
+```toml
+[[Plugins]]
+Name = "My Example Plugin "
+Command = "example_plugin"  # included in cmd/example_plugin
+IncludeDiff = true     # Passes --diff flag
+IncludeHeaders = true  # Passes --headers flag (metadata)
+IncludeComments = true # Passes --comments flag
+```
+
+Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
+
 ## Emacs integration
 
 This project ships with `codereverserver.el` for running and configuring this in emacs seamlessly.

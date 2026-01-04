@@ -16,10 +16,10 @@ func main() {
 	flag.Parse()
 
 	if *owner != "" {
-		fmt.Printf("Owner Length: %d\n", len(*owner))
+		fmt.Printf("Owner: %s\n", *owner)
 	}
 	if *repo != "" {
-		fmt.Printf("Repo Length: %d\n", len(*repo))
+		fmt.Printf("Repo: %s\n", *repo)
 	}
 	if *number != 0 {
 		fmt.Printf("Number: %d\n", *number)

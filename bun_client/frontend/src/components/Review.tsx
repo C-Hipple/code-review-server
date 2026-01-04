@@ -18,6 +18,11 @@ interface Comment {
     outdated: boolean;
 }
 
+interface PluginResult {
+    result: string;
+    status: string;
+}
+
 interface PRResponse {
     content: string;
     diff: string;
@@ -29,11 +34,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
     const [comments, setComments] = useState<Comment[]>([]);
+    const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
     const [loading, setLoading] = useState(false);
 
     // UI State
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
     const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null); // For inline comments
+    const [showPlugins, setShowPlugins] = useState(false);
 
     const [submitting, setSubmitting] = useState(false);
 
@@ -48,7 +55,34 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
     useEffect(() => {
         loadPR();
+        loadPluginOutputs();
     }, [owner, repo, number]);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setShowPlugins(false);
+                setShowCommentModal(false);
+                setSubmitting(false);
+                setActiveLineIndex(null);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    const loadPluginOutputs = async () => {
+        try {
+            const res = await rpcCall<{ output: Record<string, PluginResult> }>('RPCHandler.GetPluginOutput', [{
+                Owner: owner,
+                Repo: repo,
+                Number: number
+            }]);
+            setPluginOutputs(res.output || {});
+        } catch (e) {
+            console.error("Failed to load plugin outputs:", e);
+        }
+    };
 
     const loadPR = async () => {
         setLoading(true);
@@ -80,6 +114,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
+            loadPluginOutputs();
         } catch (e) {
             console.error(e);
         } finally {
@@ -96,14 +131,14 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     };
 
     const handleAddComment = async () => {
-        if (!filename || !position || !commentBody) return;
+        if (!filename || !commentBody) return;
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number,
                 Filename: filename,
-                Position: parseInt(position, 10),
+                Position: parseInt(position, 10) || 0,
                 Body: commentBody
             }]);
             setContent(res.content || '');
@@ -162,27 +197,30 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 let pos: number | null = null;
                 let file: string | null = null;
 
-                const fileMatch = line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
+                // Match standard git diff headers or simplified format
+                // Look for '+++ b/filename' as the primary source of the new filename
+                const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
+                    line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
+
                 if (fileMatch) {
-                    currentFile = fileMatch[2].trim();
+                    currentFile = (fileMatch[1] || fileMatch[2]).trim();
                     currentPos = 0;
                     foundFirstHunkInFile = false;
+
+                    // Allow comments on the file header itself (general file comments)
+                    pos = 0;
+                    file = currentFile;
+                    clickable = true;
                 } else if (currentFile) {
                     const isHunkHeader = line.startsWith('@@');
-                    const isSourceLine = line.length > 0 && ['+', '-', ' '].includes(line[0]);
+                    const isSourceLine = line.length > 0 && ['+', '-', ' '].includes(line[0]) && !line.startsWith('---') && !line.startsWith('+++');
 
-                    if (isHunkHeader) {
-                        if (!foundFirstHunkInFile) {
-                            currentPos = 0;
-                            foundFirstHunkInFile = true;
-                        } else {
-                            currentPos++;
-                        }
-                        pos = currentPos;
-                        file = currentFile;
-                        clickable = true;
-                    } else if (isSourceLine) {
+                    if (isHunkHeader || isSourceLine) {
                         currentPos++;
+                        if (!foundFirstHunkInFile && isHunkHeader) {
+                            foundFirstHunkInFile = true;
+                            // GitHub position 1 is the first @@ line
+                        }
                         pos = currentPos;
                         file = currentFile;
                         clickable = true;
@@ -314,6 +352,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     setShowCommentModal(true);
                 }} style={btnStyle}>Add General Comment</button>
                 <button onClick={() => setSubmitting(true)} style={{ ...btnStyle, background: 'var(--success)' }}>Submit Review</button>
+                <button
+                    onClick={() => setShowPlugins(!showPlugins)}
+                    style={{ ...btnStyle, background: showPlugins ? 'var(--accent)' : 'transparent', border: '1px solid var(--border)', color: showPlugins ? 'white' : 'var(--text-primary)' }}
+                >
+                    Plugins {Object.keys(pluginOutputs).length > 0 ? `(${Object.keys(pluginOutputs).length})` : ''}
+                </button>
 
                 <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
                     💡 Click on any line of code to add a comment
@@ -385,6 +429,73 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' }}>
                             <button onClick={() => setSubmitting(false)} style={btnSecondaryStyle}>Cancel</button>
                             <button onClick={handleSubmitReview} style={{ ...btnStyle, background: 'var(--success)' }}>Submit</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {showPlugins && (
+                <div style={{
+                    position: 'fixed' as const,
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.2)',
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    zIndex: 100,
+                }} onClick={() => setShowPlugins(false)}>
+                    <div style={{
+                        background: 'var(--bg-secondary)',
+                        width: '500px',
+                        maxWidth: '80vw',
+                        height: '100vh',
+                        borderLeft: '1px solid var(--border)',
+                        boxShadow: '-5px 0 20px rgba(0,0,0,0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflowY: 'auto',
+                        padding: '20px',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1, paddingBottom: '10px', borderBottom: '1px solid var(--border)' }}>
+                            <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>Plugin Analysis</h2>
+                            <button onClick={() => setShowPlugins(false)} style={btnSecondaryStyle}>Close (Esc)</button>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                            {Object.keys(pluginOutputs).length === 0 ? (
+                                <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic', padding: '20px', textAlign: 'center' }}>No plugin output found.</div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                    {Object.entries(pluginOutputs).map(([name, data]) => (
+                                        <div key={name} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
+                                            <div style={{
+                                                padding: '10px 15px',
+                                                background: 'var(--bg-secondary)',
+                                                borderBottom: '1px solid var(--border)',
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center'
+                                            }}>
+                                                <span style={{ fontWeight: 600, fontSize: '14px' }}>{name}</span>
+                                                <span style={{
+                                                    fontSize: '11px',
+                                                    padding: '2px 10px',
+                                                    borderRadius: '12px',
+                                                    fontWeight: 600,
+                                                    background: data.status === 'success' ? 'rgba(35, 134, 54, 0.2)' : data.status === 'pending' ? 'rgba(158, 106, 3, 0.2)' : 'rgba(218, 54, 51, 0.2)',
+                                                    color: data.status === 'success' ? '#3fb950' : data.status === 'pending' ? '#d29922' : '#f85149',
+                                                    border: `1px solid ${data.status === 'success' ? 'rgba(63, 185, 80, 0.3)' : data.status === 'pending' ? 'rgba(210, 153, 34, 0.3)' : 'rgba(248, 81, 73, 0.3)'}`
+                                                }}>
+                                                    {data.status.toUpperCase()}
+                                                </span>
+                                            </div>
+                                            <div style={{ padding: '15px', whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: '1.5', color: 'var(--text-primary)', background: 'var(--bg-primary)' }}>
+                                                {data.result || <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>No output produced.</span>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

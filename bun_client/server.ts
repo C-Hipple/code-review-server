@@ -15,6 +15,19 @@ interface JsonRpcResponse {
     id: number | string;
 }
 
+const getShellPath = () => {
+    try {
+        const shell = process.env.SHELL || "bash";
+        const { stdout } = Bun.spawnSync([shell, "-lc", "echo $PATH"]);
+        return stdout.toString().trim();
+    } catch (e) {
+        console.error("Failed to fetch shell PATH:", e);
+        return process.env.PATH || "";
+    }
+};
+
+const SHELL_PATH = getShellPath();
+
 class RpcBridge {
     private proc: any;
     private pending = new Map<string | number, { resolve: (val: any) => void; reject: (err: any) => void }>();
@@ -28,7 +41,8 @@ class RpcBridge {
             stderr: "inherit",
             env: {
                 ...process.env,
-                HOME: "/home/chris"
+                PATH: SHELL_PATH,
+                HOME: process.env.HOME || "/home/chris"
             }
         });
 
@@ -198,6 +212,34 @@ Bun.serve({
 
         if (url.pathname === "/api/reviews" && req.method === "POST") {
             return handleRpc("RPCHandler.GetAllReviews", [{}]);
+        }
+
+        if (url.pathname === "/api/set-feedback" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.SetFeedback", [body]);
+        }
+
+        if (url.pathname === "/api/remove-pr-comments" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.RemovePRComments", [body]);
+        }
+
+        if (url.pathname === "/api/list-plugins" && (req.method === "POST" || req.method === "GET")) {
+            return handleRpc("RPCHandler.ListPlugins", [{}]);
+        }
+
+        if (url.pathname === "/api/get-plugin-output" && (req.method === "POST" || req.method === "GET")) {
+            let body;
+            if (req.method === "GET") {
+                body = {
+                    Owner: url.searchParams.get("owner"),
+                    Repo: url.searchParams.get("repo"),
+                    Number: parseInt(url.searchParams.get("number") || "0", 10),
+                };
+            } else {
+                body = await req.json();
+            }
+            return handleRpc("RPCHandler.GetPluginOutput", [body]);
         }
 
         // Generic legacy RPC endpoint

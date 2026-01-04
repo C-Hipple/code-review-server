@@ -213,6 +213,14 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding status column to PluginResults", "error", err)
 		}
 	}
+	// Migration: Add sha column to PluginResults if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='sha'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding sha column to PluginResults", "error", err)
+		}
+	}
 
 	pluginResultsSchema := `
 	CREATE TABLE IF NOT EXISTS PluginResults (
@@ -223,6 +231,7 @@ func (db *DB) initSchema() error {
 		plugin_name TEXT NOT NULL,
 		result TEXT NOT NULL,
 		status TEXT DEFAULT 'success',
+		sha TEXT DEFAULT '',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(owner, repo, pr_number, plugin_name)
 	);
@@ -236,15 +245,16 @@ func (db *DB) initSchema() error {
 	return nil
 }
 
-func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName string, result string, status string) error {
+func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName string, result string, status string, sha string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(owner, repo, pr_number, plugin_name) DO UPDATE SET
 			result = excluded.result,
 			status = excluded.status,
+			sha = excluded.sha,
 			updated_at = excluded.updated_at`,
-		owner, repo, prNumber, pluginName, result, status,
+		owner, repo, prNumber, pluginName, result, status, sha,
 	)
 	return err
 }
@@ -278,6 +288,22 @@ func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]Plu
 		}
 	}
 	return results, nil
+}
+
+// GetPluginResultSHA retrieves the SHA for which a plugin was last run
+func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName string) (string, error) {
+	var sha string
+	err := db.conn.QueryRow(
+		"SELECT sha FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+		owner, repo, prNumber, pluginName,
+	).Scan(&sha)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return sha, nil
 }
 
 func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {

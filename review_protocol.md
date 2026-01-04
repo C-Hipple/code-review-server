@@ -266,6 +266,55 @@ Submits a review to GitHub. This will:
 
 ---
 
+### `RPCHandler.ListPlugins`
+
+Lists all installed and configured plugins.
+
+**Arguments** (`ListPluginsArgs`):
+```json
+{}
+```
+
+**Reply** (`ListPluginsReply`):
+| Field     | Type       | Description                        |
+|-----------|------------|------------------------------------|
+| `plugins` | []Plugin   | List of configured plugin objects  |
+
+#### `Plugin` Object
+| Field             | Type   | Description                                           |
+|-------------------|--------|-------------------------------------------------------|
+| `Name`            | string | Human-readable name of the plugin                     |
+| `Command`         | string | Command or path to the plugin binary                  |
+| `IncludeDiff`     | bool   | Whether the plugin receives the PR diff               |
+| `IncludeHeaders`  | bool   | Whether the plugin receives the PR metadata (headers) |
+| `IncludeComments` | bool   | Whether the plugin receives the PR comments           |
+
+---
+
+### `RPCHandler.GetPluginOutput`
+
+Retrieves the output and status of all plugins for a specific pull request.
+
+**Arguments** (`GetPluginOutputArgs`):
+| Field    | Type   | Required | Description                          |
+|----------|--------|----------|--------------------------------------|
+| `Owner`  | string | Yes      | Repository owner                     |
+| `Repo`   | string | Yes      | Repository name                      |
+| `Number` | int    | Yes      | Pull request number                  |
+
+**Reply** (`GetPluginOutputReply`):
+| Field    | Type                        | Description                                            |
+|----------|-----------------------------|--------------------------------------------------------|
+| `output` | map[string]PluginResult     | Map of plugin names to their respective results/status |
+
+#### `PluginResult` Object
+| Field    | Type   | Description                                                          |
+|----------|--------|----------------------------------------------------------------------|
+| `result` | string | The captured output (stdout/stderr) of the plugin                    |
+| `status` | string | Execution status: `pending`, `success`, or `error`                   |
+
+---
+
 ## Workflow
 
 A typical code review workflow using this API:

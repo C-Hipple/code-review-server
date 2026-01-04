@@ -31,6 +31,9 @@
 (defvar crs--response-buffer ""
   "Buffer for accumulating partial JSON-RPC responses.")
 
+(defvar crs-plugins nil
+  "List of plugins configured on the server.")
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
@@ -68,6 +71,7 @@ Returns the process handle."
             (error "Server process died immediately. Stderr: %s" stderr-content)))))
 
     (message "Started crs JSON-RPC server")
+    (crs-list-plugins)
     crs--process))
 
 ;;;###autoload
@@ -161,6 +165,16 @@ CALLBACK is a function to call with the result."
                                   (id . ,id)))))
       (process-send-string crs--process
                            (concat request "\n")))))
+
+(defun crs-list-plugins ()
+  "Call the ListPlugins RPC method and store the result in `crs-plugins`."
+  (interactive)
+  (crs--send-request
+   "RPCHandler.ListPlugins"
+   (vector)
+   (lambda (result)
+     (setq crs-plugins (cdr (assq 'plugins result)))
+     (message "Plugins updated: %d plugins found" (length crs-plugins)))))
 
 ;;;###autoload
 (defun crs-get-reviews ()
@@ -268,6 +282,7 @@ CALLBACK is a function to call with the result."
   ;; "rc" #'crs-comment-review
   ;; "rr" #'crs-request-changes-review
   "g" #'crs-sync-pr
+  "p" #'crs-get-plugin-output
   "q" #'quit-window
   )
 
@@ -291,6 +306,7 @@ CALLBACK is a function to call with the result."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "p" #'crs-get-plugin-output
     "q" #'quit-window)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -304,6 +320,7 @@ CALLBACK is a function to call with the result."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "p" #'crs-get-plugin-output
     "q" #'quit-window)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -536,7 +553,12 @@ This must be called after delta-wash."
                  (cons 'Number number)))
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
-     (let ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number))))
+     (let* ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number)))
+            (project-path (expand-file-name (concat "~/" repo))))
+       (with-current-buffer buffer
+         (if (file-directory-p project-path)
+             (cd project-path)
+           (message "Directory not found: %s" project-path)))
        ;; Pass the whole result to crs--render-and-update
        (crs--render-and-update buffer result)
        (pop-to-buffer buffer)
@@ -548,12 +570,25 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
   (interactive)
   (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
     (if (string-match "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)" line)
-        (let ((owner (match-string 1 line))
-              (repo (match-string 2 line))
-              (number (string-to-number (match-string 3 line))))
+        (let* ((owner (match-string 1 line))
+               (repo (match-string 2 line))
+               (number (string-to-number (match-string 3 line)))
+               (project-path (expand-file-name (concat "~/" repo))))
+          (if (file-directory-p project-path)
+              (cd project-path)
+            (message "Directory not found: %s" project-path))
           (crs-get-review owner repo number))
       (error "Could not find GitHub PR URL on current line"))))
 
+(defun crs--get-current-review-info ()
+  "Extract (owner repo number) from the current buffer name.
+Returns a list (owner repo number) or signals an error if not in a review buffer."
+  (let ((name (buffer-name)))
+    (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+        (list (match-string 1 name)
+              (match-string 2 name)
+              (string-to-number (match-string 3 name)))
+      (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)
 (defvar-local crs--comment-repo nil)
@@ -643,6 +678,68 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
     ", c" #'crs-submit-comment
     ", k" #'crs-abort-comment))
 
+;; Buffer-local variables for plugin output mode
+(defvar-local crs--plugin-owner nil
+  "Owner of the PR for plugin output.")
+(defvar-local crs--plugin-repo nil
+  "Repo of the PR for plugin output.")
+(defvar-local crs--plugin-number nil
+  "PR number for plugin output.")
+
+(defun crs-refresh-plugin-output ()
+  "Refresh the plugin output in the current buffer."
+  (interactive)
+  (unless (and crs--plugin-owner crs--plugin-repo crs--plugin-number)
+    (error "Not in a plugin output buffer or missing PR context"))
+  (let ((owner crs--plugin-owner)
+        (repo crs--plugin-repo)
+        (number crs--plugin-number))
+    (message "Refreshing plugin output for %s/%s #%d..." owner repo number)
+    (crs--send-request
+     "RPCHandler.GetPluginOutput"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)))
+     (lambda (result)
+       (let ((output (cdr (assq 'output result)))
+             (buffer (current-buffer)))
+         (with-current-buffer buffer
+           (let ((inhibit-read-only t))
+             (erase-buffer)
+             (if (null output)
+                 (insert "No plugin output available.\n")
+               (dolist (plugin-entry (append output nil))
+                 (let* ((name (symbol-name (car plugin-entry)))
+                        (data (cdr plugin-entry))
+                        (res (cdr (assq 'result data)))
+                        (status (cdr (assq 'status data))))
+                   (insert (format "# Plugin: %s (Status: %s)\n" name status))
+                   (insert "──────────────────────────────────\n")
+                   (insert (or res "No output."))
+                   (insert "\n\n"))))
+             (goto-char (point-min))))
+         (message "Plugin output refreshed."))))))
+
+(defun crs-quit-plugin-output ()
+  "Quit the plugin output window and kill the buffer."
+  (interactive)
+  (quit-window t))
+
+(defvar-keymap crs-plugin-output-mode-map
+  "r" #'crs-refresh-plugin-output
+  "q" #'crs-quit-plugin-output)
+
+(define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
+  "Major mode for viewing plugin output.
+  Inherits from markdown-mode and is read-only.
+  \\{crs-plugin-output-mode-map}"
+  (setq buffer-read-only t))
+
+(when (fboundp 'evil-define-key)
+  (evil-define-key 'normal crs-plugin-output-mode-map
+    "r" #'crs-refresh-plugin-output
+    "q" #'crs-quit-plugin-output))
+
 (defun crs--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."
   (save-excursion
@@ -728,13 +825,12 @@ If on a local comment, local-comment-id and local-comment-body will be set."
               (message "Could not find start of comment block"))))))
 
     ;; 2. Parse Owner, Repo, Number
-    (let ((name (buffer-name)))
-      (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-          (progn
-            (setq owner (match-string 1 name))
-            (setq repo (match-string 2 name))
-            (setq number (string-to-number (match-string 3 name))))
-        (message "Could not parse review context from buffer name: %S" name)))
+    (condition-case nil
+        (let ((info (crs--get-current-review-info)))
+          (setq owner (nth 0 info)
+                repo (nth 1 info)
+                number (nth 2 info)))
+      (error (message "Could not parse review context from buffer name: %S" (buffer-name))))
 
     ;; 3. Find Filename and Position
     (save-excursion
@@ -813,11 +909,12 @@ Returns a plist with :id, :owner, :repo, :number if on a local comment."
         (number nil)
         (local-comment-id nil))
     ;; Parse Owner, Repo, Number from buffer name
-    (let ((name (buffer-name)))
-      (when (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (setq owner (match-string 1 name))
-        (setq repo (match-string 2 name))
-        (setq number (string-to-number (match-string 3 name)))))
+    (condition-case nil
+        (let ((info (crs--get-current-review-info)))
+          (setq owner (nth 0 info)
+                repo (nth 1 info)
+                number (nth 2 info)))
+      (error nil))
     ;; Check if inside a local comment block
     (save-excursion
       (end-of-line)
@@ -874,13 +971,10 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
   (let ((owner nil)
         (repo nil)
         (number nil))
-    (let ((name (buffer-name)))
-      (if (string-match "\\* Review \\([^/]+\\)/\\([^ ]+\\) #\\([0-9]+\\) \\*" name)
-          (progn
-            (setq owner (match-string 1 name))
-            (setq repo (match-string 2 name))
-            (setq number (string-to-number (match-string 3 name))))
-        (error "Not in a valid review buffer")))
+    (let ((info (crs--get-current-review-info)))
+      (setq owner (nth 0 info)
+            repo (nth 1 info)
+            number (nth 2 info)))
 
     (crs--send-request
      "RPCHandler.SubmitReview"
@@ -916,13 +1010,10 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
   (let ((owner nil)
         (repo nil)
         (number nil))
-    (let ((name (buffer-name)))
-      (if (string-match "\\* Review \\([^/]+\\)/\\([^ ]+\\) #\\([0-9]+\\) \\*" name)
-          (progn
-            (setq owner (match-string 1 name))
-            (setq repo (match-string 2 name))
-            (setq number (string-to-number (match-string 3 name))))
-        (error "Not in a valid review buffer")))
+    (let ((info (crs--get-current-review-info)))
+      (setq owner (nth 0 info)
+            repo (nth 1 info)
+            number (nth 2 info)))
 
     (message "Syncing PR %s/%s #%d..." owner repo number)
     (crs--send-request
@@ -935,6 +1026,45 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
          (when review-buffer
            (crs--render-and-update review-buffer result))
          (message "Review synced successfully!"))))))
+
+(defun crs-get-plugin-output ()
+  "Fetch and display plugin output for the current PR."
+  (interactive)
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info)))
+    (message "Fetching plugin output for %s/%s #%d..." owner repo number)
+    (crs--send-request
+     "RPCHandler.GetPluginOutput"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)))
+     (lambda (result)
+       (let ((output (cdr (assq 'output result)))
+             (buffer (get-buffer-create (format "* Plugin Output %s/%s #%d *" owner repo number))))
+         (with-current-buffer buffer
+           (let ((inhibit-read-only t))
+             (erase-buffer)
+             (if (null output)
+                 (insert "No plugin output available.\n")
+               (dolist (plugin-entry (append output nil)) ;; Ensure it's treated as a list of pairs
+                 (let* ((name (symbol-name (car plugin-entry)))
+                        (data (cdr plugin-entry))
+                        (res (cdr (assq 'result data)))
+                        (status (cdr (assq 'status data))))
+                   (insert (format "# Plugin: %s (Status: %s)\n" name status))
+                   (insert "──────────────────────────────────\n")
+                   (insert (or res "No output."))
+                   (insert "\n\n"))))
+             (goto-char (point-min))
+             (crs-plugin-output-mode)
+             ;; Store PR context for refresh
+             (setq crs--plugin-owner owner)
+             (setq crs--plugin-repo repo)
+             (setq crs--plugin-number number)))
+         (pop-to-buffer buffer)
+         (message "Plugin output loaded."))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)
   "Switch to the project directory, fetch, and checkout the branch.

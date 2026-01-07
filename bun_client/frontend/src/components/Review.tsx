@@ -364,13 +364,19 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         const isContextLine = line.length > 0 && line[0] === ' ';
 
                         if (isHunkHeader) {
-                            currentPos++;
+                            // For the first hunk in a file, the backend resets diffPosCount to 0.
+                            // Subsequent hunks consume a position but aren't valid comment targets.
                             if (!foundFirstHunkInFile) {
                                 foundFirstHunkInFile = true;
+                                // Don't increment for first hunk - mimics backend reset to 0
+                            } else {
+                                // Subsequent hunks consume a position in the diff
+                                currentPos++;
                             }
                             pos = currentPos;
                             file = currentFile;
-                            clickable = true;
+                            // Hunk headers are not valid GitHub comment positions
+                            clickable = false;
                             lineType = 'hunk';
                         } else if (isAddition || isDeletion || isContextLine) {
                             currentPos++;

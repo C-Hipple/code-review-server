@@ -82,7 +82,7 @@ func Initialize() error {
 		}
 	}
 
-	parsed_sleep_duration := time.Duration(1) * time.Minute
+	parsed_sleep_duration := time.Duration(10) * time.Minute
 	if intermediate_config.SleepDuration != 0 {
 		parsed_sleep_duration = time.Duration(intermediate_config.SleepDuration) * time.Minute
 	}

@@ -271,6 +271,17 @@ CALLBACK is a function to call with the result."
       (when (overlay-get ov 'codereview-hide)
         (delete-overlay ov)))))
 
+(defun crs-toggle-comments ()
+  "Toggle visibility of all comments in the current review buffer.
+Re-renders the buffer with or without comments based on the toggle state."
+  (interactive)
+  (unless crs--buffer-diff
+    (error "No stored PR data. Please reload the review first"))
+  (setq crs--buffer-show-comments (not crs--buffer-show-comments))
+  (let ((current-line (line-number-at-pos)))
+    (crs--render-and-update (current-buffer) nil current-line))
+  (message "Comments %s" (if crs--buffer-show-comments "shown" "hidden")))
+
 (defvar-keymap my-code-review-mode-map
   "TAB" #'crs-toggle-section
   "<tab>" #'crs-toggle-section
@@ -283,6 +294,7 @@ CALLBACK is a function to call with the result."
   ;; "rr" #'crs-request-changes-review
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
+  "H" #'crs-toggle-comments
   "q" #'quit-window
   )
 
@@ -307,6 +319,7 @@ CALLBACK is a function to call with the result."
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
     "p" #'crs-get-plugin-output
+    "H" #'crs-toggle-comments
     "q" #'quit-window)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -321,6 +334,7 @@ CALLBACK is a function to call with the result."
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
     "p" #'crs-get-plugin-output
+    "H" #'crs-toggle-comments
     "q" #'quit-window)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -377,10 +391,29 @@ CALLBACK is a function to call with the result."
       (push "" lines)
       (mapconcat #'identity (nreverse lines) "\n"))))
 
-(defun crs--render-diff (diff-content comment-map)
+(defun crs--format-compact-comment-indicator (comments)
+  "Format a compact comment indicator for COMMENTS.
+Returns a string like <C: user1, user2>."
+  (let ((authors (seq-uniq
+                  (seq-map (lambda (c)
+                             (or (cdr (assq 'author c)) "local"))
+                           comments))))
+    (format "<C: %s>" (string-join authors ", "))))
+
+(defun crs--append-right-aligned (line indicator min-column)
+  "Append INDICATOR to LINE, right-aligned at MIN-COLUMN or further right.
+If LINE extends past MIN-COLUMN, place indicator one space after LINE ends."
+  (let* ((line-length (length line))
+         (indicator-length (length indicator))
+         (target-column (max min-column (1+ line-length)))
+         (padding (- target-column line-length)))
+    (concat line (make-string padding ?\s) indicator)))
+
+(defun crs--render-diff (diff-content comment-map &optional show-full-comments)
   "Render the diff string with interleaved comments.
 DIFF-CONTENT is the raw diff string.
-COMMENT-MAP is a hash table of comments."
+COMMENT-MAP is a hash table of comments.
+SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact indicators."
   (with-temp-buffer
     (insert (or diff-content ""))
     (goto-char (point-min))
@@ -418,9 +451,14 @@ COMMENT-MAP is a hash table of comments."
                   (when current-file
                     (let ((comments (gethash (format "%s:" current-file) comment-map)))
                       (when comments
-                        ;; Group by generic buckets or just render all
                         (with-current-buffer result-buffer
-                          (insert (crs--render-comment-tree comments)))))))
+                          (if show-full-comments
+                              (insert (crs--render-comment-tree comments))
+                            ;; For file-level comments, show indicator on hunk header
+                            (setq line (crs--append-right-aligned
+                                        line
+                                        (crs--format-compact-comment-indicator comments)
+                                        120))))))))
               (setq position (1+ position)))
             (with-current-buffer result-buffer (insert line "\n")))
 
@@ -430,21 +468,22 @@ COMMENT-MAP is a hash table of comments."
                      (string-prefix-p "-" line)
                      (string-prefix-p " " line)))
             (setq position (1+ position))
-            (with-current-buffer result-buffer (insert line "\n"))
             ;; Check for comments at this position
-            (when current-file
-              (let ((key (format "%s:%d" current-file position)))
-                (let ((comments (gethash key comment-map)))
-                  (when comments
-                    ;; TODO: Better threading logic. For now, group by InReplyTo?
-                    ;; The server does fancy grouping. Here we just take the list which might be flat.
-                    ;; But crs--index-comments stacks them.
-                    ;; Ideally we should group them by thread ID.
-                    ;; Simplification: Render each comment as a separate block/tree unless we group them.
-                    ;; We'll just render them all.
-                    (with-current-buffer result-buffer
-                      (dolist (c comments)
-                        (insert (crs--render-comment-tree (list c))))))))))
+            (let* ((key (when current-file (format "%s:%d" current-file position)))
+                   (comments (when key (gethash key comment-map))))
+              (if (and comments show-full-comments)
+                  ;; Insert line first, then full comments
+                  (with-current-buffer result-buffer
+                    (insert line "\n")
+                    (dolist (c comments)
+                      (insert (crs--render-comment-tree (list c)))))
+                ;; No full comments - maybe append compact indicator
+                (when comments
+                  (setq line (crs--append-right-aligned
+                              line
+                              (crs--format-compact-comment-indicator comments)
+                              120)))
+                (with-current-buffer result-buffer (insert line "\n")))))
 
            ;; Other header lines (index, ---, etc)
            (t
@@ -509,21 +548,72 @@ This must be called after delta-wash."
                   (insert (format "%s%s%s\n" type pad filename))))
             (message "Could not find end of header for %s" filename)))))))
 
+(defun crs--render-from-stored-data ()
+  "Render the buffer content from stored diff, comments, and preamble.
+Uses `crs--buffer-show-comments' to determine whether to show full comments or compact indicators."
+  (let ((comment-map (crs--index-comments crs--buffer-comments)))
+    (concat
+     (or crs--buffer-preamble "")
+     (crs--render-diff crs--buffer-diff comment-map crs--buffer-show-comments))))
+
 (defun crs--render-and-update (buffer content &optional target-line)
-  "Render CONTENT (which can be a string or a JSON-RPC result alist) into BUFFER."
+  "Render CONTENT (which can be a string, JSON-RPC result alist, or nil) into BUFFER.
+If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
-          (old-pos (point)))
+          (old-pos (point))
+          ;; Extract data before mode change (which kills local vars)
+          (new-diff nil)
+          (new-comments nil)
+          (new-preamble nil)
+          (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
+                                 crs--buffer-show-comments
+                               t))
+          ;; Preserve existing data for re-render case
+          (existing-diff crs--buffer-diff)
+          (existing-comments crs--buffer-comments)
+          (existing-preamble crs--buffer-preamble))
+
+      ;; If content is a JSON result (alist), extract the components
+      (when (and content (listp content) (not (stringp content)))
+        (let* ((diff (cdr (assq 'diff content)))
+               (comments (cdr (assq 'comments content)))
+               (raw-content (cdr (assq 'content content)))
+               (preamble (if raw-content
+                             (if (string-match "Files changed (.*)\n\n" raw-content)
+                                 (substring raw-content 0 (match-end 0))
+                               raw-content)
+                           "")))
+          (setq new-diff diff)
+          (setq new-comments comments)
+          (setq new-preamble preamble)))
+
+      ;; Temporarily set for rendering (before mode change wipes them)
+      (setq crs--buffer-diff (or new-diff existing-diff))
+      (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-preamble (or new-preamble existing-preamble))
+      (setq crs--buffer-show-comments new-show-comments)
+
       (erase-buffer)
 
-      (if (stringp content)
-          (insert content)
-        ;; Assume it's the JSON result object
-        (insert (crs--render-pr-from-json content)))
+      (cond
+       ;; String content: insert directly
+       ((stringp content)
+        (insert content))
+       ;; nil or alist: render from stored data
+       (t
+        (insert (crs--render-from-stored-data))))
 
       (delta-wash)
       (crs--simplify-diff-headers)
       (my-code-review-mode)
+
+      ;; Re-set the buffer-local variables AFTER mode change
+      (setq crs--buffer-diff (or new-diff existing-diff))
+      (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-preamble (or new-preamble existing-preamble))
+      (setq crs--buffer-show-comments new-show-comments)
+
       (let ((final-pos (if target-line
                            (progn
                              (goto-char (point-min))
@@ -600,6 +690,16 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "When non-nil, we're editing an existing local comment with this ID.")
 (defvar-local crs--comment-original-line nil
   "The line number in the review buffer where the comment was started.")
+
+;; Buffer-local variables for storing PR data separately
+(defvar-local crs--buffer-diff nil
+  "The raw diff content for the current PR.")
+(defvar-local crs--buffer-comments nil
+  "The comments list for the current PR.")
+(defvar-local crs--buffer-preamble nil
+  "The preamble content (header + conversation) for the current PR.")
+(defvar-local crs--buffer-show-comments t
+  "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."

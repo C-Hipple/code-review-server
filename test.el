@@ -1,5 +1,6 @@
 (crs-start-server)
 (crs-restart-server)
+(crs-shutdown-server)
 (crs-get-review "C-Hipple" "gtdbot" 9)
 (crs-get-review "C-Hipple" "gtdbot" 11)
 (crs-get-review "C-Hipple" "diff-lsp" 6)

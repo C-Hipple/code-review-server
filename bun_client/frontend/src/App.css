@@ -17,3 +17,86 @@
 .pr-item-card button:active {
     transform: scale(0.95);
 }
+
+/* Plugin output markdown styling */
+.plugin-output h1,
+.plugin-output h2,
+.plugin-output h3,
+.plugin-output h4 {
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+    color: var(--text-primary);
+}
+
+.plugin-output h1 { font-size: 1.4em; }
+.plugin-output h2 { font-size: 1.2em; }
+.plugin-output h3 { font-size: 1.1em; }
+
+.plugin-output p {
+    margin: 0.5em 0;
+}
+
+.plugin-output ul,
+.plugin-output ol {
+    margin: 0.5em 0;
+    padding-left: 1.5em;
+}
+
+.plugin-output li {
+    margin: 0.25em 0;
+}
+
+.plugin-output code {
+    background: var(--bg-tertiary);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+}
+
+.plugin-output pre {
+    background: var(--bg-tertiary);
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+}
+
+.plugin-output pre code {
+    background: none;
+    padding: 0;
+}
+
+.plugin-output blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 0.5em 0;
+    padding-left: 1em;
+    color: var(--text-secondary);
+}
+
+.plugin-output a {
+    color: var(--accent);
+}
+
+.plugin-output hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1em 0;
+}
+
+.plugin-output table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.5em 0;
+}
+
+.plugin-output th,
+.plugin-output td {
+    border: 1px solid var(--border);
+    padding: 8px;
+    text-align: left;
+}
+
+.plugin-output th {
+    background: var(--bg-tertiary);
+}

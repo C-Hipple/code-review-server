@@ -70,8 +70,10 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 }
 
 type GetReviewsArgs struct{}
+
 type GetReviewsReply struct {
-	Content string `json:"content"`
+	Content string       `json:"content"`
+	Items   []ReviewItem `json:"items"`
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
@@ -82,6 +84,16 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 		return err
 	}
 	reply.Content = content
+
+	// Get structured items
+	items, err := renderer.GetAllReviewItems()
+	if err != nil {
+		h.Log.Error("Error getting review items", "error", err)
+		// Don't fail the whole request, just return empty items
+		reply.Items = []ReviewItem{}
+	} else {
+		reply.Items = items
+	}
 	return nil
 }
 

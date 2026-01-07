@@ -167,7 +167,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			ms.runWorkflow(log, workflow, ms.workflow_chan, file_change_wg)
 		}(workflow)
 	}
-	if waitTimeout(&wg, 60*time.Second) {
+	if waitTimeout(&wg, 240*time.Second) {
 		log.Error("RunOnce waitgroup timed out waiting for workflows")
 	} else {
 		log.Info("Completed RunOnce Waitgroup")
@@ -203,7 +203,7 @@ func (ms ManagerService) Run(log *slog.Logger) {
 		ms.RunOnce(log, &listener_wg)
 		close(ms.workflow_chan)
 		listener_wg.Done()
-		if waitTimeout(&listener_wg, 60*time.Second) {
+		if waitTimeout(&listener_wg, 240*time.Second) {
 			log.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
 	} else {
@@ -220,7 +220,7 @@ func (ms ManagerService) Run(log *slog.Logger) {
 			close(ms.workflow_chan)
 			cycle_wg.Done()
 
-			if waitTimeout(&cycle_wg, 60*time.Second) {
+			if waitTimeout(&cycle_wg, 240*time.Second) {
 				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 			// Render org files after each cycle

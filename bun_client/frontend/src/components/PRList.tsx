@@ -5,8 +5,31 @@ interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
 }
 
+// Matches the ReviewItem struct from the Go backend
+interface ReviewItem {
+    section: string;
+    status: string;
+    title: string;
+    owner: string;
+    repo: string;
+    number: number;
+    author: string;
+    url: string;
+}
+
+interface GetReviewsResponse {
+    content: string;
+    items: ReviewItem[];
+}
+
+// Group items by section
+interface Section {
+    name: string;
+    items: ReviewItem[];
+}
+
 export default function PRList({ onOpenReview }: PRListProps) {
-    const [content, setContent] = useState<string>('');
+    const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
 
     // Manual form state
@@ -21,11 +44,29 @@ export default function PRList({ onOpenReview }: PRListProps) {
     const loadList = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<{ content: string }>('RPCHandler.GetAllReviews', [{}]);
-            setContent(res.content || '');
+            const res = await rpcCall<GetReviewsResponse>('RPCHandler.GetAllReviews', [{}]);
+            const items = res.items || [];
+            
+            // Group items by section
+            const sectionMap = new Map<string, ReviewItem[]>();
+            for (const item of items) {
+                const sectionName = item.section || 'Other';
+                if (!sectionMap.has(sectionName)) {
+                    sectionMap.set(sectionName, []);
+                }
+                sectionMap.get(sectionName)!.push(item);
+            }
+            
+            // Convert to array
+            const sectionList: Section[] = [];
+            for (const [name, items] of sectionMap) {
+                sectionList.push({ name, items });
+            }
+            
+            setSections(sectionList);
         } catch (e) {
             console.error(e);
-            setContent('Error loading list.');
+            setSections([]);
         } finally {
             setLoading(false);
         }
@@ -96,7 +137,7 @@ export default function PRList({ onOpenReview }: PRListProps) {
                     <div>Loading...</div>
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                        {parseOrgContent(content).map((section, sIdx) => (
+                        {sections.map((section, sIdx) => (
                             <div key={sIdx}>
                                 <h3 style={{
                                     fontSize: '13px',
@@ -110,7 +151,7 @@ export default function PRList({ onOpenReview }: PRListProps) {
                                     borderBottom: '1px solid var(--border)',
                                     paddingBottom: '8px'
                                 }}>
-                                    {cleanSectionName(section.name)}
+                                    {section.name}
                                 </h3>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                     {section.items.length === 0 ? (
@@ -139,19 +180,20 @@ export default function PRList({ onOpenReview }: PRListProps) {
                                                             background: getStatusColor(item.status),
                                                             color: 'white'
                                                         }}>{item.status}</span>
-                                                        <span style={{ fontWeight: 500, fontSize: '15px' }}>{cleanHeader(item.header)}</span>
+                                                        <span style={{ fontWeight: 500, fontSize: '15px' }}>{item.title}</span>
                                                     </div>
                                                     {item.number ? (
                                                         <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                                                             {item.owner}/{item.repo} <span style={{ color: 'var(--accent)' }}>#{item.number}</span>
+                                                            {item.author && <span style={{ marginLeft: '8px', color: 'var(--text-secondary)' }}>by {item.author}</span>}
                                                         </div>
                                                     ) : (
                                                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                                            {item.details.join(' ')}
+                                                            Non-PR item
                                                         </div>
                                                     )}
                                                 </div>
-                                                {item.number && (
+                                                {item.number > 0 && (
                                                     <button
                                                         onClick={() => onOpenReview(item.owner, item.repo, item.number)}
                                                         style={{
@@ -182,72 +224,6 @@ export default function PRList({ onOpenReview }: PRListProps) {
     );
 }
 
-// Helper functions for parsing and styling
-const parseOrgContent = (text: string) => {
-    if (!text) return [];
-
-    const sections: { name: string, items: any[] }[] = [];
-    const lines = text.split('\n');
-    let currentSection: { name: string, items: any[] } | null = null;
-    let currentItem: any = null;
-
-    for (const line of lines) {
-        if (line.startsWith('* ')) {
-            currentSection = { name: line.substring(2).trim(), items: [] };
-            sections.push(currentSection);
-            currentItem = null;
-        } else if (line.startsWith('** ')) {
-            currentItem = {
-                header: line.substring(3).trim(),
-                details: [],
-                status: line.split(' ')[1]
-            };
-            if (currentSection) {
-                currentSection.items.push(currentItem);
-            } else {
-                currentSection = { name: 'Tasks', items: [currentItem] };
-                sections.push(currentSection);
-            }
-        } else if (currentItem && line.trim()) {
-            currentItem.details.push(line.trim());
-        }
-    }
-
-    return sections.map(s => ({
-        ...s,
-        items: s.items.map(item => {
-            const prNumberLine = item.details.find((d: string) => /^\d+$/.test(d));
-            const repoLine = item.details.find((d: string) => d.startsWith('Repo:'));
-
-            if (prNumberLine && repoLine) {
-                const repoPath = repoLine.replace('Repo:', '').trim();
-                const parts = repoPath.split('/');
-
-                if (parts.length >= 2) {
-                    // Normal case: owner/repo
-                    return {
-                        ...item,
-                        owner: parts[0],
-                        repo: parts[1],
-                        number: parseInt(prNumberLine, 10)
-                    };
-                } else if (parts.length === 1 && parts[0]) {
-                    // Fallback for when owner is missing but we have a default
-                    // Based on user context, default owner might be C-Hipple
-                    return {
-                        ...item,
-                        owner: 'C-Hipple',
-                        repo: parts[0],
-                        number: parseInt(prNumberLine, 10)
-                    };
-                }
-            }
-            return item;
-        })
-    }));
-};
-
-
 const getStatusColor = (status: string) => {
     switch (status) {
         case 'DONE': return 'var(--success)';
@@ -257,28 +233,6 @@ const getStatusColor = (status: string) => {
         default: return 'var(--bg-tertiary)';
     }
 };
-
-const cleanHeader = (header: string) => {
-    // Remove the status from the header if it's there
-    const parts = header.split(' ');
-    if (['TODO', 'DONE', 'CANCELLED', 'PROGRESS', 'WAITING', 'BLOCKED'].includes(parts[0])) {
-        return parts.slice(1).join(' ').split(':')[0].trim();
-    }
-    return header.split(':')[0].trim();
-};
-
-const cleanSectionName = (name: string) => {
-    // Remove the status from the section name if it's there
-    const parts = name.split(' ');
-    let cleaned = name;
-    if (['TODO', 'DONE', 'CANCELLED', 'PROGRESS', 'WAITING', 'BLOCKED'].includes(parts[0])) {
-        cleaned = parts.slice(1).join(' ');
-    }
-    // Remove the ratio suffix [n/m]
-    return cleaned.replace(/\[\d+\/\d+\]$/, '').trim();
-};
-
-
 
 const inputStyle = {
     background: 'var(--bg-primary)',

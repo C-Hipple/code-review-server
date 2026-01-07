@@ -28,7 +28,7 @@
   :group 'my-custom-highlights)
 
 (defface washer-file-header-face
-  '((t (:foreground "cyan" :weight bold :height 1.3)))
+  '((t (:foreground "#268bd2" :weight bold :height 1.3)))
   "Face for file headers."
   :group 'my-custom-highlights)
 
@@ -40,6 +40,11 @@
 (defface washer-section-heading-face
   '((t (:foreground "#cb4b16" :weight bold :height 1.3)))
   "Face for major section headings."
+  :group 'my-custom-highlights)
+
+(defface washer-compact-comment-face
+  '((t (:foreground "#859900" :weight bold)))
+  "Face for compact comment indicators <C: username>."
   :group 'my-custom-highlights)
 
 (defun highlight-review-comments ()
@@ -54,7 +59,8 @@
                             ("^    │ .*" 0 'washer-review-comment-face t)
                             ("^\\(modified\\|deleted\\|new file\\).*" 0 'washer-file-header-face t)
                             ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|URL\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\):.*" 0 'washer-summary-face t)
-                            ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)))
+                            ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)
+                            ("<C: [^>]+>" 0 'washer-compact-comment-face t)))
   (goto-address-mode 1)
   (font-lock-flush))
 

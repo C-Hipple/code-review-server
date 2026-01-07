@@ -152,6 +152,15 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo, sha)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRMetadataCache (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		metadata_json TEXT NOT NULL,
+		cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo, owner)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
 	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
@@ -725,6 +734,42 @@ func (db *DB) UpsertCIStatus(prNumber int, repo, sha, statusJSON string) error {
 		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
 			status_json = excluded.status_json`,
 		prNumber, repo, sha, statusJSON,
+	)
+	return err
+}
+
+func (db *DB) GetPRMetadataCache(owner string, repo string, prNumber int) (string, error) {
+	var metadataJSON string
+	err := db.conn.QueryRow(
+		"SELECT metadata_json FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
+	).Scan(&metadataJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return metadataJSON, nil
+}
+
+func (db *DB) UpsertPRMetadataCache(owner string, repo string, prNumber int, metadataJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRMetadataCache (owner, repo, pr_number, metadata_json, cached_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(pr_number, repo, owner) DO UPDATE SET
+			metadata_json = excluded.metadata_json,
+			cached_at = CURRENT_TIMESTAMP`,
+		owner, repo, prNumber, metadataJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRMetadataCache(owner string, repo string, prNumber int) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }

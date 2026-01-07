@@ -62,13 +62,13 @@ func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, e
 		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Description)
 	}
 
-	prompt := fmt.Sprintf(`Summarize the following pull request. 
-Please provide:
-- A few bullet points highlighting key ideas/changes.
-- Quick suggestions for improvements.
+	prompt := fmt.Sprintf(`Summarize this PR as briefly as possible.
+- 2-4 bullet points on key changes (one line each)
+- 1-2 brief suggestions if any
 
-%s
-Diff:
+Be terse. No fluff.
+
+%sDiff:
 %s
 `, contextInfo, diff)
 

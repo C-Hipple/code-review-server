@@ -77,6 +77,96 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	return content.String(), nil
 }
 
+// ReviewItem represents a single PR review item with structured metadata
+type ReviewItem struct {
+	Section string `json:"section"`
+	Status  string `json:"status"`
+	Title   string `json:"title"`
+	Owner   string `json:"owner"`
+	Repo    string `json:"repo"`
+	Number  int    `json:"number"`
+	Author  string `json:"author"`
+	URL     string `json:"url"`
+}
+
+// GetAllReviewItems returns structured review items from all sections
+func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
+	sections, err := r.db.GetAllSections()
+	if err != nil {
+		return nil, err
+	}
+
+	var reviewItems []ReviewItem
+
+	for _, section := range sections {
+		items, err := r.db.GetItemsBySection(section.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range items {
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName)
+			reviewItems = append(reviewItems, reviewItem)
+		}
+	}
+
+	return reviewItems, nil
+}
+
+// parseItemToReviewItem extracts structured metadata from an item's details
+func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName string) ReviewItem {
+	details, err := item.GetDetails()
+	if err != nil {
+		details = []string{}
+	}
+
+	reviewItem := ReviewItem{
+		Section: sectionName,
+		Status:  item.Status,
+		Title:   item.Title,
+	}
+
+	for _, line := range details {
+		line = strings.TrimSpace(line)
+
+		// PR number is typically the first line and just a number
+		if reviewItem.Number == 0 {
+			var num int
+			if _, err := fmt.Sscanf(line, "%d", &num); err == nil && num > 0 {
+				reviewItem.Number = num
+				continue
+			}
+		}
+
+		// Parse Repo: owner/repo
+		if strings.HasPrefix(line, "Repo:") {
+			repoStr := strings.TrimSpace(strings.TrimPrefix(line, "Repo:"))
+			parts := strings.Split(repoStr, "/")
+			if len(parts) >= 2 {
+				reviewItem.Owner = parts[0]
+				reviewItem.Repo = parts[1]
+			} else if len(parts) == 1 {
+				reviewItem.Repo = parts[0]
+			}
+			continue
+		}
+
+		// Parse Author: username or Author: username (Full Name)
+		if strings.HasPrefix(line, "Author:") {
+			reviewItem.Author = strings.TrimSpace(strings.TrimPrefix(line, "Author:"))
+			continue
+		}
+
+		// Parse URL (usually starts with https://github.com)
+		if strings.HasPrefix(line, "https://") {
+			reviewItem.URL = line
+			continue
+		}
+	}
+
+	return reviewItem
+}
+
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
 	content, err := r.RenderAllSectionsToString()
 	if err != nil {
@@ -364,91 +454,132 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	client := git_tools.GetGithubClient()
 	ctx := context.Background()
 
-	// 1. Fetch PR details
-	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
-	if err != nil {
-		return nil, err
-	}
+	var metadata PRMetadata
+	var headSHA string
+	needsFreshFetch := skipCache
 
-	// 2. Fetch Metadata (Reviewers, Commits, CI)
-	reviewers, _ := GetRequestedReviewers(owner, repo, number, skipCache)
-	reviewerLogins := []string{}
-	for _, r := range reviewers {
-		reviewerLogins = append(reviewerLogins, r.GetLogin())
-	}
-
-	var ciStatus string
-	var ciFailures []string
-	if pr.Head != nil && pr.Head.SHA != nil {
-		status, err := GetLatestCIStatus(owner, repo, number, *pr.Head.SHA, skipCache)
-		if err == nil && status != nil {
-			total := 0
-			success := 0
-			overallState := "success"
-			if status.Status != nil {
-				if status.Status.GetState() != "success" && status.Status.GetState() != "" {
-					overallState = status.Status.GetState()
-				}
-				total += status.Status.GetTotalCount()
-				for _, s := range status.Status.Statuses {
-					if s.GetState() == "success" {
-						success++
-					} else if s.GetState() == "failure" {
-						ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
-					}
-				}
+	// 1. Try to load metadata from cache first (unless skipCache)
+	if !skipCache {
+		cachedMetadataJSON, err := config.C.DB.GetPRMetadataCache(owner, repo, number)
+		if err == nil && cachedMetadataJSON != "" {
+			if err := json.Unmarshal([]byte(cachedMetadataJSON), &metadata); err == nil {
+				slog.Debug("Using cached PR metadata", "pr", number, "repo", repo)
+				// We have cached metadata, but we still need SHA for diff lookup
+				// Get it from the PullRequests table
+				_, sha, _ := config.C.DB.GetPullRequest(number, repo)
+				headSHA = sha
+			} else {
+				needsFreshFetch = true
 			}
-			if status.CheckRuns != nil {
-				total += status.CheckRuns.GetTotal()
-				for _, cr := range status.CheckRuns.CheckRuns {
-					if cr.GetConclusion() == "success" {
-						success++
-					} else {
-						if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
-							overallState = "failure"
-							ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
-						}
-					}
-				}
-			}
-			if total == 0 && overallState == "success" {
-				overallState = "pending"
-			}
-			ciStatus = fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
+		} else {
+			needsFreshFetch = true
 		}
 	}
 
-	labels := []string{}
-	for _, l := range pr.Labels {
-		labels = append(labels, l.GetName())
+	// 2. Fetch fresh PR details from GitHub if needed
+	if needsFreshFetch {
+		pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+		if err != nil {
+			// If we have cached data, return that instead of failing
+			if metadata.Number != 0 {
+				slog.Warn("GitHub API error, falling back to cached metadata", "error", err)
+			} else {
+				return nil, err
+			}
+		} else {
+			// Extract SHA for CI status lookup
+			if pr.Head != nil && pr.Head.SHA != nil {
+				headSHA = *pr.Head.SHA
+			}
+
+			// Fetch Reviewers
+			reviewers, _ := GetRequestedReviewers(owner, repo, number, skipCache)
+			reviewerLogins := []string{}
+			for _, r := range reviewers {
+				reviewerLogins = append(reviewerLogins, r.GetLogin())
+			}
+
+			// Fetch CI Status
+			var ciStatus string
+			var ciFailures []string
+			if headSHA != "" {
+				status, err := GetLatestCIStatus(owner, repo, number, headSHA, skipCache)
+				if err == nil && status != nil {
+					total := 0
+					success := 0
+					overallState := "success"
+					if status.Status != nil {
+						if status.Status.GetState() != "success" && status.Status.GetState() != "" {
+							overallState = status.Status.GetState()
+						}
+						total += status.Status.GetTotalCount()
+						for _, s := range status.Status.Statuses {
+							if s.GetState() == "success" {
+								success++
+							} else if s.GetState() == "failure" {
+								ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
+							}
+						}
+					}
+					if status.CheckRuns != nil {
+						total += status.CheckRuns.GetTotal()
+						for _, cr := range status.CheckRuns.CheckRuns {
+							if cr.GetConclusion() == "success" {
+								success++
+							} else {
+								if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
+									overallState = "failure"
+									ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
+								}
+							}
+						}
+					}
+					if total == 0 && overallState == "success" {
+						overallState = "pending"
+					}
+					ciStatus = fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
+				}
+			}
+
+			labels := []string{}
+			for _, l := range pr.Labels {
+				labels = append(labels, l.GetName())
+			}
+
+			assignees := []string{}
+			for _, u := range pr.Assignees {
+				assignees = append(assignees, u.GetLogin())
+			}
+
+			metadata = PRMetadata{
+				Number:      number,
+				Title:       pr.GetTitle(),
+				Author:      pr.User.GetLogin(),
+				BaseRef:     pr.Base.GetRef(),
+				HeadRef:     pr.Head.GetRef(),
+				State:       pr.GetState(),
+				Labels:      labels,
+				Assignees:   assignees,
+				Reviewers:   reviewerLogins,
+				Draft:       pr.GetDraft(),
+				CIStatus:    ciStatus,
+				CIFailures:  ciFailures,
+				Description: pr.GetBody(),
+				URL:         pr.GetHTMLURL(),
+			}
+			if pr.Milestone != nil {
+				metadata.Milestone = pr.Milestone.GetTitle()
+			}
+
+			// Cache the metadata
+			metadataJSON, err := json.Marshal(metadata)
+			if err == nil {
+				config.C.DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON))
+			}
+		}
 	}
 
-	assignees := []string{}
-	for _, u := range pr.Assignees {
-		assignees = append(assignees, u.GetLogin())
-	}
-
-	metadata := PRMetadata{
-		Number:      number,
-		Title:       pr.GetTitle(),
-		Author:      pr.User.GetLogin(),
-		BaseRef:     pr.Base.GetRef(),
-		HeadRef:     pr.Head.GetRef(),
-		State:       pr.GetState(),
-		Labels:      labels,
-		Assignees:   assignees,
-		Reviewers:   reviewerLogins,
-		Draft:       pr.GetDraft(),
-		CIStatus:    ciStatus,
-		CIFailures:  ciFailures,
-		Description: pr.GetBody(),
-		URL:         pr.GetHTMLURL(),
-	}
-	if pr.Milestone != nil {
-		metadata.Milestone = pr.Milestone.GetTitle()
-	}
-
-	// 3. Fetch Diff
+	// 3. Fetch Diff (with caching)
 	var diff string
 	if !skipCache {
 		cachedDiff, _, err := config.C.DB.GetPullRequest(number, repo)
@@ -463,11 +594,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		} else {
 			diff = d
 			// Store in cache
-			latestSha := ""
-			if pr.Head != nil && pr.Head.SHA != nil {
-				latestSha = *pr.Head.SHA
-			}
-			config.C.DB.UpsertPullRequest(number, repo, latestSha, diff)
+			config.C.DB.UpsertPullRequest(number, repo, headSHA, diff)
 		}
 	}
 

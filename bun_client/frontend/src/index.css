@@ -57,6 +57,15 @@ button {
   cursor: pointer;
 }
 
+.hover-thread {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hover-thread:hover {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.2);
+}
+
 pre {
   margin: 0;
   font-family: var(--font-mono);

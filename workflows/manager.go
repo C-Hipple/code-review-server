@@ -108,8 +108,8 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 }
 
 func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
+	changeCount := 0
 	for deserializedChange := range channel {
-		log.Info("Doing deser change: " + deserializedChange.FileChange.Item.ID())
 		db := config.C.DB
 		doc := org.NewDBClient(db, deserializedChange.FileChange.ItemSerializer)
 		switch deserializedChange.FileChange.ChangeType {
@@ -120,10 +120,10 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 		case "Delete":
 			doc.DeleteItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item)
 		}
+		changeCount++
 		wg.Done()
-
 	}
-
+	log.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
 }
 
 func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {

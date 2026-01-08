@@ -158,6 +158,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [filename, setFilename] = useState('');
     const [position, setPosition] = useState('');
     const [commentBody, setCommentBody] = useState('');
+    const [replyToId, setReplyToId] = useState<number | null>(null);
 
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
@@ -238,6 +239,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         setFilename('');
         setPosition('');
         setCommentBody('');
+        setReplyToId(null);
         setShowCommentModal(false);
         setActiveLineIndex(null);
     };
@@ -245,14 +247,18 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const handleAddComment = async () => {
         if (!filename || !commentBody) return;
         try {
-            const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [{
+            const params: any = {
                 Owner: owner,
                 Repo: repo,
                 Number: number,
                 Filename: filename,
                 Position: parseInt(position, 10) || 0,
                 Body: commentBody
-            }]);
+            };
+            if (replyToId !== null) {
+                params.ReplyToID = replyToId;
+            }
+            const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [params]);
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
@@ -402,13 +408,26 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setActiveLineIndex(null);
             setFilename('');
             setPosition('');
+            setReplyToId(null);
         } else {
             setFilename(file);
             setPosition(pos.toString());
             setActiveLineIndex(idx);
             setShowCommentModal(false);
             setCommentBody('');
+            setReplyToId(null);
         }
+    };
+
+    // Handle clicking on a reply thread to reply to the last message
+    const handleThreadClick = (thread: Comment[], file: string, pos: number, lineIdx: number) => {
+        const lastComment = thread[thread.length - 1];
+        setFilename(file);
+        setPosition(pos.toString());
+        setReplyToId(parseInt(lastComment.id, 10));
+        setActiveLineIndex(lineIdx);
+        setShowCommentModal(false);
+        setCommentBody('');
     };
 
     // Custom theme based on oneDark but adjusted for diff context
@@ -581,17 +600,43 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         </div>
                         {rootComments.map(rc => {
                             const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
+                            const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
                             return (
-                                <div key={rc.id} style={{
-                                    margin: '10px 20px',
-                                    border: '1px solid var(--border)',
-                                    borderRadius: '6px',
-                                    background: 'var(--bg-primary)',
-                                    overflow: 'hidden'
-                                }}>
-                                    <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                                <div 
+                                    key={rc.id} 
+                                    style={{
+                                        margin: '10px 20px',
+                                        border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                        borderRadius: '6px',
+                                        background: 'var(--bg-primary)',
+                                        overflow: 'hidden',
+                                        cursor: 'pointer',
+                                        transition: 'border-color 0.15s ease',
+                                    }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (item.file && item.pos !== null) {
+                                            handleThreadClick(thread, item.file, item.pos, idx);
+                                        }
+                                    }}
+                                    className="hover-thread"
+                                    title="Click to reply to this thread"
+                                >
+                                    <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <span>{rc.author} commented</span>
-                                        <span>ID: {rc.id}</span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ 
+                                                fontSize: '10px', 
+                                                color: 'var(--accent)', 
+                                                opacity: 0.7,
+                                                background: 'rgba(56, 139, 253, 0.1)',
+                                                padding: '2px 6px',
+                                                borderRadius: '4px'
+                                            }}>
+                                                ↩ click to reply
+                                            </span>
+                                            <span>ID: {rc.id}</span>
+                                        </div>
                                     </div>
                                     {thread.map(c => (
                                         <div key={c.id} style={{ padding: '10px', borderBottom: c.id !== thread[thread.length - 1].id ? '1px solid var(--border)' : 'none' }}>
@@ -611,18 +656,21 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 marginBottom: '10px'
                             }}>
                                 <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    Commenting on {item.file}:{item.pos}
+                                    {replyToId !== null 
+                                        ? `Replying to comment #${replyToId}`
+                                        : `Commenting on ${item.file}:${item.pos}`
+                                    }
                                 </div>
                                 <textarea
                                     autoFocus
-                                    placeholder="Write a comment..."
+                                    placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                     value={commentBody}
                                     onChange={e => setCommentBody(e.target.value)}
                                     style={{ ...inputStyle, height: '80px', marginBottom: '10px' }}
                                 />
                                 <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                                    <button onClick={() => setActiveLineIndex(null)} style={btnSecondaryStyle}>Cancel</button>
-                                    <button onClick={handleAddComment} style={btnStyle}>Add Comment</button>
+                                    <button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} style={btnSecondaryStyle}>Cancel</button>
+                                    <button onClick={handleAddComment} style={btnStyle}>{replyToId !== null ? 'Reply' : 'Add Comment'}</button>
                                 </div>
                             </div>
                         )}
@@ -711,17 +759,43 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     </div>
                     {rootComments.map(rc => {
                         const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
+                        const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
                         return (
-                            <div key={rc.id} style={{
-                                margin: '10px 20px',
-                                border: '1px solid var(--border)',
-                                borderRadius: '6px',
-                                background: 'var(--bg-primary)',
-                                overflow: 'hidden'
-                            }}>
-                                <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                            <div 
+                                key={rc.id} 
+                                style={{
+                                    margin: '10px 20px',
+                                    border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                    borderRadius: '6px',
+                                    background: 'var(--bg-primary)',
+                                    overflow: 'hidden',
+                                    cursor: 'pointer',
+                                    transition: 'border-color 0.15s ease',
+                                }}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (item.file && item.pos !== null) {
+                                        handleThreadClick(thread, item.file, item.pos, idx);
+                                    }
+                                }}
+                                className="hover-thread"
+                                title="Click to reply to this thread"
+                            >
+                                <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <span>{rc.author} commented</span>
-                                    <span>ID: {rc.id}</span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span style={{ 
+                                            fontSize: '10px', 
+                                            color: 'var(--accent)', 
+                                            opacity: 0.7,
+                                            background: 'rgba(56, 139, 253, 0.1)',
+                                            padding: '2px 6px',
+                                            borderRadius: '4px'
+                                        }}>
+                                            ↩ click to reply
+                                        </span>
+                                        <span>ID: {rc.id}</span>
+                                    </div>
                                 </div>
                                 {thread.map(c => (
                                     <div key={c.id} style={{ padding: '10px', borderBottom: c.id !== thread[thread.length - 1].id ? '1px solid var(--border)' : 'none' }}>
@@ -741,18 +815,21 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             marginBottom: '10px'
                         }}>
                             <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                Commenting on {item.file}:{item.pos}
+                                {replyToId !== null 
+                                    ? `Replying to comment #${replyToId}`
+                                    : `Commenting on ${item.file}:${item.pos}`
+                                }
                             </div>
                             <textarea
                                 autoFocus
-                                placeholder="Write a comment..."
+                                placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                 value={commentBody}
                                 onChange={e => setCommentBody(e.target.value)}
                                 style={{ ...inputStyle, height: '80px', marginBottom: '10px' }}
                             />
                             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                                <button onClick={() => setActiveLineIndex(null)} style={btnSecondaryStyle}>Cancel</button>
-                                <button onClick={handleAddComment} style={btnStyle}>Add Comment</button>
+                                <button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} style={btnSecondaryStyle}>Cancel</button>
+                                <button onClick={handleAddComment} style={btnStyle}>{replyToId !== null ? 'Reply' : 'Add Comment'}</button>
                             </div>
                         </div>
                     )}

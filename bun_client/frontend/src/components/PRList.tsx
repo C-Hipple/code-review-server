@@ -28,14 +28,115 @@ interface Section {
     items: ReviewItem[];
 }
 
+// Status options for the dropdown filter (static options)
+const STATUS_OPTIONS = [
+    { value: '', label: 'All Statuses' },
+    { value: 'TODO', label: 'TODO' },
+    { value: 'PROGRESS', label: 'In Progress' },
+    { value: 'DONE', label: 'Done' },
+    { value: 'CANCELLED', label: 'Cancelled' },
+];
+
+// Configuration for dynamic dropdown filters
+// Each filter extracts unique values from the items based on a field
+interface DynamicFilterConfig {
+    key: keyof ReviewItem;  // Field to filter on
+    label: string;          // Display label
+    allLabel: string;       // "All X" label
+}
+
+const DYNAMIC_FILTERS: DynamicFilterConfig[] = [
+    { key: 'author', label: 'Author', allLabel: 'All Authors' },
+    { key: 'owner', label: 'Owner', allLabel: 'All Owners' },
+    { key: 'repo', label: 'Repo', allLabel: 'All Repos' },
+];
+
+// Helper to extract unique sorted values for a field from items
+function getUniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[] {
+    return Array.from(
+        new Set(
+            items
+                .map(item => String(item[field] || ''))
+                .filter(val => val.trim() !== '')
+        )
+    ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
 export default function PRList({ onOpenReview }: PRListProps) {
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
+    const [filterText, setFilterText] = useState('');
+    const [statusFilter, setStatusFilter] = useState('');
+    
+    // Dynamic filters state - one value per filter key
+    const [dynamicFilters, setDynamicFilters] = useState<Record<string, string>>(() => {
+        const initial: Record<string, string> = {};
+        DYNAMIC_FILTERS.forEach(f => { initial[f.key] = ''; });
+        return initial;
+    });
 
     // Manual form state
     const [owner, setOwner] = useState('C-Hipple'); // Default based on user context
     const [repo, setRepo] = useState('code-review-server');
     const [prNumber, setPrNumber] = useState('');
+
+    // Get all items flattened for computing unique values
+    const allItems = sections.flatMap(s => s.items);
+
+    // Check if any filters are active
+    const hasActiveFilters = filterText.trim() !== '' || 
+        statusFilter !== '' || 
+        Object.values(dynamicFilters).some(v => v !== '');
+
+    // Filter items based on all active filters
+    const filterItem = (item: ReviewItem): boolean => {
+        // Status filter
+        if (statusFilter && item.status !== statusFilter) {
+            return false;
+        }
+        
+        // Dynamic filters
+        for (const config of DYNAMIC_FILTERS) {
+            const filterValue = dynamicFilters[config.key];
+            if (filterValue && String(item[config.key]) !== filterValue) {
+                return false;
+            }
+        }
+        
+        // Text search filter
+        if (!filterText.trim()) return true;
+        const search = filterText.toLowerCase();
+        return (
+            item.title.toLowerCase().includes(search) ||
+            item.author.toLowerCase().includes(search) ||
+            item.owner.toLowerCase().includes(search) ||
+            item.repo.toLowerCase().includes(search)
+        );
+    };
+
+    // Update a single dynamic filter
+    const setDynamicFilter = (key: string, value: string) => {
+        setDynamicFilters(prev => ({ ...prev, [key]: value }));
+    };
+
+    // Clear all filters
+    const clearAllFilters = () => {
+        setFilterText('');
+        setStatusFilter('');
+        setDynamicFilters(() => {
+            const cleared: Record<string, string> = {};
+            DYNAMIC_FILTERS.forEach(f => { cleared[f.key] = ''; });
+            return cleared;
+        });
+    };
+
+    // Get filtered sections (only sections with matching items)
+    const filteredSections = sections
+        .map(section => ({
+            ...section,
+            items: section.items.filter(filterItem)
+        }))
+        .filter(section => section.items.length > 0);
 
     useEffect(() => {
         loadList();
@@ -133,11 +234,151 @@ export default function PRList({ onOpenReview }: PRListProps) {
                     <button onClick={loadList} style={{ ...buttonStyle, background: 'var(--bg-tertiary)' }}>Refresh</button>
                 </div>
 
+                {/* Filter Bar */}
+                <div style={{ marginBottom: '20px' }}>
+                    {/* Search Input */}
+                    <div style={{ position: 'relative' }}>
+                        <input
+                            type="text"
+                            value={filterText}
+                            onChange={e => setFilterText(e.target.value)}
+                            placeholder="Filter by title, author, owner, or repo..."
+                            style={{
+                                ...filterInputStyle,
+                                width: '100%',
+                                paddingLeft: '36px'
+                            }}
+                        />
+                        <span style={{
+                            position: 'absolute',
+                            left: '12px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            color: 'var(--text-secondary)',
+                            fontSize: '14px',
+                            pointerEvents: 'none'
+                        }}>⌕</span>
+                        {filterText && (
+                            <button
+                                onClick={() => setFilterText('')}
+                                style={{
+                                    position: 'absolute',
+                                    right: '8px',
+                                    top: '50%',
+                                    transform: 'translateY(-50%)',
+                                    background: 'var(--bg-tertiary)',
+                                    border: 'none',
+                                    borderRadius: '50%',
+                                    width: '20px',
+                                    height: '20px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    cursor: 'pointer',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '12px',
+                                    padding: 0
+                                }}
+                            >×</button>
+                        )}
+                    </div>
+
+                    {/* Filter Dropdowns Row */}
+                    <div style={{ 
+                        display: 'flex', 
+                        gap: '12px', 
+                        marginTop: '12px',
+                        flexWrap: 'wrap',
+                        alignItems: 'center'
+                    }}>
+                        {/* Status Filter (static options) */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <label style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                Status:
+                            </label>
+                            <select
+                                value={statusFilter}
+                                onChange={e => setStatusFilter(e.target.value)}
+                                style={selectStyle}
+                            >
+                                {STATUS_OPTIONS.map(opt => (
+                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Dynamic Filters (generated from data) */}
+                        {DYNAMIC_FILTERS.map(config => {
+                            const options = getUniqueValues(allItems, config.key);
+                            return (
+                                <div key={config.key} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                        {config.label}:
+                                    </label>
+                                    <select
+                                        value={dynamicFilters[config.key]}
+                                        onChange={e => setDynamicFilter(config.key, e.target.value)}
+                                        style={selectStyle}
+                                    >
+                                        <option value="">{config.allLabel}</option>
+                                        {options.map(val => (
+                                            <option key={val} value={val}>{val}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            );
+                        })}
+
+                        {/* Clear All Filters Button */}
+                        {hasActiveFilters && (
+                            <button
+                                onClick={clearAllFilters}
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    padding: '6px 12px',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    cursor: 'pointer',
+                                    marginLeft: 'auto',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                }}
+                            >
+                                <span>×</span> Clear filters
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Results count */}
+                    {hasActiveFilters && (
+                        <div style={{ 
+                            fontSize: '12px', 
+                            color: 'var(--text-secondary)', 
+                            marginTop: '12px' 
+                        }}>
+                            Showing {filteredSections.reduce((acc, s) => acc + s.items.length, 0)} of {sections.reduce((acc, s) => acc + s.items.length, 0)} items
+                        </div>
+                    )}
+                </div>
+
                 {loading ? (
                     <div>Loading...</div>
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                        {sections.map((section, sIdx) => (
+                        {filteredSections.length === 0 && hasActiveFilters ? (
+                            <div style={{ 
+                                fontSize: '14px', 
+                                color: 'var(--text-secondary)', 
+                                fontStyle: 'italic',
+                                textAlign: 'center',
+                                padding: '40px 20px'
+                            }}>
+                                No items match the current filters
+                            </div>
+                        ) : filteredSections.map((section, sIdx) => (
                             <div key={sIdx}>
                                 <h3 style={{
                                     fontSize: '13px',
@@ -253,4 +494,27 @@ const buttonStyle = {
     borderRadius: '6px',
     fontSize: '14px',
     fontWeight: 500,
+};
+
+const filterInputStyle = {
+    background: 'var(--bg-primary)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-primary)',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    outline: 'none',
+    transition: 'border-color 0.2s ease',
+};
+
+const selectStyle = {
+    background: 'var(--bg-primary)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-primary)',
+    padding: '6px 10px',
+    borderRadius: '6px',
+    fontSize: '13px',
+    outline: 'none',
+    cursor: 'pointer',
+    minWidth: '120px',
 };

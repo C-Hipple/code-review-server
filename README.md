@@ -203,12 +203,24 @@ Add plugins to your `codereviewserver.toml` using `[[Plugins]]` tables:
 
 ```toml
 [[Plugins]]
-Name = "My Example Plugin "
-Command = "example_plugin"  # included in cmd/example_plugin
+Name = "Summarize Diff"
+Command = "summarize_diff"
 IncludeDiff = true     # Passes --diff flag
 IncludeHeaders = true  # Passes --headers flag (metadata)
 IncludeComments = true # Passes --comments flag
+
+[[Plugins]]
+Name = "Security Check"
+Command = "security_check"
+IncludeDiff = true
+IncludeHeaders = true
+IncludeComments = false
 ```
+
+### Official Plugins
+
+- **Summarize Diff**: Uses Gemini 2.0 Flash to provide a terse bulleted summary of the changes in a PR.
+- **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
 

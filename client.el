@@ -295,6 +295,8 @@ Re-renders the buffer with or without comments based on the toggle state."
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
   "H" #'crs-toggle-comments
+  "RET" #'crs-visit-file
+  "<return>" #'crs-visit-file
   "q" #'quit-window
   )
 
@@ -320,6 +322,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rg" #'crs-sync-pr
     "p" #'crs-get-plugin-output
     "H" #'crs-toggle-comments
+    "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -335,6 +338,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rg" #'crs-sync-pr
     "p" #'crs-get-plugin-output
     "H" #'crs-toggle-comments
+    "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -670,6 +674,23 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           (crs-get-review owner repo number))
       (error "Could not find GitHub PR URL on current line"))))
 
+(defun crs-visit-file ()
+  "Visit the file at point in the code review buffer."
+  (interactive)
+  (let* ((ctx (crs--get-comment-context))
+         (filename (nth 3 ctx))
+         (line (nth 8 ctx)))
+    (if (and filename (not (string= filename "")))
+        (if (file-exists-p filename)
+            (progn
+              (find-file filename)
+              (when line
+                (goto-char (point-min))
+                (forward-line (1- line))
+                (recenter)))
+          (message "File not found: %s" filename))
+      (message "No file found at point"))))
+
 (defun crs--get-current-review-info ()
   "Extract (owner repo number) from the current buffer name.
 Returns a list (owner repo number) or signals an error if not in a review buffer."
@@ -878,6 +899,7 @@ If on a local comment, local-comment-id and local-comment-body will be set."
         (reply-to-id nil)
         (local-comment-id nil)
         (local-comment-body nil)
+        (target-file-line nil)
         (target-line (line-number-at-pos))
         (first-hunk-line-num nil))
 
@@ -947,24 +969,33 @@ If on a local comment, local-comment-id and local-comment-body will be set."
       (when (and filename first-hunk-line-num)
         (goto-char (point-min))
         (forward-line (1- first-hunk-line-num))
-        (let ((count 0))
-          (forward-line 1)
+        (let ((count 0)
+              (file-line nil))
           (while (<= (line-number-at-pos) target-line)
             (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-              ;; Skip lines that are part of a comment block (allowing for ANSI codes)
-              ;; Also skip hunk headers (@@ lines)
-              (unless (or (string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
-                          (string-match-p "^@@" line-content))
-                (setq count (1+ count))))
+              (cond
+               ((string-match "^@@ -[0-9]+,[0-9]+ \\+\\([0-9]+\\),[0-9]+ @@" line-content)
+                (setq file-line (string-to-number (match-string 1 line-content)))
+                (setq target-file-line file-line))
+               ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
+                ;; Skip comment blocks
+                nil)
+               (t
+                ;; Content line
+                (unless (string-match-p "^@@" line-content)
+                  (setq count (1+ count))
+                  (setq target-file-line file-line)
+                  (when (and file-line (not (string-prefix-p "-" line-content)))
+                    (setq file-line (1+ file-line)))))))
             (forward-line 1))
           (setq position count))))
 
-    (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body)))
+    (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body target-file-line)))
       (message "Context extracted: %S" ctx)
       (message (concat "Position:" (prin1-to-string position)))
       ctx)))
 
-(defun crs-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body)
+(defun crs-add-or-edit-comment (owner repo number filename position &optional reply-to-id local-comment-id local-comment-body line)
   "Open a buffer to add or edit a comment on a review.
 If on a local comment, opens it for editing with the existing body pre-filled.
 If called interactively, attempts to guess parameters from context."

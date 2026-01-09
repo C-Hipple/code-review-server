@@ -190,7 +190,7 @@ CALLBACK is a function to call with the result."
    "RPCHandler.GetAllReviews"
    (vector)
    (lambda (result)
-     (let ((content (cdr (assq 'Content result)))
+     (let ((content (cdr (assq 'content result)))
            (buffer (get-buffer-create "* Reviews *")))
        (with-current-buffer buffer
          (erase-buffer)

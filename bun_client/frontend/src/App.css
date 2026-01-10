@@ -5,8 +5,9 @@
 
 .pr-item-card:hover {
     border-color: var(--accent) !important;
-    transform: translateX(4px);
+    transform: translateY(-2px);
     background: var(--bg-tertiary) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .pr-item-card button:hover {

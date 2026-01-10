@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { rpcCall } from './api';
 import PRList from './components/PRList';
 import Review from './components/Review';
+import PluginOutput from './components/PluginOutput';
 
 interface PRParams {
     owner: string;
@@ -10,7 +11,7 @@ interface PRParams {
 }
 
 function App() {
-    const [view, setView] = useState<'LIST' | 'REVIEW'>('LIST');
+    const [view, setView] = useState<'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT'>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
 
     // Initial load from URL
@@ -19,10 +20,15 @@ function App() {
         const owner = params.get('owner');
         const repo = params.get('repo');
         const number = params.get('number');
+        const viewParam = params.get('view');
 
         if (owner && repo && number) {
             setCurrentPR({ owner, repo, number: parseInt(number, 10) });
-            setView('REVIEW');
+            if (viewParam === 'plugins') {
+                setView('PLUGIN_OUTPUT');
+            } else {
+                setView('REVIEW');
+            }
         }
 
         const handlePopState = () => {
@@ -30,10 +36,15 @@ function App() {
             const newOwner = newParams.get('owner');
             const newRepo = newParams.get('repo');
             const newNumber = newParams.get('number');
+            const newViewParam = newParams.get('view');
 
             if (newOwner && newRepo && newNumber) {
                 setCurrentPR({ owner: newOwner, repo: newRepo, number: parseInt(newNumber, 10) });
-                setView('REVIEW');
+                if (newViewParam === 'plugins') {
+                    setView('PLUGIN_OUTPUT');
+                } else {
+                    setView('REVIEW');
+                }
             } else {
                 setView('LIST');
                 setCurrentPR(null);
@@ -56,6 +67,19 @@ function App() {
         setView('REVIEW');
     };
 
+    const handleOpenPluginOutput = (owner: string, repo: string, number: number) => {
+        const params = new URLSearchParams();
+        params.set('owner', owner);
+        params.set('repo', repo);
+        params.set('number', number.toString());
+        params.set('view', 'plugins');
+
+        window.history.pushState({}, '', `?${params.toString()}`);
+
+        setCurrentPR({ owner, repo, number });
+        setView('PLUGIN_OUTPUT');
+    };
+
     const handleBack = () => {
         window.history.pushState({}, '', window.location.pathname);
         setView('LIST');
@@ -68,7 +92,7 @@ function App() {
                 <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 600 }}>
                     <span style={{ color: 'var(--accent)' }}>Code</span>Review
                 </h1>
-                {view === 'REVIEW' && (
+                {(view === 'REVIEW' || view === 'PLUGIN_OUTPUT') && (
                     <button
                         onClick={handleBack}
                         style={{
@@ -87,9 +111,12 @@ function App() {
             </header>
 
             <main>
-                {view === 'LIST' && <PRList onOpenReview={handleOpenReview} />}
+                {view === 'LIST' && <PRList onOpenReview={handleOpenReview} onOpenPluginOutput={handleOpenPluginOutput} />}
                 {view === 'REVIEW' && currentPR && (
                     <Review owner={currentPR.owner} repo={currentPR.repo} number={currentPR.number} />
+                )}
+                {view === 'PLUGIN_OUTPUT' && currentPR && (
+                    <PluginOutput owner={currentPR.owner} repo={currentPR.repo} number={currentPR.number} />
                 )}
             </main>
         </div>

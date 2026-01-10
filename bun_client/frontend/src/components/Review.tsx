@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall } from '../api';
+import { Button, Badge, Modal, TextArea, mapStatusToVariant } from '../design';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
 const stripHtmlComments = (text: string): string => {
@@ -151,6 +152,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
     const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null); // For inline comments
     const [showPlugins, setShowPlugins] = useState(false);
+    const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
 
     const [submitting, setSubmitting] = useState(false);
 
@@ -286,6 +288,33 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             console.error(e);
             alert('Error submitting review');
         }
+    };
+
+    // File collapse handlers
+    const toggleFileCollapse = (filename: string) => {
+        setCollapsedFiles(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(filename)) {
+                newSet.delete(filename);
+            } else {
+                newSet.add(filename);
+            }
+            return newSet;
+        });
+    };
+
+    const collapseAllFiles = () => {
+        const lines = parseDiff();
+        const allFiles = new Set(
+            lines
+                .filter(line => line.lineType === 'file-header' && line.file)
+                .map(line => line.file!)
+        );
+        setCollapsedFiles(allFiles);
+    };
+
+    const expandAllFiles = () => {
+        setCollapsedFiles(new Set());
     };
 
     // Line types for rendering
@@ -531,6 +560,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         const lines = parseDiff();
         if (lines.length === 0) return null;
 
+        let currentFile: string | null = null;
+
         return lines.map((item, idx) => {
             const line = item.text;
             const isAddition = item.lineType === 'addition';
@@ -538,13 +569,24 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             const isHunkHeader = item.lineType === 'hunk';
             const isFileHeader = item.lineType === 'file-header';
             const isCodeLine = isAddition || isDeletion || item.lineType === 'code';
-            
+
+            // Update current file when we hit a file header
+            if (isFileHeader) {
+                currentFile = item.file;
+            }
+
+            // Skip rendering lines that belong to collapsed files (but always render file headers)
+            if (!isFileHeader && currentFile && collapsedFiles.has(currentFile)) {
+                return null;
+            }
+
             // Render file header with clean styling
             if (isFileHeader) {
                 const statusInfo = getFileStatusInfo(item.fileStatus);
                 const isInlineActive = activeLineIndex === idx;
                 const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
                 const rootComments = lineComments.filter(c => !c.in_reply_to);
+                const isCollapsed = item.file ? collapsedFiles.has(item.file) : false;
 
                 return (
                     <div key={idx}>
@@ -565,6 +607,29 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             className="hover-line"
                             title={`Add comment to ${item.file}`}
                         >
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (item.file) toggleFileCollapse(item.file);
+                                }}
+                                style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    padding: '4px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '16px',
+                                    lineHeight: 1,
+                                    transition: 'transform 0.2s ease',
+                                    transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                                }}
+                                title={isCollapsed ? 'Expand file' : 'Collapse file'}
+                            >
+                                ▼
+                            </button>
                             <span style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -666,11 +731,22 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                     value={commentBody}
                                     onChange={e => setCommentBody(e.target.value)}
-                                    style={{ ...inputStyle, height: '80px', marginBottom: '10px' }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '8px',
+                                        marginBottom: '10px',
+                                        background: 'var(--bg-primary)',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-primary)',
+                                        borderRadius: '4px',
+                                        height: '80px',
+                                        fontFamily: 'inherit',
+                                        resize: 'vertical',
+                                    }}
                                 />
-                                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                                    <button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} style={btnSecondaryStyle}>Cancel</button>
-                                    <button onClick={handleAddComment} style={btnStyle}>{replyToId !== null ? 'Reply' : 'Add Comment'}</button>
+                                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                                    <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
+                                    <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
                                 </div>
                             </div>
                         )}
@@ -825,11 +901,22 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                 value={commentBody}
                                 onChange={e => setCommentBody(e.target.value)}
-                                style={{ ...inputStyle, height: '80px', marginBottom: '10px' }}
+                                style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    marginBottom: '10px',
+                                    background: 'var(--bg-primary)',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-primary)',
+                                    borderRadius: '4px',
+                                    height: '80px',
+                                    fontFamily: 'inherit',
+                                    resize: 'vertical',
+                                }}
                             />
-                            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                                <button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} style={btnSecondaryStyle}>Cancel</button>
-                                <button onClick={handleAddComment} style={btnStyle}>{replyToId !== null ? 'Reply' : 'Add Comment'}</button>
+                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
+                                <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
                             </div>
                         </div>
                     )}
@@ -916,7 +1003,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 style={{
-                                    ...btnSecondaryStyle,
+                                    background: 'transparent',
+                                    color: 'var(--text-secondary)',
+                                    border: '1px solid var(--border)',
+                                    padding: '8px 16px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: '6px',
@@ -1117,21 +1209,30 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 top: '10px',
                 zIndex: 10
             }}>
-                <button onClick={handleSync} style={btnStyle}>
-                    {loading ? '↻ Syncing...' : '↻ Sync'}
-                </button>
-                <button onClick={() => {
+                <Button onClick={handleSync} loading={loading}>
+                    {loading ? 'Syncing...' : '↻ Sync'}
+                </Button>
+                <Button onClick={() => {
+                    if (collapsedFiles.size > 0) {
+                        expandAllFiles();
+                    } else {
+                        collapseAllFiles();
+                    }
+                }} variant="secondary" size="sm">
+                    {collapsedFiles.size > 0 ? '▼ Expand All' : '◀ Collapse All'}
+                </Button>
+                <Button onClick={() => {
                     setFilename('');
                     setPosition('');
                     setShowCommentModal(true);
-                }} style={btnStyle}>+ Comment</button>
-                <button onClick={() => setSubmitting(true)} style={{ ...btnStyle, background: 'var(--success)' }}>Submit Review</button>
-                <button
+                }}>+ Comment</Button>
+                <Button onClick={() => setSubmitting(true)} style={{ background: 'var(--success)' }}>Submit Review</Button>
+                <Button
                     onClick={() => setShowPlugins(!showPlugins)}
-                    style={{ ...btnStyle, background: showPlugins ? 'var(--accent)' : 'transparent', border: '1px solid var(--border)', color: showPlugins ? 'white' : 'var(--text-primary)' }}
+                    variant={showPlugins ? 'primary' : 'secondary'}
                 >
                     Plugins {Object.keys(pluginOutputs).length > 0 ? `(${Object.keys(pluginOutputs).length})` : ''}
-                </button>
+                </Button>
 
                 <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
                     💡 Click on any line of code to add a comment
@@ -1169,63 +1270,85 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 </div>
             </div>
 
-            {showCommentModal && (
-                <div style={modalOverlayStyle}>
-                    <div style={modalStyle}>
-                        <h3>Add Comment</h3>
-                        <input
-                            placeholder="Filename"
-                            value={filename}
-                            onChange={e => setFilename(e.target.value)}
-                            style={inputStyle}
-                        />
-                        <input
-                            type="number"
-                            placeholder="Line Position in Diff"
-                            value={position}
-                            onChange={e => setPosition(e.target.value)}
-                            style={inputStyle}
-                        />
-                        <textarea
-                            placeholder="Comment"
-                            value={commentBody}
-                            onChange={e => setCommentBody(e.target.value)}
-                            style={{ ...inputStyle, height: '100px' }}
-                        />
-                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' }}>
-                            <button onClick={resetCommentForm} style={btnSecondaryStyle}>Cancel</button>
-                            <button onClick={handleAddComment} style={btnStyle}>Add</button>
-                        </div>
+            <Modal
+                isOpen={showCommentModal}
+                onClose={resetCommentForm}
+                title="Add Comment"
+                size="sm"
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <input
+                        placeholder="Filename"
+                        value={filename}
+                        onChange={e => setFilename(e.target.value)}
+                        style={{
+                            padding: '8px',
+                            background: 'var(--bg-primary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '4px',
+                        }}
+                    />
+                    <input
+                        type="number"
+                        placeholder="Line Position in Diff"
+                        value={position}
+                        onChange={e => setPosition(e.target.value)}
+                        style={{
+                            padding: '8px',
+                            background: 'var(--bg-primary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '4px',
+                        }}
+                    />
+                    <TextArea
+                        placeholder="Comment"
+                        value={commentBody}
+                        onChange={e => setCommentBody(e.target.value)}
+                        rows={5}
+                    />
+                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                        <Button onClick={resetCommentForm} variant="secondary">Cancel</Button>
+                        <Button onClick={handleAddComment}>Add</Button>
                     </div>
                 </div>
-            )}
+            </Modal>
 
-            {submitting && (
-                <div style={modalOverlayStyle}>
-                    <div style={modalStyle}>
-                        <h3>Submit Review</h3>
-                        <select
-                            value={reviewEvent}
-                            onChange={e => setReviewEvent(e.target.value)}
-                            style={{ ...inputStyle, marginBottom: '10px' }}
-                        >
-                            <option value="COMMENT">Comment</option>
-                            <option value="APPROVE">Approve</option>
-                            <option value="REQUEST_CHANGES">Request Changes</option>
-                        </select>
-                        <textarea
-                            placeholder="Review Body (Optional)"
-                            value={reviewBody}
-                            onChange={e => setReviewBody(e.target.value)}
-                            style={{ ...inputStyle, height: '100px' }}
-                        />
-                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' }}>
-                            <button onClick={() => setSubmitting(false)} style={btnSecondaryStyle}>Cancel</button>
-                            <button onClick={handleSubmitReview} style={{ ...btnStyle, background: 'var(--success)' }}>Submit</button>
-                        </div>
+            <Modal
+                isOpen={submitting}
+                onClose={() => setSubmitting(false)}
+                title="Submit Review"
+                size="sm"
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <select
+                        value={reviewEvent}
+                        onChange={e => setReviewEvent(e.target.value)}
+                        style={{
+                            padding: '8px',
+                            background: 'var(--bg-primary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '4px',
+                        }}
+                    >
+                        <option value="COMMENT">Comment</option>
+                        <option value="APPROVE">Approve</option>
+                        <option value="REQUEST_CHANGES">Request Changes</option>
+                    </select>
+                    <TextArea
+                        placeholder="Review Body (Optional)"
+                        value={reviewBody}
+                        onChange={e => setReviewBody(e.target.value)}
+                        rows={5}
+                    />
+                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                        <Button onClick={() => setSubmitting(false)} variant="secondary">Cancel</Button>
+                        <Button onClick={handleSubmitReview} style={{ background: 'var(--success)' }}>Submit</Button>
                     </div>
                 </div>
-            )}
+            </Modal>
             {showPlugins && (
                 <div style={{
                     position: 'fixed' as const,
@@ -1252,7 +1375,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1, paddingBottom: '10px', borderBottom: '1px solid var(--border)' }}>
                             <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>Plugin Analysis</h2>
-                            <button onClick={() => setShowPlugins(false)} style={btnSecondaryStyle}>Close (Esc)</button>
+                            <Button onClick={() => setShowPlugins(false)} variant="secondary" size="sm">Close (Esc)</Button>
                         </div>
                         <div style={{ flex: 1 }}>
                             {Object.keys(pluginOutputs).length === 0 ? (
@@ -1300,55 +1423,3 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         </div>
     );
 }
-
-const btnStyle = {
-    background: 'var(--accent)',
-    color: 'white',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    fontWeight: 500,
-    cursor: 'pointer',
-};
-
-const btnSecondaryStyle = {
-    background: 'transparent',
-    color: 'var(--text-secondary)',
-    border: '1px solid var(--border)',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-};
-
-const inputStyle = {
-    display: 'block',
-    width: '100%',
-    padding: '8px',
-    marginBottom: '10px',
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    borderRadius: '4px',
-    boxSizing: 'border-box' as const,
-};
-
-const modalOverlayStyle = {
-    position: 'fixed' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.7)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 100,
-};
-
-const modalStyle = {
-    background: 'var(--bg-secondary)',
-    padding: '20px',
-    borderRadius: '8px',
-    width: '400px',
-    border: '1px solid var(--border)',
-};

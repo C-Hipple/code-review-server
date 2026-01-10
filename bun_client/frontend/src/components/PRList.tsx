@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
+import { Button, Badge, Card, Input, Select, mapStatusToVariant } from '../design';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
+    onOpenPluginOutput: (owner: string, repo: string, number: number) => void;
 }
 
 // Matches the ReviewItem struct from the Go backend
@@ -62,7 +64,7 @@ function getUniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[]
     ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
-export default function PRList({ onOpenReview }: PRListProps) {
+export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps) {
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterText, setFilterText] = useState('');
@@ -183,172 +185,97 @@ export default function PRList({ onOpenReview }: PRListProps) {
 
     return (
         <div className="pr-list">
-            <div className="card" style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                padding: '20px',
-                marginBottom: '20px'
-            }}>
+            <Card padding="lg" style={{ marginBottom: '20px' }}>
                 <h2 style={{ marginTop: 0, fontSize: '18px' }}>Open Review Manually</h2>
-                <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '10px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>Owner</label>
-                        <input
-                            type="text"
-                            value={owner}
-                            onChange={e => setOwner(e.target.value)}
-                            style={inputStyle}
-                        />
-                    </div>
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>Repo</label>
-                        <input
-                            type="text"
-                            value={repo}
-                            onChange={e => setRepo(e.target.value)}
-                            style={inputStyle}
-                        />
-                    </div>
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>PR #</label>
-                        <input
-                            type="number"
-                            value={prNumber}
-                            onChange={e => setPrNumber(e.target.value)}
-                            style={inputStyle}
-                        />
-                    </div>
-                    <button type="submit" style={buttonStyle}>Go</button>
+                <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <Input
+                        label="Owner"
+                        type="text"
+                        value={owner}
+                        onChange={e => setOwner(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Input
+                        label="Repo"
+                        type="text"
+                        value={repo}
+                        onChange={e => setRepo(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Input
+                        label="PR #"
+                        type="number"
+                        value={prNumber}
+                        onChange={e => setPrNumber(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Button type="submit">Go</Button>
                 </form>
-            </div>
+            </Card>
 
-            <div className="card" style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                padding: '20px'
-            }}>
+            <Card padding="lg">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                     <h2 style={{ margin: 0, fontSize: '18px' }}>Your Reviews</h2>
-                    <button onClick={loadList} style={{ ...buttonStyle, background: 'var(--bg-tertiary)' }}>Refresh</button>
+                    <Button onClick={loadList} variant="secondary" loading={loading}>Refresh</Button>
                 </div>
 
                 {/* Filter Bar */}
                 <div style={{ marginBottom: '20px' }}>
                     {/* Search Input */}
-                    <div style={{ position: 'relative' }}>
-                        <input
-                            type="text"
-                            value={filterText}
-                            onChange={e => setFilterText(e.target.value)}
-                            placeholder="Filter by title, author, owner, or repo..."
-                            style={{
-                                ...filterInputStyle,
-                                width: '100%',
-                                paddingLeft: '36px'
-                            }}
-                        />
-                        <span style={{
-                            position: 'absolute',
-                            left: '12px',
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            color: 'var(--text-secondary)',
-                            fontSize: '14px',
-                            pointerEvents: 'none'
-                        }}>⌕</span>
-                        {filterText && (
-                            <button
-                                onClick={() => setFilterText('')}
-                                style={{
-                                    position: 'absolute',
-                                    right: '8px',
-                                    top: '50%',
-                                    transform: 'translateY(-50%)',
-                                    background: 'var(--bg-tertiary)',
-                                    border: 'none',
-                                    borderRadius: '50%',
-                                    width: '20px',
-                                    height: '20px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    cursor: 'pointer',
-                                    color: 'var(--text-secondary)',
-                                    fontSize: '12px',
-                                    padding: 0
-                                }}
-                            >×</button>
-                        )}
-                    </div>
+                    <Input
+                        type="text"
+                        value={filterText}
+                        onChange={e => setFilterText(e.target.value)}
+                        placeholder="Filter by title, author, owner, or repo..."
+                        icon={<span>⌕</span>}
+                        clearable
+                        onClear={() => setFilterText('')}
+                    />
 
                     {/* Filter Dropdowns Row */}
-                    <div style={{ 
-                        display: 'flex', 
-                        gap: '12px', 
+                    <div style={{
+                        display: 'flex',
+                        gap: '12px',
                         marginTop: '12px',
                         flexWrap: 'wrap',
-                        alignItems: 'center'
+                        alignItems: 'flex-end'
                     }}>
                         {/* Status Filter (static options) */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <label style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                                Status:
-                            </label>
-                            <select
-                                value={statusFilter}
-                                onChange={e => setStatusFilter(e.target.value)}
-                                style={selectStyle}
-                            >
-                                {STATUS_OPTIONS.map(opt => (
-                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                ))}
-                            </select>
-                        </div>
+                        <Select
+                            label="Status"
+                            value={statusFilter}
+                            onChange={e => setStatusFilter(e.target.value)}
+                            options={STATUS_OPTIONS}
+                        />
 
                         {/* Dynamic Filters (generated from data) */}
                         {DYNAMIC_FILTERS.map(config => {
                             const options = getUniqueValues(allItems, config.key);
                             return (
-                                <div key={config.key} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                                        {config.label}:
-                                    </label>
-                                    <select
-                                        value={dynamicFilters[config.key]}
-                                        onChange={e => setDynamicFilter(config.key, e.target.value)}
-                                        style={selectStyle}
-                                    >
-                                        <option value="">{config.allLabel}</option>
-                                        {options.map(val => (
-                                            <option key={val} value={val}>{val}</option>
-                                        ))}
-                                    </select>
-                                </div>
+                                <Select
+                                    key={config.key}
+                                    label={config.label}
+                                    value={dynamicFilters[config.key]}
+                                    onChange={e => setDynamicFilter(config.key, e.target.value)}
+                                >
+                                    <option value="">{config.allLabel}</option>
+                                    {options.map(val => (
+                                        <option key={val} value={val}>{val}</option>
+                                    ))}
+                                </Select>
                             );
                         })}
 
                         {/* Clear All Filters Button */}
                         {hasActiveFilters && (
-                            <button
+                            <Button
                                 onClick={clearAllFilters}
-                                style={{
-                                    background: 'transparent',
-                                    border: '1px solid var(--border)',
-                                    color: 'var(--text-secondary)',
-                                    padding: '6px 12px',
-                                    borderRadius: '6px',
-                                    fontSize: '12px',
-                                    cursor: 'pointer',
-                                    marginLeft: 'auto',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px'
-                                }}
+                                variant="secondary"
+                                size="sm"
+                                style={{ marginLeft: 'auto' }}
                             >
                                 <span>×</span> Clear filters
-                            </button>
+                            </Button>
                         )}
                     </div>
 
@@ -401,26 +328,23 @@ export default function PRList({ onOpenReview }: PRListProps) {
                                         </div>
                                     ) : (
                                         section.items.map((item, iIdx) => (
-                                            <div key={iIdx} style={{
-                                                background: 'var(--bg-primary)',
-                                                border: '1px solid var(--border)',
-                                                borderRadius: '8px',
-                                                padding: '12px 16px',
-                                                display: 'flex',
-                                                justifyContent: 'space-between',
-                                                alignItems: 'center',
-                                                transition: 'all 0.2s ease'
-                                            }} className="pr-item-card">
+                                            <Card
+                                                key={iIdx}
+                                                variant="outlined"
+                                                padding="md"
+                                                hover
+                                                className="pr-item-card"
+                                                style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                }}
+                                            >
                                                 <div style={{ flex: 1 }}>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                                                        <span style={{
-                                                            fontSize: '10px',
-                                                            fontWeight: 700,
-                                                            padding: '2px 6px',
-                                                            borderRadius: '4px',
-                                                            background: getStatusColor(item.status),
-                                                            color: 'white'
-                                                        }}>{item.status}</span>
+                                                        <Badge variant={mapStatusToVariant(item.status)} size="sm">
+                                                            {item.status}
+                                                        </Badge>
                                                         <span style={{ fontWeight: 500, fontSize: '15px' }}>{item.title}</span>
                                                     </div>
                                                     {item.number ? (
@@ -435,24 +359,23 @@ export default function PRList({ onOpenReview }: PRListProps) {
                                                     )}
                                                 </div>
                                                 {item.number > 0 && (
-                                                    <button
-                                                        onClick={() => onOpenReview(item.owner, item.repo, item.number)}
-                                                        style={{
-                                                            background: 'var(--accent)',
-                                                            color: 'white',
-                                                            border: 'none',
-                                                            padding: '8px 16px',
-                                                            borderRadius: '6px',
-                                                            fontSize: '13px',
-                                                            fontWeight: 600,
-                                                            marginLeft: '15px',
-                                                            transition: 'transform 0.1s active'
-                                                        }}
-                                                    >
-                                                        Review
-                                                    </button>
+                                                    <div style={{ display: 'flex', gap: '12px', marginLeft: '15px' }}>
+                                                        <Button
+                                                            onClick={() => onOpenPluginOutput(item.owner, item.repo, item.number)}
+                                                            variant="ghost"
+                                                            size="sm"
+                                                        >
+                                                            Plugins
+                                                        </Button>
+                                                        <Button
+                                                            onClick={() => onOpenReview(item.owner, item.repo, item.number)}
+                                                            size="sm"
+                                                        >
+                                                            Review
+                                                        </Button>
+                                                    </div>
                                                 )}
-                                            </div>
+                                            </Card>
                                         ))
                                     )}
                                 </div>
@@ -460,61 +383,7 @@ export default function PRList({ onOpenReview }: PRListProps) {
                         ))}
                     </div>
                 )}
-            </div>
+            </Card>
         </div>
     );
 }
-
-const getStatusColor = (status: string) => {
-    switch (status) {
-        case 'DONE': return 'var(--success)';
-        case 'TODO': return 'var(--accent)';
-        case 'CANCELLED': return 'var(--text-secondary)';
-        case 'PROGRESS': return 'var(--warning)';
-        default: return 'var(--bg-tertiary)';
-    }
-};
-
-const inputStyle = {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '8px 12px',
-    borderRadius: '6px',
-    fontSize: '14px',
-    outline: 'none',
-    width: '150px'
-};
-
-const buttonStyle = {
-    background: 'var(--accent)',
-    color: 'white',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    fontSize: '14px',
-    fontWeight: 500,
-};
-
-const filterInputStyle = {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '10px 12px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    outline: 'none',
-    transition: 'border-color 0.2s ease',
-};
-
-const selectStyle = {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '6px 10px',
-    borderRadius: '6px',
-    fontSize: '13px',
-    outline: 'none',
-    cursor: 'pointer',
-    minWidth: '120px',
-};

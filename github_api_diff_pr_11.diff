@@ -1,0 +1,163 @@
+diff --git a/README.md b/README.md
+index de8428b..d84ac69 100644
+--- a/README.md
++++ b/README.md
+@@ -33,6 +33,7 @@ Owner: str
+ Filters: list[str]
+ OrgFileName: str
+ SectionTitle: str
++Prune: bool
+ ```
+ 
+ The WorkflowType is one of the following strings:
+@@ -41,6 +42,9 @@ SingleRepoSyncReviewRequestsWorkflow
+ ListMyPRsWorkflow
+ ProjectListWorkflow
+ 
++Prune tells the workflow runner whether or not to remove PRs from the section if they're no longer relevant.  The default is False
++
++### Workflow specific configurations
+ Single Repo Sync workflow takes an additional paramter, Repo.
+ ```
+ Repo: str
+@@ -51,6 +55,8 @@ ListMyPRsWorkflow takes the additional parameter PRState, which is passed throug
+ PRState: str [open/closed/nil]
+ ```
+ 
++
++
+ An Example complete config file is below
+ 
+ ```toml
+@@ -68,6 +74,7 @@ Owner = "C-Hipple"
+ Filters = ["FilterNotDraft"]
+ OrgFileName = "reviews.org"
+ SectionTitle = "Open PRs"
++Prune = true
+ 
+ [[Workflows]]
+ WorkflowType = "ListMyPRsWorkflow"
+@@ -75,6 +82,7 @@ Name = "List Closed PRs"
+ Owner = "C-Hipple"
+ OrgFileName = "reviews.org"
+ SectionTitle = "Closed PRs"
++Prune = false
+ ```
+ 
+ ## Filters
+diff --git a/config.go b/config.go
+index b13bb3e..ddab808 100644
+--- a/config.go
++++ b/config.go
+@@ -28,6 +28,7 @@ type RawWorkflow struct {
+ 	OrgFileName  string
+ 	SectionTitle string
+ 	PRState      string
++	Prune        bool
+ }
+ 
+ func LoadConfig() Config {
+@@ -81,6 +82,7 @@ func BuildSingleRepoReviewWorkflow(raw *RawWorkflow, repos *[]string) workflows.
+ 		Filters:      BuildFiltersList(raw.Filters),
+ 		OrgFileName:  raw.OrgFileName,
+ 		SectionTitle: raw.SectionTitle,
++		Prune:        raw.Prune,
+ 	}
+ 	return wf
+ }
+@@ -93,6 +95,7 @@ func BuildSyncReviewRequestWorkflow(raw *RawWorkflow, repos *[]string) workflows
+ 		Filters:      BuildFiltersList(raw.Filters),
+ 		OrgFileName:  raw.OrgFileName,
+ 		SectionTitle: raw.SectionTitle,
++		Prune:        raw.Prune,
+ 	}
+ 	return wf
+ }
+@@ -106,6 +109,7 @@ func BuildListMyPRsWorkflow(raw *RawWorkflow, repos *[]string) workflows.Workflo
+ 		PRState:      raw.PRState,
+ 		OrgFileName:  raw.OrgFileName,
+ 		SectionTitle: raw.SectionTitle,
++		Prune:        raw.Prune,
+ 	}
+ 	return wf
+ }
+@@ -120,6 +124,7 @@ func BuildProjectListWorkflow(raw *RawWorkflow, jiraDomain string) workflows.Wor
+ 		Filters:      BuildFiltersList(raw.Filters),
+ 		OrgFileName:  raw.OrgFileName,
+ 		SectionTitle: raw.SectionTitle,
++		Prune:        raw.Prune,
+ 	}
+ 	return wf
+ }
+diff --git a/workflows/workflows.go b/workflows/workflows.go
+index f90bcb4..6535c4b 100644
+--- a/workflows/workflows.go
++++ b/workflows/workflows.go
+@@ -37,6 +37,7 @@ type SingleRepoSyncReviewRequestsWorkflow struct {
+ 	Owner   string
+ 	Repo    string
+ 	Filters []git_tools.PRFilter
++	Prune   bool
+ 
+ 	// org output info
+ 	OrgFileName  string
+@@ -71,7 +72,7 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(c chan FileChanges, file_chang
+ 		return RunResult{}, errors.New("Section Not Found")
+ 	}
+ 
+-	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, true)
++	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, w.Prune)
+ 	return result, nil
+ }
+ 
+@@ -81,6 +82,7 @@ type SyncReviewRequestsWorkflow struct {
+ 	Owner   string
+ 	Repos   []string
+ 	Filters []git_tools.PRFilter
++	Prune   bool
+ 
+ 	// org output info
+ 	OrgFileName  string
+@@ -97,7 +99,7 @@ func (w SyncReviewRequestsWorkflow) Run(c chan FileChanges, file_change_wg *sync
+ 		fmt.Println("Error getting section: ", err, w.SectionTitle)
+ 		return RunResult{}, errors.New("Section Not Found")
+ 	}
+-	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, true)
++	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, w.Prune)
+ 	return result, nil
+ }
+ 
+@@ -121,6 +123,8 @@ type ListMyPRsWorkflow struct {
+ 	OrgFileName  string
+ 	SectionTitle string
+ 	PRState      string
++
++	Prune bool
+ }
+ 
+ func (w ListMyPRsWorkflow) GetName() string {
+@@ -147,7 +151,7 @@ func (w ListMyPRsWorkflow) Run(c chan FileChanges, file_change_wg *sync.WaitGrou
+ 		return RunResult{}, errors.New("Section Not Found")
+ 	}
+ 	prs = git_tools.ApplyPRFilters(prs, []git_tools.PRFilter{git_tools.MyPRs})
+-	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, false)
++	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, w.Prune)
+ 	return result, nil
+ }
+ 
+@@ -160,6 +164,7 @@ type ProjectListWorkflow struct {
+ 	SectionTitle string
+ 	JiraDomain   string
+ 	JiraEpic     string
++	Prune        bool
+ }
+ 
+ func (w ProjectListWorkflow) GetName() string {
+@@ -188,6 +193,6 @@ func (w ProjectListWorkflow) Run(c chan FileChanges, file_change_wg *sync.WaitGr
+ 	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
+ 
+ 	prs := git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
+-	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, false)
++	result := ProcessPRs(prs, c, &doc, &section, file_change_wg, w.Prune)
+ 	return result, nil
+ }

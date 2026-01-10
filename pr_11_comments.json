@@ -1,0 +1,42 @@
+[
+  {
+    "id": "2082768603",
+    "author": "C-Hipple",
+    "body": "```suggestion\nPrune tells the workflow runner whether or not to remove PRs from the section if they're no longer relevant.  The default is False\n```",
+    "path": "README.md",
+    "position": "1",
+    "in_reply_to": 0,
+    "created_at": "2025-05-10T02:33:37Z",
+    "outdated": false
+  },
+  {
+    "id": "2107999396",
+    "author": "C-Hipple",
+    "body": "here too? (this comment is on Prune:    raw.Prune,",
+    "path": "config.go",
+    "position": "36",
+    "in_reply_to": 0,
+    "created_at": "2025-05-27T01:50:13Z",
+    "outdated": false
+  },
+  {
+    "id": "10",
+    "author": "local",
+    "body": "ihere",
+    "path": "config.go",
+    "position": "4",
+    "in_reply_to": 0,
+    "created_at": "0001-01-01T00:00:00Z",
+    "outdated": false
+  },
+  {
+    "id": "11",
+    "author": "local",
+    "body": "on prune",
+    "path": "config.go",
+    "position": "4",
+    "in_reply_to": 0,
+    "created_at": "0001-01-01T00:00:00Z",
+    "outdated": false
+  }
+]

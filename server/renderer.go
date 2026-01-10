@@ -287,21 +287,25 @@ type CommentJSON struct {
 }
 
 type PRMetadata struct {
-	Number      int      `json:"number"`
-	Title       string   `json:"title"`
-	Author      string   `json:"author"`
-	BaseRef     string   `json:"base_ref"`
-	HeadRef     string   `json:"head_ref"`
-	State       string   `json:"state"`
-	Milestone   string   `json:"milestone"`
-	Labels      []string `json:"labels"`
-	Assignees   []string `json:"assignees"`
-	Reviewers   []string `json:"reviewers"`
-	Draft       bool     `json:"draft"`
-	CIStatus    string   `json:"ci_status"`
-	CIFailures  []string `json:"ci_failures"`
-	Description string   `json:"description"`
-	URL         string   `json:"url"`
+	Number             int      `json:"number"`
+	Title              string   `json:"title"`
+	Author             string   `json:"author"`
+	BaseRef            string   `json:"base_ref"`
+	HeadRef            string   `json:"head_ref"`
+	State              string   `json:"state"`
+	Milestone          string   `json:"milestone"`
+	Labels             []string `json:"labels"`
+	Assignees          []string `json:"assignees"`
+	Reviewers          []string `json:"reviewers"`           // Requested individual reviewers
+	RequestedTeams     []string `json:"requested_teams"`     // Requested team reviewers
+	ApprovedBy         []string `json:"approved_by"`         // Logins of users who approved
+	ChangesRequestedBy []string `json:"changes_requested_by"` // Logins of users who requested changes
+	CommentedBy        []string `json:"commented_by"`         // Logins of users who commented (non-approval/non-request)
+	Draft              bool     `json:"draft"`
+	CIStatus           string   `json:"ci_status"`
+	CIFailures         []string `json:"ci_failures"`
+	Description        string   `json:"description"`
+	URL                string   `json:"url"`
 }
 
 type PRDetails struct {
@@ -450,6 +454,19 @@ func convertLocalCommentsToPRComments(localComments []database.LocalComment) []P
 	return result
 }
 
+// convertIssueCommentToPRComment converts a *github.IssueComment to *github.PullRequestComment
+func convertIssueCommentToPRComment(ic *github.IssueComment) *github.PullRequestComment {
+	return &github.PullRequestComment{
+		ID:        ic.ID,
+		Body:      ic.Body,
+		User:      ic.User,
+		CreatedAt: ic.CreatedAt,
+		UpdatedAt: ic.UpdatedAt,
+		URL:       ic.URL,
+		HTMLURL:   ic.HTMLURL,
+	}
+}
+
 func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDetails, error) {
 	client := git_tools.GetGithubClient()
 	ctx := context.Background()
@@ -492,11 +509,42 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				headSHA = *pr.Head.SHA
 			}
 
-			// Fetch Reviewers
+			// Fetch Reviewers (Requested)
 			reviewers, _ := GetRequestedReviewers(owner, repo, number, skipCache)
 			reviewerLogins := []string{}
-			for _, r := range reviewers {
-				reviewerLogins = append(reviewerLogins, r.GetLogin())
+			teamLogins := []string{}
+			if reviewers != nil {
+				for _, r := range reviewers.Users {
+					reviewerLogins = append(reviewerLogins, r.GetLogin())
+				}
+				for _, t := range reviewers.Teams {
+					teamLogins = append(teamLogins, t.GetName())
+				}
+			}
+
+			// Fetch actual reviews to see who has approved/commented/etc.
+			reviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+			approvedBy := []string{}
+			changesRequestedBy := []string{}
+			commentedBy := []string{}
+
+			// Map to keep track of the latest review state for each user
+			latestReviewState := make(map[string]string)
+			for _, review := range reviews {
+				if review.User != nil && review.State != nil {
+					latestReviewState[review.User.GetLogin()] = review.GetState()
+				}
+			}
+
+			for user, state := range latestReviewState {
+				switch state {
+				case "APPROVED":
+					approvedBy = append(approvedBy, user)
+				case "CHANGES_REQUESTED":
+					changesRequestedBy = append(changesRequestedBy, user)
+				case "COMMENTED":
+					commentedBy = append(commentedBy, user)
+				}
 			}
 
 			// Fetch CI Status
@@ -552,20 +600,24 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			metadata = PRMetadata{
-				Number:      number,
-				Title:       pr.GetTitle(),
-				Author:      pr.User.GetLogin(),
-				BaseRef:     pr.Base.GetRef(),
-				HeadRef:     pr.Head.GetRef(),
-				State:       pr.GetState(),
-				Labels:      labels,
-				Assignees:   assignees,
-				Reviewers:   reviewerLogins,
-				Draft:       pr.GetDraft(),
-				CIStatus:    ciStatus,
-				CIFailures:  ciFailures,
-				Description: pr.GetBody(),
-				URL:         pr.GetHTMLURL(),
+				Number:             number,
+				Title:              pr.GetTitle(),
+				Author:             pr.User.GetLogin(),
+				BaseRef:            pr.Base.GetRef(),
+				HeadRef:            pr.Head.GetRef(),
+				State:              pr.GetState(),
+				Labels:             labels,
+				Assignees:          assignees,
+				Reviewers:          reviewerLogins,
+				RequestedTeams:     teamLogins,
+				ApprovedBy:         approvedBy,
+				ChangesRequestedBy: changesRequestedBy,
+				CommentedBy:        commentedBy,
+				Draft:              pr.GetDraft(),
+				CIStatus:           ciStatus,
+				CIFailures:         ciFailures,
+				Description:        pr.GetBody(),
+				URL:                pr.GetHTMLURL(),
 			}
 			if pr.Milestone != nil {
 				metadata.Milestone = pr.Milestone.GetTitle()
@@ -615,7 +667,18 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	if githubComments == nil {
 		opts := github.PullRequestListCommentsOptions{}
 		githubComments, _, _ = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
+
+		issueComments, _, _ := client.Issues.ListComments(ctx, owner, repo, number, nil)
+		for _, ic := range issueComments {
+			githubComments = append(githubComments, convertIssueCommentToPRComment(ic))
+		}
+
 		if githubComments != nil {
+			// Sort comments by creation date to maintain order
+			sort.Slice(githubComments, func(i, j int) bool {
+				return githubComments[i].CreatedAt.Before(*githubComments[j].CreatedAt)
+			})
+
 			commentsJSON, _ := json.Marshal(githubComments)
 			config.C.DB.UpsertPRComments(number, repo, string(commentsJSON))
 		}
@@ -663,18 +726,49 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	reviewers, err := GetRequestedReviewers(owner, repo, number, skipCache)
 	if err != nil {
 		slog.Error("Error fetching requested reviewers", "error", err)
-		// Continue without reviewers rather than failing
-		reviewers = []*github.User{}
 	}
 
 	reviewersStr := ""
-	for _, reviewer := range reviewers {
-		if reviewersStr != "" {
-			reviewersStr += ", "
+	if reviewers != nil {
+		for _, reviewer := range reviewers.Users {
+			if reviewersStr != "" {
+				reviewersStr += ", "
+			}
+			reviewersStr += "@" + reviewer.GetLogin()
 		}
-		reviewersStr += reviewer.GetLogin()
+		for _, team := range reviewers.Teams {
+			if reviewersStr != "" {
+				reviewersStr += ", "
+			}
+			reviewersStr += "team:" + team.GetName()
+		}
 	}
 
+	// Fetch actual reviews to see status
+	reviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+	approvedBy := []string{}
+	changesRequestedBy := []string{}
+	commentedBy := []string{}
+
+	latestReviewState := make(map[string]string)
+	for _, review := range reviews {
+		if review.User != nil && review.State != nil {
+			latestReviewState[review.User.GetLogin()] = review.GetState()
+		}
+	}
+
+	for user, state := range latestReviewState {
+		switch state {
+		case "APPROVED":
+			approvedBy = append(approvedBy, "@"+user)
+		case "CHANGES_REQUESTED":
+			changesRequestedBy = append(changesRequestedBy, "@"+user)
+		case "COMMENTED":
+			commentedBy = append(commentedBy, "@"+user)
+		}
+	}
+
+	// ... rest of the function ...
 	// Fetch Commits
 	commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
 	if err != nil {
@@ -736,6 +830,16 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 	sb.WriteString(fmt.Sprintf("Assignees: \t%s\n", assignees))
 	sb.WriteString("Suggested-Reviewers: No suggestions\n")
 	sb.WriteString(fmt.Sprintf("Reviewers: \t%s\n", reviewersStr))
+
+	if len(approvedBy) > 0 {
+		sb.WriteString(fmt.Sprintf("Approved-By: \t%s\n", strings.Join(approvedBy, ", ")))
+	}
+	if len(changesRequestedBy) > 0 {
+		sb.WriteString(fmt.Sprintf("Changes-Requested-By: \t%s\n", strings.Join(changesRequestedBy, ", ")))
+	}
+	if len(commentedBy) > 0 {
+		sb.WriteString(fmt.Sprintf("Commented-By: \t%s\n", strings.Join(commentedBy, ", ")))
+	}
 
 	// CI Status
 	if pr.Head != nil && pr.Head.SHA != nil {
@@ -1232,7 +1336,7 @@ func filterComments(comments []PRComment) []PRComment {
 	return output
 }
 
-func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*github.User, error) {
+func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*github.Reviewers, error) {
 	client := git_tools.GetGithubClient()
 
 	if !skipCache {
@@ -1240,7 +1344,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*g
 		if err != nil {
 			slog.Error("Error checking database for requested reviewers", "pr", number, "repo", repo, "error", err)
 		} else if cachedReviewersJSON != "" {
-			var reviewers []*github.User
+			var reviewers *github.Reviewers
 			if err := json.Unmarshal([]byte(cachedReviewersJSON), &reviewers); err != nil {
 				slog.Error("Error unmarshaling cached reviewers", "error", err)
 			} else {
@@ -1250,13 +1354,11 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*g
 	}
 
 	reviewers, _, err := client.PullRequests.ListReviewers(context.Background(), owner, repo, number, nil)
-	// TODO: Show status of already done reviews.
-	// reviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repo, number, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	reviewersJSON, err := json.Marshal(reviewers.Users)
+	reviewersJSON, err := json.Marshal(reviewers)
 	if err != nil {
 		slog.Error("Error marshaling reviewers for storage", "error", err)
 	} else {
@@ -1265,7 +1367,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) ([]*g
 		}
 	}
 
-	return reviewers.Users, nil
+	return reviewers, nil
 }
 
 type CombinedPRStatus struct {

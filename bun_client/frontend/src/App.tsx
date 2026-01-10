@@ -116,7 +116,7 @@ function App() {
                     <Review owner={currentPR.owner} repo={currentPR.repo} number={currentPR.number} />
                 )}
                 {view === 'PLUGIN_OUTPUT' && currentPR && (
-                    <PluginOutput owner={currentPR.owner} repo={currentPR.repo} number={currentPR.number} />
+                    <PluginOutput owner={currentPR.owner} repo={currentPR.repo} number={currentPR.number} onClose={handleBack} />
                 )}
             </main>
         </div>

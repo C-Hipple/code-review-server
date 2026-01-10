@@ -1,6 +1,7 @@
 import { spawn } from "bun";
 
 import { resolve } from "path";
+import { assets } from "./embedded_assets";
 const SERVER_PATH = resolve(process.env.HOME || "/home/chris", "go/bin/crs");
 
 interface JsonRpcRequest {
@@ -146,7 +147,7 @@ const CORS_HEADERS = {
 };
 
 Bun.serve({
-    port: 3000,
+    port: parseInt(process.env.PORT || "3000"),
     async fetch(req) {
         const url = new URL(req.url);
 
@@ -248,8 +249,39 @@ Bun.serve({
             return handleRpc(body.method, body.params);
         }
 
+        // Serve static files
+        let path = url.pathname;
+        if (path === "/") path = "/index.html";
+
+        // 1. Try embedded assets (for single-binary distribution)
+        if (assets[path]) {
+            return new Response(Bun.file(assets[path]));
+        }
+
+        // 2. Fallback to disk (for development)
+        const publicPath = resolve(import.meta.dir, "frontend/dist");
+        const filePath = resolve(publicPath, path.substring(1));
+
+        if (filePath.startsWith(publicPath)) {
+            const file = Bun.file(filePath);
+            if (await file.exists()) {
+                return new Response(file);
+            }
+        }
+
+        // 3. SPA fallback: serve index.html
+        if (assets["/index.html"]) {
+            return new Response(Bun.file(assets["/index.html"]));
+        }
+
+        const indexPath = resolve(publicPath, "index.html");
+        const indexFile = Bun.file(indexPath);
+        if (await indexFile.exists()) {
+            return new Response(indexFile);
+        }
+
         return new Response("Not Found", { status: 404 });
     },
 });
 
-console.log("Bun server running on http://localhost:3000");
+console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "3000")}`);

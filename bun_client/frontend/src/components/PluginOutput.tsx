@@ -6,6 +6,7 @@ interface PluginOutputProps {
     owner: string;
     repo: string;
     number: number;
+    onClose?: () => void;
 }
 
 interface PluginResult {
@@ -17,13 +18,24 @@ interface GetPluginOutputResponse {
     output: Record<string, PluginResult>;
 }
 
-export default function PluginOutput({ owner, repo, number }: PluginOutputProps) {
+export default function PluginOutput({ owner, repo, number, onClose }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
 
     useEffect(() => {
         loadPluginOutput();
     }, [owner, repo, number]);
+
+    useEffect(() => {
+        if (!onClose) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [onClose]);
 
     const loadPluginOutput = async () => {
         setLoading(true);
@@ -51,9 +63,16 @@ export default function PluginOutput({ owner, repo, number }: PluginOutputProps)
                     <h2 style={{ margin: 0, fontSize: '18px' }}>
                         Plugin Output for {owner}/{repo} #{number}
                     </h2>
-                    <Button onClick={loadPluginOutput} loading={loading}>
-                        Refresh
-                    </Button>
+                    <div style={{ display: 'flex', gap: '12px' }}>
+                        <Button onClick={loadPluginOutput} loading={loading} variant="secondary">
+                            Refresh
+                        </Button>
+                        {onClose && (
+                            <Button onClick={onClose} variant="secondary">
+                                Close (Esc)
+                            </Button>
+                        )}
+                    </div>
                 </div>
 
                 {loading ? (

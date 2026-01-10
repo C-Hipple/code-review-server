@@ -42,7 +42,11 @@ interface PRMetadata {
     milestone: string;
     labels: string[];
     assignees: string[];
-    reviewers: string[];
+    reviewers: string[];           // Requested individual reviewers
+    requested_teams: string[];     // Requested team reviewers
+    approved_by: string[];         // Users who approved
+    changes_requested_by: string[]; // Users who requested changes
+    commented_by: string[];         // Users who commented
     draft: boolean;
     ci_status: string;
     ci_failures: string[];
@@ -130,13 +134,13 @@ const getLanguageFromFilename = (filename: string): string => {
         'ml': 'ocaml',
         'proto': 'protobuf',
     };
-    
+
     // Handle special filenames
     const basename = filename.split('/').pop()?.toLowerCase() || '';
     if (basename === 'dockerfile') return 'docker';
     if (basename === 'makefile' || basename === 'gnumakefile') return 'makefile';
     if (basename.endsWith('.d.ts')) return 'typescript';
-    
+
     return languageMap[ext] || 'text';
 };
 
@@ -382,13 +386,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         clickable = true;
                         lineType = 'file-header';
 
-                        parsedLines.push({ 
-                            text: currentFile, 
-                            file, 
-                            pos, 
-                            clickable, 
+                        parsedLines.push({
+                            text: currentFile,
+                            file,
+                            pos,
+                            clickable,
                             lineType,
-                            fileStatus: pendingFileStatus 
+                            fileStatus: pendingFileStatus
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
                         continue;
@@ -479,16 +483,16 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const highlightedLines = useMemo(() => {
         const lines = parseDiff();
         const result: Map<number, React.ReactNode> = new Map();
-        
+
         // Group lines by file and collect code for bulk highlighting
         let currentFile: string | null = null;
         let fileLines: { idx: number; code: string; prefix: string }[] = [];
-        
+
         const processFileSection = (file: string, linesData: typeof fileLines) => {
             if (linesData.length === 0) return;
-            
+
             const language = getLanguageFromFilename(file);
-            
+
             // We'll use SyntaxHighlighter's output directly for each line
             linesData.forEach((lineData) => {
                 const lineCode = lineData.code || ' '; // Use space for empty lines
@@ -518,7 +522,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 ));
             });
         };
-        
+
         lines.forEach((item, idx) => {
             if (item.lineType === 'file-header') {
                 // Process previous file's lines
@@ -533,12 +537,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 fileLines.push({ idx, code, prefix: item.text[0] });
             }
         });
-        
+
         // Process the last file section
         if (currentFile && fileLines.length > 0) {
             processFileSection(currentFile, fileLines);
         }
-        
+
         return result;
     }, [diff, customDiffTheme]);
 
@@ -667,8 +671,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
                             const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
                             return (
-                                <div 
-                                    key={rc.id} 
+                                <div
+                                    key={rc.id}
                                     style={{
                                         margin: '10px 20px',
                                         border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
@@ -690,9 +694,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <span>{rc.author} commented</span>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ 
-                                                fontSize: '10px', 
-                                                color: 'var(--accent)', 
+                                            <span style={{
+                                                fontSize: '10px',
+                                                color: 'var(--accent)',
                                                 opacity: 0.7,
                                                 background: 'rgba(56, 139, 253, 0.1)',
                                                 padding: '2px 6px',
@@ -721,7 +725,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 marginBottom: '10px'
                             }}>
                                 <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    {replyToId !== null 
+                                    {replyToId !== null
                                         ? `Replying to comment #${replyToId}`
                                         : `Commenting on ${item.file}:${item.pos}`
                                     }
@@ -754,12 +758,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 );
             }
 
-            let containerStyle: React.CSSProperties = { 
+            let containerStyle: React.CSSProperties = {
                 display: 'flex',
                 alignItems: 'stretch',
                 minHeight: '20px',
             };
-            
+
             let prefixStyle: React.CSSProperties = {
                 width: '20px',
                 minWidth: '20px',
@@ -772,10 +776,10 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 justifyContent: 'center',
                 fontSize: '12px',
             };
-            
-            let lineStyle: React.CSSProperties = { 
+
+            let lineStyle: React.CSSProperties = {
                 flex: 1,
-                padding: '0 8px', 
+                padding: '0 8px',
                 whiteSpace: 'pre',
                 display: 'flex',
                 alignItems: 'center',
@@ -803,7 +807,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             // Determine what to render for the line content
             let lineContent: React.ReactNode;
             const highlightedContent = highlightedLines.get(idx);
-            
+
             if (highlightedContent && isCodeLine && !isHunkHeader) {
                 // Use syntax-highlighted content
                 lineContent = highlightedContent;
@@ -815,8 +819,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             return (
                 <div key={idx}>
                     <div
-                        style={{ 
-                            ...containerStyle, 
+                        style={{
+                            ...containerStyle,
                             borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
                             marginLeft: isInlineActive ? '-3px' : '0',
                         }}
@@ -837,8 +841,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
                         const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
                         return (
-                            <div 
-                                key={rc.id} 
+                            <div
+                                key={rc.id}
                                 style={{
                                     margin: '10px 20px',
                                     border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
@@ -860,9 +864,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <span>{rc.author} commented</span>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <span style={{ 
-                                            fontSize: '10px', 
-                                            color: 'var(--accent)', 
+                                        <span style={{
+                                            fontSize: '10px',
+                                            color: 'var(--accent)',
                                             opacity: 0.7,
                                             background: 'rgba(56, 139, 253, 0.1)',
                                             padding: '2px 6px',
@@ -891,7 +895,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             marginBottom: '10px'
                         }}>
                             <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                {replyToId !== null 
+                                {replyToId !== null
                                     ? `Replying to comment #${replyToId}`
                                     : `Commenting on ${item.file}:${item.pos}`
                                 }
@@ -1075,14 +1079,94 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             </div>
                         )}
 
-                        {/* Reviewers */}
-                        {metadata.reviewers && metadata.reviewers.length > 0 && (
+                        {/* Reviewers/Teams */}
+                        {((metadata.reviewers && metadata.reviewers.length > 0) || (metadata.requested_teams && metadata.requested_teams.length > 0)) && (
                             <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
                                 <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                    Reviewers
+                                    Requested Reviewers
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                    {metadata.reviewers.map((r, i) => (
+                                    {metadata.reviewers?.map((r, i) => (
+                                        <span key={`rev-${i}`} style={{
+                                            background: 'var(--bg-tertiary)',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            color: 'var(--text-primary)'
+                                        }}>
+                                            @{r}
+                                        </span>
+                                    ))}
+                                    {metadata.requested_teams?.map((t, i) => (
+                                        <span key={`team-${i}`} style={{
+                                            background: 'rgba(56, 139, 253, 0.1)',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            color: 'var(--accent)',
+                                            border: '1px solid rgba(56, 139, 253, 0.2)'
+                                        }}>
+                                            team:{t}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Approved By */}
+                        {metadata.approved_by && metadata.approved_by.length > 0 && (
+                            <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--success)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    ✓ Approved By
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {metadata.approved_by.map((r, i) => (
+                                        <span key={i} style={{
+                                            background: 'rgba(35, 134, 54, 0.1)',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            color: 'var(--success)',
+                                            border: '1px solid rgba(35, 134, 54, 0.2)'
+                                        }}>
+                                            @{r}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Changes Requested By */}
+                        {metadata.changes_requested_by && metadata.changes_requested_by.length > 0 && (
+                            <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--danger)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    ✗ Changes Requested By
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {metadata.changes_requested_by.map((r, i) => (
+                                        <span key={i} style={{
+                                            background: 'rgba(218, 54, 51, 0.1)',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            color: 'var(--danger)',
+                                            border: '1px solid rgba(218, 54, 51, 0.2)'
+                                        }}>
+                                            @{r}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Commented By */}
+                        {metadata.commented_by && metadata.commented_by.length > 0 && (
+                            <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    💬 Commented By
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {metadata.commented_by.map((r, i) => (
                                         <span key={i} style={{
                                             background: 'var(--bg-tertiary)',
                                             padding: '2px 8px',

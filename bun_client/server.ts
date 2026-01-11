@@ -1,8 +1,9 @@
-import { spawn } from "bun";
+import { spawn, Subprocess } from "bun";
 
-import { resolve } from "path";
+import { resolve, join } from "path";
 import { assets } from "./embedded_assets";
 const SERVER_PATH = resolve(process.env.HOME || "/home/chris", "go/bin/crs");
+const DIFF_LSP_PATH = resolve(process.env.HOME || "/home/chris", ".cargo/bin/diff-lsp");
 
 interface JsonRpcRequest {
     method: string;
@@ -146,10 +147,24 @@ const CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 };
 
-Bun.serve({
+Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
     port: parseInt(process.env.PORT || "3000"),
-    async fetch(req) {
+    async fetch(req, server) {
         const url = new URL(req.url);
+
+        if (url.pathname === "/api/lsp") {
+            const success = server.upgrade(req, {
+                data: {
+                    cmd: DIFF_LSP_PATH,
+                    envs: {
+                        PATH: SHELL_PATH,
+                        HOME: process.env.HOME || "/home/chris"
+                    }
+                }
+            });
+            if (success) return undefined;
+            return new Response("Upgrade failed", { status: 500 });
+        }
 
         // CORS
         if (req.method === "OPTIONS") {
@@ -243,6 +258,23 @@ Bun.serve({
             return handleRpc("RPCHandler.GetPluginOutput", [body]);
         }
 
+        if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
+            const body = await req.json();
+            const { project, root, buffer, type, content } = body;
+            const header = `Project: ${project}
+Root: ${root}
+Buffer: ${buffer}
+Type: ${type}
+`;
+            const fullContent = header + content;
+            const filename = `diff_lsp_${crypto.randomUUID()}`;
+            const filePath = join("/tmp", filename);
+            await Bun.write(filePath, fullContent);
+            return new Response(JSON.stringify({ path: filePath }), {
+                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+            });
+        }
+
         // Generic legacy RPC endpoint
         if (url.pathname === "/api/rpc" && req.method === "POST") {
             const body = await req.json();
@@ -282,6 +314,46 @@ Bun.serve({
 
         return new Response("Not Found", { status: 404 });
     },
+    websocket: {
+        open(ws) {
+            console.log("LSP WebSocket connected");
+            const { cmd, envs } = ws.data;
+            const proc = spawn([cmd], {
+                stdin: "pipe",
+                stdout: "pipe",
+                stderr: "inherit",
+                env: { ...process.env, ...envs }
+            });
+            ws.data.proc = proc;
+
+            const reader = proc.stdout.getReader();
+            (async () => {
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        ws.send(value);
+                    }
+                } catch (e) {
+                    console.error("Error reading from LSP:", e);
+                }
+            })();
+        },
+        message(ws, message) {
+            const proc = ws.data.proc;
+            if (proc && proc.stdin && typeof proc.stdin !== "number") {
+                proc.stdin.write(message);
+                proc.stdin.flush();
+            }
+        },
+        close(ws) {
+            console.log("LSP WebSocket closed");
+            const proc = ws.data.proc;
+            if (proc) {
+                proc.kill();
+            }
+        },
+    }
 });
 
 console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "3000")}`);

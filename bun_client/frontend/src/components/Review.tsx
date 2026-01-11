@@ -4,6 +4,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall } from '../api';
 import { Button, Badge, Modal, TextArea, mapStatusToVariant } from '../design';
+import { LspClient, LspHover, LspLocation } from '../lsp';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
 const stripHtmlComments = (text: string): string => {
@@ -155,6 +156,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     // UI State
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
     const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null); // For inline comments
+    const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
 
@@ -170,10 +172,57 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
 
+    // LSP State
+    const [lspClient, setLspClient] = useState<LspClient | null>(null);
+    const [lspUri, setLspUri] = useState<string | null>(null);
+    const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
+
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
     }, [owner, repo, number]);
+
+    useEffect(() => {
+        if (!diff || !metadata) return;
+
+        const initLsp = async () => {
+            if (lspClient) {
+                // Simple cleanup if needed, though we make a new one
+            }
+            const client = new LspClient();
+            client.connect();
+
+            try {
+                // Prepare context for diff-lsp
+                // We use "code-review" as type to match server configuration
+                const path = await client.prepareContext(
+                    repo,
+                    `~/${repo}`,
+                    `PR #${number}`,
+                    "code-review",
+                    diff
+                );
+                const uri = `file://${path}`;
+                setLspUri(uri);
+
+                // Initialize standard LSP
+                await client.initialize("/");
+                client.initialized();
+                // Open the document (the temp file we just created)
+                client.didOpen(uri, "diff", 1, diff);
+
+                setLspClient(client);
+            } catch (e) {
+                console.error("LSP Init failed", e);
+            }
+        };
+
+        initLsp();
+
+        return () => {
+            // connection clean up handled by browser closing ws or GC
+        };
+    }, [diff, owner, repo, number]); // Re-init if diff changes
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -182,6 +231,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 setShowCommentModal(false);
                 setSubmitting(false);
                 setActiveLineIndex(null);
+                setActiveLspIndex(null);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -248,6 +298,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         setReplyToId(null);
         setShowCommentModal(false);
         setActiveLineIndex(null);
+        // Do not reset LSP index here as users might want to keep references open while adding a comment
     };
 
     const handleAddComment = async () => {
@@ -331,6 +382,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         clickable: boolean;
         lineType: LineType;
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
+        originalLineIndex: number;
     }
 
     // Parse diff to identify clickable lines (metadata is now rendered separately)
@@ -345,7 +397,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             let foundFirstHunkInFile = false;
             let pendingFileStatus: 'modified' | 'new' | 'deleted' | 'renamed' = 'modified';
 
-            for (const rawLine of lines) {
+            lines.forEach((rawLine, index) => {
                 const line = rawLine.replace(/\r$/, '');
                 let clickable = false;
                 let pos: number | null = null;
@@ -392,10 +444,11 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             pos,
                             clickable,
                             lineType,
-                            fileStatus: pendingFileStatus
+                            fileStatus: pendingFileStatus,
+                            originalLineIndex: index
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
-                        continue;
+                        return; // continue equivalent in forEach
                     } else if (currentFile) {
                         const isHunkHeader = line.startsWith('@@');
                         const isAddition = line.startsWith('+') && !line.startsWith('+++');
@@ -428,15 +481,15 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 }
 
                 if (lineType !== 'skip') {
-                    parsedLines.push({ text: line, file, pos, clickable, lineType });
+                    parsedLines.push({ text: line, file, pos, clickable, lineType, originalLineIndex: index });
                 }
-            }
+            });
         }
 
         return parsedLines;
     };
 
-    const handleLineClick = (idx: number, file: string, pos: number) => {
+    const handleCommentClick = (idx: number, file: string, pos: number) => {
         if (activeLineIndex === idx) {
             setActiveLineIndex(null);
             setFilename('');
@@ -449,6 +502,38 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setShowCommentModal(false);
             setCommentBody('');
             setReplyToId(null);
+        }
+    };
+
+    const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number) => {
+        if (activeLspIndex === idx) {
+            setActiveLspIndex(null);
+            setLspData(null);
+        } else {
+            // Don't open comment box on code click
+            // But update filename/position context just in case? No, keep it separate.
+            setActiveLspIndex(idx);
+            setLspData(null);
+
+            console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex);
+
+            // Fetch LSP Data
+            if (lspClient && lspUri) {
+                console.log("Fetching LSP data for URI:", lspUri);
+                try {
+                    const line = originalLineIndex + 4;
+                    const [hover, refs] = await Promise.all([
+                        lspClient.hover(lspUri, line, 0),
+                        lspClient.references(lspUri, line, 0)
+                    ]);
+                    console.log("LSP Response - Hover:", hover, "Refs:", refs);
+                    setLspData({ hover, refs });
+                } catch (e) {
+                    console.error("Failed to fetch LSP data", e);
+                }
+            } else {
+                console.warn("LSP Client or URI not ready", !!lspClient, lspUri);
+            }
         }
     };
 
@@ -607,7 +692,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 cursor: 'pointer',
                                 borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
                             }}
-                            onClick={() => item.file && item.pos !== null && handleLineClick(idx, item.file, item.pos)}
+                            onClick={() => item.file && item.pos !== null && handleCommentClick(idx, item.file, item.pos)}
                             className="hover-line"
                             title={`Add comment to ${item.file}`}
                         >
@@ -730,6 +815,39 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                         : `Commenting on ${item.file}:${item.pos}`
                                     }
                                 </div>
+                                {lspData && (
+                                    <div style={{ marginBottom: '10px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+                                        <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>LSP Info</div>
+                                        <div style={{ padding: '10px', background: 'var(--bg-primary)' }}>
+                                            {lspData.hover && (
+                                                <div style={{ marginBottom: '10px' }}>
+                                                    <strong>Hover:</strong>
+                                                    <pre style={{ whiteSpace: 'pre-wrap', marginTop: '5px' }}>
+                                                        {typeof lspData.hover.contents === 'string'
+                                                            ? lspData.hover.contents
+                                                            : Array.isArray(lspData.hover.contents)
+                                                                ? lspData.hover.contents.map(c => typeof c === 'string' ? c : c.value).join('\n')
+                                                                : (lspData.hover.contents as any).value
+                                                        }
+                                                    </pre>
+                                                </div>
+                                            )}
+                                            {lspData.refs && lspData.refs.length > 0 && (
+                                                <div>
+                                                    <strong>References ({lspData.refs.length}):</strong>
+                                                    <ul style={{ margin: '5px 0 0 20px', padding: 0 }}>
+                                                        {lspData.refs.map((r, i) => (
+                                                            <li key={i}>{r.uri} : {r.range.start.line + 1}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            {!lspData.hover && (!lspData.refs || lspData.refs.length === 0) && (
+                                                <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>No information found.</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                                 <textarea
                                     autoFocus
                                     placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
@@ -797,10 +915,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             }
 
             if (item.clickable) {
-                containerStyle = { ...containerStyle, cursor: 'pointer' };
+                containerStyle = { ...containerStyle, cursor: 'default' };
+                prefixStyle = { ...prefixStyle, cursor: 'pointer' };
             }
 
             const isInlineActive = activeLineIndex === idx;
+            const isLspActive = activeLspIndex === idx;
             const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
             const rootComments = lineComments.filter(c => !c.in_reply_to);
 
@@ -821,19 +941,37 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     <div
                         style={{
                             ...containerStyle,
-                            borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
-                            marginLeft: isInlineActive ? '-3px' : '0',
+                            borderLeft: isInlineActive || isLspActive ? '3px solid var(--accent)' : '3px solid transparent',
+                            marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
                         }}
-                        onClick={() => item.clickable && item.file && item.pos !== null && handleLineClick(idx, item.file, item.pos)}
                         className={item.clickable ? 'hover-line' : ''}
-                        title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
+                        title={undefined}
                     >
                         {isCodeLine && !isHunkHeader && (
-                            <span style={prefixStyle}>
+                            <span
+                                style={prefixStyle}
+                                onClick={(e) => {
+                                    if (item.clickable && item.file && item.pos !== null) {
+                                        e.stopPropagation();
+                                        handleCommentClick(idx, item.file, item.pos);
+                                    }
+                                }}
+                                title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
+                            >
                                 {isAddition ? '+' : isDeletion ? '-' : ''}
                             </span>
                         )}
-                        <span style={lineStyle}>
+                        <span
+                            style={{
+                                ...lineStyle,
+                                cursor: item.clickable ? 'pointer' : 'default'
+                            }}
+                            onClick={(e) => {
+                                if (item.clickable && item.file && item.pos !== null) {
+                                    handleCodeClick(idx, item.file, item.pos, item.originalLineIndex);
+                                }
+                            }}
+                        >
                             {lineContent}
                         </span>
                     </div>
@@ -886,7 +1024,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             </div>
                         );
                     })}
-                    {isInlineActive && (
+                    {(isInlineActive || isLspActive) && (
                         <div style={{
                             padding: '10px 20px',
                             background: 'var(--bg-primary)',
@@ -894,34 +1032,75 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             borderTop: '1px solid var(--border)',
                             marginBottom: '10px'
                         }}>
-                            <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                {replyToId !== null
-                                    ? `Replying to comment #${replyToId}`
-                                    : `Commenting on ${item.file}:${item.pos}`
-                                }
-                            </div>
-                            <textarea
-                                autoFocus
-                                placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
-                                value={commentBody}
-                                onChange={e => setCommentBody(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px',
-                                    marginBottom: '10px',
-                                    background: 'var(--bg-primary)',
-                                    border: '1px solid var(--border)',
-                                    color: 'var(--text-primary)',
-                                    borderRadius: '4px',
-                                    height: '80px',
-                                    fontFamily: 'inherit',
-                                    resize: 'vertical',
-                                }}
-                            />
-                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
-                                <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
-                            </div>
+                            {isInlineActive && (
+                                <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    {replyToId !== null
+                                        ? `Replying to comment #${replyToId}`
+                                        : `Commenting on ${item.file}:${item.pos}`
+                                    }
+                                </div>
+                            )}
+
+                            {isLspActive && lspData && (
+                                <div style={{ marginBottom: '10px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+                                    <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>LSP Info</div>
+                                    <div style={{ padding: '10px', background: 'var(--bg-primary)' }}>
+                                        {lspData.hover && (
+                                            <div style={{ marginBottom: '10px' }}>
+                                                <strong>Hover:</strong>
+                                                <pre style={{ whiteSpace: 'pre-wrap', marginTop: '5px' }}>
+                                                    {typeof lspData.hover.contents === 'string'
+                                                        ? lspData.hover.contents
+                                                        : Array.isArray(lspData.hover.contents)
+                                                            ? lspData.hover.contents.map(c => typeof c === 'string' ? c : c.value).join('\n')
+                                                            : (lspData.hover.contents as any).value
+                                                    }
+                                                </pre>
+                                            </div>
+                                        )}
+                                        {lspData.refs && lspData.refs.length > 0 && (
+                                            <div>
+                                                <strong>References ({lspData.refs.length}):</strong>
+                                                <ul style={{ margin: '5px 0 0 20px', padding: 0 }}>
+                                                    {lspData.refs.map((r, i) => (
+                                                        <li key={i}>{r.uri} : {r.range.start.line + 1}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                        {!lspData.hover && (!lspData.refs || lspData.refs.length === 0) && (
+                                            <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>No information found.</div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {isInlineActive && (
+                                <>
+                                    <textarea
+                                        autoFocus
+                                        placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
+                                        value={commentBody}
+                                        onChange={e => setCommentBody(e.target.value)}
+                                        style={{
+                                            width: '100%',
+                                            padding: '8px',
+                                            marginBottom: '10px',
+                                            background: 'var(--bg-primary)',
+                                            border: '1px solid var(--border)',
+                                            color: 'var(--text-primary)',
+                                            borderRadius: '4px',
+                                            height: '80px',
+                                            fontFamily: 'inherit',
+                                            resize: 'vertical',
+                                        }}
+                                    />
+                                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                                        <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
+                                        <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                                    </div>
+                                </>
+                            )}
                         </div>
                     )}
                 </div>

@@ -8,12 +8,24 @@
     transform: translateY(-2px);
     background: var(--bg-tertiary) !important;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
 }
 
 .pr-item-card button:hover {
     filter: brightness(1.1);
     transform: scale(1.05);
 }
+
+.pr-title {
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.pr-title:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
 
 .pr-item-card button:active {
     transform: scale(0.95);
@@ -29,9 +41,17 @@
     color: var(--text-primary);
 }
 
-.plugin-output h1 { font-size: 1.4em; }
-.plugin-output h2 { font-size: 1.2em; }
-.plugin-output h3 { font-size: 1.1em; }
+.plugin-output h1 {
+    font-size: 1.4em;
+}
+
+.plugin-output h2 {
+    font-size: 1.2em;
+}
+
+.plugin-output h3 {
+    font-size: 1.1em;
+}
 
 .plugin-output p {
     margin: 0.5em 0;

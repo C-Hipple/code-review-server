@@ -70,7 +70,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
     const [filterText, setFilterText] = useState('');
     const [statusFilter, setStatusFilter] = useState('');
     const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
-    
+
     // Dynamic filters state - one value per filter key
     const [dynamicFilters, setDynamicFilters] = useState<Record<string, string>>(() => {
         const initial: Record<string, string> = {};
@@ -87,8 +87,8 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
     const allItems = sections.flatMap(s => s.items);
 
     // Check if any filters are active
-    const hasActiveFilters = filterText.trim() !== '' || 
-        statusFilter !== '' || 
+    const hasActiveFilters = filterText.trim() !== '' ||
+        statusFilter !== '' ||
         Object.values(dynamicFilters).some(v => v !== '');
 
     // Filter items based on all active filters
@@ -97,7 +97,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
         if (statusFilter && item.status !== statusFilter) {
             return false;
         }
-        
+
         // Dynamic filters
         for (const config of DYNAMIC_FILTERS) {
             const filterValue = dynamicFilters[config.key];
@@ -105,7 +105,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                 return false;
             }
         }
-        
+
         // Text search filter
         if (!filterText.trim()) return true;
         const search = filterText.toLowerCase();
@@ -170,7 +170,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
         try {
             const res = await rpcCall<GetReviewsResponse>('RPCHandler.GetAllReviews', [{}]);
             const items = res.items || [];
-            
+
             // Group items by section
             const sectionMap = new Map<string, ReviewItem[]>();
             for (const item of items) {
@@ -180,13 +180,13 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                 }
                 sectionMap.get(sectionName)!.push(item);
             }
-            
+
             // Convert to array
             const sectionList: Section[] = [];
             for (const [name, items] of sectionMap) {
                 sectionList.push({ name, items });
             }
-            
+
             setSections(sectionList);
         } catch (e) {
             console.error(e);
@@ -310,10 +310,10 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
 
                     {/* Results count */}
                     {hasActiveFilters && (
-                        <div style={{ 
-                            fontSize: '12px', 
-                            color: 'var(--text-secondary)', 
-                            marginTop: '12px' 
+                        <div style={{
+                            fontSize: '12px',
+                            color: 'var(--text-secondary)',
+                            marginTop: '12px'
                         }}>
                             Showing {filteredSections.reduce((acc, s) => acc + s.items.length, 0)} of {sections.reduce((acc, s) => acc + s.items.length, 0)} items
                         </div>
@@ -325,9 +325,9 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                         {filteredSections.length === 0 && hasActiveFilters ? (
-                            <div style={{ 
-                                fontSize: '14px', 
-                                color: 'var(--text-secondary)', 
+                            <div style={{
+                                fontSize: '14px',
+                                color: 'var(--text-secondary)',
                                 fontStyle: 'italic',
                                 textAlign: 'center',
                                 padding: '40px 20px'
@@ -338,7 +338,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                             const isCollapsed = collapsedSections.has(section.name);
                             return (
                                 <div key={sIdx}>
-                                    <h3 
+                                    <h3
                                         onClick={() => toggleSection(section.name)}
                                         style={{
                                             fontSize: '13px',
@@ -356,7 +356,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                         }}
                                         className="hover-line"
                                     >
-                                        <span style={{ 
+                                        <span style={{
                                             display: 'inline-block',
                                             transition: 'transform 0.2s ease',
                                             transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
@@ -388,13 +388,19 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                                             justifyContent: 'space-between',
                                                             alignItems: 'center',
                                                         }}
+                                                        onClick={() => item.number > 0 && onOpenReview(item.owner, item.repo, item.number)}
                                                     >
                                                         <div style={{ flex: 1 }}>
                                                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
                                                                 <Badge variant={mapStatusToVariant(item.status)} size="sm">
                                                                     {item.status}
                                                                 </Badge>
-                                                                <span style={{ fontWeight: 500, fontSize: '15px' }}>{item.title}</span>
+                                                                <span
+                                                                    className={item.number > 0 ? "pr-title" : ""}
+                                                                    style={{ fontWeight: 500, fontSize: '15px' }}
+                                                                >
+                                                                    {item.title}
+                                                                </span>
                                                             </div>
                                                             {item.number ? (
                                                                 <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
@@ -410,14 +416,14 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                                         {item.number > 0 && (
                                                             <div style={{ display: 'flex', gap: '12px', marginLeft: '15px' }}>
                                                                 <Button
-                                                                    onClick={() => onOpenPluginOutput(item.owner, item.repo, item.number)}
+                                                                    onClick={(e) => { e.stopPropagation(); onOpenPluginOutput(item.owner, item.repo, item.number); }}
                                                                     variant="ghost"
                                                                     size="sm"
                                                                 >
                                                                     Plugins
                                                                 </Button>
                                                                 <Button
-                                                                    onClick={() => onOpenReview(item.owner, item.repo, item.number)}
+                                                                    onClick={(e) => { e.stopPropagation(); onOpenReview(item.owner, item.repo, item.number); }}
                                                                     size="sm"
                                                                 >
                                                                     Review

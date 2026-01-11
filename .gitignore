@@ -39,6 +39,7 @@ go.work.sum
 # built binary
 codereviewserver
 crs
+crs-gui
 
 # test stuff
 test.org
@@ -59,3 +60,4 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+

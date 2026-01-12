@@ -98,9 +98,10 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 }
 
 type GetPRstructArgs struct {
-	Repo   string `json:"Repo"`
-	Owner  string `json:"Owner"`
-	Number int    `json:"Number"`
+	Repo      string `json:"Repo"`
+	Owner     string `json:"Owner"`
+	Number    int    `json:"Number"`
+	SkipCache bool   `json:"SkipCache"`
 }
 
 type GetPRReply struct {
@@ -109,47 +110,52 @@ type GetPRReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, args.SkipCache)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	// Trigger async plugin execution
-	commentsJSON := "[]"
-	if len(details.Comments) > 0 {
-		// Use the already fetched comments if available, but they are structs here.
-		// We can try to get the raw JSON from DB or marshal them back.
-		// For simplicity/performance, let's grab the raw JSON from DB since GetPRDetails usually gets it.
-		// Check GetPRDetails implementation if needed, but for now retrieving it from DB is safest
-		// to match what the user might expect (raw data).
-		// Actually, GetPRDetails returns parsed structs.
-		// We can get the raw comments JSON from DB
-		rawComments, _ := config.C.DB.GetPRComments(args.Number, args.Repo)
-		if rawComments != "" {
-			commentsJSON = rawComments
-		}
-	}
-
-	// Extract SHA from metadata - we need to get it from the PR
-	// The SHA is stored when we cache the diff, but we need to retrieve it
-	// Let's get it from the database or fetch it fresh
-	_, sha, _ := config.C.DB.GetPullRequest(args.Number, args.Repo)
-	
-	// Run plugins in background with SHA
-	metadataJSON, _ := json.Marshal(details.Metadata)
-	go RunPlugins(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON))
-
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	reply.Okay = true
 	return nil
+}
+
+// fetchPRAndRunPlugins is a helper to centralize PR fetching, cache handling, and plugin triggering
+func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
+	details, err := GetPRDetails(owner, repo, number, skipCache)
+	if err != nil {
+		h.Log.Error("Error fetching PR details", "error", err)
+		return nil, "", err
+	}
+
+	// Trigger async plugin execution
+	commentsJSON := "[]"
+	rawComments, _ := config.C.DB.GetPRComments(number, repo)
+	if rawComments != "" {
+		commentsJSON = rawComments
+	}
+
+	// Extract SHA from DB
+	_, sha, _ := config.C.DB.GetPullRequest(number, repo)
+
+	// Run plugins in background
+	metadataJSON, _ := json.Marshal(details.Metadata)
+	go RunPlugins(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON))
+
+	// Get the full formatted response for the UI.
+	// Since GetPRDetails already refreshed the cache if skipCache was true,
+	// we use false here to avoid redundant API calls.
+	content, _ := GetFullPRResponse(owner, repo, number, false)
+
+	return details, content, nil
 }
 
 type AddCommentArgs struct {
@@ -168,6 +174,7 @@ type AddCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
@@ -178,17 +185,16 @@ func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) er
 	}
 	reply.ID = comment.ID
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -206,6 +212,7 @@ type EditCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
@@ -216,17 +223,16 @@ func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply)
 	}
 	reply.Okay = true
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -243,6 +249,7 @@ type DeleteCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
@@ -253,17 +260,16 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 	}
 	reply.Okay = true
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -280,6 +286,7 @@ type SetFeedbackReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
@@ -289,17 +296,16 @@ func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply)
 		return err
 	}
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -315,6 +321,7 @@ type RemovePRCommentsReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
@@ -325,17 +332,16 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 	}
 	reply.Okay = true
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -353,6 +359,7 @@ type SubmitReviewReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -403,27 +410,23 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 
 	// 4. Clean up Local Comments
-	// Only delete the comments we successfully submitted?
-	// For MVP, we delete all local comments for this PR because we assume they were part of the review.
 	err = config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error deleting local comments after submission", "error", err)
-		// We don't return error here because submission succeeded, but we log it.
 	}
 
 	reply.Okay = true
 
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, false)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	return nil
 }
 
@@ -439,20 +442,20 @@ type SyncPRReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, true)
+	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
-		h.Log.Error("Error processing SyncPR", "error", err)
 		return err
 	}
 
-	content, _ := GetFullPRResponse(args.Owner, args.Repo, args.Number, true)
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.Reviews = details.Reviews
 	reply.Okay = true
 	return nil
 }

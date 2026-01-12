@@ -295,6 +295,7 @@ Re-renders the buffer with or without comments based on the toggle state."
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
   "H" #'crs-toggle-comments
+  "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
   "q" #'quit-window
@@ -320,8 +321,10 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "H" #'crs-toggle-comments
+    "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for visual state
@@ -336,8 +339,10 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "H" #'crs-toggle-comments
+    "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for insert state
@@ -555,9 +560,23 @@ This must be called after delta-wash."
 (defun crs--render-from-stored-data ()
   "Render the buffer content from stored diff, comments, and preamble.
 Uses `crs--buffer-show-comments' to determine whether to show full comments or compact indicators."
-  (let ((comment-map (crs--index-comments crs--buffer-comments)))
+  (let* ((comment-map (crs--index-comments crs--buffer-comments))
+         (preamble (or crs--buffer-preamble ""))
+         (feedback crs--buffer-review-feedback))
+    ;; Inject feedback into existing section if it exists
+    (if (and feedback (not (string-empty-p feedback)))
+        (if (string-match "^Your Review Feedback\n" preamble)
+            (let* ((start (match-end 0))
+                   (rest (substring preamble start))
+                   (next-section (string-match crs--section-header-regexp rest))
+                   (content (concat "──────────────────────────────────\n" feedback "\n\n")))
+              (if next-section
+                  (setq preamble (concat (substring preamble 0 start) content (substring rest next-section)))
+                (setq preamble (concat (substring preamble 0 start) content))))
+          ;; Fallback: if section not found (shouldn't happen with this server), append it
+          (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
     (concat
-     (or crs--buffer-preamble "")
+     preamble
      (crs--render-diff crs--buffer-diff comment-map crs--buffer-show-comments))))
 
 (defun crs--render-and-update (buffer content &optional target-line)
@@ -576,7 +595,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
-          (existing-preamble crs--buffer-preamble))
+          (existing-preamble crs--buffer-preamble)
+          (existing-review-feedback crs--buffer-review-feedback))
 
       ;; If content is a JSON result (alist), extract the components
       (when (and content (listp content) (not (stringp content)))
@@ -597,6 +617,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (setq crs--buffer-comments (or new-comments existing-comments))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-review-feedback existing-review-feedback)
 
       (erase-buffer)
 
@@ -617,6 +638,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (setq crs--buffer-comments (or new-comments existing-comments))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-review-feedback existing-review-feedback)
 
       (let ((final-pos (if target-line
                            (progn
@@ -721,6 +743,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "The preamble content (header + conversation) for the current PR.")
 (defvar-local crs--buffer-show-comments t
   "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
+(defvar-local crs--buffer-review-feedback nil
+  "The review feedback for the current PR.")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -1093,15 +1117,20 @@ If not on a local comment, displays a warning message."
                  (crs--render-and-update review-buffer result))
                (message "Local comment deleted")))))))))
 
-(defun crs-submit-review (event body)
-  "Submit a review with EVENT and optional BODY.
-EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
+(defun crs-submit-review (event)
+  "Submit a review with EVENT.
+The body is taken from `crs--buffer-review-feedback`.
+If the body is empty, prompts the user."
   (interactive
-   (list (completing-read "Event: " '("APPROVE" "REQUEST_CHANGES" "COMMENT") nil t)
-         (read-string "Body: ")))
-  (let ((owner nil)
+   (list (completing-read "Event: " '("APPROVE" "REQUEST_CHANGES" "COMMENT") nil t)))
+  (let ((body crs--buffer-review-feedback)
+        (owner nil)
         (repo nil)
         (number nil))
+    (when (or (null body) (string-match-p "\\`[[:space:]\n]*\\'" body))
+      (unless (yes-or-no-p "Review feedback is empty. Continue anyway? ")
+        (user-error "Aborted")))
+
     (let ((info (crs--get-current-review-info)))
       (setq owner (nth 0 info)
             repo (nth 1 info)
@@ -1113,27 +1142,61 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                    (cons 'Repo repo)
                    (cons 'Number number)
                    (cons 'Event event)
-                   (cons 'Body body)))
+                   (cons 'Body (or body ""))))
      (lambda (result)
        (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (crs--render-and-update review-buffer result))
+           (with-current-buffer review-buffer
+             (setq crs--buffer-review-feedback nil)
+             (crs--render-and-update review-buffer result)))
          (message "Review submitted successfully!"))))))
 
-(defun crs-approve-review (body)
-  "Approve the review with optional BODY."
-  (interactive "sApprove Body: ")
-  (crs-submit-review "APPROVE" body))
+(defun crs-set-review-feedback ()
+  "Set the review feedback for the current PR."
+  (interactive)
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (buffer (get-buffer-create (format "*Review Feedback %s/%s #%d*" owner repo number)))
+         (current-feedback crs--buffer-review-feedback)
+         (original-review-buffer (current-buffer)))
+    (with-current-buffer buffer
+      (markdown-mode)
+      (erase-buffer)
+      (when current-feedback
+        (insert current-feedback))
+      (setq-local crs--comment-owner owner)
+      (setq-local crs--comment-repo repo)
+      (setq-local crs--comment-number number)
+      (local-set-key (kbd "C-c C-c")
+                     (lambda ()
+                       (interactive)
+                       (let ((feedback (buffer-string)))
+                         (with-current-buffer original-review-buffer
+                           (setq crs--buffer-review-feedback feedback)
+                           (crs--render-and-update (current-buffer) nil))
+                         (kill-buffer-and-window)
+                         (message "Review feedback set."))))
+      (local-set-key (kbd "C-c C-k") (lambda () (interactive) (kill-buffer-and-window) (message "Review feedback aborted."))))
+    (switch-to-buffer-other-window buffer)
+    (when (fboundp 'evil-insert-state)
+      (evil-insert-state))))
 
-(defun crs-comment-review (body)
-  "Comment on the review with optional BODY."
-  (interactive "sComment Body: ")
-  (crs-submit-review "COMMENT" body))
+(defun crs-approve-review ()
+  "Approve the review."
+  (interactive)
+  (crs-submit-review "APPROVE"))
 
-(defun crs-request-changes-review (body)
-  "Request changes on the review with optional BODY."
-  (interactive "sRequest Changes Body: ")
-  (crs-submit-review "REQUEST_CHANGES" body))
+(defun crs-comment-review ()
+  "Comment on the review."
+  (interactive)
+  (crs-submit-review "COMMENT"))
+
+(defun crs-request-changes-review ()
+  "Request changes on the review."
+  (interactive)
+  (crs-submit-review "REQUEST_CHANGES"))
 
 (defun crs-sync-pr ()
   "Sync the PR in the current buffer with the server."

@@ -208,7 +208,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 // Initialize standard LSP
                 await client.initialize("/");
                 client.initialized();
+                
                 // Open the document (the temp file we just created)
+                console.log("Sending didOpen for", uri);
                 client.didOpen(uri, "diff", 1, diff);
 
                 setLspClient(client);
@@ -511,10 +513,6 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setLspData(null);
         } else {
             // Don't open comment box on code click
-            // But update filename/position context just in case? No, keep it separate.
-            setActiveLspIndex(idx);
-            setLspData(null);
-
             console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex);
 
             // Fetch LSP Data
@@ -527,12 +525,45 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         lspClient.references(lspUri, line, 0)
                     ]);
                     console.log("LSP Response - Hover:", hover, "Refs:", refs);
-                    setLspData({ hover, refs });
+
+                    let hasHover = false;
+                    if (hover && hover.contents) {
+                        if (typeof hover.contents === 'string') {
+                            hasHover = hover.contents.length > 0;
+                        } else if (Array.isArray(hover.contents)) {
+                            hasHover = hover.contents.length > 0;
+                        } else if (typeof hover.contents === 'object') {
+                            hasHover = !!(hover.contents as any).value;
+                        }
+                    }
+                    const hasRefs = refs && refs.length > 0;
+
+                    if (hasHover || hasRefs) {
+                        setLspData({ hover, refs });
+                        setActiveLspIndex(idx);
+                    } else {
+                        // Placeholder for testing when LSP returns no data
+                        setLspData({
+                            hover: { contents: "### LSP Placeholder\nThis feedback is currently a **placeholder** for testing purposes. The real LSP implementation is in progress." },
+                            refs: [
+                                { uri: `file://${file}`, range: { start: { line: originalLineIndex, character: 0 }, end: { line: originalLineIndex, character: 10 } } }
+                            ]
+                        });
+                        setActiveLspIndex(idx);
+                    }
                 } catch (e) {
                     console.error("Failed to fetch LSP data", e);
                 }
             } else {
                 console.warn("LSP Client or URI not ready", !!lspClient, lspUri);
+                // Placeholder for testing when LSP is not connected
+                setLspData({
+                    hover: { contents: "### LSP Placeholder (Disconnected)\nThe LSP server is not yet connected or ready. This is a fallback test message." },
+                    refs: [
+                        { uri: `file://${file}`, range: { start: { line: originalLineIndex, character: 0 }, end: { line: originalLineIndex, character: 10 } } }
+                    ]
+                });
+                setActiveLspIndex(idx);
             }
         }
     };
@@ -880,6 +911,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 display: 'flex',
                 alignItems: 'stretch',
                 minHeight: '20px',
+                position: 'relative',
             };
 
             let prefixStyle: React.CSSProperties = {
@@ -936,6 +968,15 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 lineContent = isCodeLine ? line.slice(1) : line;
             }
 
+            const getHoverContent = (hover: any) => {
+                if (!hover || !hover.contents) return '';
+                if (typeof hover.contents === 'string') return hover.contents;
+                if (Array.isArray(hover.contents)) {
+                    return hover.contents.map((c: any) => typeof c === 'string' ? c : c.value).join('\n');
+                }
+                return (hover.contents as any).value || '';
+            };
+
             return (
                 <div key={idx}>
                     <div
@@ -974,6 +1015,40 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         >
                             {lineContent}
                         </span>
+                        {isLspActive && lspData && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '100%',
+                                left: '40px',
+                                zIndex: 100,
+                                background: 'var(--bg-secondary)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '6px',
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                                padding: '12px',
+                                maxWidth: '600px',
+                                overflow: 'auto',
+                                maxHeight: '300px'
+                            }} onClick={e => e.stopPropagation()}>
+                                {lspData.hover && (
+                                    <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--text-primary)' }}>
+                                        <Markdown>
+                                            {getHoverContent(lspData.hover)}
+                                        </Markdown>
+                                    </div>
+                                )}
+                                {lspData.refs && lspData.refs.length > 0 && (
+                                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', fontSize: '12px' }}>
+                                        <div style={{ fontWeight: 600, marginBottom: '5px', color: 'var(--text-secondary)' }}>References ({lspData.refs.length}):</div>
+                                        <ul style={{ margin: '0 0 0 15px', padding: 0, color: 'var(--accent)' }}>
+                                            {lspData.refs.map((r, i) => (
+                                                <li key={i}>{r.uri.split('/').pop()} : {r.range.start.line + 1}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                     {rootComments.map(rc => {
                         const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
@@ -1024,7 +1099,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             </div>
                         );
                     })}
-                    {(isInlineActive || isLspActive) && (
+                    {isInlineActive && (
                         <div style={{
                             padding: '10px 20px',
                             background: 'var(--bg-primary)',
@@ -1032,75 +1107,34 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             borderTop: '1px solid var(--border)',
                             marginBottom: '10px'
                         }}>
-                            {isInlineActive && (
-                                <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    {replyToId !== null
-                                        ? `Replying to comment #${replyToId}`
-                                        : `Commenting on ${item.file}:${item.pos}`
-                                    }
-                                </div>
-                            )}
-
-                            {isLspActive && lspData && (
-                                <div style={{ marginBottom: '10px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
-                                    <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>LSP Info</div>
-                                    <div style={{ padding: '10px', background: 'var(--bg-primary)' }}>
-                                        {lspData.hover && (
-                                            <div style={{ marginBottom: '10px' }}>
-                                                <strong>Hover:</strong>
-                                                <pre style={{ whiteSpace: 'pre-wrap', marginTop: '5px' }}>
-                                                    {typeof lspData.hover.contents === 'string'
-                                                        ? lspData.hover.contents
-                                                        : Array.isArray(lspData.hover.contents)
-                                                            ? lspData.hover.contents.map(c => typeof c === 'string' ? c : c.value).join('\n')
-                                                            : (lspData.hover.contents as any).value
-                                                    }
-                                                </pre>
-                                            </div>
-                                        )}
-                                        {lspData.refs && lspData.refs.length > 0 && (
-                                            <div>
-                                                <strong>References ({lspData.refs.length}):</strong>
-                                                <ul style={{ margin: '5px 0 0 20px', padding: 0 }}>
-                                                    {lspData.refs.map((r, i) => (
-                                                        <li key={i}>{r.uri} : {r.range.start.line + 1}</li>
-                                                    ))}
-                                                </ul>
-                                            </div>
-                                        )}
-                                        {!lspData.hover && (!lspData.refs || lspData.refs.length === 0) && (
-                                            <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>No information found.</div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
-                            {isInlineActive && (
-                                <>
-                                    <textarea
-                                        autoFocus
-                                        placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
-                                        value={commentBody}
-                                        onChange={e => setCommentBody(e.target.value)}
-                                        style={{
-                                            width: '100%',
-                                            padding: '8px',
-                                            marginBottom: '10px',
-                                            background: 'var(--bg-primary)',
-                                            border: '1px solid var(--border)',
-                                            color: 'var(--text-primary)',
-                                            borderRadius: '4px',
-                                            height: '80px',
-                                            fontFamily: 'inherit',
-                                            resize: 'vertical',
-                                        }}
-                                    />
-                                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                        <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
-                                        <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
-                                    </div>
-                                </>
-                            )}
+                            <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                {replyToId !== null
+                                    ? `Replying to comment #${replyToId}`
+                                    : `Commenting on ${item.file}:${item.pos}`
+                                }
+                            </div>
+                            <textarea
+                                autoFocus
+                                placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
+                                value={commentBody}
+                                onChange={e => setCommentBody(e.target.value)}
+                                style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    marginBottom: '10px',
+                                    background: 'var(--bg-primary)',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-primary)',
+                                    borderRadius: '4px',
+                                    height: '80px',
+                                    fontFamily: 'inherit',
+                                    resize: 'vertical',
+                                }}
+                            />
+                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
+                                <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                            </div>
                         </div>
                     )}
                 </div>

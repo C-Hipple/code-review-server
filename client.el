@@ -305,7 +305,43 @@ Re-renders the buffer with or without comments based on the toggle state."
   "Major mode for viewing code reviews."
   (highlight-at-at-lines-blue)
   (highlight-review-comments)
-  (add-to-invisibility-spec '(codereview-hide . t)))
+  (add-to-invisibility-spec '(codereview-hide . t))
+  (add-hook 'post-command-hook #'crs--maybe-show-collapsed-comments nil t))
+
+(defun crs--maybe-show-collapsed-comments ()
+  "Show collapsed comments in minibuffer if cursor is on a line with compact indicator."
+  (when (and (eq major-mode 'my-code-review-mode)
+             (not crs--buffer-show-comments)
+             crs--buffer-comments)
+    (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+      (when (string-match "<C: [^>]+>" line)
+        ;; Extract file and position from context
+        (let* ((ctx (crs--get-comment-context))
+               (file (nth 3 ctx))
+               (pos (nth 4 ctx)))
+          (when (and file pos)
+            (let* ((comment-map (crs--index-comments crs--buffer-comments))
+                   (key (format "%s:%s" file pos))
+                   (comments (gethash key comment-map)))
+              (when comments
+                (crs--display-comments-in-minibuffer comments)))))))))
+
+(defun crs--display-comments-in-minibuffer (comments)
+  "Display COMMENTS in the minibuffer as a one-line summary."
+  (let* ((count (length comments))
+         (summary
+          (mapconcat
+           (lambda (c)
+             (let ((author (or (cdr (assq 'author c)) "local"))
+                   (body (or (cdr (assq 'body c)) "")))
+               ;; Truncate body to first line, max 60 chars
+               (let ((first-line (car (split-string body "\n"))))
+                 (if (> (length first-line) 60)
+                     (format "[%s]: %s..." author (substring first-line 0 57))
+                   (format "[%s]: %s" author first-line)))))
+           comments
+           " | ")))
+    (message "%d comment%s: %s" count (if (= count 1) "" "s") summary)))
 
 ;; Override evil-mode keybindings - define keys for normal and visual states
 (when (fboundp 'evil-define-key)
@@ -579,6 +615,208 @@ Uses `crs--buffer-show-comments' to determine whether to show full comments or c
      preamble
      (crs--render-diff crs--buffer-diff comment-map crs--buffer-show-comments))))
 
+(defun crs--insert-comments-into-buffer (comments show-full-comments)
+  "Insert COMMENTS into the current buffer which contains the diff.
+SHOW-FULL-COMMENTS determines whether to show full content or indicators."
+  (let ((comment-map (crs--index-comments comments))
+        (insertions nil)
+        (current-file nil)
+        (position 0)
+        (first-hunk-seen nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let* ((line-start (point))
+               (line-end (line-end-position))
+               (line (buffer-substring-no-properties line-start line-end)))
+          (cond
+           ;; File Header - match simplified first as it's more specific if simplification happened
+           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+            (setq current-file (match-string 2 line))
+            (setq first-hunk-seen nil))
+
+           ;; Fallback to standard diff header
+           ((string-prefix-p "diff " line)
+            (setq current-file nil)
+            (setq first-hunk-seen nil))
+
+           ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+            (setq current-file (match-string 1 line)))
+
+           ;; Hunk Header
+           ((string-prefix-p "@@ " line)
+            (if (not first-hunk-seen)
+                (progn
+                  (setq position 0)
+                  (setq first-hunk-seen t)
+                  ;; File comments
+                  (when current-file
+                    (let ((file-comments (gethash (format "%s:" current-file) comment-map)))
+                      (when file-comments
+                        (if show-full-comments
+                            ;; Insert before line
+                            (push (cons line-start (crs--render-comment-tree file-comments)) insertions)
+                          ;; Compact: append to line
+                          (push (cons line-end (list 'append (crs--format-compact-comment-indicator file-comments))) insertions))))))
+              (setq position (1+ position))))
+
+           ;; Content Line
+           ((and first-hunk-seen
+                 (or (string-prefix-p "+" line)
+                     (string-prefix-p "-" line)
+                     (string-prefix-p " " line)))
+            (setq position (1+ position))
+            (let* ((key (when current-file (format "%s:%d" current-file position)))
+                   (line-comments (when key (gethash key comment-map))))
+              (when line-comments
+                (if show-full-comments
+                    ;; Insert after line
+                    (push (cons line-end (concat "\n" (string-trim-right (crs--render-comment-tree line-comments)))) insertions)
+                  ;; Compact: append
+                  (push (cons line-end (list 'append (crs--format-compact-comment-indicator line-comments))) insertions))))))
+          )
+        (forward-line 1)))
+
+    ;; Execute insertions (sorted by point descending)
+    (setq insertions (sort insertions (lambda (a b) (> (car a) (car b)))))
+
+    (dolist (ins insertions)
+      (goto-char (car ins))
+      (let ((content (cdr ins)))
+        (if (and (listp content) (eq (car content) 'append))
+            ;; Handle append with alignment
+            (let* ((indicator (cadr content))
+                   (current-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                   (new-line (crs--append-right-aligned current-line indicator 120)))
+              (delete-region (line-beginning-position) (line-end-position))
+              (insert new-line))
+          ;; Normal insert
+          (insert content))))))
+
+(defun crs--render-header-from-metadata (metadata)
+  "Render the PR header from METADATA alist."
+  (if (null metadata)
+      ""
+    (let ((number (cdr (assq 'number metadata)))
+          (title (cdr (assq 'title metadata)))
+          (author (cdr (assq 'author metadata)))
+          (state (cdr (assq 'state metadata)))
+          (url (cdr (assq 'url metadata)))
+          (base (cdr (assq 'base_ref metadata)))
+          (head (cdr (assq 'head_ref metadata)))
+          (milestone (cdr (assq 'milestone metadata)))
+          (labels (cdr (assq 'labels metadata))) ;; array
+          (draft (cdr (assq 'draft metadata)))
+          (assignees (cdr (assq 'assignees metadata))) ;; array
+          (reviewers (cdr (assq 'reviewers metadata))) ;; array
+          (teams (cdr (assq 'requested_teams metadata))) ;; array
+          (approved (cdr (assq 'approved_by metadata))) ;; array
+          (changes (cdr (assq 'changes_requested_by metadata))) ;; array
+          (commented (cdr (assq 'commented_by metadata))) ;; array
+          (ci-status (cdr (assq 'ci_status metadata)))
+          (ci-failures (cdr (assq 'ci_failures metadata))) ;; array
+          (sb ""))
+      
+      (setq sb (concat sb (format "#%s: %s\n" number title)))
+      (setq sb (concat sb (format "Author: \t@%s\n" author)))
+      (setq sb (concat sb (format "Title: \t%s\n" title)))
+      (setq sb (concat sb (format "Refs:  %s ... %s\n" base head)))
+      (setq sb (concat sb (format "URL:   %s\n" url)))
+      (setq sb (concat sb (format "State: \t%s\n" state)))
+      (setq sb (concat sb (format "Milestone: \t%s\n" (or milestone "No milestone"))))
+      
+      (let ((labels-str (if (> (length labels) 0) (string-join (append labels nil) ", ") "None yet")))
+        (setq sb (concat sb (format "Labels: \t%s\n" labels-str))))
+        
+      (setq sb (concat sb "Projects: \tNone yet\n"))
+      (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "true" "false"))))
+      
+      (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
+        (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))
+        
+      (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
+      
+      (let* ((reviewers-list (append reviewers nil))
+             (teams-list (mapcar (lambda (t) (concat "team:" t)) (append teams nil)))
+             (all-reviewers (append reviewers-list teams-list))
+             (rev-str (string-join all-reviewers ", ")))
+        (setq sb (concat sb (format "Reviewers: \t%s\n" rev-str))))
+        
+      (when (> (length approved) 0)
+        (setq sb (concat sb (format "Approved-By: \t%s\n" (string-join (append approved nil) ", ")))))
+      (when (> (length changes) 0)
+         (setq sb (concat sb (format "Changes-Requested-By: \t%s\n" (string-join (append changes nil) ", ")))))
+      (when (> (length commented) 0)
+         (setq sb (concat sb (format "Commented-By: \t%s\n" (string-join (append commented nil) ", ")))))
+         
+      (if (and ci-status (not (string-empty-p ci-status)))
+          (progn 
+            (setq sb (concat sb (format "CI Status: \t%s\n" ci-status)))
+            (when (> (length ci-failures) 0)
+              (dolist (fail (append ci-failures nil))
+                (setq sb (concat sb (format "  - %s\n" fail))))))
+        (setq sb (concat sb "CI Status: \tUnknown\n")))
+        
+      sb)))
+
+(defun crs--render-conversation-from-data (comments reviews)
+  "Render the conversation section from COMMENTS and REVIEWS."
+  (let ((items nil)
+        (sb "\nConversation\n"))
+    ;; 1. Collect Issue Comments (where path is empty)
+    (seq-do (lambda (c)
+              (let ((path (cdr (assq 'path c))))
+                (when (or (null path) (string-empty-p path))
+                  (push (list :type 'comment 
+                              :time (cdr (assq 'created_at c))
+                              :author (cdr (assq 'author c))
+                              :body (cdr (assq 'body c)))
+                        items))))
+            comments)
+            
+    ;; 2. Collect Reviews
+    (seq-do (lambda (r)
+              (let ((state (cdr (assq 'state r)))
+                    (body (cdr (assq 'body r))))
+                ;; Skip empty COMMENTED reviews?
+                (unless (and (string= state "COMMENTED") (string-empty-p (or body "")))
+                   (push (list :type 'review
+                               :time (cdr (assq 'submitted_at r))
+                               :author (cdr (assq 'user r))
+                               :state state
+                               :body body)
+                         items))))
+            reviews)
+            
+    ;; 3. Sort by Time
+    (setq items (sort items (lambda (a b) 
+                              (string< (plist-get a :time) (plist-get b :time)))))
+                              
+    ;; 4. Render
+    (if (null items)
+        (setq sb (concat sb "No conversation found.\n"))
+      (let ((first t))
+        (dolist (item items)
+          (unless first
+            (setq sb (concat sb "--------------------------------------------------------------------------------\n")))
+          (setq first nil)
+          
+          (let ((author (plist-get item :author))
+                (time (plist-get item :time))
+                (type (plist-get item :type))
+                (body (or (plist-get item :body) "(No body)")))
+            
+            (if (eq type 'review)
+                (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
+              (setq sb (concat sb (format "From: %s at %s\n" author time))))
+              
+            (setq sb (concat sb body "\n\n"))))))
+            
+    ;; Add Files Changed header (placeholder or parsed?)
+    ;; For now just a blank line, maybe we can add a separator
+    (setq sb (concat sb "\n"))
+    sb))
+
 (defun crs--render-and-update (buffer content &optional target-line)
   "Render CONTENT (which can be a string, JSON-RPC result alist, or nil) into BUFFER.
 If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
@@ -588,6 +826,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Extract data before mode change (which kills local vars)
           (new-diff nil)
           (new-comments nil)
+          (new-metadata nil)
+          (new-reviews nil)
           (new-preamble nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
@@ -595,6 +835,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
+          (existing-metadata crs--buffer-metadata)
+          (existing-reviews crs--buffer-reviews)
           (existing-preamble crs--buffer-preamble)
           (existing-review-feedback crs--buffer-review-feedback))
 
@@ -602,6 +844,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (when (and content (listp content) (not (stringp content)))
         (let* ((diff (cdr (assq 'diff content)))
                (comments (cdr (assq 'comments content)))
+               (metadata (cdr (assq 'metadata content)))
+               (reviews (cdr (assq 'reviews content)))
                (raw-content (cdr (assq 'content content)))
                (preamble (if raw-content
                              (if (string-match "Files changed (.*)\n\n" raw-content)
@@ -610,11 +854,15 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
                            "")))
           (setq new-diff diff)
           (setq new-comments comments)
+          (setq new-metadata metadata)
+          (setq new-reviews reviews)
           (setq new-preamble preamble)))
 
       ;; Temporarily set for rendering (before mode change wipes them)
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-metadata (or new-metadata existing-metadata))
+      (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -624,18 +872,56 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (cond
        ;; String content: insert directly
        ((stringp content)
-        (insert content))
+        (insert content)
+        (delta-wash)
+        (crs--simplify-diff-headers)
+        (my-code-review-mode))
+
        ;; nil or alist: render from stored data
        (t
-        (insert (crs--render-from-stored-data))))
+        ;; 1. Insert Diff
+        (insert (or crs--buffer-diff ""))
 
-      (delta-wash)
-      (crs--simplify-diff-headers)
+        ;; 2. Delta Wash
+        (delta-wash)
+
+        ;; 3. Simplify Headers
+        (crs--simplify-diff-headers)
+
+        ;; 4. Insert Comments
+        (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments)
+
+        ;; 5. Insert Preamble & Feedback at TOP
+        (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
+               (conversation (crs--render-conversation-from-data 
+                              crs--buffer-comments
+                              crs--buffer-reviews))
+               (preamble (concat header "\n" conversation))
+               (feedback existing-review-feedback))
+
+          ;; Inject feedback into preamble (logic from crs--render-from-stored-data)
+          (if (and feedback (not (string-empty-p feedback)))
+              (if (string-match "^Your Review Feedback\n" preamble)
+                  (let* ((start (match-end 0))
+                         (rest (substring preamble start))
+                         (next-section (string-match crs--section-header-regexp rest))
+                         (content-str (concat "──────────────────────────────────\n" feedback "\n\n")))
+                    (if next-section
+                        (setq preamble (concat (substring preamble 0 start) content-str (substring rest next-section)))
+                      (setq preamble (concat (substring preamble 0 start) content-str))))
+                (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
+
+          (goto-char (point-min))
+          (insert preamble))
+
+        (my-code-review-mode)))
       (my-code-review-mode)
 
       ;; Re-set the buffer-local variables AFTER mode change
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-metadata (or new-metadata existing-metadata))
+      (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -739,6 +1025,10 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
   "The comments list for the current PR.")
+(defvar-local crs--buffer-metadata nil
+  "The PR metadata for the current PR.")
+(defvar-local crs--buffer-reviews nil
+  "The reviews list for the current PR.")
 (defvar-local crs--buffer-preamble nil
   "The preamble content (header + conversation) for the current PR.")
 (defvar-local crs--buffer-show-comments t

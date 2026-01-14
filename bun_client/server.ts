@@ -267,7 +267,7 @@ Buffer: ${buffer}
 Type: ${type}
 `;
             const fullContent = header + content;
-            const filename = `diff_lsp_${crypto.randomUUID()}`;
+            const filename = `diff_lsp_${crypto.randomUUID()}-bun`;
             const filePath = join("/tmp", filename);
             await Bun.write(filePath, fullContent);
             return new Response(JSON.stringify({ path: filePath }), {

@@ -51,7 +51,7 @@ interface PRMetadata {
     draft: boolean;
     ci_status: string;
     ci_failures: string[];
-    description: string;
+    body: string;
     url: string;
 }
 
@@ -208,7 +208,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 // Initialize standard LSP
                 await client.initialize("/");
                 client.initialized();
-                
+
                 // Open the document (the temp file we just created)
                 console.log("Sending didOpen for", uri);
                 client.didOpen(uri, "diff", 1, diff);
@@ -1443,7 +1443,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     )}
 
                     {/* Description */}
-                    {metadata.description && (
+                    {metadata.body && (
                         <div style={{
                             padding: '16px 20px',
                             borderTop: '1px solid var(--border)',
@@ -1462,7 +1462,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     overflow: 'auto'
                                 }}
                             >
-                                <Markdown>{stripHtmlComments(metadata.description)}</Markdown>
+                                <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
                             </div>
                         </div>
                     )}

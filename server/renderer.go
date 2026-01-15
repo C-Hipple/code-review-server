@@ -201,7 +201,7 @@ func (r *OrgRenderer) buildSectionHeader(section *database.Section, items []*dat
 	}
 
 	indentStars := strings.Repeat("*", section.IndentLevel-1)
-	ratio := fmt.Sprintf("[%d/%d]", len(items), doneCount)
+	ratio := fmt.Sprintf("[%d/%d]", doneCount, len(items))
 
 	return fmt.Sprintf("%s %s %s %s", indentStars, status, section.SectionName, ratio)
 }
@@ -313,7 +313,7 @@ type PRMetadata struct {
 	Draft              bool     `json:"draft"`
 	CIStatus           string   `json:"ci_status"`
 	CIFailures         []string `json:"ci_failures"`
-	Description        string   `json:"description"`
+	Body               string   `json:"body"`
 	URL                string   `json:"url"`
 }
 
@@ -647,7 +647,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				Draft:              pr.GetDraft(),
 				CIStatus:           ciStatus,
 				CIFailures:         ciFailures,
-				Description:        pr.GetBody(),
+				Body:               pr.GetBody(),
 				URL:                pr.GetHTMLURL(),
 			}
 			if pr.Milestone != nil {

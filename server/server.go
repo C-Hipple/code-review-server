@@ -72,7 +72,7 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 type GetReviewsArgs struct{}
 
 type GetReviewsReply struct {
-	Content string       `json:"content"`
+	Content string       `json:"content"` // Kept for simplicity on org-mode clients
 	Items   []ReviewItem `json:"items"`
 }
 

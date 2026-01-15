@@ -18,6 +18,7 @@
 (require 'markdown-mode)
 (require 'seq)
 (require 'subr-x)
+(require 'shr)
 
 (defvar crs--process nil
   "The process handle for the crs JSON-RPC server.")
@@ -37,6 +38,63 @@
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
+
+(defconst crs--html-placeholder-regexp
+  "<CRS-HTML\\(?: prefix=\"\\(.*?\\)\"\\)?>\\(.*?\\)</CRS-HTML>"
+  "Regexp to match HTML placeholders for deferred rendering.")
+
+(defun crs--insert-html (html-string &optional prefix)
+  "Insert HTML-STRING at point, rendering it with shr.
+If PREFIX is provided, it is prepended to each line of the rendered content.
+Images will be displayed inline if running in graphical Emacs.
+Requires Emacs to be compiled with libxml support."
+  (if (and html-string (not (string-empty-p html-string)))
+      (let ((start (point)))
+        (insert html-string)
+        (when (fboundp 'libxml-parse-html-region)
+          (let ((dom (libxml-parse-html-region start (point))))
+            (delete-region start (point))
+            (shr-insert-document dom)))
+        (when (and prefix (not (string-empty-p prefix)))
+          (let ((end (point)))
+            (save-excursion
+              (goto-char start)
+              (while (< (point) end)
+                (insert prefix)
+                (setq end (+ end (length prefix)))
+                (forward-line 1)))))
+  (insert (or prefix "") "(No content provided)"))
+
+(defun crs--make-html-placeholder (html-string &optional prefix)
+  "Create a placeholder string for HTML-STRING to be rendered later.
+If PREFIX is provided, it will be used when rendering each line.
+The content and prefix are base64 encoded to avoid issues with special characters."
+  (let ((html-encoded (if (and html-string (not (string-empty-p html-string)))
+                          (base64-encode-string (encode-coding-string html-string 'utf-8) t)
+                        "")))
+    (if (string-empty-p html-encoded)
+        (concat (or prefix "") "(No content provided)")
+      (if (and prefix (not (string-empty-p prefix)))
+          (format "<CRS-HTML prefix=\"%s\">%s</CRS-HTML>"
+                  (base64-encode-string (encode-coding-string prefix 'utf-8) t)
+                  html-encoded)
+        (format "<CRS-HTML>%s</CRS-HTML>" html-encoded)))))
+
+(defun crs--process-html-placeholders ()
+  "Find and replace all HTML placeholders in the current buffer with rendered HTML.
+This should be called after inserting content but before setting the buffer to read-only."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward crs--html-placeholder-regexp nil t)
+      (let* ((prefix-encoded (match-string 1))
+             (prefix (when prefix-encoded
+                       (decode-coding-string (base64-decode-string prefix-encoded) 'utf-8)))
+             (html-encoded (match-string 2))
+             (html-string (decode-coding-string (base64-decode-string html-encoded) 'utf-8))
+             (start (match-beginning 0)))
+        (delete-region (match-beginning 0) (match-end 0))
+        (goto-char start)
+        (crs--insert-html html-string prefix)))))
 
 ;;;###autoload
 (defun crs-start-server ()
@@ -195,6 +253,7 @@ CALLBACK is a function to call with the result."
        (with-current-buffer buffer
          (erase-buffer)
          (insert (or content ""))
+         (crs--process-html-placeholders)
          (goto-char (point-min))
          (org-mode))
        (display-buffer buffer)
@@ -420,8 +479,7 @@ Re-renders the buffer with or without comments based on the toggle state."
                         header)))
       ;; Render root comment
       (push (format "    │ [%s]:" (or author "local")) lines)
-      (dolist (line (split-string (or (cdr (assq 'body root)) "") "\n"))
-        (push (format "    │   %s" line) lines))
+      (push (crs--make-html-placeholder (cdr (assq 'body root)) "    │   ") lines)
 
       ;; Render replies
       (dolist (reply replies)
@@ -429,8 +487,7 @@ Re-renders the buffer with or without comments based on the toggle state."
         (let ((r-author (cdr (assq 'author reply)))
               (r-id (cdr (assq 'id reply))))
           (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
-          (dolist (line (split-string (or (cdr (assq 'body reply)) "") "\n"))
-            (push (format "    │   %s" line) lines))))
+          (push (crs--make-html-placeholder (cdr (assq 'body reply)) "    │   ") lines)))
 
       (push "    └──────────────────────────────────" lines)
       (push "" lines)
@@ -583,6 +640,10 @@ This must be called after delta-wash."
                  (or (re-search-forward "^\\+\\+\\+ .*\n" limit t)
                      (re-search-forward "^Binary files .*\n" limit t)))))
 
+          (when (and (not end-marker-pos)
+                     (or (string= type "new file") (string= type "deleted")))
+            (setq end-marker-pos limit))
+
           (if end-marker-pos
               (progn
                 (delete-region start end-marker-pos)
@@ -715,8 +776,9 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
           (commented (cdr (assq 'commented_by metadata))) ;; array
           (ci-status (cdr (assq 'ci_status metadata)))
           (ci-failures (cdr (assq 'ci_failures metadata))) ;; array
+          (body (cdr (assq 'body metadata)))
           (sb ""))
-      
+
       (setq sb (concat sb (format "#%s: %s\n" number title)))
       (setq sb (concat sb (format "Author: \t@%s\n" author)))
       (setq sb (concat sb (format "Title: \t%s\n" title)))
@@ -724,39 +786,43 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (setq sb (concat sb (format "URL:   %s\n" url)))
       (setq sb (concat sb (format "State: \t%s\n" state)))
       (setq sb (concat sb (format "Milestone: \t%s\n" (or milestone "No milestone"))))
-      
+
       (let ((labels-str (if (> (length labels) 0) (string-join (append labels nil) ", ") "None yet")))
         (setq sb (concat sb (format "Labels: \t%s\n" labels-str))))
-        
+
       (setq sb (concat sb "Projects: \tNone yet\n"))
       (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "true" "false"))))
-      
+
       (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
         (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))
-        
+
       (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
-      
+
       (let* ((reviewers-list (append reviewers nil))
              (teams-list (mapcar (lambda (t) (concat "team:" t)) (append teams nil)))
              (all-reviewers (append reviewers-list teams-list))
              (rev-str (string-join all-reviewers ", ")))
         (setq sb (concat sb (format "Reviewers: \t%s\n" rev-str))))
-        
+
       (when (> (length approved) 0)
         (setq sb (concat sb (format "Approved-By: \t%s\n" (string-join (append approved nil) ", ")))))
       (when (> (length changes) 0)
-         (setq sb (concat sb (format "Changes-Requested-By: \t%s\n" (string-join (append changes nil) ", ")))))
+        (setq sb (concat sb (format "Changes-Requested-By: \t%s\n" (string-join (append changes nil) ", ")))))
       (when (> (length commented) 0)
-         (setq sb (concat sb (format "Commented-By: \t%s\n" (string-join (append commented nil) ", ")))))
-         
+        (setq sb (concat sb (format "Commented-By: \t%s\n" (string-join (append commented nil) ", ")))))
+
       (if (and ci-status (not (string-empty-p ci-status)))
-          (progn 
+          (progn
             (setq sb (concat sb (format "CI Status: \t%s\n" ci-status)))
             (when (> (length ci-failures) 0)
               (dolist (fail (append ci-failures nil))
                 (setq sb (concat sb (format "  - %s\n" fail))))))
         (setq sb (concat sb "CI Status: \tUnknown\n")))
-        
+
+      ;; Description/Body (rendered as HTML)
+      (setq sb (concat sb "\nDescription\n"))
+      (setq sb (concat sb (crs--make-html-placeholder body) "\n"))
+
       sb)))
 
 (defun crs--render-conversation-from-data (comments reviews)
@@ -767,31 +833,31 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
     (seq-do (lambda (c)
               (let ((path (cdr (assq 'path c))))
                 (when (or (null path) (string-empty-p path))
-                  (push (list :type 'comment 
+                  (push (list :type 'comment
                               :time (cdr (assq 'created_at c))
                               :author (cdr (assq 'author c))
                               :body (cdr (assq 'body c)))
                         items))))
             comments)
-            
+
     ;; 2. Collect Reviews
     (seq-do (lambda (r)
               (let ((state (cdr (assq 'state r)))
                     (body (cdr (assq 'body r))))
                 ;; Skip empty COMMENTED reviews?
                 (unless (and (string= state "COMMENTED") (string-empty-p (or body "")))
-                   (push (list :type 'review
-                               :time (cdr (assq 'submitted_at r))
-                               :author (cdr (assq 'user r))
-                               :state state
-                               :body body)
-                         items))))
+                  (push (list :type 'review
+                              :time (cdr (assq 'submitted_at r))
+                              :author (cdr (assq 'user r))
+                              :state state
+                              :body body)
+                        items))))
             reviews)
-            
+
     ;; 3. Sort by Time
-    (setq items (sort items (lambda (a b) 
+    (setq items (sort items (lambda (a b)
                               (string< (plist-get a :time) (plist-get b :time)))))
-                              
+
     ;; 4. Render
     (if (null items)
         (setq sb (concat sb "No conversation found.\n"))
@@ -800,18 +866,18 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
           (unless first
             (setq sb (concat sb "--------------------------------------------------------------------------------\n")))
           (setq first nil)
-          
+
           (let ((author (plist-get item :author))
                 (time (plist-get item :time))
                 (type (plist-get item :type))
                 (body (or (plist-get item :body) "(No body)")))
-            
+
             (if (eq type 'review)
                 (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
               (setq sb (concat sb (format "From: %s at %s\n" author time))))
-              
-            (setq sb (concat sb body "\n\n"))))))
-            
+
+            (setq sb (concat sb (crs--make-html-placeholder body) "\n\n"))))))
+
     ;; Add Files Changed header (placeholder or parsed?)
     ;; For now just a blank line, maybe we can add a separator
     (setq sb (concat sb "\n"))
@@ -893,7 +959,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
 
         ;; 5. Insert Preamble & Feedback at TOP
         (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
-               (conversation (crs--render-conversation-from-data 
+               (conversation (crs--render-conversation-from-data
                               crs--buffer-comments
                               crs--buffer-reviews))
                (preamble (concat header "\n" conversation))
@@ -915,6 +981,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           (insert preamble))
 
         (my-code-review-mode)))
+
+      (crs--process-html-placeholders)
       (my-code-review-mode)
 
       ;; Re-set the buffer-local variables AFTER mode change

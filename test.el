@@ -11,6 +11,8 @@ https://github.com/IAmTomShaw/f1-race-replay/pull/18
 (crs-get-reviews)
 (crs-list-plugins)
 
+https://github.com/C-Hipple/diff-lsp/pull/5
+
 (crs-shutdown-server)
 
 

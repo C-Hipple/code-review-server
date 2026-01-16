@@ -469,14 +469,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
                     // Skip these git metadata lines
                     lineType = 'skip';
-                } else {
-                    // Match +++ b/filename as the file header
-                    const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
-                        line.match(/^\+\+\+\s+(.+)$/) ||
-                        line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
-
-                    if (fileMatch) {
-                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                                    } else {
+                                        // Match +++ b/filename as the file header
+                                        const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
+                                            line.match(/^\+\+\+\s+(.+)$/);
+                
+                                        if (fileMatch) {                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 

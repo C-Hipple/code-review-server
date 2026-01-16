@@ -437,13 +437,23 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     if (sameNameMatch) {
                         fallbackFilename = sameNameMatch[1];
                     } else {
-                        // Fallback: try to grab the b/ part
-                         const parts = line.split(' b/');
-                         if (parts.length >= 2) {
-                             fallbackFilename = parts.slice(1).join(' b/');
-                         } else {
-                             fallbackFilename = null;
-                         }
+                        // Handle quoted filenames: diff --git "a/foo" "b/foo"
+                        const quotedMatch = line.match(/^diff --git "a\/(.+)" "b\/(.+)"$/);
+                        if (quotedMatch && quotedMatch[1] === quotedMatch[2]) {
+                            fallbackFilename = quotedMatch[1];
+                        } else {
+                            // Fallback: try to grab the b/ part
+                             const parts = line.split(' b/');
+                             if (parts.length >= 2) {
+                                 fallbackFilename = parts.slice(1).join(' b/');
+                                 // Cleanup potential trailing quote from split if it was quoted "b/..."
+                                 if (fallbackFilename.endsWith('"') && line.includes('" b/')) {
+                                     fallbackFilename = fallbackFilename.slice(0, -1);
+                                 }
+                             } else {
+                                 fallbackFilename = null;
+                             }
+                        }
                     }
                     fallbackFileIndex = index;
 

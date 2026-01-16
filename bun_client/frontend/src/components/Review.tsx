@@ -398,6 +398,11 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             let currentPos = 0;
             let foundFirstHunkInFile = false;
             let pendingFileStatus: 'modified' | 'new' | 'deleted' | 'renamed' = 'modified';
+            
+            // New state tracking for empty new files
+            let fallbackFilename: string | null = null;
+            let fallbackFileIndex: number | null = null;
+            let hasEmittedHeader = false;
 
             lines.forEach((rawLine, index) => {
                 const line = rawLine.replace(/\r$/, '');
@@ -408,9 +413,40 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
                 // Check for diff --git header to determine file status
                 if (line.startsWith('diff --git')) {
-                    // Check if next lines indicate new/deleted file
+                    // Check if previous file needs a header
+                    if (fallbackFilename && !hasEmittedHeader) {
+                        parsedLines.push({
+                            text: fallbackFilename,
+                            file: fallbackFilename,
+                            pos: 0,
+                            clickable: true,
+                            lineType: 'file-header',
+                            fileStatus: pendingFileStatus,
+                            originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : index
+                        });
+                    }
+
+                    // Reset for new file
+                    hasEmittedHeader = false;
                     pendingFileStatus = 'modified';
                     lineType = 'skip';
+
+                    // Parse filename from diff --git a/path b/path
+                    // Try exact match first (handles spaces)
+                    const sameNameMatch = line.match(/^diff --git a\/(.+) b\/\1$/);
+                    if (sameNameMatch) {
+                        fallbackFilename = sameNameMatch[1];
+                    } else {
+                        // Fallback: try to grab the b/ part
+                         const parts = line.split(' b/');
+                         if (parts.length >= 2) {
+                             fallbackFilename = parts.slice(1).join(' b/');
+                         } else {
+                             fallbackFilename = null;
+                         }
+                    }
+                    fallbackFileIndex = index;
+
                 } else if (line.startsWith('new file mode')) {
                     pendingFileStatus = 'new';
                     lineType = 'skip';
@@ -439,6 +475,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         file = currentFile;
                         clickable = true;
                         lineType = 'file-header';
+                        
+                        hasEmittedHeader = true;
 
                         parsedLines.push({
                             text: currentFile,
@@ -486,6 +524,19 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     parsedLines.push({ text: line, file, pos, clickable, lineType, originalLineIndex: index });
                 }
             });
+
+            // Check if last file needs header
+            if (fallbackFilename && !hasEmittedHeader) {
+                 parsedLines.push({
+                    text: fallbackFilename,
+                    file: fallbackFilename,
+                    pos: 0,
+                    clickable: true,
+                    lineType: 'file-header',
+                    fileStatus: pendingFileStatus,
+                    originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : lines.length
+                });
+            }
         }
 
         return parsedLines;

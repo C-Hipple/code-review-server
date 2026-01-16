@@ -488,6 +488,28 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	return items, rows.Err()
 }
 
+func (db *DB) GetAllItems() ([]*Item, error) {
+	rows, err := db.conn.Query(
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items ORDER BY section_id, id",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*Item
+	for rows.Next() {
+		var item Item
+		var archivedInt int
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt); err != nil {
+			return nil, err
+		}
+		item.Archived = archivedInt == 1
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
 func (db *DB) DeleteItem(sectionID int64, identifier string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM items WHERE section_id = ? AND identifier = ?",

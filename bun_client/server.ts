@@ -37,7 +37,7 @@ class RpcBridge {
 
     constructor() {
         this.proc = spawn([SERVER_PATH, "--server"], {
-            cwd: "..", // Run from project root
+            cwd: resolve(import.meta.dir, ".."), // Run from project root
             stdin: "pipe",
             stdout: "pipe",
             stderr: "inherit",
@@ -306,7 +306,7 @@ Type: ${type}
             return new Response(Bun.file(assets["/index.html"]));
         }
 
-        const indexPath = resolve(publicPath, "index.html");
+        const indexPath = resolve(import.meta.dir, "frontend/dist/index.html");
         const indexFile = Bun.file(indexPath);
         if (await indexFile.exists()) {
             return new Response(indexFile);

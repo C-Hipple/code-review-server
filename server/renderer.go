@@ -77,6 +77,64 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	return content.String(), nil
 }
 
+func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+	sections, err := r.db.GetAllSections()
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Sort sections by ID to maintain order
+	sort.Slice(sections, func(i, j int) bool {
+		return sections[i].ID < sections[j].ID
+	})
+
+	// Fetch all items at once to avoid N+1 queries
+	allItems, err := r.db.GetAllItems()
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Group items by sectionID
+	itemsBySection := make(map[int64][]*database.Item)
+	for _, item := range allItems {
+		itemsBySection[item.SectionID] = append(itemsBySection[item.SectionID], item)
+	}
+
+	// Build the org file content and structured items
+	var content strings.Builder
+	var reviewItems []ReviewItem
+
+	for _, section := range sections {
+		// Get items for this section
+		items := itemsBySection[section.ID]
+
+		// Build section header
+		sectionHeader := r.buildSectionHeader(section, items)
+		content.WriteString(sectionHeader)
+		content.WriteString("\n")
+
+		// Build items
+		for _, item := range items {
+			// String representation
+			itemLines := r.buildItemLines(item, section.IndentLevel)
+			for _, line := range itemLines {
+				content.WriteString(line)
+				if !strings.HasSuffix(line, "\n") {
+					content.WriteString("\n")
+				}
+			}
+
+			// Structured representation
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName)
+			reviewItems = append(reviewItems, reviewItem)
+		}
+		// Add blank line between sections
+		content.WriteString("\n")
+	}
+
+	return content.String(), reviewItems, nil
+}
+
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
 	Section string `json:"section"`

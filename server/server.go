@@ -78,18 +78,13 @@ type GetReviewsReply struct {
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	renderer := NewOrgRenderer(config.C.DB)
-	content, err := renderer.RenderAllSectionsToString()
+	content, items, err := renderer.RenderAndGetItems()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
 		return err
 	}
 	reply.Content = content
-
-	// Get structured items
-	items, err := renderer.GetAllReviewItems()
-	if err != nil {
-		h.Log.Error("Error getting review items", "error", err)
-		// Don't fail the whole request, just return empty items
+	if items == nil {
 		reply.Items = []ReviewItem{}
 	} else {
 		reply.Items = items
@@ -487,6 +482,14 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 		h.Log.Error("Error fetching plugin results", "error", err)
 		return err
 	}
+
+	// If no results found, or if we want to ensure they are at least triggered,
+	// we call fetchPRAndRunPlugins (which is async for the plugin part).
+	if len(results) == 0 {
+		h.Log.Info("No plugin results found, triggering async run", "pr", args.Number)
+		go h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	}
+
 	reply.Output = results
 	return nil
 }

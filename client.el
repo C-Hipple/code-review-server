@@ -56,14 +56,15 @@ Requires Emacs to be compiled with libxml support."
             (delete-region start (point))
             (shr-insert-document dom)))
         (when (and prefix (not (string-empty-p prefix)))
-          (let ((end (point)))
+          (let ((end (point-marker)))
             (save-excursion
               (goto-char start)
               (while (< (point) end)
                 (insert prefix)
-                (setq end (+ end (length prefix)))
-                (forward-line 1)))))
-  (insert (or prefix "") "(No content provided)"))
+                (unless (zerop (forward-line 1))
+                  (goto-char end))))
+            (set-marker end nil))))
+    (insert (or prefix "") "(No content provided)")))
 
 (defun crs--make-html-placeholder (html-string &optional prefix)
   "Create a placeholder string for HTML-STRING to be rendered later.
@@ -619,8 +620,11 @@ SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact
 This must be called after delta-wash."
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "^diff --git a/\\(.*\\) b/.*$" nil t)
-      (let* ((filename (match-string 1))
+    (while (re-search-forward "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" nil t)
+      (let* ((file-a (match-string 1))
+             (file-b (match-string 2))
+             ;; Prefer the b/ side unless it's /dev/null (deleted file)
+             (filename (if (string= file-b "dev/null") file-a file-b))
              (start (match-beginning 0))
              (type "modified")
              (limit (save-excursion
@@ -629,16 +633,28 @@ This must be called after delta-wash."
                         (point-max)))))
 
         (save-excursion
-          (when (re-search-forward "^new file mode" limit t)
-            (setq type "new file"))
-          (goto-char start)
-          (when (re-search-forward "^deleted file mode" limit t)
-            (setq type "deleted")))
+          (cond
+           ((string= file-a "dev/null") (setq type "new file"))
+           ((string= file-b "dev/null") (setq type "deleted"))
+           (t
+            (goto-char start)
+            (if (re-search-forward "^new file mode" limit t)
+                (setq type "new file")
+              (goto-char start)
+              (if (re-search-forward "^deleted file mode" limit t)
+                  (setq type "deleted")
+                (goto-char start)
+                (when (re-search-forward "^@@ -0,0" limit t)
+                  (setq type "new file")))))))
 
         (let ((end-marker-pos
                (save-excursion
-                 (or (re-search-forward "^\\+\\+\\+ .*\n" limit t)
-                     (re-search-forward "^Binary files .*\n" limit t)))))
+                 (goto-char start)
+                 (cond
+                  ((re-search-forward "^\\+\\+\\+ .*\n" limit t) (point))
+                  ((re-search-forward "^Binary files .*\n" limit t) (point))
+                  ((re-search-forward "^@@ .*\n" limit t) (match-beginning 0))
+                  (t nil)))))
 
           (when (and (not end-marker-pos)
                      (or (string= type "new file") (string= type "deleted")))

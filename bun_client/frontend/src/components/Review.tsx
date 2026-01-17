@@ -618,7 +618,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             if (lspClient && lspUri) {
                 console.log("Fetching LSP data for URI:", lspUri);
                 try {
-                    const line = originalLineIndex + 4;
+                    // Header is 4 lines, but it seems we need +5 to align correctly (maybe implicit newline or 1-based issue?)
+                    const line = originalLineIndex + 5;
                     // Add 1 to col to account for the diff prefix (+/- / space)
                     const diffCol = col + 1;
                     const [hover, refs] = await Promise.all([

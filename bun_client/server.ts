@@ -153,6 +153,8 @@ Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
         const url = new URL(req.url);
 
         if (url.pathname === "/api/lsp") {
+          console.log("lsp call happening")
+
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
@@ -328,11 +330,39 @@ Type: ${type}
 
             const reader = proc.stdout.getReader();
             (async () => {
+                let buffer = Buffer.alloc(0);
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
-                        ws.send(value);
+                        buffer = Buffer.concat([buffer, value]);
+
+                        while (true) {
+                            const separatorIndex = buffer.indexOf('\r\n\r\n');
+                            if (separatorIndex === -1) break;
+
+                            const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
+                            const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
+                            
+                            if (!lengthMatch) {
+                                console.error("Invalid LSP header:", headerPart);
+                                // Skip past this separator
+                                buffer = buffer.subarray(separatorIndex + 4);
+                                continue;
+                            }
+
+                            const contentLength = parseInt(lengthMatch[1], 10);
+                            const totalMessageLength = separatorIndex + 4 + contentLength;
+
+                            if (buffer.length >= totalMessageLength) {
+                                const jsonBuf = buffer.subarray(separatorIndex + 4, totalMessageLength);
+                                const jsonStr = jsonBuf.toString('utf-8');
+                                ws.send(jsonStr);
+                                buffer = buffer.subarray(totalMessageLength);
+                            } else {
+                                break;
+                            }
+                        }
                     }
                 } catch (e) {
                     console.error("Error reading from LSP:", e);
@@ -340,9 +370,13 @@ Type: ${type}
             })();
         },
         message(ws, message) {
+            console.log("LSP Server received message:", message);
             const proc = ws.data.proc;
             if (proc && proc.stdin && typeof proc.stdin !== "number") {
-                proc.stdin.write(message);
+                const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
+                const length = new TextEncoder().encode(msgStr).length;
+                const wrapped = `Content-Length: ${length}\r\n\r\n${msgStr}`;
+                proc.stdin.write(wrapped);
                 proc.stdin.flush();
             }
         },

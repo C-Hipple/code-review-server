@@ -206,12 +206,21 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 setLspUri(uri);
 
                 // Initialize standard LSP
-                await client.initialize("/");
+                console.log("LSP Initializing...");
+                try {
+                    await Promise.race([
+                        client.initialize("/"),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("LSP Initialize timeout")), 5000))
+                    ]);
+                    console.log("LSP Initialize success");
+                } catch (e) {
+                    console.error("LSP Initialize error/timeout", e);
+                }
                 client.initialized();
 
                 // Open the document (the temp file we just created)
                 console.log("Sending didOpen for", uri);
-                client.didOpen(uri, "diff", 1, diff);
+                await client.didOpen(uri, "diff", 1, diff);
 
                 setLspClient(client);
             } catch (e) {
@@ -566,22 +575,55 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         }
     };
 
-    const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number) => {
+    const getClickColumn = (e: React.MouseEvent, container: HTMLElement): number => {
+        let range: Range | null = null;
+        let offset = 0;
+
+        // Standard
+        if (document.caretRangeFromPoint) {
+            range = document.caretRangeFromPoint(e.clientX, e.clientY);
+        } else if ((document as any).caretPositionFromPoint) {
+            // Firefox
+            const pos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
+            if (pos) {
+                range = document.createRange();
+                range.setStart(pos.offsetNode, pos.offset);
+                range.collapse(true);
+            }
+        }
+
+        if (!range) return 0;
+
+        // Traverse text nodes to calculate offset relative to container
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            if (node === range.startContainer) {
+                return offset + range.startOffset;
+            }
+            offset += node.textContent?.length || 0;
+        }
+        return 0;
+    };
+
+    const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number, col: number) => {
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
             setLspData(null);
         } else {
             // Don't open comment box on code click
-            console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex);
+            console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex, "Col:", col);
 
             // Fetch LSP Data
             if (lspClient && lspUri) {
                 console.log("Fetching LSP data for URI:", lspUri);
                 try {
                     const line = originalLineIndex + 4;
+                    // Add 1 to col to account for the diff prefix (+/- / space)
+                    const diffCol = col + 1;
                     const [hover, refs] = await Promise.all([
-                        lspClient.hover(lspUri, line, 0),
-                        lspClient.references(lspUri, line, 0)
+                        lspClient.hover(lspUri, line, diffCol),
+                        lspClient.references(lspUri, line, diffCol)
                     ]);
                     console.log("LSP Response - Hover:", hover, "Refs:", refs);
 
@@ -603,10 +645,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     } else {
                         // Placeholder for testing when LSP returns no data
                         setLspData({
-                            hover: { contents: "### LSP Placeholder\nThis feedback is currently a **placeholder** for testing purposes. The real LSP implementation is in progress." },
-                            refs: [
-                                { uri: `file://${file}`, range: { start: { line: originalLineIndex, character: 0 }, end: { line: originalLineIndex, character: 10 } } }
-                            ]
+                            hover: { contents: `### LSP Placeholder\nNo data found at line ${line}, char ${diffCol}.` },
+                            refs: []
                         });
                         setActiveLspIndex(idx);
                     }
@@ -1068,7 +1108,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             }}
                             onClick={(e) => {
                                 if (item.clickable && item.file && item.pos !== null) {
-                                    handleCodeClick(idx, item.file, item.pos, item.originalLineIndex);
+                                    const col = getClickColumn(e, e.currentTarget);
+                                    handleCodeClick(idx, item.file, item.pos, item.originalLineIndex, col);
                                 }
                             }}
                         >

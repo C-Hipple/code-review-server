@@ -226,7 +226,7 @@ Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and a
 
 ## Emacs integration
 
-This project ships with `codereverserver.el` for running and configuring this in emacs seamlessly.
+This project ships with `client.el` for running and configuring this in emacs seamlessly.
 
 ### Installation
 

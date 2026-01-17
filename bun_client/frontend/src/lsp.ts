@@ -124,7 +124,11 @@ export class LspClient {
         this.notify("initialized", {});
     }
 
-    didOpen(uri: string, languageId: string, version: number, text: string) {
+    async didOpen(uri: string, languageId: string, version: number, text: string) {
+        console.log("LSP didOpen: Waiting 1s...", uri);
+        // Wait 1 second before sending open file to give the lsp time to init
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log("LSP didOpen: Sending now...", uri);
         this.notify("textDocument/didOpen", {
             textDocument: { uri, languageId, version, text }
         });

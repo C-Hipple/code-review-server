@@ -10,6 +10,7 @@ import (
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+	"path/filepath"
 
 	"github.com/google/go-github/v48/github"
 	// "strings"
@@ -462,6 +463,44 @@ type ListPluginsReply struct {
 
 func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply) error {
 	reply.Plugins = config.C.Plugins
+	return nil
+}
+
+type CheckRepoExistsArgs struct {
+	Repo string `json:"Repo"`
+}
+
+type CheckRepoExistsReply struct {
+	Exists bool   `json:"Exists"`
+	Path   string `json:"Path"`
+}
+
+func (h *RPCHandler) CheckRepoExists(args *CheckRepoExistsArgs, reply *CheckRepoExistsReply) error {
+	repoLocation := config.C.RepoLocation
+	if len(repoLocation) > 0 && repoLocation[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			h.Log.Error("Error getting user home directory", "error", err)
+			return err
+		}
+		repoLocation = fmt.Sprintf("%s/%s", home, repoLocation[2:])
+	}
+
+	repoPath := fmt.Sprintf("%s/%s", repoLocation, args.Repo)
+	// Clean path to remove double slashes if any
+	repoPath = filepath.Clean(repoPath)
+
+	info, err := os.Stat(repoPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			reply.Exists = false
+			return nil
+		}
+		h.Log.Error("Error checking repo existence", "error", err)
+		return err
+	}
+	reply.Exists = info.IsDir()
+	reply.Path = repoPath
 	return nil
 }
 

@@ -34,9 +34,11 @@ Repos: list[str]
 SleepDuration: int (in minutes, optional, default=1 minute)
 OrgFileDir: str
 GithubUsername: str [optional]
+RepoLocation: str [optional, default="~/"]
 ```
 
 OrgFileDir will default to "~/" if it's not defined.  Github username is used for determining when using the NotMyPRs or MyPRs filters
+RepoLocation is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 
 
 Each workflow entry can take the fields:

@@ -260,6 +260,11 @@ Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
             return handleRpc("RPCHandler.GetPluginOutput", [body]);
         }
 
+        if (url.pathname === "/api/check-repo-exists" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.CheckRepoExists", [body]);
+        }
+
         if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
             const body = await req.json();
             const { project, root, buffer, type, content } = body;

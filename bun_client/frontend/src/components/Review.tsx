@@ -176,6 +176,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [lspClient, setLspClient] = useState<LspClient | null>(null);
     const [lspUri, setLspUri] = useState<string | null>(null);
     const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
+    const [repoExists, setRepoExists] = useState<boolean | null>(null);
 
     useEffect(() => {
         loadPR();
@@ -186,18 +187,26 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         if (!diff || !metadata) return;
 
         const initLsp = async () => {
-            if (lspClient) {
-                // Simple cleanup if needed, though we make a new one
-            }
-            const client = new LspClient();
-            client.connect();
-
             try {
+                const checkRes = await rpcCall<{ Exists: boolean; Path: string }>('RPCHandler.CheckRepoExists', [{ Repo: repo }]);
+                setRepoExists(checkRes.Exists);
+
+                if (!checkRes.Exists) {
+                    console.log(`Repo ${repo} not found locally, skipping LSP initialization.`);
+                    return;
+                }
+
+                if (lspClient) {
+                    // Simple cleanup if needed, though we make a new one
+                }
+                const client = new LspClient();
+                client.connect();
+
                 // Prepare context for diff-lsp
                 // We use "code-review" as type to match server configuration
                 const path = await client.prepareContext(
                     repo,
-                    `~/${repo}`,
+                    checkRes.Path,
                     `PR #${number}`,
                     "code-review",
                     diff
@@ -1657,6 +1666,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 }}>
                     <span style={{ color: 'var(--accent)' }}>◈</span>
                     Changes
+                    {repoExists === false && (
+                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }}>
+                            <span style={{ fontSize: '14px' }}>⚠️</span>
+                            Repo not found locally. LSP disabled.
+                        </div>
+                    )}
                 </div>
                 <div style={{
                     padding: '16px',

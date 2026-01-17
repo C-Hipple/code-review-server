@@ -45,6 +45,7 @@ type Config struct {
 	SleepDuration  time.Duration
 	JiraDomain     string
 	GithubUsername string
+	RepoLocation   string
 	Plugins        []Plugin
 	DB             *database.DB
 }
@@ -60,6 +61,7 @@ func Initialize() error {
 		SleepDuration  int64
 		Workflows      []RawWorkflow
 		GithubUsername string
+		RepoLocation   string
 		Plugins        []Plugin
 	}
 	home_dir, err := os.UserHomeDir()
@@ -80,6 +82,11 @@ func Initialize() error {
 		if intermediate_config.Workflows[i].GithubUsername == "" {
 			intermediate_config.Workflows[i].GithubUsername = intermediate_config.GithubUsername
 		}
+	}
+
+	repoLocation := intermediate_config.RepoLocation
+	if repoLocation == "" {
+		repoLocation = "~/"
 	}
 
 	parsed_sleep_duration := time.Duration(10) * time.Minute
@@ -106,6 +113,7 @@ func Initialize() error {
 		SleepDuration:  parsed_sleep_duration,
 		JiraDomain:     intermediate_config.JiraDomain,
 		GithubUsername: intermediate_config.GithubUsername,
+		RepoLocation:   repoLocation,
 		Plugins:        intermediate_config.Plugins,
 		DB:             db,
 	}

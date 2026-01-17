@@ -19,6 +19,7 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetAllReviews': '/api/reviews',
     'RPCHandler.ListPlugins': '/api/list-plugins',
     'RPCHandler.GetPluginOutput': '/api/get-plugin-output',
+    'RPCHandler.CheckRepoExists': '/api/check-repo-exists',
 };
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {

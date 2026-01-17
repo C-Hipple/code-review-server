@@ -336,6 +336,23 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 ---
 
+### `RPCHandler.CheckRepoExists`
+
+Checks if a repository is stored locally in the user's home directory (`~/RepoName`). This is useful for determining if features like LSP (which often require local source code) should be enabled.
+
+**Arguments** (`CheckRepoExistsArgs`):
+| Field  | Type   | Required | Description                       |
+|--------|--------|----------|-----------------------------------|
+| `Repo` | string | Yes      | Repository name (e.g., `"hello"`) |
+
+**Reply** (`CheckRepoExistsReply`):
+| Field    | Type   | Description                                      |
+|----------|--------|--------------------------------------------------|
+| `Exists` | bool   | `true` if the directory exists and is a directory|
+| `Path`   | string | The full absolute path to the repository         |
+
+---
+
 ## Workflow
 
 A typical code review workflow using this API:

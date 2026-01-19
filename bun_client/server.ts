@@ -1,8 +1,9 @@
-import { spawn } from "bun";
+import { spawn, Subprocess } from "bun";
 
-import { resolve } from "path";
+import { resolve, join } from "path";
 import { assets } from "./embedded_assets";
 const SERVER_PATH = resolve(process.env.HOME || "/home/chris", "go/bin/crs");
+const DIFF_LSP_PATH = resolve(process.env.HOME || "/home/chris", ".cargo/bin/diff-lsp");
 
 interface JsonRpcRequest {
     method: string;
@@ -36,7 +37,7 @@ class RpcBridge {
 
     constructor() {
         this.proc = spawn([SERVER_PATH, "--server"], {
-            cwd: "..", // Run from project root
+            cwd: resolve(import.meta.dir, ".."), // Run from project root
             stdin: "pipe",
             stdout: "pipe",
             stderr: "inherit",
@@ -146,10 +147,26 @@ const CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 };
 
-Bun.serve({
+Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
     port: parseInt(process.env.PORT || "3000"),
-    async fetch(req) {
+    async fetch(req, server) {
         const url = new URL(req.url);
+
+        if (url.pathname === "/api/lsp") {
+          console.log("lsp call happening")
+
+            const success = server.upgrade(req, {
+                data: {
+                    cmd: DIFF_LSP_PATH,
+                    envs: {
+                        PATH: SHELL_PATH,
+                        HOME: process.env.HOME || "/home/chris"
+                    }
+                }
+            });
+            if (success) return undefined;
+            return new Response("Upgrade failed", { status: 500 });
+        }
 
         // CORS
         if (req.method === "OPTIONS") {
@@ -243,6 +260,28 @@ Bun.serve({
             return handleRpc("RPCHandler.GetPluginOutput", [body]);
         }
 
+        if (url.pathname === "/api/check-repo-exists" && req.method === "POST") {
+            const body = await req.json();
+            return handleRpc("RPCHandler.CheckRepoExists", [body]);
+        }
+
+        if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
+            const body = await req.json();
+            const { project, root, buffer, type, content } = body;
+            const header = `Project: ${project}
+Root: ${root}
+Buffer: ${buffer}
+Type: ${type}
+`;
+            const fullContent = header + content;
+            const filename = `diff_lsp_${crypto.randomUUID()}-bun`;
+            const filePath = join("/tmp", filename);
+            await Bun.write(filePath, fullContent);
+            return new Response(JSON.stringify({ path: filePath }), {
+                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+            });
+        }
+
         // Generic legacy RPC endpoint
         if (url.pathname === "/api/rpc" && req.method === "POST") {
             const body = await req.json();
@@ -274,7 +313,7 @@ Bun.serve({
             return new Response(Bun.file(assets["/index.html"]));
         }
 
-        const indexPath = resolve(publicPath, "index.html");
+        const indexPath = resolve(import.meta.dir, "frontend/dist/index.html");
         const indexFile = Bun.file(indexPath);
         if (await indexFile.exists()) {
             return new Response(indexFile);
@@ -282,6 +321,78 @@ Bun.serve({
 
         return new Response("Not Found", { status: 404 });
     },
+    websocket: {
+        open(ws) {
+            console.log("LSP WebSocket connected");
+            const { cmd, envs } = ws.data;
+            const proc = spawn([cmd], {
+                stdin: "pipe",
+                stdout: "pipe",
+                stderr: "inherit",
+                env: { ...process.env, ...envs }
+            });
+            ws.data.proc = proc;
+
+            const reader = proc.stdout.getReader();
+            (async () => {
+                let buffer = Buffer.alloc(0);
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer = Buffer.concat([buffer, value]);
+
+                        while (true) {
+                            const separatorIndex = buffer.indexOf('\r\n\r\n');
+                            if (separatorIndex === -1) break;
+
+                            const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
+                            const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
+                            
+                            if (!lengthMatch) {
+                                console.error("Invalid LSP header:", headerPart);
+                                // Skip past this separator
+                                buffer = buffer.subarray(separatorIndex + 4);
+                                continue;
+                            }
+
+                            const contentLength = parseInt(lengthMatch[1], 10);
+                            const totalMessageLength = separatorIndex + 4 + contentLength;
+
+                            if (buffer.length >= totalMessageLength) {
+                                const jsonBuf = buffer.subarray(separatorIndex + 4, totalMessageLength);
+                                const jsonStr = jsonBuf.toString('utf-8');
+                                ws.send(jsonStr);
+                                buffer = buffer.subarray(totalMessageLength);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error reading from LSP:", e);
+                }
+            })();
+        },
+        message(ws, message) {
+            console.log("LSP Server received message:", message);
+            const proc = ws.data.proc;
+            if (proc && proc.stdin && typeof proc.stdin !== "number") {
+                const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
+                const length = new TextEncoder().encode(msgStr).length;
+                const wrapped = `Content-Length: ${length}\r\n\r\n${msgStr}`;
+                proc.stdin.write(wrapped);
+                proc.stdin.flush();
+            }
+        },
+        close(ws) {
+            console.log("LSP WebSocket closed");
+            const proc = ws.data.proc;
+            if (proc) {
+                proc.kill();
+            }
+        },
+    }
 });
 
 console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "3000")}`);

@@ -8,6 +8,7 @@
   "scripts": {
     "start": "./start_server.sh",
     "dev": "cd frontend && bun run dev",
+    "stop-dev": "pkill -f 'bun run dev' || true; pkill -f 'bun run server.ts' || true; pkill -f 'vite' || true",
     "build": "cd frontend && bun run build && cd .. && bun scripts/build.ts && bun build server.ts --compile --outfile crs-gui"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
-const API_BASE = (typeof window !== "undefined" && window.location.origin === "http://localhost:5173")
-    ? "http://localhost:3000"
+const API_BASE = (typeof window !== "undefined" && (window.location.port === "5173" || window.location.port === "5174"))
+    ? `${window.location.protocol}//${window.location.hostname}:3000`
     : "";
 const RPC_URL = `${API_BASE}/api/rpc`;
 
@@ -19,6 +19,7 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetAllReviews': '/api/reviews',
     'RPCHandler.ListPlugins': '/api/list-plugins',
     'RPCHandler.GetPluginOutput': '/api/get-plugin-output',
+    'RPCHandler.CheckRepoExists': '/api/check-repo-exists',
 };
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {

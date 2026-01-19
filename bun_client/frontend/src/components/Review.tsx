@@ -4,6 +4,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall } from '../api';
 import { Button, Badge, Modal, TextArea, mapStatusToVariant } from '../design';
+import { LspClient, LspHover, LspLocation } from '../lsp';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
 const stripHtmlComments = (text: string): string => {
@@ -50,7 +51,7 @@ interface PRMetadata {
     draft: boolean;
     ci_status: string;
     ci_failures: string[];
-    description: string;
+    body: string;
     url: string;
 }
 
@@ -155,6 +156,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     // UI State
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
     const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null); // For inline comments
+    const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
 
@@ -170,10 +172,77 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
 
+    // LSP State
+    const [lspClient, setLspClient] = useState<LspClient | null>(null);
+    const [lspUri, setLspUri] = useState<string | null>(null);
+    const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
+    const [repoExists, setRepoExists] = useState<boolean | null>(null);
+
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
     }, [owner, repo, number]);
+
+    useEffect(() => {
+        if (!diff || !metadata) return;
+
+        const initLsp = async () => {
+            try {
+                const checkRes = await rpcCall<{ Exists: boolean; Path: string }>('RPCHandler.CheckRepoExists', [{ Repo: repo }]);
+                setRepoExists(checkRes.Exists);
+
+                if (!checkRes.Exists) {
+                    console.log(`Repo ${repo} not found locally, skipping LSP initialization.`);
+                    return;
+                }
+
+                if (lspClient) {
+                    // Simple cleanup if needed, though we make a new one
+                }
+                const client = new LspClient();
+                client.connect();
+
+                // Prepare context for diff-lsp
+                // We use "code-review" as type to match server configuration
+                const path = await client.prepareContext(
+                    repo,
+                    checkRes.Path,
+                    `PR #${number}`,
+                    "code-review",
+                    diff
+                );
+                const uri = `file://${path}`;
+                setLspUri(uri);
+
+                // Initialize standard LSP
+                console.log("LSP Initializing...");
+                try {
+                    await Promise.race([
+                        client.initialize("/"),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("LSP Initialize timeout")), 5000))
+                    ]);
+                    console.log("LSP Initialize success");
+                } catch (e) {
+                    console.error("LSP Initialize error/timeout", e);
+                }
+                client.initialized();
+
+                // Open the document (the temp file we just created)
+                console.log("Sending didOpen for", uri);
+                await client.didOpen(uri, "diff", 1, diff);
+
+                setLspClient(client);
+            } catch (e) {
+                console.error("LSP Init failed", e);
+            }
+        };
+
+        initLsp();
+
+        return () => {
+            // connection clean up handled by browser closing ws or GC
+        };
+    }, [diff, owner, repo, number]); // Re-init if diff changes
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -182,6 +251,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 setShowCommentModal(false);
                 setSubmitting(false);
                 setActiveLineIndex(null);
+                setActiveLspIndex(null);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -248,6 +318,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         setReplyToId(null);
         setShowCommentModal(false);
         setActiveLineIndex(null);
+        // Do not reset LSP index here as users might want to keep references open while adding a comment
     };
 
     const handleAddComment = async () => {
@@ -331,6 +402,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         clickable: boolean;
         lineType: LineType;
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
+        originalLineIndex: number;
     }
 
     // Parse diff to identify clickable lines (metadata is now rendered separately)
@@ -344,8 +416,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             let currentPos = 0;
             let foundFirstHunkInFile = false;
             let pendingFileStatus: 'modified' | 'new' | 'deleted' | 'renamed' = 'modified';
+            
+            // New state tracking for empty new files
+            let fallbackFilename: string | null = null;
+            let fallbackFileIndex: number | null = null;
+            let hasEmittedHeader = false;
 
-            for (const rawLine of lines) {
+            lines.forEach((rawLine, index) => {
                 const line = rawLine.replace(/\r$/, '');
                 let clickable = false;
                 let pos: number | null = null;
@@ -354,9 +431,50 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
                 // Check for diff --git header to determine file status
                 if (line.startsWith('diff --git')) {
-                    // Check if next lines indicate new/deleted file
+                    // Check if previous file needs a header
+                    if (fallbackFilename && !hasEmittedHeader) {
+                        parsedLines.push({
+                            text: fallbackFilename,
+                            file: fallbackFilename,
+                            pos: 0,
+                            clickable: true,
+                            lineType: 'file-header',
+                            fileStatus: pendingFileStatus,
+                            originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : index
+                        });
+                    }
+
+                    // Reset for new file
+                    hasEmittedHeader = false;
                     pendingFileStatus = 'modified';
                     lineType = 'skip';
+
+                    // Parse filename from diff --git a/path b/path
+                    // Try exact match first (handles spaces)
+                    const sameNameMatch = line.match(/^diff --git a\/(.+) b\/\1$/);
+                    if (sameNameMatch) {
+                        fallbackFilename = sameNameMatch[1];
+                    } else {
+                        // Handle quoted filenames: diff --git "a/foo" "b/foo"
+                        const quotedMatch = line.match(/^diff --git "a\/(.+)" "b\/(.+)"$/);
+                        if (quotedMatch && quotedMatch[1] === quotedMatch[2]) {
+                            fallbackFilename = quotedMatch[1];
+                        } else {
+                            // Fallback: try to grab the b/ part
+                             const parts = line.split(' b/');
+                             if (parts.length >= 2) {
+                                 fallbackFilename = parts.slice(1).join(' b/');
+                                 // Cleanup potential trailing quote from split if it was quoted "b/..."
+                                 if (fallbackFilename.endsWith('"') && line.includes('" b/')) {
+                                     fallbackFilename = fallbackFilename.slice(0, -1);
+                                 }
+                             } else {
+                                 fallbackFilename = null;
+                             }
+                        }
+                    }
+                    fallbackFileIndex = index;
+
                 } else if (line.startsWith('new file mode')) {
                     pendingFileStatus = 'new';
                     lineType = 'skip';
@@ -369,14 +487,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
                     // Skip these git metadata lines
                     lineType = 'skip';
-                } else {
-                    // Match +++ b/filename as the file header
-                    const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
-                        line.match(/^\+\+\+\s+(.+)$/) ||
-                        line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
-
-                    if (fileMatch) {
-                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                                    } else {
+                                        // Match +++ b/filename as the file header
+                                        const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
+                                            line.match(/^\+\+\+\s+(.+)$/);
+                
+                                        if (fileMatch) {                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 
@@ -385,6 +501,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         file = currentFile;
                         clickable = true;
                         lineType = 'file-header';
+                        
+                        hasEmittedHeader = true;
 
                         parsedLines.push({
                             text: currentFile,
@@ -392,10 +510,11 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             pos,
                             clickable,
                             lineType,
-                            fileStatus: pendingFileStatus
+                            fileStatus: pendingFileStatus,
+                            originalLineIndex: index
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
-                        continue;
+                        return; // continue equivalent in forEach
                     } else if (currentFile) {
                         const isHunkHeader = line.startsWith('@@');
                         const isAddition = line.startsWith('+') && !line.startsWith('+++');
@@ -428,15 +547,28 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 }
 
                 if (lineType !== 'skip') {
-                    parsedLines.push({ text: line, file, pos, clickable, lineType });
+                    parsedLines.push({ text: line, file, pos, clickable, lineType, originalLineIndex: index });
                 }
+            });
+
+            // Check if last file needs header
+            if (fallbackFilename && !hasEmittedHeader) {
+                 parsedLines.push({
+                    text: fallbackFilename,
+                    file: fallbackFilename,
+                    pos: 0,
+                    clickable: true,
+                    lineType: 'file-header',
+                    fileStatus: pendingFileStatus,
+                    originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : lines.length
+                });
             }
         }
 
         return parsedLines;
     };
 
-    const handleLineClick = (idx: number, file: string, pos: number) => {
+    const handleCommentClick = (idx: number, file: string, pos: number) => {
         if (activeLineIndex === idx) {
             setActiveLineIndex(null);
             setFilename('');
@@ -449,6 +581,99 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setShowCommentModal(false);
             setCommentBody('');
             setReplyToId(null);
+        }
+    };
+
+    const getClickColumn = (e: React.MouseEvent, container: HTMLElement): number => {
+        let range: Range | null = null;
+        let offset = 0;
+
+        // Standard
+        if (document.caretRangeFromPoint) {
+            range = document.caretRangeFromPoint(e.clientX, e.clientY);
+        } else if ((document as any).caretPositionFromPoint) {
+            // Firefox
+            const pos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
+            if (pos) {
+                range = document.createRange();
+                range.setStart(pos.offsetNode, pos.offset);
+                range.collapse(true);
+            }
+        }
+
+        if (!range) return 0;
+
+        // Traverse text nodes to calculate offset relative to container
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            if (node === range.startContainer) {
+                return offset + range.startOffset;
+            }
+            offset += node.textContent?.length || 0;
+        }
+        return 0;
+    };
+
+    const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number, col: number) => {
+        if (activeLspIndex === idx) {
+            setActiveLspIndex(null);
+            setLspData(null);
+        } else {
+            // Don't open comment box on code click
+            console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex, "Col:", col);
+
+            // Fetch LSP Data
+            if (lspClient && lspUri) {
+                console.log("Fetching LSP data for URI:", lspUri);
+                try {
+                    // Header is 4 lines, but it seems we need +5 to align correctly (maybe implicit newline or 1-based issue?)
+                    const line = originalLineIndex + 5;
+                    // Add 1 to col to account for the diff prefix (+/- / space)
+                    const diffCol = col + 1;
+                    const [hover, refs] = await Promise.all([
+                        lspClient.hover(lspUri, line, diffCol),
+                        lspClient.references(lspUri, line, diffCol)
+                    ]);
+                    console.log("LSP Response - Hover:", hover, "Refs:", refs);
+
+                    let hasHover = false;
+                    if (hover && hover.contents) {
+                        if (typeof hover.contents === 'string') {
+                            hasHover = hover.contents.length > 0;
+                        } else if (Array.isArray(hover.contents)) {
+                            hasHover = hover.contents.length > 0;
+                        } else if (typeof hover.contents === 'object') {
+                            hasHover = !!(hover.contents as any).value;
+                        }
+                    }
+                    const hasRefs = refs && refs.length > 0;
+
+                    if (hasHover || hasRefs) {
+                        setLspData({ hover, refs });
+                        setActiveLspIndex(idx);
+                    } else {
+                        // Placeholder for testing when LSP returns no data
+                        setLspData({
+                            hover: { contents: `### LSP Placeholder\nNo data found at line ${line}, char ${diffCol}.` },
+                            refs: []
+                        });
+                        setActiveLspIndex(idx);
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch LSP data", e);
+                }
+            } else {
+                console.warn("LSP Client or URI not ready", !!lspClient, lspUri);
+                // Placeholder for testing when LSP is not connected
+                setLspData({
+                    hover: { contents: "### LSP Placeholder (Disconnected)\nThe LSP server is not yet connected or ready. This is a fallback test message." },
+                    refs: [
+                        { uri: `file://${file}`, range: { start: { line: originalLineIndex, character: 0 }, end: { line: originalLineIndex, character: 10 } } }
+                    ]
+                });
+                setActiveLspIndex(idx);
+            }
         }
     };
 
@@ -607,7 +832,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 cursor: 'pointer',
                                 borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
                             }}
-                            onClick={() => item.file && item.pos !== null && handleLineClick(idx, item.file, item.pos)}
+                            onClick={() => item.file && item.pos !== null && handleCommentClick(idx, item.file, item.pos)}
                             className="hover-line"
                             title={`Add comment to ${item.file}`}
                         >
@@ -730,6 +955,39 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                         : `Commenting on ${item.file}:${item.pos}`
                                     }
                                 </div>
+                                {lspData && (
+                                    <div style={{ marginBottom: '10px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+                                        <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>LSP Info</div>
+                                        <div style={{ padding: '10px', background: 'var(--bg-primary)' }}>
+                                            {lspData.hover && (
+                                                <div style={{ marginBottom: '10px' }}>
+                                                    <strong>Hover:</strong>
+                                                    <pre style={{ whiteSpace: 'pre-wrap', marginTop: '5px' }}>
+                                                        {typeof lspData.hover.contents === 'string'
+                                                            ? lspData.hover.contents
+                                                            : Array.isArray(lspData.hover.contents)
+                                                                ? lspData.hover.contents.map(c => typeof c === 'string' ? c : c.value).join('\n')
+                                                                : (lspData.hover.contents as any).value
+                                                        }
+                                                    </pre>
+                                                </div>
+                                            )}
+                                            {lspData.refs && lspData.refs.length > 0 && (
+                                                <div>
+                                                    <strong>References ({lspData.refs.length}):</strong>
+                                                    <ul style={{ margin: '5px 0 0 20px', padding: 0 }}>
+                                                        {lspData.refs.map((r, i) => (
+                                                            <li key={i}>{r.uri} : {r.range.start.line + 1}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            {!lspData.hover && (!lspData.refs || lspData.refs.length === 0) && (
+                                                <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>No information found.</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                                 <textarea
                                     autoFocus
                                     placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
@@ -762,6 +1020,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 display: 'flex',
                 alignItems: 'stretch',
                 minHeight: '20px',
+                position: 'relative',
             };
 
             let prefixStyle: React.CSSProperties = {
@@ -797,10 +1056,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             }
 
             if (item.clickable) {
-                containerStyle = { ...containerStyle, cursor: 'pointer' };
+                containerStyle = { ...containerStyle, cursor: 'default' };
+                prefixStyle = { ...prefixStyle, cursor: 'pointer' };
             }
 
             const isInlineActive = activeLineIndex === idx;
+            const isLspActive = activeLspIndex === idx;
             const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
             const rootComments = lineComments.filter(c => !c.in_reply_to);
 
@@ -816,26 +1077,88 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 lineContent = isCodeLine ? line.slice(1) : line;
             }
 
+            const getHoverContent = (hover: any) => {
+                if (!hover || !hover.contents) return '';
+                if (typeof hover.contents === 'string') return hover.contents;
+                if (Array.isArray(hover.contents)) {
+                    return hover.contents.map((c: any) => typeof c === 'string' ? c : c.value).join('\n');
+                }
+                return (hover.contents as any).value || '';
+            };
+
             return (
                 <div key={idx}>
                     <div
                         style={{
                             ...containerStyle,
-                            borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
-                            marginLeft: isInlineActive ? '-3px' : '0',
+                            borderLeft: isInlineActive || isLspActive ? '3px solid var(--accent)' : '3px solid transparent',
+                            marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
                         }}
-                        onClick={() => item.clickable && item.file && item.pos !== null && handleLineClick(idx, item.file, item.pos)}
                         className={item.clickable ? 'hover-line' : ''}
-                        title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
+                        title={undefined}
                     >
                         {isCodeLine && !isHunkHeader && (
-                            <span style={prefixStyle}>
+                            <span
+                                style={prefixStyle}
+                                onClick={(e) => {
+                                    if (item.clickable && item.file && item.pos !== null) {
+                                        e.stopPropagation();
+                                        handleCommentClick(idx, item.file, item.pos);
+                                    }
+                                }}
+                                title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
+                            >
                                 {isAddition ? '+' : isDeletion ? '-' : ''}
                             </span>
                         )}
-                        <span style={lineStyle}>
+                        <span
+                            style={{
+                                ...lineStyle,
+                                cursor: item.clickable ? 'pointer' : 'default'
+                            }}
+                            onClick={(e) => {
+                                if (item.clickable && item.file && item.pos !== null) {
+                                    const col = getClickColumn(e, e.currentTarget);
+                                    handleCodeClick(idx, item.file, item.pos, item.originalLineIndex, col);
+                                }
+                            }}
+                        >
                             {lineContent}
                         </span>
+                        {isLspActive && lspData && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '100%',
+                                left: '40px',
+                                zIndex: 100,
+                                background: 'var(--bg-secondary)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '6px',
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                                padding: '12px',
+                                maxWidth: '600px',
+                                overflow: 'auto',
+                                maxHeight: '300px'
+                            }} onClick={e => e.stopPropagation()}>
+                                {lspData.hover && (
+                                    <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--text-primary)' }}>
+                                        <Markdown>
+                                            {getHoverContent(lspData.hover)}
+                                        </Markdown>
+                                    </div>
+                                )}
+                                {lspData.refs && lspData.refs.length > 0 && (
+                                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', fontSize: '12px' }}>
+                                        <div style={{ fontWeight: 600, marginBottom: '5px', color: 'var(--text-secondary)' }}>References ({lspData.refs.length}):</div>
+                                        <ul style={{ margin: '0 0 0 15px', padding: 0, color: 'var(--accent)' }}>
+                                            {lspData.refs.map((r, i) => (
+                                                <li key={i}>{r.uri.split('/').pop()} : {r.range.start.line + 1}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                     {rootComments.map(rc => {
                         const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
@@ -1230,7 +1553,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     )}
 
                     {/* Description */}
-                    {metadata.description && (
+                    {metadata.body && (
                         <div style={{
                             padding: '16px 20px',
                             borderTop: '1px solid var(--border)',
@@ -1249,7 +1572,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     overflow: 'auto'
                                 }}
                             >
-                                <Markdown>{stripHtmlComments(metadata.description)}</Markdown>
+                                <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
                             </div>
                         </div>
                     )}
@@ -1343,6 +1666,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 }}>
                     <span style={{ color: 'var(--accent)' }}>◈</span>
                     Changes
+                    {repoExists === false && (
+                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }}>
+                            <span style={{ fontSize: '14px' }}>⚠️</span>
+                            Repo not found locally. LSP disabled.
+                        </div>
+                    )}
                 </div>
                 <div style={{
                     padding: '16px',

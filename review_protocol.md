@@ -76,6 +76,7 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 #### Rendered Comment Format
 
@@ -95,6 +96,19 @@ Comments are rendered inline within the diff or at the file headers. They use a 
   ```
 
 Each comment block includes the file path, timestamp, author(s), and comment ID, followed by the conversation thread.
+
+#### Review Object
+
+Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
+
+| Field          | Type      | Description                                      |
+|----------------|-----------|--------------------------------------------------|
+| `id`           | int64     | Review ID                                        |
+| `user`         | string    | GitHub login of the reviewer                     |
+| `body`         | string    | Main body text of the review                     |
+| `state`        | string    | Review state (APPROVED, CHANGES_REQUESTED, etc.) |
+| `submitted_at` | Time      | Timestamp when the review was submitted          |
+| `html_url`     | string    | Link to the review on GitHub                     |
 
 ---
 
@@ -117,6 +131,7 @@ Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -143,6 +158,7 @@ Adds a new local (pending) comment to a pull request. The comment is stored loca
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -167,6 +183,7 @@ Edits an existing local (pending) comment.
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -190,6 +207,7 @@ Deletes a local (pending) comment.
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -213,6 +231,7 @@ Sets the top-level feedback/review body for a pull request.
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -235,6 +254,7 @@ Removes all local (pending) comments for a specific pull request.
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -263,6 +283,7 @@ Submits a review to GitHub. This will:
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
 | `comments` | []CommentJSON| List of structured PR comments                  |
+| `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
 
@@ -312,6 +333,23 @@ Retrieves the output and status of all plugins for a specific pull request.
 |----------|--------|----------------------------------------------------------------------|
 | `result` | string | The captured output (stdout/stderr) of the plugin                    |
 | `status` | string | Execution status: `pending`, `success`, or `error`                   |
+
+---
+
+### `RPCHandler.CheckRepoExists`
+
+Checks if a repository is stored locally in the user's home directory (`~/RepoName`). This is useful for determining if features like LSP (which often require local source code) should be enabled.
+
+**Arguments** (`CheckRepoExistsArgs`):
+| Field  | Type   | Required | Description                       |
+|--------|--------|----------|-----------------------------------|
+| `Repo` | string | Yes      | Repository name (e.g., `"hello"`) |
+
+**Reply** (`CheckRepoExistsReply`):
+| Field    | Type   | Description                                      |
+|----------|--------|--------------------------------------------------|
+| `Exists` | bool   | `true` if the directory exists and is a directory|
+| `Path`   | string | The full absolute path to the repository         |
 
 ---
 
@@ -372,6 +410,16 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "position": "5",
         "created_at": "2023-01-01T12:00:00Z",
         "outdated": false
+      }
+    ],
+    "reviews": [
+      {
+        "id": 98765,
+        "user": "coder1",
+        "body": "Looks good!",
+        "state": "APPROVED",
+        "submitted_at": "2023-01-01T12:05:00Z",
+        "html_url": "https://github.com/..."
       }
     ]
   },

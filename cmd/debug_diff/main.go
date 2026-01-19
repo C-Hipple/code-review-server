@@ -15,13 +15,13 @@ func main() {
 	defer config.C.DB.Close()
 
 	owner := "C-Hipple"
-	repo := "gtdbot"
-	number := 11
+	repo := "diff-lsp"
+	number := 15
 
 	client := git_tools.GetGithubClient()
 	diff := git_tools.GetPRDiff(client, owner, repo, number)
 
-	filename := "github_api_diff_pr_11.diff"
+	filename := "pr_15_diff.diff"
 	if err := os.WriteFile(filename, []byte(diff), 0644); err != nil {
 		fmt.Printf("Error writing file: %v\n", err)
 		os.Exit(1)

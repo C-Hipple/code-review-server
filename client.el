@@ -18,6 +18,7 @@
 (require 'markdown-mode)
 (require 'seq)
 (require 'subr-x)
+(require 'shr)
 
 (defvar crs--process nil
   "The process handle for the crs JSON-RPC server.")
@@ -37,6 +38,64 @@
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
+
+(defconst crs--html-placeholder-regexp
+  "<CRS-HTML\\(?: prefix=\"\\(.*?\\)\"\\)?>\\(.*?\\)</CRS-HTML>"
+  "Regexp to match HTML placeholders for deferred rendering.")
+
+(defun crs--insert-html (html-string &optional prefix)
+  "Insert HTML-STRING at point, rendering it with shr.
+If PREFIX is provided, it is prepended to each line of the rendered content.
+Images will be displayed inline if running in graphical Emacs.
+Requires Emacs to be compiled with libxml support."
+  (if (and html-string (not (string-empty-p html-string)))
+      (let ((start (point)))
+        (insert html-string)
+        (when (fboundp 'libxml-parse-html-region)
+          (let ((dom (libxml-parse-html-region start (point))))
+            (delete-region start (point))
+            (shr-insert-document dom)))
+        (when (and prefix (not (string-empty-p prefix)))
+          (let ((end (point-marker)))
+            (save-excursion
+              (goto-char start)
+              (while (< (point) end)
+                (insert prefix)
+                (unless (zerop (forward-line 1))
+                  (goto-char end))))
+            (set-marker end nil))))
+    (insert (or prefix "") "(No content provided)")))
+
+(defun crs--make-html-placeholder (html-string &optional prefix)
+  "Create a placeholder string for HTML-STRING to be rendered later.
+If PREFIX is provided, it will be used when rendering each line.
+The content and prefix are base64 encoded to avoid issues with special characters."
+  (let ((html-encoded (if (and html-string (not (string-empty-p html-string)))
+                          (base64-encode-string (encode-coding-string html-string 'utf-8) t)
+                        "")))
+    (if (string-empty-p html-encoded)
+        (concat (or prefix "") "(No content provided)")
+      (if (and prefix (not (string-empty-p prefix)))
+          (format "<CRS-HTML prefix=\"%s\">%s</CRS-HTML>"
+                  (base64-encode-string (encode-coding-string prefix 'utf-8) t)
+                  html-encoded)
+        (format "<CRS-HTML>%s</CRS-HTML>" html-encoded)))))
+
+(defun crs--process-html-placeholders ()
+  "Find and replace all HTML placeholders in the current buffer with rendered HTML.
+This should be called after inserting content but before setting the buffer to read-only."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward crs--html-placeholder-regexp nil t)
+      (let* ((prefix-encoded (match-string 1))
+             (prefix (when prefix-encoded
+                       (decode-coding-string (base64-decode-string prefix-encoded) 'utf-8)))
+             (html-encoded (match-string 2))
+             (html-string (decode-coding-string (base64-decode-string html-encoded) 'utf-8))
+             (start (match-beginning 0)))
+        (delete-region (match-beginning 0) (match-end 0))
+        (goto-char start)
+        (crs--insert-html html-string prefix)))))
 
 ;;;###autoload
 (defun crs-start-server ()
@@ -173,8 +232,9 @@ CALLBACK is a function to call with the result."
    "RPCHandler.ListPlugins"
    (vector)
    (lambda (result)
-     (setq crs-plugins (cdr (assq 'plugins result)))
-     (message "Plugins updated: %d plugins found" (length crs-plugins)))))
+     (let ((plugins-list (append (cdr (assq 'plugins result)) nil)))
+       (setq crs-plugins (mapcar (lambda (p) (cdr (assq 'Name p))) plugins-list))
+       (message "Plugins updated: %d plugins found" (length crs-plugins))))))
 
 ;;;###autoload
 (defun crs-get-reviews ()
@@ -195,6 +255,7 @@ CALLBACK is a function to call with the result."
        (with-current-buffer buffer
          (erase-buffer)
          (insert (or content ""))
+         (crs--process-html-placeholders)
          (goto-char (point-min))
          (org-mode))
        (display-buffer buffer)
@@ -294,7 +355,9 @@ Re-renders the buffer with or without comments based on the toggle state."
   ;; "rr" #'crs-request-changes-review
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
+  "P" #'crs-get-single-plugin-output
   "H" #'crs-toggle-comments
+  "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
   "q" #'quit-window
@@ -304,7 +367,43 @@ Re-renders the buffer with or without comments based on the toggle state."
   "Major mode for viewing code reviews."
   (highlight-at-at-lines-blue)
   (highlight-review-comments)
-  (add-to-invisibility-spec '(codereview-hide . t)))
+  (add-to-invisibility-spec '(codereview-hide . t))
+  (add-hook 'post-command-hook #'crs--maybe-show-collapsed-comments nil t))
+
+(defun crs--maybe-show-collapsed-comments ()
+  "Show collapsed comments in minibuffer if cursor is on a line with compact indicator."
+  (when (and (eq major-mode 'my-code-review-mode)
+             (not crs--buffer-show-comments)
+             crs--buffer-comments)
+    (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+      (when (string-match "<C: [^>]+>" line)
+        ;; Extract file and position from context
+        (let* ((ctx (crs--get-comment-context))
+               (file (nth 3 ctx))
+               (pos (nth 4 ctx)))
+          (when (and file pos)
+            (let* ((comment-map (crs--index-comments crs--buffer-comments))
+                   (key (format "%s:%s" file pos))
+                   (comments (gethash key comment-map)))
+              (when comments
+                (crs--display-comments-in-minibuffer comments)))))))))
+
+(defun crs--display-comments-in-minibuffer (comments)
+  "Display COMMENTS in the minibuffer as a one-line summary."
+  (let* ((count (length comments))
+         (summary
+          (mapconcat
+           (lambda (c)
+             (let ((author (or (cdr (assq 'author c)) "local"))
+                   (body (or (cdr (assq 'body c)) "")))
+               ;; Truncate body to first line, max 60 chars
+               (let ((first-line (car (split-string body "\n"))))
+                 (if (> (length first-line) 60)
+                     (format "[%s]: %s..." author (substring first-line 0 57))
+                   (format "[%s]: %s" author first-line)))))
+           comments
+           " | ")))
+    (message "%d comment%s: %s" count (if (= count 1) "" "s") summary)))
 
 ;; Override evil-mode keybindings - define keys for normal and visual states
 (when (fboundp 'evil-define-key)
@@ -320,8 +419,11 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
+    "P" #'crs-get-single-plugin-output
     "H" #'crs-toggle-comments
+    "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for visual state
@@ -336,8 +438,11 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
     "rg" #'crs-sync-pr
+    "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
+    "P" #'crs-get-single-plugin-output
     "H" #'crs-toggle-comments
+    "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "q" #'quit-window)
   ;; Define keys for insert state
@@ -379,8 +484,7 @@ Re-renders the buffer with or without comments based on the toggle state."
                         header)))
       ;; Render root comment
       (push (format "    │ [%s]:" (or author "local")) lines)
-      (dolist (line (split-string (or (cdr (assq 'body root)) "") "\n"))
-        (push (format "    │   %s" line) lines))
+      (push (crs--make-html-placeholder (cdr (assq 'body root)) "    │   ") lines)
 
       ;; Render replies
       (dolist (reply replies)
@@ -388,8 +492,7 @@ Re-renders the buffer with or without comments based on the toggle state."
         (let ((r-author (cdr (assq 'author reply)))
               (r-id (cdr (assq 'id reply))))
           (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
-          (dolist (line (split-string (or (cdr (assq 'body reply)) "") "\n"))
-            (push (format "    │   %s" line) lines))))
+          (push (crs--make-html-placeholder (cdr (assq 'body reply)) "    │   ") lines)))
 
       (push "    └──────────────────────────────────" lines)
       (push "" lines)
@@ -521,8 +624,11 @@ SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact
 This must be called after delta-wash."
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "^diff --git a/\\(.*\\) b/.*$" nil t)
-      (let* ((filename (match-string 1))
+    (while (re-search-forward "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" nil t)
+      (let* ((file-a (match-string 1))
+             (file-b (match-string 2))
+             ;; Prefer the b/ side unless it's /dev/null (deleted file)
+             (filename (if (string= file-b "dev/null") file-a file-b))
              (start (match-beginning 0))
              (type "modified")
              (limit (save-excursion
@@ -531,16 +637,32 @@ This must be called after delta-wash."
                         (point-max)))))
 
         (save-excursion
-          (when (re-search-forward "^new file mode" limit t)
-            (setq type "new file"))
-          (goto-char start)
-          (when (re-search-forward "^deleted file mode" limit t)
-            (setq type "deleted")))
+          (cond
+           ((string= file-a "dev/null") (setq type "new file"))
+           ((string= file-b "dev/null") (setq type "deleted"))
+           (t
+            (goto-char start)
+            (if (re-search-forward "^new file mode" limit t)
+                (setq type "new file")
+              (goto-char start)
+              (if (re-search-forward "^deleted file mode" limit t)
+                  (setq type "deleted")
+                (goto-char start)
+                (when (re-search-forward "^@@ -0,0" limit t)
+                  (setq type "new file")))))))
 
         (let ((end-marker-pos
                (save-excursion
-                 (or (re-search-forward "^\\+\\+\\+ .*\n" limit t)
-                     (re-search-forward "^Binary files .*\n" limit t)))))
+                 (goto-char start)
+                 (cond
+                  ((re-search-forward "^\\+\\+\\+ .*\n" limit t) (point))
+                  ((re-search-forward "^Binary files .*\n" limit t) (point))
+                  ((re-search-forward "^@@ .*\n" limit t) (match-beginning 0))
+                  (t nil)))))
+
+          (when (and (not end-marker-pos)
+                     (or (string= type "new file") (string= type "deleted")))
+            (setq end-marker-pos limit))
 
           (if end-marker-pos
               (progn
@@ -555,10 +677,231 @@ This must be called after delta-wash."
 (defun crs--render-from-stored-data ()
   "Render the buffer content from stored diff, comments, and preamble.
 Uses `crs--buffer-show-comments' to determine whether to show full comments or compact indicators."
-  (let ((comment-map (crs--index-comments crs--buffer-comments)))
+  (let* ((comment-map (crs--index-comments crs--buffer-comments))
+         (preamble (or crs--buffer-preamble ""))
+         (feedback crs--buffer-review-feedback))
+    ;; Inject feedback into existing section if it exists
+    (if (and feedback (not (string-empty-p feedback)))
+        (if (string-match "^Your Review Feedback\n" preamble)
+            (let* ((start (match-end 0))
+                   (rest (substring preamble start))
+                   (next-section (string-match crs--section-header-regexp rest))
+                   (content (concat "──────────────────────────────────\n" feedback "\n\n")))
+              (if next-section
+                  (setq preamble (concat (substring preamble 0 start) content (substring rest next-section)))
+                (setq preamble (concat (substring preamble 0 start) content))))
+          ;; Fallback: if section not found (shouldn't happen with this server), append it
+          (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
     (concat
-     (or crs--buffer-preamble "")
+     preamble
      (crs--render-diff crs--buffer-diff comment-map crs--buffer-show-comments))))
+
+(defun crs--insert-comments-into-buffer (comments show-full-comments)
+  "Insert COMMENTS into the current buffer which contains the diff.
+SHOW-FULL-COMMENTS determines whether to show full content or indicators."
+  (let ((comment-map (crs--index-comments comments))
+        (insertions nil)
+        (current-file nil)
+        (position 0)
+        (first-hunk-seen nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let* ((line-start (point))
+               (line-end (line-end-position))
+               (line (buffer-substring-no-properties line-start line-end)))
+          (cond
+           ;; File Header - match simplified first as it's more specific if simplification happened
+           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+            (setq current-file (match-string 2 line))
+            (setq first-hunk-seen nil))
+
+           ;; Fallback to standard diff header
+           ((string-prefix-p "diff " line)
+            (setq current-file nil)
+            (setq first-hunk-seen nil))
+
+           ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+            (setq current-file (match-string 1 line)))
+
+           ;; Hunk Header
+           ((string-prefix-p "@@ " line)
+            (if (not first-hunk-seen)
+                (progn
+                  (setq position 0)
+                  (setq first-hunk-seen t)
+                  ;; File comments
+                  (when current-file
+                    (let ((file-comments (gethash (format "%s:" current-file) comment-map)))
+                      (when file-comments
+                        (if show-full-comments
+                            ;; Insert before line
+                            (push (cons line-start (crs--render-comment-tree file-comments)) insertions)
+                          ;; Compact: append to line
+                          (push (cons line-end (list 'append (crs--format-compact-comment-indicator file-comments))) insertions))))))
+              (setq position (1+ position))))
+
+           ;; Content Line
+           ((and first-hunk-seen
+                 (or (string-prefix-p "+" line)
+                     (string-prefix-p "-" line)
+                     (string-prefix-p " " line)))
+            (setq position (1+ position))
+            (let* ((key (when current-file (format "%s:%d" current-file position)))
+                   (line-comments (when key (gethash key comment-map))))
+              (when line-comments
+                (if show-full-comments
+                    ;; Insert after line
+                    (push (cons line-end (concat "\n" (string-trim-right (crs--render-comment-tree line-comments)))) insertions)
+                  ;; Compact: append
+                  (push (cons line-end (list 'append (crs--format-compact-comment-indicator line-comments))) insertions))))))
+          )
+        (forward-line 1)))
+
+    ;; Execute insertions (sorted by point descending)
+    (setq insertions (sort insertions (lambda (a b) (> (car a) (car b)))))
+
+    (dolist (ins insertions)
+      (goto-char (car ins))
+      (let ((content (cdr ins)))
+        (if (and (listp content) (eq (car content) 'append))
+            ;; Handle append with alignment
+            (let* ((indicator (cadr content))
+                   (current-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                   (new-line (crs--append-right-aligned current-line indicator 120)))
+              (delete-region (line-beginning-position) (line-end-position))
+              (insert new-line))
+          ;; Normal insert
+          (insert content))))))
+
+(defun crs--render-header-from-metadata (metadata)
+  "Render the PR header from METADATA alist."
+  (if (null metadata)
+      ""
+    (let ((number (cdr (assq 'number metadata)))
+          (title (cdr (assq 'title metadata)))
+          (author (cdr (assq 'author metadata)))
+          (state (cdr (assq 'state metadata)))
+          (url (cdr (assq 'url metadata)))
+          (base (cdr (assq 'base_ref metadata)))
+          (head (cdr (assq 'head_ref metadata)))
+          (milestone (cdr (assq 'milestone metadata)))
+          (labels (cdr (assq 'labels metadata))) ;; array
+          (draft (cdr (assq 'draft metadata)))
+          (assignees (cdr (assq 'assignees metadata))) ;; array
+          (reviewers (cdr (assq 'reviewers metadata))) ;; array
+          (teams (cdr (assq 'requested_teams metadata))) ;; array
+          (approved (cdr (assq 'approved_by metadata))) ;; array
+          (changes (cdr (assq 'changes_requested_by metadata))) ;; array
+          (commented (cdr (assq 'commented_by metadata))) ;; array
+          (ci-status (cdr (assq 'ci_status metadata)))
+          (ci-failures (cdr (assq 'ci_failures metadata))) ;; array
+          (body (cdr (assq 'body metadata)))
+          (sb ""))
+
+      (setq sb (concat sb (format "Title: #%s: %s\n" number title)))
+      (setq sb (concat sb (format "Author: \t@%s\n" author)))
+      (setq sb (concat sb (format "Title: \t%s\n" title)))
+      (setq sb (concat sb (format "Refs:  %s ... %s\n" base head)))
+      (setq sb (concat sb (format "URL:   %s\n" url)))
+      (setq sb (concat sb (format "State: \t%s\n" state)))
+      (setq sb (concat sb (format "Milestone: \t%s\n" (or milestone "No milestone"))))
+
+      (let ((labels-str (if (> (length labels) 0) (string-join (append labels nil) ", ") "None yet")))
+        (setq sb (concat sb (format "Labels: \t%s\n" labels-str))))
+
+      (setq sb (concat sb "Projects: \tNone yet\n"))
+      (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "true" "false"))))
+
+      (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
+        (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))
+
+      (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
+
+      (let* ((reviewers-list (append reviewers nil))
+             (teams-list (mapcar (lambda (t) (concat "team:" t)) (append teams nil)))
+             (all-reviewers (append reviewers-list teams-list))
+             (rev-str (string-join all-reviewers ", ")))
+        (setq sb (concat sb (format "Reviewers: \t%s\n" rev-str))))
+
+      (when (> (length approved) 0)
+        (setq sb (concat sb (format "Approved-By: \t%s\n" (string-join (append approved nil) ", ")))))
+      (when (> (length changes) 0)
+        (setq sb (concat sb (format "Changes-Requested-By: \t%s\n" (string-join (append changes nil) ", ")))))
+      (when (> (length commented) 0)
+        (setq sb (concat sb (format "Commented-By: \t%s\n" (string-join (append commented nil) ", ")))))
+
+      (if (and ci-status (not (string-empty-p ci-status)))
+          (progn
+            (setq sb (concat sb (format "CI Status: \t%s\n" ci-status)))
+            (when (> (length ci-failures) 0)
+              (dolist (fail (append ci-failures nil))
+                (setq sb (concat sb (format "  - %s\n" fail))))))
+        (setq sb (concat sb "CI Status: \tUnknown\n")))
+
+      ;; Description/Body (rendered as HTML)
+      (setq sb (concat sb "\nDescription\n"))
+      (setq sb (concat sb (crs--make-html-placeholder body) "\n"))
+
+      sb)))
+
+(defun crs--render-conversation-from-data (comments reviews)
+  "Render the conversation section from COMMENTS and REVIEWS."
+  (let ((items nil)
+        (sb "\nConversation\n"))
+    ;; 1. Collect Issue Comments (where path is empty)
+    (seq-do (lambda (c)
+              (let ((path (cdr (assq 'path c))))
+                (when (or (null path) (string-empty-p path))
+                  (push (list :type 'comment
+                              :time (cdr (assq 'created_at c))
+                              :author (cdr (assq 'author c))
+                              :body (cdr (assq 'body c)))
+                        items))))
+            comments)
+
+    ;; 2. Collect Reviews
+    (seq-do (lambda (r)
+              (let ((state (cdr (assq 'state r)))
+                    (body (cdr (assq 'body r))))
+                ;; Skip empty COMMENTED reviews?
+                (unless (and (string= state "COMMENTED") (string-empty-p (or body "")))
+                  (push (list :type 'review
+                              :time (cdr (assq 'submitted_at r))
+                              :author (cdr (assq 'user r))
+                              :state state
+                              :body body)
+                        items))))
+            reviews)
+
+    ;; 3. Sort by Time
+    (setq items (sort items (lambda (a b)
+                              (string< (plist-get a :time) (plist-get b :time)))))
+
+    ;; 4. Render
+    (if (null items)
+        (setq sb (concat sb "No conversation found.\n"))
+      (let ((first t))
+        (dolist (item items)
+          (unless first
+            (setq sb (concat sb "--------------------------------------------------------------------------------\n")))
+          (setq first nil)
+
+          (let ((author (plist-get item :author))
+                (time (plist-get item :time))
+                (type (plist-get item :type))
+                (body (or (plist-get item :body) "(No body)")))
+
+            (if (eq type 'review)
+                (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
+              (setq sb (concat sb (format "From: %s at %s\n" author time))))
+
+            (setq sb (concat sb (crs--make-html-placeholder body) "\n\n"))))))
+
+    ;; Add Files Changed header (placeholder or parsed?)
+    ;; For now just a blank line, maybe we can add a separator
+    (setq sb (concat sb "\n"))
+    sb))
 
 (defun crs--render-and-update (buffer content &optional target-line)
   "Render CONTENT (which can be a string, JSON-RPC result alist, or nil) into BUFFER.
@@ -569,6 +912,8 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Extract data before mode change (which kills local vars)
           (new-diff nil)
           (new-comments nil)
+          (new-metadata nil)
+          (new-reviews nil)
           (new-preamble nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
@@ -576,12 +921,17 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
-          (existing-preamble crs--buffer-preamble))
+          (existing-metadata crs--buffer-metadata)
+          (existing-reviews crs--buffer-reviews)
+          (existing-preamble crs--buffer-preamble)
+          (existing-review-feedback crs--buffer-review-feedback))
 
       ;; If content is a JSON result (alist), extract the components
       (when (and content (listp content) (not (stringp content)))
         (let* ((diff (cdr (assq 'diff content)))
                (comments (cdr (assq 'comments content)))
+               (metadata (cdr (assq 'metadata content)))
+               (reviews (cdr (assq 'reviews content)))
                (raw-content (cdr (assq 'content content)))
                (preamble (if raw-content
                              (if (string-match "Files changed (.*)\n\n" raw-content)
@@ -590,33 +940,79 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
                            "")))
           (setq new-diff diff)
           (setq new-comments comments)
+          (setq new-metadata metadata)
+          (setq new-reviews reviews)
           (setq new-preamble preamble)))
 
       ;; Temporarily set for rendering (before mode change wipes them)
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-metadata (or new-metadata existing-metadata))
+      (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-review-feedback existing-review-feedback)
 
       (erase-buffer)
 
       (cond
        ;; String content: insert directly
        ((stringp content)
-        (insert content))
+        (insert content)
+        (delta-wash)
+        (crs--simplify-diff-headers)
+        (my-code-review-mode))
+
        ;; nil or alist: render from stored data
        (t
-        (insert (crs--render-from-stored-data))))
+        ;; 1. Insert Diff
+        (insert (or crs--buffer-diff ""))
 
-      (delta-wash)
-      (crs--simplify-diff-headers)
+        ;; 2. Delta Wash
+        (delta-wash)
+
+        ;; 3. Simplify Headers
+        (crs--simplify-diff-headers)
+
+        ;; 4. Insert Comments
+        (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments)
+
+        ;; 5. Insert Preamble & Feedback at TOP
+        (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
+               (conversation (crs--render-conversation-from-data
+                              crs--buffer-comments
+                              crs--buffer-reviews))
+               (preamble (concat header "\n" conversation))
+               (feedback existing-review-feedback))
+
+          ;; Inject feedback into preamble (logic from crs--render-from-stored-data)
+          (if (and feedback (not (string-empty-p feedback)))
+              (if (string-match "^Your Review Feedback\n" preamble)
+                  (let* ((start (match-end 0))
+                         (rest (substring preamble start))
+                         (next-section (string-match crs--section-header-regexp rest))
+                         (content-str (concat "──────────────────────────────────\n" feedback "\n\n")))
+                    (if next-section
+                        (setq preamble (concat (substring preamble 0 start) content-str (substring rest next-section)))
+                      (setq preamble (concat (substring preamble 0 start) content-str))))
+                (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
+
+          (goto-char (point-min))
+          (insert preamble))
+
+        (my-code-review-mode)))
+
+      (crs--process-html-placeholders)
       (my-code-review-mode)
 
       ;; Re-set the buffer-local variables AFTER mode change
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-metadata (or new-metadata existing-metadata))
+      (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-review-feedback existing-review-feedback)
 
       (let ((final-pos (if target-line
                            (progn
@@ -717,10 +1113,16 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
   "The comments list for the current PR.")
+(defvar-local crs--buffer-metadata nil
+  "The PR metadata for the current PR.")
+(defvar-local crs--buffer-reviews nil
+  "The reviews list for the current PR.")
 (defvar-local crs--buffer-preamble nil
   "The preamble content (header + conversation) for the current PR.")
 (defvar-local crs--buffer-show-comments t
   "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
+(defvar-local crs--buffer-review-feedback nil
+  "The review feedback for the current PR.")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -807,6 +1209,12 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
 (defvar-local crs--plugin-number nil
   "PR number for plugin output.")
 
+(defvar-local crs--plugin-output-map nil
+  "Hash table mapping plugin names to their output data.")
+
+(defvar-local crs--plugin-name nil
+  "If non-nil, this buffer displays output only for this plugin.")
+
 (defun crs-refresh-plugin-output ()
   "Refresh the plugin output in the current buffer."
   (interactive)
@@ -814,7 +1222,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
     (error "Not in a plugin output buffer or missing PR context"))
   (let ((owner crs--plugin-owner)
         (repo crs--plugin-repo)
-        (number crs--plugin-number))
+        (number crs--plugin-number)
+        (target-plugin crs--plugin-name))
     (message "Refreshing plugin output for %s/%s #%d..." owner repo number)
     (crs--send-request
      "RPCHandler.GetPluginOutput"
@@ -827,6 +1236,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
          (with-current-buffer buffer
            (let ((inhibit-read-only t))
              (erase-buffer)
+             (setq crs--plugin-output-map (make-hash-table :test 'equal))
              (if (null output)
                  (insert "No plugin output available.\n")
                (dolist (plugin-entry (append output nil))
@@ -834,12 +1244,15 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
                         (data (cdr plugin-entry))
                         (res (cdr (assq 'result data)))
                         (status (cdr (assq 'status data))))
-                   (insert (format "# Plugin: %s (Status: %s)\n" name status))
-                   (insert "──────────────────────────────────\n")
-                   (insert (or res "No output."))
-                   (insert "\n\n"))))
+                   (puthash name data crs--plugin-output-map)
+                   (when (or (null target-plugin) (string= name target-plugin))
+                     (insert (format "# Plugin: %s (Status: %s)\n" name status))
+                     (insert "──────────────────────────────────\n")
+                     (insert (or res "No output."))
+                     (insert "\n\n")))))
              (goto-char (point-min))))
          (message "Plugin output refreshed."))))))
+
 
 (defun crs-quit-plugin-output ()
   "Quit the plugin output window and kill the buffer."
@@ -1093,15 +1506,20 @@ If not on a local comment, displays a warning message."
                  (crs--render-and-update review-buffer result))
                (message "Local comment deleted")))))))))
 
-(defun crs-submit-review (event body)
-  "Submit a review with EVENT and optional BODY.
-EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
+(defun crs-submit-review (event)
+  "Submit a review with EVENT.
+The body is taken from `crs--buffer-review-feedback`.
+If the body is empty, prompts the user."
   (interactive
-   (list (completing-read "Event: " '("APPROVE" "REQUEST_CHANGES" "COMMENT") nil t)
-         (read-string "Body: ")))
-  (let ((owner nil)
+   (list (completing-read "Event: " '("APPROVE" "REQUEST_CHANGES" "COMMENT") nil t)))
+  (let ((body crs--buffer-review-feedback)
+        (owner nil)
         (repo nil)
         (number nil))
+    (when (or (null body) (string-match-p "\\`[[:space:]\n]*\\'" body))
+      (unless (yes-or-no-p "Review feedback is empty. Continue anyway? ")
+        (user-error "Aborted")))
+
     (let ((info (crs--get-current-review-info)))
       (setq owner (nth 0 info)
             repo (nth 1 info)
@@ -1113,27 +1531,61 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                    (cons 'Repo repo)
                    (cons 'Number number)
                    (cons 'Event event)
-                   (cons 'Body body)))
+                   (cons 'Body (or body ""))))
      (lambda (result)
        (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
          (when review-buffer
-           (crs--render-and-update review-buffer result))
+           (with-current-buffer review-buffer
+             (setq crs--buffer-review-feedback nil)
+             (crs--render-and-update review-buffer result)))
          (message "Review submitted successfully!"))))))
 
-(defun crs-approve-review (body)
-  "Approve the review with optional BODY."
-  (interactive "sApprove Body: ")
-  (crs-submit-review "APPROVE" body))
+(defun crs-set-review-feedback ()
+  "Set the review feedback for the current PR."
+  (interactive)
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (buffer (get-buffer-create (format "*Review Feedback %s/%s #%d*" owner repo number)))
+         (current-feedback crs--buffer-review-feedback)
+         (original-review-buffer (current-buffer)))
+    (with-current-buffer buffer
+      (markdown-mode)
+      (erase-buffer)
+      (when current-feedback
+        (insert current-feedback))
+      (setq-local crs--comment-owner owner)
+      (setq-local crs--comment-repo repo)
+      (setq-local crs--comment-number number)
+      (local-set-key (kbd "C-c C-c")
+                     (lambda ()
+                       (interactive)
+                       (let ((feedback (buffer-string)))
+                         (with-current-buffer original-review-buffer
+                           (setq crs--buffer-review-feedback feedback)
+                           (crs--render-and-update (current-buffer) nil))
+                         (kill-buffer-and-window)
+                         (message "Review feedback set."))))
+      (local-set-key (kbd "C-c C-k") (lambda () (interactive) (kill-buffer-and-window) (message "Review feedback aborted."))))
+    (switch-to-buffer-other-window buffer)
+    (when (fboundp 'evil-insert-state)
+      (evil-insert-state))))
 
-(defun crs-comment-review (body)
-  "Comment on the review with optional BODY."
-  (interactive "sComment Body: ")
-  (crs-submit-review "COMMENT" body))
+(defun crs-approve-review ()
+  "Approve the review."
+  (interactive)
+  (crs-submit-review "APPROVE"))
 
-(defun crs-request-changes-review (body)
-  "Request changes on the review with optional BODY."
-  (interactive "sRequest Changes Body: ")
-  (crs-submit-review "REQUEST_CHANGES" body))
+(defun crs-comment-review ()
+  "Comment on the review."
+  (interactive)
+  (crs-submit-review "COMMENT"))
+
+(defun crs-request-changes-review ()
+  "Request changes on the review."
+  (interactive)
+  (crs-submit-review "REQUEST_CHANGES"))
 
 (defun crs-sync-pr ()
   "Sync the PR in the current buffer with the server."
@@ -1173,7 +1625,8 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                    (cons 'Number number)))
      (lambda (result)
        (let ((output (cdr (assq 'output result)))
-             (buffer (get-buffer-create (format "* Plugin Output %s/%s #%d *" owner repo number))))
+             (buffer (get-buffer-create (format "* Plugin Output %s/%s #%d *" owner repo number)))
+             (plugin-map (make-hash-table :test 'equal)))
          (with-current-buffer buffer
            (let ((inhibit-read-only t))
              (erase-buffer)
@@ -1184,18 +1637,114 @@ EVENT must be one of 'APPROVE', 'REQUEST_CHANGES', or 'COMMENT'."
                         (data (cdr plugin-entry))
                         (res (cdr (assq 'result data)))
                         (status (cdr (assq 'status data))))
+                   (puthash name data plugin-map)
                    (insert (format "# Plugin: %s (Status: %s)\n" name status))
                    (insert "──────────────────────────────────\n")
                    (insert (or res "No output."))
                    (insert "\n\n"))))
              (goto-char (point-min))
              (crs-plugin-output-mode)
+             (setq crs--plugin-output-map plugin-map)
              ;; Store PR context for refresh
              (setq crs--plugin-owner owner)
              (setq crs--plugin-repo repo)
              (setq crs--plugin-number number)))
          (pop-to-buffer buffer)
          (message "Plugin output loaded."))))))
+
+(defun crs-get-single-plugin-output (&optional plugin-name)
+  "Fetch and display output for a single plugin.
+If PLUGIN-NAME is nil, prompts the user to select one.
+Uses cached data from the general plugin output buffer if available."
+  (interactive)
+  (let ((owner crs--plugin-owner)
+        (repo crs--plugin-repo)
+        (number crs--plugin-number))
+    ;; If not in a buffer with plugin vars, try to extract from review buffer name
+    (unless (and owner repo number)
+      (let ((info (crs--get-current-review-info)))
+        (setq owner (nth 0 info)
+              repo (nth 1 info)
+              number (nth 2 info))))
+
+    (if (and (null plugin-name) (null crs-plugins))
+        (progn
+          (message "No plugins found. Refreshing list... please try again in a moment.")
+          (crs-list-plugins))
+      ;; Defensive: Ensure crs-plugins is a list of strings
+      (let* ((candidates (if (vectorp crs-plugins) (append crs-plugins nil) crs-plugins))
+             (candidates (mapcar (lambda (item)
+                                   (if (and (listp item) (assq 'Name item))
+                                       (cdr (assq 'Name item))
+                                     item))
+                                 candidates))
+             (plugin (or plugin-name
+                         (completing-read "Plugin: " candidates nil t)))
+             (general-buf-name (format "* Plugin Output %s/%s #%d *" owner repo number))
+             (general-buf (get-buffer general-buf-name))
+             (cached-map (when (and general-buf (buffer-live-p general-buf))
+                           (with-current-buffer general-buf
+                             crs--plugin-output-map)))
+             (cached-data (when cached-map (gethash plugin cached-map))))
+
+        (if cached-data
+            (let ((buffer (get-buffer-create (format "* Plugin Output: %s %s/%s #%d *" plugin owner repo number))))
+              (with-current-buffer buffer
+                (let ((inhibit-read-only t))
+                  (erase-buffer)
+                  (let* ((status (cdr (assq 'status cached-data)))
+                         (res (cdr (assq 'result cached-data))))
+                    (insert (format "# Plugin: %s (Status: %s)\n" plugin status))
+                    (insert "──────────────────────────────────\n")
+                    (insert (or res "No output."))
+                    (insert "\n\n"))
+                  (goto-char (point-min))
+                  (crs-plugin-output-mode)
+                  ;; Store context
+                  (setq crs--plugin-output-map cached-map)
+                  (setq crs--plugin-owner owner)
+                  (setq crs--plugin-repo repo)
+                  (setq crs--plugin-number number)
+                  (setq crs--plugin-name plugin)))
+              (pop-to-buffer buffer)
+              (message "Plugin output loaded from cache."))
+
+          (message "Fetching output for plugin %s..." plugin)
+          (crs--send-request
+           "RPCHandler.GetPluginOutput"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)))
+           (lambda (result)
+             (let ((output (cdr (assq 'output result)))
+                   (buffer (get-buffer-create (format "* Plugin Output: %s %s/%s #%d *" plugin owner repo number)))
+                   (plugin-map (make-hash-table :test 'equal)))
+               (with-current-buffer buffer
+                 (let ((inhibit-read-only t))
+                   (erase-buffer)
+                   (if (null output)
+                       (insert "No plugin output available.\n")
+                     (dolist (plugin-entry (append output nil))
+                       (let* ((name (symbol-name (car plugin-entry)))
+                              (data (cdr plugin-entry))
+                              (res (cdr (assq 'result data)))
+                              (status (cdr (assq 'status data))))
+                         (puthash name data plugin-map)
+                         (when (string= name plugin)
+                           (insert (format "# Plugin: %s (Status: %s)\n" name status))
+                           (insert "──────────────────────────────────\n")
+                           (insert (or res "No output."))
+                           (insert "\n\n")))))
+                   (goto-char (point-min))
+                   (crs-plugin-output-mode)
+                   (setq crs--plugin-output-map plugin-map)
+                   ;; Store PR context for refresh
+                   (setq crs--plugin-owner owner)
+                   (setq crs--plugin-repo repo)
+                   (setq crs--plugin-number number)
+                   (setq crs--plugin-name plugin)))
+               (pop-to-buffer buffer)
+               (message "Plugin output loaded.")))))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)
   "Switch to the project directory, fetch, and checkout the branch.
@@ -1223,6 +1772,8 @@ TODO: This doesn't match if the root branch has a special char in it."
 (defun crs-checkout-current-project ()
   (interactive)
   (crs--switch-and-fetch (projectile-project-name) (crs--get-ref-name)))
+
+(define-key evil-normal-state-map (kbd "SPC b r") 'crs-get-reviews)
 (provide 'crs-client)
 
 ;;; crs-client.el ends here

@@ -144,6 +144,13 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRReviews (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		reviews_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS CIStatus (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -245,6 +252,7 @@ func (db *DB) initSchema() error {
 		UNIQUE(owner, repo, pr_number, plugin_name)
 	);
 	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
+	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
 	`
 	_, err = db.conn.Exec(pluginResultsSchema)
 	if err != nil {
@@ -461,6 +469,28 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
 		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*Item
+	for rows.Next() {
+		var item Item
+		var archivedInt int
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt); err != nil {
+			return nil, err
+		}
+		item.Archived = archivedInt == 1
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+func (db *DB) GetAllItems() ([]*Item, error) {
+	rows, err := db.conn.Query(
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -797,6 +827,41 @@ func (item *Item) GetTags() ([]string, error) {
 // Transaction support
 func (db *DB) Begin() (*sql.Tx, error) {
 	return db.conn.Begin()
+}
+
+func (db *DB) GetPRReviews(prNumber int, repo string) (string, error) {
+	var reviewsJSON string
+	err := db.conn.QueryRow(
+		"SELECT reviews_json FROM PRReviews WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&reviewsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return reviewsJSON, nil
+}
+
+func (db *DB) UpsertPRReviews(prNumber int, repo, reviewsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRReviews (pr_number, repo, reviews_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			reviews_json = excluded.reviews_json`,
+		prNumber, repo, reviewsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRReviews(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRReviews WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
 }
 
 func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {

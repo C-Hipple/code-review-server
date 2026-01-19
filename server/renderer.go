@@ -77,6 +77,64 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	return content.String(), nil
 }
 
+func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+	sections, err := r.db.GetAllSections()
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Sort sections by ID to maintain order
+	sort.Slice(sections, func(i, j int) bool {
+		return sections[i].ID < sections[j].ID
+	})
+
+	// Fetch all items at once to avoid N+1 queries
+	allItems, err := r.db.GetAllItems()
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Group items by sectionID
+	itemsBySection := make(map[int64][]*database.Item)
+	for _, item := range allItems {
+		itemsBySection[item.SectionID] = append(itemsBySection[item.SectionID], item)
+	}
+
+	// Build the org file content and structured items
+	var content strings.Builder
+	var reviewItems []ReviewItem
+
+	for _, section := range sections {
+		// Get items for this section
+		items := itemsBySection[section.ID]
+
+		// Build section header
+		sectionHeader := r.buildSectionHeader(section, items)
+		content.WriteString(sectionHeader)
+		content.WriteString("\n")
+
+		// Build items
+		for _, item := range items {
+			// String representation
+			itemLines := r.buildItemLines(item, section.IndentLevel)
+			for _, line := range itemLines {
+				content.WriteString(line)
+				if !strings.HasSuffix(line, "\n") {
+					content.WriteString("\n")
+				}
+			}
+
+			// Structured representation
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName)
+			reviewItems = append(reviewItems, reviewItem)
+		}
+		// Add blank line between sections
+		content.WriteString("\n")
+	}
+
+	return content.String(), reviewItems, nil
+}
+
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
 	Section string `json:"section"`
@@ -201,7 +259,7 @@ func (r *OrgRenderer) buildSectionHeader(section *database.Section, items []*dat
 	}
 
 	indentStars := strings.Repeat("*", section.IndentLevel-1)
-	ratio := fmt.Sprintf("[%d/%d]", len(items), doneCount)
+	ratio := fmt.Sprintf("[%d/%d]", doneCount, len(items))
 
 	return fmt.Sprintf("%s %s %s %s", indentStars, status, section.SectionName, ratio)
 }
@@ -286,6 +344,15 @@ type CommentJSON struct {
 	Outdated  bool      `json:"outdated"`
 }
 
+type ReviewJSON struct {
+	ID          int64     `json:"id"`
+	User        string    `json:"user"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	HTMLURL     string    `json:"html_url"`
+}
+
 type PRMetadata struct {
 	Number             int      `json:"number"`
 	Title              string   `json:"title"`
@@ -304,7 +371,7 @@ type PRMetadata struct {
 	Draft              bool     `json:"draft"`
 	CIStatus           string   `json:"ci_status"`
 	CIFailures         []string `json:"ci_failures"`
-	Description        string   `json:"description"`
+	Body               string   `json:"body"`
 	URL                string   `json:"url"`
 }
 
@@ -312,6 +379,7 @@ type PRDetails struct {
 	Metadata PRMetadata    `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
 // GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
@@ -523,14 +591,14 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			// Fetch actual reviews to see who has approved/commented/etc.
-			reviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+			ghReviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
 			approvedBy := []string{}
 			changesRequestedBy := []string{}
 			commentedBy := []string{}
 
 			// Map to keep track of the latest review state for each user
 			latestReviewState := make(map[string]string)
-			for _, review := range reviews {
+			for _, review := range ghReviews {
 				if review.User != nil && review.State != nil {
 					latestReviewState[review.User.GetLogin()] = review.GetState()
 				}
@@ -545,6 +613,27 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				case "COMMENTED":
 					commentedBy = append(commentedBy, user)
 				}
+			}
+
+			// Capture Reviews for display
+			var formattedReviews []ReviewJSON
+			for _, r := range ghReviews {
+				var submittedAt time.Time
+				if r.SubmittedAt != nil {
+					submittedAt = *r.SubmittedAt
+				}
+				formattedReviews = append(formattedReviews, ReviewJSON{
+					ID:          r.GetID(),
+					User:        r.User.GetLogin(),
+					Body:        r.GetBody(),
+					State:       r.GetState(),
+					SubmittedAt: submittedAt,
+					HTMLURL:     r.GetHTMLURL(),
+				})
+			}
+			// Cache Reviews
+			if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
+				config.C.DB.UpsertPRReviews(number, repo, string(reviewsJSON))
 			}
 
 			// Fetch CI Status
@@ -616,7 +705,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				Draft:              pr.GetDraft(),
 				CIStatus:           ciStatus,
 				CIFailures:         ciFailures,
-				Description:        pr.GetBody(),
+				Body:               pr.GetBody(),
 				URL:                pr.GetHTMLURL(),
 			}
 			if pr.Milestone != nil {
@@ -704,10 +793,42 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		})
 	}
 
+	// 5. Load Reviews from DB
+	var reviews []ReviewJSON
+	cachedReviewsJSON, err := config.C.DB.GetPRReviews(number, repo)
+	if err == nil && cachedReviewsJSON != "" {
+		json.Unmarshal([]byte(cachedReviewsJSON), &reviews)
+	}
+
+	// If not in DB, fetch fresh
+	if reviews == nil {
+		ghReviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+		var formattedReviews []ReviewJSON
+		for _, r := range ghReviews {
+			var submittedAt time.Time
+			if r.SubmittedAt != nil {
+				submittedAt = *r.SubmittedAt
+			}
+			formattedReviews = append(formattedReviews, ReviewJSON{
+				ID:          r.GetID(),
+				User:        r.User.GetLogin(),
+				Body:        r.GetBody(),
+				State:       r.GetState(),
+				SubmittedAt: submittedAt,
+				HTMLURL:     r.GetHTMLURL(),
+			})
+		}
+		reviews = formattedReviews
+		if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
+			config.C.DB.UpsertPRReviews(number, repo, string(reviewsJSON))
+		}
+	}
+
 	return &PRDetails{
 		Metadata: metadata,
 		Diff:     formattedDiff,
 		Comments: commentJSONs,
+		Reviews:  reviews,
 	}, nil
 }
 
@@ -926,20 +1047,76 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool) (s
 
 	// Conversation
 	sb.WriteString("Conversation\n")
-	if len(issueComments) == 0 {
+
+	// Combine Issue Comments and Reviews for Conversation
+	type conversationItem struct {
+		Time   time.Time
+		Author string
+		Body   string
+		Type   string // "Comment" or "Review"
+		State  string // For reviews
+	}
+	var convItems []conversationItem
+
+	for _, c := range issueComments {
+		t := time.Time{}
+		if c.CreatedAt != nil {
+			t = *c.CreatedAt
+		}
+		convItems = append(convItems, conversationItem{
+			Time:   t,
+			Author: c.User.GetLogin(),
+			Body:   c.GetBody(),
+			Type:   "Comment",
+		})
+	}
+
+	for _, r := range reviews {
+		// Skip empty commented reviews as they are usually just pending or noise
+		if r.GetState() == "COMMENTED" && r.GetBody() == "" {
+			continue
+		}
+
+		t := time.Time{}
+		if r.SubmittedAt != nil {
+			t = *r.SubmittedAt
+		}
+
+		convItems = append(convItems, conversationItem{
+			Time:   t,
+			Author: r.User.GetLogin(),
+			Body:   r.GetBody(),
+			Type:   "Review",
+			State:  r.GetState(),
+		})
+	}
+
+	// Sort by time
+	sort.Slice(convItems, func(i, j int) bool {
+		return convItems[i].Time.Before(convItems[j].Time)
+	})
+
+	if len(convItems) == 0 {
 		sb.WriteString("No conversation found.\n")
 	} else {
-		for i, c := range issueComments {
+		for i, item := range convItems {
 			if i > 0 {
 				sb.WriteString("--------------------------------------------------------------------------------\n")
 			}
-			dateStr := ""
-			if c.CreatedAt != nil {
-				dateStr = c.CreatedAt.Format(time.DateTime)
+			dateStr := item.Time.Format(time.DateTime)
+
+			header := fmt.Sprintf("From: %s at %s", item.Author, dateStr)
+			if item.Type == "Review" {
+				header += fmt.Sprintf(" [%s]", item.State)
 			}
-			sb.WriteString(fmt.Sprintf("From: %s at %s\n", c.User.GetLogin(), dateStr))
-			sb.WriteString(escapeBodyString(c.GetBody()))
-			sb.WriteString("\n\n")
+			sb.WriteString(header + "\n")
+
+			if item.Body != "" {
+				sb.WriteString(escapeBodyString(item.Body))
+				sb.WriteString("\n\n")
+			} else {
+				sb.WriteString("(No body)\n\n")
+			}
 		}
 	}
 	sb.WriteString("\n")

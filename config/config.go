@@ -45,6 +45,7 @@ type Config struct {
 	SleepDuration  time.Duration
 	JiraDomain     string
 	GithubUsername string
+	RepoLocation   string
 	Plugins        []Plugin
 	DB             *database.DB
 }
@@ -60,6 +61,7 @@ func Initialize() error {
 		SleepDuration  int64
 		Workflows      []RawWorkflow
 		GithubUsername string
+		RepoLocation   string
 		Plugins        []Plugin
 	}
 	home_dir, err := os.UserHomeDir()
@@ -76,10 +78,23 @@ func Initialize() error {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	pluginNames := make(map[string]bool)
+	for _, p := range intermediate_config.Plugins {
+		if pluginNames[p.Name] {
+			return fmt.Errorf("duplicate plugin name found: %s", p.Name)
+		}
+		pluginNames[p.Name] = true
+	}
+
 	for i := range intermediate_config.Workflows {
 		if intermediate_config.Workflows[i].GithubUsername == "" {
 			intermediate_config.Workflows[i].GithubUsername = intermediate_config.GithubUsername
 		}
+	}
+
+	repoLocation := intermediate_config.RepoLocation
+	if repoLocation == "" {
+		repoLocation = "~/"
 	}
 
 	parsed_sleep_duration := time.Duration(10) * time.Minute
@@ -106,6 +121,7 @@ func Initialize() error {
 		SleepDuration:  parsed_sleep_duration,
 		JiraDomain:     intermediate_config.JiraDomain,
 		GithubUsername: intermediate_config.GithubUsername,
+		RepoLocation:   repoLocation,
 		Plugins:        intermediate_config.Plugins,
 		DB:             db,
 	}

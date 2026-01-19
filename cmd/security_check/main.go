@@ -46,7 +46,7 @@ type PRMetadata struct {
 	Draft       bool     `json:"draft"`
 	CIStatus    string   `json:"ci_status"`
 	CIFailures  []string `json:"ci_failures"`
-	Description string   `json:"description"`
+	Body        string   `json:"body"`
 	URL         string   `json:"url"`
 }
 
@@ -58,8 +58,8 @@ func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, e
 	if metadata.Title != "" {
 		contextInfo += fmt.Sprintf("PR Title: %s\n", metadata.Title)
 	}
-	if metadata.Description != "" {
-		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Description)
+	if metadata.Body != "" {
+		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Body)
 	}
 
 	prompt := fmt.Sprintf(`Analyze the following PR diff for potential security issues, specifically focusing on endpoints.

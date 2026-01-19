@@ -1,5 +1,6 @@
 (crs-start-server)
 (crs-restart-server)
+(crs-kill-reviews-and-restart)
 (crs-shutdown-server)
 (crs-get-review "C-Hipple" "gtdbot" 9)
 (crs-get-review "C-Hipple" "gtdbot" 11)
@@ -22,3 +23,11 @@ https://github.com/C-Hipple/diff-lsp/pull/5
         (line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
         )
     (message line-content)))
+
+(defun crs-kill-reviews-and-restart ()
+  "Close all open review buffers and restart the server."
+  (interactive)
+  (dolist (buffer (buffer-list))
+    (when (string-match-p "^\\* Review" (buffer-name buffer))
+      (kill-buffer buffer)))
+  (crs-restart-server))

@@ -78,6 +78,14 @@ func Initialize() error {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	pluginNames := make(map[string]bool)
+	for _, p := range intermediate_config.Plugins {
+		if pluginNames[p.Name] {
+			return fmt.Errorf("duplicate plugin name found: %s", p.Name)
+		}
+		pluginNames[p.Name] = true
+	}
+
 	for i := range intermediate_config.Workflows {
 		if intermediate_config.Workflows[i].GithubUsername == "" {
 			intermediate_config.Workflows[i].GithubUsername = intermediate_config.GithubUsername

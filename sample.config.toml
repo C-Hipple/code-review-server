@@ -1,0 +1,43 @@
+# Code Review Server Sample Configuration
+# Copy this to ~/.config/codereviewserver.toml
+
+# List of repositories to monitor
+# Currently these are all matched to the workflow owner.
+Repos = ["go-github", "go-toml"]
+
+# General Settings
+JiraDomain = "your-domain.atlassian.net"
+SleepDuration = 10 # Time to wait between updates (in minutes)
+GithubUsername = "your-github-username"
+RepoLocation = "~/" # Base directory where repos are cloned
+
+# Workflows define how PRs are gathered and displayed
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "My Open PRs"
+Filters = ["FilterNotDraft"]
+SectionTitle = "My Pull Requests"
+IncludeDiff = true
+
+[[Workflows]]
+WorkflowType = "SingleRepoSyncReviewRequestsWorkflow"
+Name = "Team Reviews"
+Owner = "my-org"
+Repo = "main-repo"
+Teams = ["my-team", "my-other-team"]
+SectionTitle = "Needs My Team's Review"
+
+# Plugins allow extending the server with custom checks
+[[Plugins]]
+Name = "Security Check"
+Command = "security_check"  # Discover able on path with go install ./...
+IncludeDiff = true
+IncludeHeaders = true
+IncludeComments = false
+
+[[Plugins]]
+Name = "Summarize"
+Command = "summarize_diff"
+IncludeDiff = true
+IncludeHeaders = true
+IncludeComments = true

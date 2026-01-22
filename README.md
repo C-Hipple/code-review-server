@@ -1,22 +1,68 @@
-# codereverserver
+# code-review-server
 
-codereverserver is a service which runs highly configurable workflows to load github reviews which your are interested in locally to org-files.
+code-review-server is a service which runs highly configurable workflows to load code reviews which your are interested into easily managed customizable interfaces.
+
+As the name implies, this repo is for a backend server service, which you'll need a client to attach to.
+
+It ships with a web client and an emacs client, but you can easily build your own using the docs from review_protocol.md
+
+The web client can be found in `bun_client`
+the emacs client is in client.el
+
+## Quickstart
+
+1. Clone the repository
+
+2. Configure your toml config per guidelines below && setup your environment variables
+```bash
+export GTDBOT_GITHUB_TOKEN="Github Token"  # Required.
+export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
+```
+
+3. compile the go server with `go install ./...`
+
+You need to do `go install` so that the server is installed in system PATH and that clients can find it.  Clients are responsibile for starting the server process (mirroring the implementation of LSPs)
+
+Doing `./...` ensures that the server binary and the included plugins are installed.
+
+### For the web client (using bun)
+
+The web client is packaged with bun, and has a bun backend with a react frontend.  If you build and run the bun backend, you'll get a working webserver on localhost:3000 which lists all of your PRs.  From there you can 
+
+4. `cd` to `bun_client`
+5. `bun install && bun run build`
+6. `./start-server`
+
+### For emacs client
+
+4. open `client.el`  && evaluate the buffer
+5. run commands
+
+```elisp
+(crs-start-server) ;; to start the processing
+(crs-get-reviews)  ;; Load your required reviews into an ephermeral org-mode buffer
+
+;; To start a review
+(crs-start-review-at-point)  ;; when your cursor is on a github URL 
+
+
+(crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
+```
+
+Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
 
 ## Installation
 
-Build from source, it's go, just do it.
-Binaries not provided.
-
 ```bash
 git clone git@github.com/C-Hipple/gtdbot
-cd codereverserver
+cd code-review-server
 go install
 ```
 
 
 ## Configuration
 
-codereverserver works from a toml config expected at the path `~/config/gtdbot.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
+code-review-server works from a toml config expected at the path `~/config/gtdbot.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
 
 
 ```bash
@@ -185,13 +231,13 @@ You can configure a release check command which is run when PRs are added to the
 example. If we have a program on our PATH variable named release-check, you should call it like this:
 
 ```
-$ release-check C-Hipple codereverserver abcdef
+$ release-check C-Hipple code-review-server abcdef
 released
 
-$ release-check C-Hipple codereverserver hijklm
+$ release-check C-Hipple code-review-server hijklm
 release-client
 
-$ release-check C-Hipple codereverserver nopqrs
+$ release-check C-Hipple code-review-server nopqrs
 merged
 ```
 
@@ -199,9 +245,14 @@ That string will then be put into the title line of the PR via the org-serialize
 
 ## Plugins
 
+Plugins are external projects which are expected to be discoverable on your `$PATH`, and are called per PR.
 You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
 
+For full plugin development, checkout the the full [docs](https://code-review-server.readthedocs.io/en/latest/)
+You can also check the plugin example_plugin contained in this repo to understand the interface of building your own plugin.  You can do it in any language you'd like.
+
 Add plugins to your `codereviewserver.toml` using `[[Plugins]]` tables:
+
 
 ```toml
 [[Plugins]]
@@ -219,12 +270,13 @@ IncludeHeaders = true
 IncludeComments = false
 ```
 
-### Official Plugins
+### Included Plugins
 
-- **Summarize Diff**: Uses Gemini 2.0 Flash to provide a terse bulleted summary of the changes in a PR.
+- **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
+
 
 ## Emacs integration
 
@@ -235,7 +287,7 @@ This project ships with `client.el` for running and configuring this in emacs se
 #### Spacemacs
 ```elisp
    ;; in dotspacemacs-additional-packages
-   (codereverserver :location (recipe
+   (code-review-server :location (recipe
                       :fetcher github
                       :repo "C-Hipple/gtdbot"
                       :files ("*.el")))
@@ -249,15 +301,3 @@ You'll likely want to bind run-gtdbot-oneoff and/or run-gtdbot-service.
 By default this package sets (if you use evil mode) `,r l` and `, r s` for those two commands.
 
 If you don't use evil mode, you'll have to pick your own keybinds.
-
-In org-agenda mode, this package adds a new command "R" which allows for a quick review (filtered by day/week/month/sprint) of completed items.
-
-## Org-mode Review Notes
-
-The default value for the files searched by the review functionality is:
-
-```elisp
-(setq gtdbot-org-agenda-files '("~/gtd/inbox.org" "~/gtd/gtd.org" "~/gtd/notes.org" "~/gtd/next_actions.org" "~/gtd/reviews.org"))
-```
-
-You can set this variable to wherever you keep your org files

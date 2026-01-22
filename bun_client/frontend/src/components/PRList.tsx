@@ -207,34 +207,6 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
     return (
         <div className="pr-list">
             <Card padding="lg" style={{ marginBottom: '20px' }}>
-                <h2 style={{ marginTop: 0, fontSize: '18px' }}>Open Review Manually</h2>
-                <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                    <Input
-                        label="Owner"
-                        type="text"
-                        value={owner}
-                        onChange={e => setOwner(e.target.value)}
-                        style={{ width: '150px' }}
-                    />
-                    <Input
-                        label="Repo"
-                        type="text"
-                        value={repo}
-                        onChange={e => setRepo(e.target.value)}
-                        style={{ width: '150px' }}
-                    />
-                    <Input
-                        label="PR #"
-                        type="number"
-                        value={prNumber}
-                        onChange={e => setPrNumber(e.target.value)}
-                        style={{ width: '150px' }}
-                    />
-                    <Button type="submit">Go</Button>
-                </form>
-            </Card>
-
-            <Card padding="lg">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <h2 style={{ margin: 0, fontSize: '18px' }}>Your Reviews</h2>
@@ -416,9 +388,18 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                                         {item.number > 0 && (
                                                             <div style={{ display: 'flex', gap: '12px', marginLeft: '15px' }}>
                                                                 <Button
+                                                                    onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank'); }}
+                                                                    variant="secondary"
+                                                                    size="sm"
+                                                                    style={{ width: '160px' }}
+                                                                >
+                                                                    Review on GitHub
+                                                                </Button>
+                                                                <Button
                                                                     onClick={(e) => { e.stopPropagation(); onOpenPluginOutput(item.owner, item.repo, item.number); }}
                                                                     variant="ghost"
                                                                     size="sm"
+                                                                    style={{ width: '80px' }}
                                                                 >
                                                                     Plugins
                                                                 </Button>
@@ -440,6 +421,34 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                         })}
                     </div>
                 )}
+            </Card>
+
+            <Card padding="lg">
+                <h2 style={{ marginTop: 0, fontSize: '18px' }}>Open Review Manually</h2>
+                <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <Input
+                        label="Owner"
+                        type="text"
+                        value={owner}
+                        onChange={e => setOwner(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Input
+                        label="Repo"
+                        type="text"
+                        value={repo}
+                        onChange={e => setRepo(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Input
+                        label="PR #"
+                        type="number"
+                        value={prNumber}
+                        onChange={e => setPrNumber(e.target.value)}
+                        style={{ width: '150px' }}
+                    />
+                    <Button type="submit">Go</Button>
+                </form>
             </Card>
         </div>
     );

@@ -1765,7 +1765,7 @@ TODO: This doesn't match if the root branch has a special char in it."
   (save-excursion
     (goto-char (point-min))
     (let ((found-ref ""))
-      (when (re-search-forward "Refs:\\s+\\([^[:space:]]+\\)\\s+\\.\\.\\.\\s+\\(.+\\)$" nil t)
+      (when (re-search-forward "^Refs:\\s+\\([^[:space:]]+\\)\\s+\\.\\.\\.\\s+\\(.+\\)$" nil t)
         (setq found-ref (match-string 2)))
       found-ref)))
 

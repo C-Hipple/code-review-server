@@ -312,7 +312,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 	changes := []FileChanges{}
 
 	for _, pr := range prs {
-		pr_strings = append(pr_strings, fmt.Sprintf("%s-%v", *pr.Head.Repo.Name, pr.GetNumber()))
+		pr_strings = append(pr_strings, fmt.Sprintf("%s-%v", pr.Base.Repo.GetFullName(), pr.GetNumber()))
 		seen_prs = append(seen_prs, pr)
 		changes = append(changes, SyncTODOToSectionDB(*doc, pr, *section, includeDiff))
 	}

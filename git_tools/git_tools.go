@@ -18,7 +18,7 @@ type PullRequest interface {
 
 type PRFilter func([]*github.PullRequest) []*github.PullRequest
 
-func GetPRs(client *github.Client, state string, owner string, repo string) []*github.PullRequest {
+func GetPRs(client *github.Client, state string, owner string, repo string) ([]*github.PullRequest, error) {
 	per_page := 100
 	options := github.PullRequestListOptions{State: state, ListOptions: github.ListOptions{PerPage: per_page, Page: 1}}
 	var prs []*github.PullRequest
@@ -32,7 +32,7 @@ func GetPRs(client *github.Client, state string, owner string, repo string) []*g
 		new_prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &options)
 		if err != nil {
 			slog.Error("Error listing PRs", "error", err)
-			break
+			return nil, err
 		}
 		prs = append(prs, new_prs...)
 		if len(new_prs) != per_page || i >= max_additional_calls {
@@ -41,33 +41,37 @@ func GetPRs(client *github.Client, state string, owner string, repo string) []*g
 		options.Page += 1
 		i = i + 1
 	}
-	return prs
+	return prs, nil
 }
 
-func GetManyRepoPRs(client *github.Client, state string, owner string, repos []string) []*github.PullRequest {
+func GetManyRepoPRs(client *github.Client, state string, owner string, repos []string) ([]*github.PullRequest, error) {
 	var prs []*github.PullRequest
 	for _, repo := range repos {
-		repo_prs := GetPRs(
+		repo_prs, err := GetPRs(
 			client,
 			state,
 			owner,
 			repo,
 		)
+		if err != nil {
+			return nil, err
+		}
 		prs = append(prs, repo_prs...)
 	}
-	return prs
+	return prs, nil
 }
 
-func GetSpecificPRs(client *github.Client, owner string, repo string, pr_numbers []int) []*github.PullRequest {
+func GetSpecificPRs(client *github.Client, owner string, repo string, pr_numbers []int) ([]*github.PullRequest, error) {
 	var prs []*github.PullRequest
 	for _, number := range pr_numbers {
 		pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
 		if err != nil {
 			slog.Error("Error Getting PR", "owner", owner, "repo", repo, "number", number, "error", err)
+			return nil, err
 		}
 		prs = append(prs, pr)
 	}
-	return prs
+	return prs, nil
 }
 
 func GetPRDiff(client *github.Client, owner string, repo string, pr_number int) string {

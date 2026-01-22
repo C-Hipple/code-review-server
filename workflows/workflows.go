@@ -64,12 +64,16 @@ func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgSectionName() string {
 }
 
 func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-	prs := git_tools.GetPRs(
+	prs, err := git_tools.GetPRs(
 		git_tools.GetGithubClient(),
 		"open",
 		w.Owner,
 		w.Repo,
 	)
+	if err != nil {
+		log.Error("Error getting PRs", "error", err)
+		return RunResult{}, err
+	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
@@ -101,7 +105,11 @@ type SyncReviewRequestsWorkflow struct {
 
 func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
-	prs := git_tools.GetManyRepoPRs(client, "open", w.Owner, w.Repos)
+	prs, err := git_tools.GetManyRepoPRs(client, "open", w.Owner, w.Repos)
+	if err != nil {
+		log.Error("Error getting PRs", "error", err)
+		return RunResult{}, err
+	}
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
 	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
@@ -154,7 +162,11 @@ func (w ListMyPRsWorkflow) GetOrgSectionName() string {
 
 func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
-	prs := git_tools.GetManyRepoPRs(client, w.PRState, w.Owner, w.Repos)
+	prs, err := git_tools.GetManyRepoPRs(client, w.PRState, w.Owner, w.Repos)
+	if err != nil {
+		log.Error("Error getting PRs", "error", err)
+		return RunResult{}, err
+	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
@@ -205,7 +217,11 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_chan
 	}
 	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
 
-	prs := git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
+	prs, err := git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
+	if err != nil {
+		log.Error("Error getting specific PRs", "error", err)
+		return RunResult{}, err
+	}
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
 	return result, nil
 }

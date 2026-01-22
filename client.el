@@ -178,7 +178,11 @@ Useful after recompiling the Go server binary."
               (result (cdr (assq 'result response)))
               (error (cdr (assq 'error response))))
           (if error
-              (message "JSON-RPC Error: %s" (if (stringp error) error (cdr (assq 'message error))))
+              (let ((callback (gethash id crs--pending-requests)))
+                (message "JSON-RPC Error: %s" (if (stringp error) error (cdr (assq 'message error))))
+                (when callback
+                  (remhash id crs--pending-requests)
+                  (funcall callback `((error . ,error)))))
             (let ((callback (gethash id crs--pending-requests)))
               (when callback
                 (remhash id crs--pending-requests)
@@ -1044,13 +1048,21 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
      (let* ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number)))
-            (project-path (expand-file-name (concat "~/" repo))))
+            (project-path (expand-file-name (concat "~/" repo)))
+            (error-info (cdr (assq 'error result))))
        (with-current-buffer buffer
          (if (file-directory-p project-path)
              (cd project-path)
            (message "Directory not found: %s" project-path)))
-       ;; Pass the whole result to crs--render-and-update
-       (crs--render-and-update buffer result)
+       (if error-info
+           (with-current-buffer buffer
+             (let ((inhibit-read-only t))
+               (erase-buffer)
+               (insert (format "Error loading review: %s"
+                               (if (stringp error-info) error-info (cdr (assq 'message error-info)))))
+               (my-code-review-mode)))
+         ;; Pass the whole result to crs--render-and-update
+         (crs--render-and-update buffer result))
        (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
 
@@ -1150,11 +1162,14 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
                          (cons 'ID editing-id)
                          (cons 'Body body)))
            (lambda (result)
-             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-               (when review-buffer
-                 (crs--render-and-update review-buffer result original-line))
-               (message "Comment updated successfully")
-               (kill-buffer-and-window))))
+             (let ((err (cdr (assq 'error result))))
+               (if err
+                   (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
+                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                   (when review-buffer
+                     (crs--render-and-update review-buffer result original-line))
+                   (message "Comment updated successfully")
+                   (kill-buffer-and-window))))))
         ;; Adding a new comment
         (crs--send-request
          "RPCHandler.AddComment"
@@ -1166,11 +1181,14 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
                        (cons 'ReplyToID reply-to-id)
                        (cons 'Body body)))
          (lambda (result)
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-             (when review-buffer
-               (crs--render-and-update review-buffer result original-line))
-             (message "Comment added successfully")
-             (kill-buffer-and-window))))))))
+           (let ((err (cdr (assq 'error result))))
+             (if err
+                 (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
+               (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (when review-buffer
+                   (crs--render-and-update review-buffer result original-line))
+                 (message "Comment added successfully")
+                 (kill-buffer-and-window))))))))))
 
 (defun crs-abort-comment ()
   "Abort the comment in the current buffer."
@@ -1501,10 +1519,13 @@ If not on a local comment, displays a warning message."
                          (cons 'Number number)
                          (cons 'ID id)))
            (lambda (result)
-             (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-               (when review-buffer
-                 (crs--render-and-update review-buffer result))
-               (message "Local comment deleted")))))))))
+             (let ((err (cdr (assq 'error result))))
+               (if err
+                   (message "Error deleting comment: %s" (if (stringp err) err (cdr (assq 'message err))))
+                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                   (when review-buffer
+                     (crs--render-and-update review-buffer result))
+                   (message "Local comment deleted")))))))))))
 
 (defun crs-submit-review (event)
   "Submit a review with EVENT.
@@ -1533,12 +1554,15 @@ If the body is empty, prompts the user."
                    (cons 'Event event)
                    (cons 'Body (or body ""))))
      (lambda (result)
-       (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-         (when review-buffer
-           (with-current-buffer review-buffer
-             (setq crs--buffer-review-feedback nil)
-             (crs--render-and-update review-buffer result)))
-         (message "Review submitted successfully!"))))))
+       (let ((err (cdr (assq 'error result))))
+         (if err
+             (message "Error submitting review: %s" (if (stringp err) err (cdr (assq 'message err))))
+           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+             (when review-buffer
+               (with-current-buffer review-buffer
+                 (setq crs--buffer-review-feedback nil)
+                 (crs--render-and-update review-buffer result)))
+             (message "Review submitted successfully!"))))))))
 
 (defun crs-set-review-feedback ()
   "Set the review feedback for the current PR."
@@ -1605,10 +1629,13 @@ If the body is empty, prompts the user."
                    (cons 'Repo repo)
                    (cons 'Number number)))
      (lambda (result)
-       (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
-         (when review-buffer
-           (crs--render-and-update review-buffer result))
-         (message "Review synced successfully!"))))))
+       (let ((err (cdr (assq 'error result))))
+         (if err
+             (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
+           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+             (when review-buffer
+               (crs--render-and-update review-buffer result))
+             (message "Review synced successfully!"))))))))
 
 (defun crs-get-plugin-output ()
   "Fetch and display plugin output for the current PR."

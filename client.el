@@ -364,6 +364,7 @@ Re-renders the buffer with or without comments based on the toggle state."
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
+  "O" #'crs-show-outdated-comments
   "q" #'quit-window
   )
 
@@ -429,6 +430,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
+    "O" #'crs-show-outdated-comments
     "q" #'quit-window)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -448,6 +450,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
+    "O" #'crs-show-outdated-comments
     "q" #'quit-window)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -849,10 +852,12 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
       sb)))
 
-(defun crs--render-conversation-from-data (comments reviews)
-  "Render the conversation section from COMMENTS and REVIEWS."
+(defun crs--render-conversation-from-data (comments reviews &optional outdated-comments)
+  "Render the conversation section from COMMENTS, REVIEWS and optionally OUTDATED-COMMENTS."
   (let ((items nil)
         (sb "\nConversation\n"))
+    (when (and outdated-comments (> (length outdated-comments) 0))
+      (setq sb (concat sb (format "PR contains %d outdated comments\n" (length outdated-comments)))))
     ;; 1. Collect Issue Comments (where path is empty)
     (seq-do (lambda (c)
               (let ((path (cdr (assq 'path c))))
@@ -916,6 +921,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Extract data before mode change (which kills local vars)
           (new-diff nil)
           (new-comments nil)
+          (new-outdated-comments nil)
           (new-metadata nil)
           (new-reviews nil)
           (new-preamble nil)
@@ -925,6 +931,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
+          (existing-outdated-comments crs--buffer-outdated-comments)
           (existing-metadata crs--buffer-metadata)
           (existing-reviews crs--buffer-reviews)
           (existing-preamble crs--buffer-preamble)
@@ -934,6 +941,10 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (when (and content (listp content) (not (stringp content)))
         (let* ((diff (cdr (assq 'diff content)))
                (comments (cdr (assq 'comments content)))
+               (outdated-comments (or (cdr (assq 'outdated_comments content))
+                                      (cdr (assq 'outdated-comments content))
+                                      (cdr (assoc "outdated_comments" content))
+                                      (cdr (assoc "outdated-comments" content))))
                (metadata (cdr (assq 'metadata content)))
                (reviews (cdr (assq 'reviews content)))
                (raw-content (cdr (assq 'content content)))
@@ -943,7 +954,12 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
                                raw-content)
                            "")))
           (setq new-diff diff)
-          (setq new-comments comments)
+          ;; Explicitly filter out outdated comments from the main comments list
+          ;; just in case the server still includes them there.
+          (setq new-comments (seq-filter (lambda (c)
+                                           (not (eq (cdr (assq 'outdated c)) t)))
+                                         comments))
+          (setq new-outdated-comments outdated-comments)
           (setq new-metadata metadata)
           (setq new-reviews reviews)
           (setq new-preamble preamble)))
@@ -951,6 +967,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       ;; Temporarily set for rendering (before mode change wipes them)
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
@@ -978,14 +995,15 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
         ;; 3. Simplify Headers
         (crs--simplify-diff-headers)
 
-        ;; 4. Insert Comments
+        ;; 4. Insert Comments (only regular comments in-line with diff)
         (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments)
 
         ;; 5. Insert Preamble & Feedback at TOP
         (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
-               (conversation (crs--render-conversation-from-data
+                (conversation (crs--render-conversation-from-data
                               crs--buffer-comments
-                              crs--buffer-reviews))
+                              crs--buffer-reviews
+                              crs--buffer-outdated-comments))
                (preamble (concat header "\n" conversation))
                (feedback existing-review-feedback))
 
@@ -1007,11 +1025,11 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
         (my-code-review-mode)))
 
       (crs--process-html-placeholders)
-      (my-code-review-mode)
 
       ;; Re-set the buffer-local variables AFTER mode change
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
+      (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
@@ -1099,6 +1117,63 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
           (message "File not found: %s" filename))
       (message "No file found at point"))))
 
+(defun crs-show-outdated-comments ()
+  "Show outdated comments for the current PR in a separate buffer."
+  (interactive)
+  (unless (and (boundp 'crs--buffer-outdated-comments)
+               crs--buffer-outdated-comments
+               (not (seq-empty-p crs--buffer-outdated-comments)))
+    (error "No outdated comments found for this PR"))
+
+  (let* ((owner crs--comment-owner)
+         (repo crs--comment-repo)
+         (number crs--comment-number)
+         (info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (buffer-name (format "* Outdated Comments %s/%s #%d *" owner repo number))
+         (buffer (get-buffer-create buffer-name))
+         (comments crs--buffer-outdated-comments))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Outdated Comments for %s/%s #%d\n" owner repo number))
+        (insert "──────────────────────────────────\n\n")
+        (if (seq-empty-p comments)
+            (insert "No outdated comments found.\n")
+          (seq-do (lambda (c)
+                    (let ((author (or (cdr (assq 'author c)) "unknown"))
+                          (time (or (cdr (assq 'created_at c)) ""))
+                          (path (or (cdr (assq 'path c)) ""))
+                          (body (or (cdr (assq 'body c)) "(No body)")))
+                      (insert (format "[%s] %s on %s:\n" author time path))
+                      (crs--insert-html body "  ")
+                      (insert "\n\n──────────────────────────────────\n\n")))
+                  comments))
+        (goto-char (point-min))
+        (crs-outdated-comments-mode)))
+    (display-buffer buffer)
+    (message "Outdated comments displayed in %s" buffer-name)))
+
+(defun crs-quit-outdated-comments ()
+  "Quit the outdated comments window and kill the buffer."
+  (interactive)
+  (quit-window t))
+
+(defvar-keymap crs-outdated-comments-mode-map
+  "q" #'crs-quit-outdated-comments)
+
+(define-derived-mode crs-outdated-comments-mode markdown-mode "Outdated Comments"
+  "Major mode for viewing outdated comments.
+  Inherits from markdown-mode and is read-only.
+  \\{crs-outdated-comments-mode-map}"
+  (setq buffer-read-only t))
+
+(when (fboundp 'evil-define-key)
+  (evil-define-key 'normal crs-outdated-comments-mode-map
+    "q" #'crs-quit-outdated-comments))
+
 (defun crs--get-current-review-info ()
   "Extract (owner repo number) from the current buffer name.
 Returns a list (owner repo number) or signals an error if not in a review buffer."
@@ -1125,6 +1200,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
   "The comments list for the current PR.")
+(defvar-local crs--buffer-outdated-comments nil
+  "The outdated comments list for the current PR.")
 (defvar-local crs--buffer-metadata nil
   "The PR metadata for the current PR.")
 (defvar-local crs--buffer-reviews nil

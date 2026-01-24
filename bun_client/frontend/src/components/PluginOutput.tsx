@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
-import { Button, Badge, Card, mapStatusToVariant } from '../design';
+import { Button, Badge, Card, Select, mapStatusToVariant, Theme, THEME_OPTIONS } from '../design';
 
 interface PluginOutputProps {
     owner: string;
     repo: string;
     number: number;
+    theme: Theme;
+    onThemeChange: (theme: Theme) => void;
     onClose?: () => void;
 }
 
@@ -18,7 +20,7 @@ interface GetPluginOutputResponse {
     output: Record<string, PluginResult>;
 }
 
-export default function PluginOutput({ owner, repo, number, onClose }: PluginOutputProps) {
+export default function PluginOutput({ owner, repo, number, theme, onThemeChange, onClose }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
 
@@ -63,7 +65,7 @@ export default function PluginOutput({ owner, repo, number, onClose }: PluginOut
                     <h2 style={{ margin: 0, fontSize: '18px' }}>
                         Plugin Output for {owner}/{repo} #{number}
                     </h2>
-                    <div style={{ display: 'flex', gap: '12px' }}>
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                         <Button onClick={loadPluginOutput} loading={loading} variant="secondary">
                             Refresh
                         </Button>

@@ -16,6 +16,35 @@ export const colors = {
   success: 'var(--success)',
   danger: 'var(--danger)',
   warning: 'var(--warning)',
+
+  // Status Text
+  textSuccess: 'var(--text-success)',
+  textDanger: 'var(--text-danger)',
+  textWarning: 'var(--text-warning)',
+  textMerged: 'var(--text-merged)',
+
+  // Status Backgrounds
+  bgSuccessDim: 'var(--bg-success-dim)',
+  bgDangerDim: 'var(--bg-danger-dim)',
+  bgWarningDim: 'var(--bg-warning-dim)',
+  bgMergedDim: 'var(--bg-merged-dim)',
+  bgInfoDim: 'var(--bg-info-dim)',
+  bgInfoDimStrong: 'var(--bg-info-dim-strong)',
+
+  // Status Borders
+  borderSuccessDim: 'var(--border-success-dim)',
+  borderDangerDim: 'var(--border-danger-dim)',
+  borderWarningDim: 'var(--border-warning-dim)',
+  borderInfoDim: 'var(--border-info-dim)',
+  borderMergedDim: 'var(--border-merged-dim)',
+
+  // Diff
+  diffAddBg: 'var(--diff-add-bg)',
+  diffAddGutterBg: 'var(--diff-add-gutter-bg)',
+  diffDelBg: 'var(--diff-del-bg)',
+  diffDelGutterBg: 'var(--diff-del-gutter-bg)',
+  diffHunkBg: 'var(--diff-hunk-bg)',
+  overlayBg: 'var(--overlay-bg)',
 };
 
 export const spacing = {
@@ -44,8 +73,8 @@ export const transitions = {
 };
 
 export const shadows = {
-  sm: '0 1px 3px rgba(0, 0, 0, 0.3)',
-  md: '0 4px 12px rgba(0, 0, 0, 0.3)',
-  lg: '0 8px 24px rgba(0, 0, 0, 0.4)',
-  glow: '0 0 0 1px rgba(88, 166, 255, 0.2)',
+  sm: 'var(--shadow-sm)',
+  md: 'var(--shadow-md)',
+  lg: 'var(--shadow-lg)',
+  glow: 'var(--shadow-glow)',
 };

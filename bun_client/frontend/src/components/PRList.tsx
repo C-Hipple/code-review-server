@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
-import { Button, Badge, Card, Input, Select, mapStatusToVariant } from '../design';
+import { Button, Badge, Card, Input, Select, mapStatusToVariant, Theme, THEME_OPTIONS, ReviewLocation } from '../design';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
     onOpenPluginOutput: (owner: string, repo: string, number: number) => void;
+    theme: Theme;
+    reviewLocation: ReviewLocation;
+    onThemeChange: (theme: Theme) => void;
 }
 
 // Matches the ReviewItem struct from the Go backend
@@ -64,7 +67,7 @@ function getUniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[]
     ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
-export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps) {
+export default function PRList({ onOpenReview, onOpenPluginOutput, theme, reviewLocation, onThemeChange }: PRListProps) {
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterText, setFilterText] = useState('');
@@ -217,7 +220,9 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                             </div>
                         )}
                     </div>
-                    <Button onClick={loadList} variant="secondary" loading={loading}>Refresh</Button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <Button onClick={loadList} variant="secondary" loading={loading}>Refresh</Button>
+                    </div>
                 </div>
 
                 {/* Filter Bar */}
@@ -360,7 +365,14 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                                             justifyContent: 'space-between',
                                                             alignItems: 'center',
                                                         }}
-                                                        onClick={() => item.number > 0 && onOpenReview(item.owner, item.repo, item.number)}
+                                                        onClick={() => {
+                                                            if (item.number <= 0) return;
+                                                            if (reviewLocation === 'github') {
+                                                                window.open(item.url, '_blank');
+                                                            } else {
+                                                                onOpenReview(item.owner, item.repo, item.number);
+                                                            }
+                                                        }}
                                                     >
                                                         <div style={{ flex: 1 }}>
                                                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
@@ -388,20 +400,18 @@ export default function PRList({ onOpenReview, onOpenPluginOutput }: PRListProps
                                                         {item.number > 0 && (
                                                             <div style={{ display: 'flex', gap: '12px', marginLeft: '15px' }}>
                                                                 <Button
-                                                                    onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank'); }}
-                                                                    variant="secondary"
-                                                                    size="sm"
-                                                                    style={{ width: '160px' }}
-                                                                >
-                                                                    Review on GitHub
-                                                                </Button>
-                                                                <Button
                                                                     onClick={(e) => { e.stopPropagation(); onOpenPluginOutput(item.owner, item.repo, item.number); }}
                                                                     variant="ghost"
                                                                     size="sm"
-                                                                    style={{ width: '80px' }}
                                                                 >
                                                                     Plugins
+                                                                </Button>
+                                                                <Button
+                                                                    onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank'); }}
+                                                                    variant="secondary"
+                                                                    size="sm"
+                                                                >
+                                                                    GitHub
                                                                 </Button>
                                                                 <Button
                                                                     onClick={(e) => { e.stopPropagation(); onOpenReview(item.owner, item.repo, item.number); }}

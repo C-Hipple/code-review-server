@@ -857,7 +857,9 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
   (let ((items nil)
         (sb "\nConversation\n"))
     (when (and outdated-comments (> (length outdated-comments) 0))
-      (setq sb (concat sb (format "PR contains %d outdated comments\n" (length outdated-comments)))))
+      (let ((count (length outdated-comments)))
+        (setq sb (concat sb (format "PR Contains %d outdated comment%s\n---------------------\n"
+                                    count (if (= count 1) "" "s"))))))
     ;; 1. Collect Issue Comments (where path is empty)
     (seq-do (lambda (c)
               (let ((path (cdr (assq 'path c))))
@@ -1000,7 +1002,7 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
 
         ;; 5. Insert Preamble & Feedback at TOP
         (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
-                (conversation (crs--render-conversation-from-data
+               (conversation (crs--render-conversation-from-data
                               crs--buffer-comments
                               crs--buffer-reviews
                               crs--buffer-outdated-comments))

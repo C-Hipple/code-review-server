@@ -75,7 +75,8 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `Content`  | string       | Formatted PR response (diff, comments, metadata)|
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 #### Rendered Comment Format
@@ -130,7 +131,8 @@ Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
 | `Content`  | string       | Formatted PR response (freshly fetched)         |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -157,7 +159,8 @@ Adds a new local (pending) comment to a pull request. The comment is stored loca
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -182,7 +185,8 @@ Edits an existing local (pending) comment.
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -206,7 +210,8 @@ Deletes a local (pending) comment.
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -230,7 +235,8 @@ Sets the top-level feedback/review body for a pull request.
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -253,7 +259,8 @@ Removes all local (pending) comments for a specific pull request.
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -282,7 +289,8 @@ Submits a review to GitHub. This will:
 | `Content`  | string       | Formatted updated PR content                    |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR comments                  |
+| `comments` | []CommentJSON| List of structured PR active comments           |
+| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
 ---
@@ -412,6 +420,7 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "outdated": false
       }
     ],
+    "outdated_comments": [],
     "reviews": [
       {
         "id": 98765,

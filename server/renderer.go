@@ -378,8 +378,9 @@ type PRMetadata struct {
 type PRDetails struct {
 	Metadata PRMetadata    `json:"metadata"`
 	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Comments         []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 // GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
@@ -779,19 +780,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	localComments, _ := config.C.DB.GetLocalCommentsForPR(owner, repo, number)
 	comments = append(comments, convertLocalCommentsToPRComments(localComments)...)
 
-	commentJSONs := []CommentJSON{}
-	for _, c := range comments {
-		commentJSONs = append(commentJSONs, CommentJSON{
-			ID:        c.GetID(),
-			Author:    c.GetLogin(),
-			Body:      c.GetBody(),
-			Path:      c.GetPath(),
-			Position:  c.GetPosition(),
-			InReplyTo: c.GetInReplyTo(),
-			CreatedAt: c.GetCreatedAt(),
-			Outdated:  c.IsOutdated(),
-		})
-	}
+	commentJSONs, outdatedCommentJSONs := splitComments(comments)
 
 	// 5. Load Reviews from DB
 	var reviews []ReviewJSON
@@ -828,6 +817,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		Metadata: metadata,
 		Diff:     formattedDiff,
 		Comments: commentJSONs,
+		OutdatedComments: outdatedCommentJSONs,
 		Reviews:  reviews,
 	}, nil
 }
@@ -1499,6 +1489,53 @@ func cleanEmptyEndingLines(lines *[]string) []string {
 		i--
 	}
 	return (*lines)[:i+1]
+}
+
+func splitComments(comments []PRComment) ([]CommentJSON, []CommentJSON) {
+	// Map to track if a comment (by ID) is outdated, including inherited status from parents
+	isIDOutdated := make(map[string]bool)
+
+	// First pass: identify explicitly outdated roots and populate initial map
+	for _, c := range comments {
+		if c.GetInReplyTo() == 0 {
+			isIDOutdated[c.GetID()] = c.IsOutdated()
+		}
+	}
+
+	// Second pass: propagate status to replies.
+	// Since comments are sorted by CreatedAt, parents should come before replies.
+	for _, c := range comments {
+		if c.GetInReplyTo() != 0 {
+			parentID := strconv.FormatInt(c.GetInReplyTo(), 10)
+			if isIDOutdated[parentID] {
+				isIDOutdated[c.GetID()] = true
+			} else {
+				isIDOutdated[c.GetID()] = c.IsOutdated()
+			}
+		}
+	}
+
+	active := []CommentJSON{}
+	outdated := []CommentJSON{}
+	for _, c := range comments {
+		isOutdated := isIDOutdated[c.GetID()]
+		item := CommentJSON{
+			ID:        c.GetID(),
+			Author:    c.GetLogin(),
+			Body:      c.GetBody(),
+			Path:      c.GetPath(),
+			Position:  c.GetPosition(),
+			InReplyTo: c.GetInReplyTo(),
+			CreatedAt: c.GetCreatedAt(),
+			Outdated:  isOutdated,
+		}
+		if isOutdated {
+			outdated = append(outdated, item)
+		} else {
+			active = append(active, item)
+		}
+	}
+	return active, outdated
 }
 
 func filterComments(comments []PRComment) []PRComment {

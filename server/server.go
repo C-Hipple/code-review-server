@@ -106,6 +106,7 @@ type GetPRReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -119,6 +120,7 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
 	return nil
@@ -170,6 +172,7 @@ type AddCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -190,6 +193,7 @@ func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) er
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -208,6 +212,7 @@ type EditCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -228,6 +233,7 @@ func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply)
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -245,6 +251,7 @@ type DeleteCommentReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -265,6 +272,7 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -282,6 +290,7 @@ type SetFeedbackReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -301,6 +310,7 @@ func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply)
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -317,6 +327,7 @@ type RemovePRCommentsReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -337,6 +348,7 @@ func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemoveP
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -355,6 +367,7 @@ type SubmitReviewReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -422,6 +435,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	return nil
 }
@@ -438,6 +452,7 @@ type SyncPRReply struct {
 	Metadata *PRMetadata   `json:"metadata"`
 	Diff     string        `json:"diff"`
 	Comments []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews  []ReviewJSON  `json:"reviews"`
 }
 
@@ -451,6 +466,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
 	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
 	return nil

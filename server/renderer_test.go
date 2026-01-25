@@ -582,3 +582,67 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 	}
 }
 
+func TestSplitComments(t *testing.T) {
+	// Root is outdated
+	root := &github.PullRequestComment{
+		ID:       github.Int64(1),
+		User:     &github.User{Login: github.String("user1")},
+		Body:     github.String("outdated root"),
+		Position: nil, // Outdated
+		OriginalPosition: github.Int(10),
+		Line: nil,
+		OriginalLine: github.Int(10),
+	}
+	// Reply to outdated root (not explicitly outdated itself, but should inherit)
+	reply := &github.PullRequestComment{
+		ID:        github.Int64(2),
+		InReplyTo: github.Int64(1),
+		User:      &github.User{Login: github.String("user2")},
+		Body:      github.String("reply to outdated"),
+		Position:  github.Int(15), 
+		Line:      github.Int(15),
+	}
+	// Another root, not outdated
+	activeRoot := &github.PullRequestComment{
+		ID:       github.Int64(3),
+		User:     &github.User{Login: github.String("user3")},
+		Body:     github.String("active root"),
+		Position: github.Int(20),
+		Line:     github.Int(20),
+	}
+
+	comments := convertToPRComments([]*github.PullRequestComment{root, reply, activeRoot})
+	active, outdated := splitComments(comments)
+
+	if len(outdated) != 2 {
+		t.Errorf("Expected 2 outdated comments, got %d", len(outdated))
+	}
+	if len(active) != 1 {
+		t.Errorf("Expected 1 active comment, got %d", len(active))
+	}
+
+	// Verify reply (ID 2) is in outdated list
+	foundReply := false
+	for _, c := range outdated {
+		if c.ID == "2" {
+			foundReply = true
+			if !c.Outdated {
+				t.Errorf("Reply (ID 2) should be marked as outdated")
+			}
+		}
+	}
+	if !foundReply {
+		t.Errorf("Reply (ID 2) not found in outdated list")
+	}
+
+	// Verify activeRoot (ID 3) is in active list
+	foundActive := false
+	for _, c := range active {
+		if c.ID == "3" {
+			foundActive = true
+		}
+	}
+	if !foundActive {
+		t.Errorf("Active root (ID 3) not found in active list")
+	}
+}

@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall } from '../api';
-import { Button, Badge, Modal, TextArea, mapStatusToVariant } from '../design';
+import { Button, Badge, Modal, TextArea, Select, mapStatusToVariant, colors, shadows, Theme, THEME_OPTIONS } from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
@@ -15,6 +15,8 @@ interface ReviewProps {
     owner: string;
     repo: string;
     number: number;
+    theme: Theme;
+    onThemeChange: (theme: Theme) => void;
 }
 
 interface Comment {
@@ -59,6 +61,7 @@ interface PRResponse {
     content: string;
     diff: string;
     comments: Comment[];
+    outdated_comments: Comment[];
     metadata: PRMetadata;
 }
 
@@ -145,10 +148,11 @@ const getLanguageFromFilename = (filename: string): string => {
     return languageMap[ext] || 'text';
 };
 
-export default function Review({ owner, repo, number }: ReviewProps) {
+export default function Review({ owner, repo, number, theme, onThemeChange }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
     const [comments, setComments] = useState<Comment[]>([]);
+    const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
     const [loading, setLoading] = useState(false);
@@ -159,6 +163,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+    const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
 
     const [submitting, setSubmitting] = useState(false);
 
@@ -252,6 +257,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 setSubmitting(false);
                 setActiveLineIndex(null);
                 setActiveLspIndex(null);
+                setActiveOutdatedFile(null);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -282,6 +288,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
             setMetadata(res.metadata || null);
         } catch (e) {
             console.error(e);
@@ -302,6 +309,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
             setMetadata(res.metadata || null);
             loadPluginOutputs();
         } catch (e) {
@@ -339,6 +347,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
             resetCommentForm();
         } catch (e) {
             console.error(e);
@@ -358,6 +367,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
             setSubmitting(false);
         } catch (e) {
             console.error(e);
@@ -416,7 +426,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             let currentPos = 0;
             let foundFirstHunkInFile = false;
             let pendingFileStatus: 'modified' | 'new' | 'deleted' | 'renamed' = 'modified';
-            
+
             // New state tracking for empty new files
             let fallbackFilename: string | null = null;
             let fallbackFileIndex: number | null = null;
@@ -461,16 +471,16 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             fallbackFilename = quotedMatch[1];
                         } else {
                             // Fallback: try to grab the b/ part
-                             const parts = line.split(' b/');
-                             if (parts.length >= 2) {
-                                 fallbackFilename = parts.slice(1).join(' b/');
-                                 // Cleanup potential trailing quote from split if it was quoted "b/..."
-                                 if (fallbackFilename.endsWith('"') && line.includes('" b/')) {
-                                     fallbackFilename = fallbackFilename.slice(0, -1);
-                                 }
-                             } else {
-                                 fallbackFilename = null;
-                             }
+                            const parts = line.split(' b/');
+                            if (parts.length >= 2) {
+                                fallbackFilename = parts.slice(1).join(' b/');
+                                // Cleanup potential trailing quote from split if it was quoted "b/..."
+                                if (fallbackFilename.endsWith('"') && line.includes('" b/')) {
+                                    fallbackFilename = fallbackFilename.slice(0, -1);
+                                }
+                            } else {
+                                fallbackFilename = null;
+                            }
                         }
                     }
                     fallbackFileIndex = index;
@@ -487,12 +497,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
                     // Skip these git metadata lines
                     lineType = 'skip';
-                                    } else {
-                                        // Match +++ b/filename as the file header
-                                        const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
-                                            line.match(/^\+\+\+\s+(.+)$/);
-                
-                                        if (fileMatch) {                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                } else {
+                    // Match +++ b/filename as the file header
+                    const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
+                        line.match(/^\+\+\+\s+(.+)$/);
+
+                    if (fileMatch) {
+                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 
@@ -501,7 +512,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                         file = currentFile;
                         clickable = true;
                         lineType = 'file-header';
-                        
+
                         hasEmittedHeader = true;
 
                         parsedLines.push({
@@ -553,7 +564,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
 
             // Check if last file needs header
             if (fallbackFilename && !hasEmittedHeader) {
-                 parsedLines.push({
+                parsedLines.push({
                     text: fallbackFilename,
                     file: fallbackFilename,
                     pos: 0,
@@ -689,20 +700,36 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     };
 
     // Custom theme based on oneDark but adjusted for diff context
-    const customDiffTheme = useMemo(() => ({
-        ...oneDark,
-        'pre[class*="language-"]': {
-            ...oneDark['pre[class*="language-"]'],
-            background: 'transparent',
-            margin: 0,
-            padding: 0,
-            overflow: 'visible',
-        },
-        'code[class*="language-"]': {
-            ...oneDark['code[class*="language-"]'],
-            background: 'transparent',
-        },
-    }), []);
+    const customDiffTheme = useMemo(() => {
+        const getBaseTheme = () => {
+            switch (theme) {
+                case 'light': return oneLight;
+                case 'gruvbox-dark': return gruvboxDark;
+                case 'gruvbox-light': return gruvboxLight;
+                case 'solarized-light': return solarizedlight;
+                case 'solarized-dark': return solarizedDarkAtom;
+                case 'dracula': return dracula;
+                case 'nord': return nord;
+                case 'night-owl': return nightOwl;
+                default: return oneDark;
+            }
+        };
+        const baseTheme = getBaseTheme();
+        return {
+            ...baseTheme,
+            'pre[class*="language-"]': {
+                ...(baseTheme['pre[class*="language-"]'] as any),
+                background: 'transparent',
+                margin: 0,
+                padding: 0,
+                overflow: 'visible',
+            },
+            'code[class*="language-"]': {
+                ...(baseTheme['code[class*="language-"]'] as any),
+                background: 'transparent',
+            },
+        };
+    }, [theme]);
 
     // Pre-compute highlighted lines for each file section
     const highlightedLines = useMemo(() => {
@@ -775,13 +802,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
     const getFileStatusInfo = (status?: 'modified' | 'new' | 'deleted' | 'renamed') => {
         switch (status) {
             case 'new':
-                return { icon: '+', label: 'new file', color: 'var(--success)', bg: 'rgba(35, 134, 54, 0.15)' };
+                return { icon: '+', label: 'new file', color: colors.success, bg: colors.bgSuccessDim };
             case 'deleted':
-                return { icon: '−', label: 'deleted', color: 'var(--danger)', bg: 'rgba(218, 54, 51, 0.15)' };
+                return { icon: '−', label: 'deleted', color: colors.danger, bg: colors.bgDangerDim };
             case 'renamed':
-                return { icon: '→', label: 'renamed', color: 'var(--warning)', bg: 'rgba(210, 153, 34, 0.15)' };
+                return { icon: '→', label: 'renamed', color: colors.warning, bg: colors.bgWarningDim };
             default:
-                return { icon: '●', label: 'modified', color: 'var(--accent)', bg: 'rgba(56, 139, 253, 0.15)' };
+                return { icon: '●', label: 'modified', color: colors.accent, bg: colors.bgInfoDimStrong };
         }
     };
 
@@ -816,6 +843,8 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                 const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
                 const rootComments = lineComments.filter(c => !c.in_reply_to);
                 const isCollapsed = item.file ? collapsedFiles.has(item.file) : false;
+                const fileOutdatedComments = item.file ? outdatedComments.filter(c => c.path === item.file) : [];
+                const hasOutdated = fileOutdatedComments.length > 0;
 
                 return (
                     <div key={idx}>
@@ -831,6 +860,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 marginTop: idx > 0 ? '8px' : '0',
                                 cursor: 'pointer',
                                 borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
+                                position: 'relative',
                             }}
                             onClick={() => item.file && item.pos !== null && handleCommentClick(idx, item.file, item.pos)}
                             className="hover-line"
@@ -891,6 +921,29 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                             }}>
                                 {item.text}
                             </span>
+                            {hasOutdated && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (item.file) setActiveOutdatedFile(item.file);
+                                    }}
+                                    style={{
+                                        marginLeft: 'auto',
+                                        background: colors.bgWarningDim,
+                                        border: `1px solid ${colors.borderWarningDim}`,
+                                        color: colors.textWarning,
+                                        padding: '4px 8px',
+                                        borderRadius: '4px',
+                                        fontSize: '12px',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        fontWeight: 500
+                                    }}
+                                >                                    <span>⚠️</span> Outdated Comments ({fileOutdatedComments.length})
+                                </button>
+                            )}
                         </div>
                         {rootComments.map(rc => {
                             const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
@@ -921,9 +974,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             <span style={{
                                                 fontSize: '10px',
-                                                color: 'var(--accent)',
+                                                color: colors.accent,
                                                 opacity: 0.7,
-                                                background: 'rgba(56, 139, 253, 0.1)',
+                                                background: colors.bgInfoDim,
                                                 padding: '2px 6px',
                                                 borderRadius: '4px'
                                             }}>
@@ -1045,14 +1098,14 @@ export default function Review({ owner, repo, number }: ReviewProps) {
             };
 
             if (isAddition) {
-                containerStyle = { ...containerStyle, background: 'rgba(35, 134, 54, 0.12)' };
-                prefixStyle = { ...prefixStyle, color: 'var(--success)', background: 'rgba(35, 134, 54, 0.2)' };
+                containerStyle = { ...containerStyle, background: colors.diffAddBg };
+                prefixStyle = { ...prefixStyle, color: colors.success, background: colors.diffAddGutterBg };
             } else if (isDeletion) {
-                containerStyle = { ...containerStyle, background: 'rgba(218, 54, 51, 0.12)' };
-                prefixStyle = { ...prefixStyle, color: 'var(--danger)', background: 'rgba(218, 54, 51, 0.2)' };
+                containerStyle = { ...containerStyle, background: colors.diffDelBg };
+                prefixStyle = { ...prefixStyle, color: colors.danger, background: colors.diffDelGutterBg };
             } else if (isHunkHeader) {
-                containerStyle = { ...containerStyle, background: 'rgba(56, 139, 253, 0.1)' };
-                lineStyle = { ...lineStyle, color: 'var(--accent)', fontStyle: 'italic', fontSize: '12px' };
+                containerStyle = { ...containerStyle, background: colors.diffHunkBg };
+                lineStyle = { ...lineStyle, color: colors.accent, fontStyle: 'italic', fontSize: '12px' };
             }
 
             if (item.clickable) {
@@ -1134,7 +1187,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 background: 'var(--bg-secondary)',
                                 border: '1px solid var(--border)',
                                 borderRadius: '6px',
-                                boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                                boxShadow: shadows.md,
                                 padding: '12px',
                                 maxWidth: '600px',
                                 overflow: 'auto',
@@ -1189,9 +1242,9 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                         <span style={{
                                             fontSize: '10px',
-                                            color: 'var(--accent)',
+                                            color: colors.accent,
                                             opacity: 0.7,
-                                            background: 'rgba(56, 139, 253, 0.1)',
+                                            background: colors.bgInfoDim,
                                             padding: '2px 6px',
                                             borderRadius: '4px'
                                         }}>
@@ -1258,24 +1311,24 @@ export default function Review({ owner, repo, number }: ReviewProps) {
         if (!metadata?.ci_status) return {};
         const status = metadata.ci_status.toLowerCase();
         if (status === 'success' || status === 'passed') {
-            return { background: 'rgba(35, 134, 54, 0.15)', color: '#3fb950', borderColor: 'rgba(63, 185, 80, 0.4)' };
+            return { background: colors.bgSuccessDim, color: colors.textSuccess, borderColor: colors.borderSuccessDim };
         } else if (status === 'pending' || status === 'running') {
-            return { background: 'rgba(158, 106, 3, 0.15)', color: '#d29922', borderColor: 'rgba(210, 153, 34, 0.4)' };
+            return { background: colors.bgWarningDim, color: colors.textWarning, borderColor: colors.borderWarningDim };
         } else if (status === 'failure' || status === 'failed') {
-            return { background: 'rgba(218, 54, 51, 0.15)', color: '#f85149', borderColor: 'rgba(248, 81, 73, 0.4)' };
+            return { background: colors.bgDangerDim, color: colors.textDanger, borderColor: colors.borderDangerDim };
         }
-        return { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderColor: 'var(--border)' };
+        return { background: colors.bgTertiary, color: colors.textSecondary, borderColor: colors.border };
     };
 
     const getStateStyle = () => {
         if (!metadata?.state) return {};
         const state = metadata.state.toLowerCase();
         if (state === 'open') {
-            return { background: 'rgba(35, 134, 54, 0.15)', color: '#3fb950' };
+            return { background: colors.bgSuccessDim, color: colors.textSuccess };
         } else if (state === 'closed') {
-            return { background: 'rgba(218, 54, 51, 0.15)', color: '#f85149' };
+            return { background: colors.bgDangerDim, color: colors.textDanger };
         } else if (state === 'merged') {
-            return { background: 'rgba(130, 80, 223, 0.15)', color: '#a371f7' };
+            return { background: colors.bgMergedDim, color: colors.textMerged };
         }
         return {};
     };
@@ -1422,12 +1475,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     ))}
                                     {metadata.requested_teams?.map((t, i) => (
                                         <span key={`team-${i}`} style={{
-                                            background: 'rgba(56, 139, 253, 0.1)',
+                                            background: colors.bgInfoDim,
                                             padding: '2px 8px',
                                             borderRadius: '4px',
                                             fontSize: '12px',
-                                            color: 'var(--accent)',
-                                            border: '1px solid rgba(56, 139, 253, 0.2)'
+                                            color: colors.accent,
+                                            border: `1px solid ${colors.borderInfoDim}`
                                         }}>
                                             team:{t}
                                         </span>
@@ -1445,12 +1498,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {metadata.approved_by.map((r, i) => (
                                         <span key={i} style={{
-                                            background: 'rgba(35, 134, 54, 0.1)',
+                                            background: colors.bgSuccessDim,
                                             padding: '2px 8px',
                                             borderRadius: '4px',
                                             fontSize: '12px',
-                                            color: 'var(--success)',
-                                            border: '1px solid rgba(35, 134, 54, 0.2)'
+                                            color: colors.success,
+                                            border: `1px solid ${colors.borderSuccessDim}`
                                         }}>
                                             @{r}
                                         </span>
@@ -1468,12 +1521,12 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {metadata.changes_requested_by.map((r, i) => (
                                         <span key={i} style={{
-                                            background: 'rgba(218, 54, 51, 0.1)',
+                                            background: colors.bgDangerDim,
                                             padding: '2px 8px',
                                             borderRadius: '4px',
                                             fontSize: '12px',
-                                            color: 'var(--danger)',
-                                            border: '1px solid rgba(218, 54, 51, 0.2)'
+                                            color: colors.danger,
+                                            border: `1px solid ${colors.borderDangerDim}`
                                         }}>
                                             @{r}
                                         </span>
@@ -1521,13 +1574,13 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                         {metadata.labels.map((label, i) => (
                                             <span key={i} style={{
-                                                background: 'linear-gradient(135deg, rgba(130, 80, 223, 0.2), rgba(56, 139, 253, 0.2))',
-                                                color: '#a371f7',
+                                                background: colors.bgMergedDim,
+                                                color: colors.textMerged,
                                                 padding: '2px 10px',
                                                 borderRadius: '12px',
                                                 fontSize: '11px',
                                                 fontWeight: 500,
-                                                border: '1px solid rgba(130, 80, 223, 0.3)'
+                                                border: `1px solid ${colors.borderMergedDim}`
                                             }}>
                                                 {label}
                                             </span>
@@ -1581,10 +1634,10 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     {metadata.ci_failures && metadata.ci_failures.length > 0 && (
                         <div style={{
                             padding: '14px 20px',
-                            borderTop: '1px solid var(--border)',
-                            background: 'rgba(218, 54, 51, 0.05)'
+                            borderTop: `1px solid ${colors.border}`,
+                            background: colors.bgDangerDim
                         }}>
-                            <div style={{ fontSize: '11px', color: '#f85149', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            <div style={{ fontSize: '11px', color: colors.textDanger, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                                 ✗ CI Failures
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -1592,7 +1645,7 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     <span key={i} style={{
                                         fontFamily: 'var(--font-mono)',
                                         fontSize: '12px',
-                                        color: '#f85149'
+                                        color: colors.textDanger
                                     }}>
                                         • {failure}
                                     </span>
@@ -1769,28 +1822,35 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    background: 'rgba(0,0,0,0.2)',
+                    background: colors.overlayBg,
                     display: 'flex',
                     justifyContent: 'flex-end',
                     zIndex: 100,
                 }} onClick={() => setShowPlugins(false)}>
                     <div style={{
                         background: 'var(--bg-secondary)',
-                        width: '500px',
-                        maxWidth: '80vw',
+                        width: '600px',
+                        maxWidth: '90vw',
                         height: '100vh',
                         borderLeft: '1px solid var(--border)',
-                        boxShadow: '-5px 0 20px rgba(0,0,0,0.3)',
+                        boxShadow: shadows.lg,
                         display: 'flex',
                         flexDirection: 'column',
-                        overflowY: 'auto',
-                        padding: '20px',
+                        overflow: 'hidden',
                     }} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1, paddingBottom: '10px', borderBottom: '1px solid var(--border)' }}>
+                        <div style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '20px 24px',
+                            background: 'var(--bg-secondary)',
+                            zIndex: 1,
+                            borderBottom: '1px solid var(--border)'
+                        }}>
                             <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>Plugin Analysis</h2>
                             <Button onClick={() => setShowPlugins(false)} variant="secondary" size="sm">Close (Esc)</Button>
                         </div>
-                        <div style={{ flex: 1 }}>
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
                             {Object.keys(pluginOutputs).length === 0 ? (
                                 <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic', padding: '20px', textAlign: 'center' }}>No plugin output found.</div>
                             ) : (
@@ -1811,14 +1871,20 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                                     padding: '2px 10px',
                                                     borderRadius: '12px',
                                                     fontWeight: 600,
-                                                    background: data.status === 'success' ? 'rgba(35, 134, 54, 0.2)' : data.status === 'pending' ? 'rgba(158, 106, 3, 0.2)' : 'rgba(218, 54, 51, 0.2)',
-                                                    color: data.status === 'success' ? '#3fb950' : data.status === 'pending' ? '#d29922' : '#f85149',
-                                                    border: `1px solid ${data.status === 'success' ? 'rgba(63, 185, 80, 0.3)' : data.status === 'pending' ? 'rgba(210, 153, 34, 0.3)' : 'rgba(248, 81, 73, 0.3)'}`
+                                                    background: data.status === 'success' ? colors.bgSuccessDim : data.status === 'pending' ? colors.bgWarningDim : colors.bgDangerDim,
+                                                    color: data.status === 'success' ? colors.textSuccess : data.status === 'pending' ? colors.textWarning : colors.textDanger,
+                                                    border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`
                                                 }}>
                                                     {data.status.toUpperCase()}
                                                 </span>
                                             </div>
-                                            <div className="plugin-output" style={{ padding: '15px', fontSize: '13px', lineHeight: '1.5', color: 'var(--text-primary)', background: 'var(--bg-primary)' }}>
+                                            <div className="plugin-output markdown-content" style={{
+                                                padding: '15px',
+                                                fontSize: '14px',
+                                                lineHeight: '1.6',
+                                                color: 'var(--text-primary)',
+                                                background: 'var(--bg-primary)',
+                                            }}>
                                                 {data.result ? (
                                                     <Markdown>{data.result}</Markdown>
                                                 ) : (
@@ -1829,6 +1895,81 @@ export default function Review({ owner, repo, number }: ReviewProps) {
                                     ))}
                                 </div>
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+            {activeOutdatedFile && (
+                <div style={{
+                    position: 'fixed' as const,
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: colors.overlayBg,
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    zIndex: 100,
+                }} onClick={() => setActiveOutdatedFile(null)}>
+                    <div style={{
+                        background: 'var(--bg-secondary)',
+                        width: '600px',
+                        maxWidth: '90vw',
+                        height: '100vh',
+                        borderLeft: '1px solid var(--border)',
+                        boxShadow: shadows.lg,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '20px 24px',
+                            background: 'var(--bg-secondary)',
+                            zIndex: 1,
+                            borderBottom: '1px solid var(--border)'
+                        }}>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--warning)' }}>Outdated Comments</h2>
+                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{activeOutdatedFile}</span>
+                            </div>
+                            <Button onClick={() => setActiveOutdatedFile(null)} variant="secondary" size="sm">Close (Esc)</Button>
+                        </div>
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                {outdatedComments.filter(c => c.path === activeOutdatedFile).map(c => (
+                                    <div key={c.id} style={{
+                                        background: 'var(--bg-primary)',
+                                        border: '1px solid var(--border)',
+                                        borderRadius: '8px',
+                                        overflow: 'hidden'
+                                    }}>
+                                        <div style={{
+                                            padding: '10px 15px',
+                                            background: 'var(--bg-secondary)',
+                                            borderBottom: '1px solid var(--border)',
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center'
+                                        }}>
+                                            <span style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{c.author}</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                                {new Date(c.created_at).toLocaleString()}
+                                            </span>
+                                        </div>
+                                        <div className="markdown-content" style={{
+                                            padding: '15px',
+                                            fontSize: '14px',
+                                            lineHeight: '1.6',
+                                            color: 'var(--text-primary)',
+                                        }}>
+                                            <Markdown>{c.body}</Markdown>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 </div>

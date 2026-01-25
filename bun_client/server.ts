@@ -1,9 +1,24 @@
 import { spawn, Subprocess } from "bun";
-
-import { resolve, join } from "path";
+import { resolve, join, dirname } from "path";
 import { assets } from "./embedded_assets";
-const SERVER_PATH = resolve(process.env.HOME || "/home/chris", "go/bin/crs");
-const DIFF_LSP_PATH = resolve(process.env.HOME || "/home/chris", ".cargo/bin/diff-lsp");
+
+const SERVER_PATH = Bun.which("crs") || "crs";
+const DIFF_LSP_PATH = Bun.which("diff-lsp") || "diff-lsp";
+
+// Resolve the project root. 
+// When compiled, import.meta.dir is a virtual path (/$bunfs/root).
+// We must use a real path for the OS to spawn processes correctly.
+function getProjectRoot() {
+    const metaDir = import.meta.dir;
+    if (metaDir.startsWith("/$bunfs")) {
+        // If we are in bun_client directory, the project root is one level up
+        const cwd = process.cwd();
+        return cwd.endsWith("bun_client") ? resolve(cwd, "..") : cwd;
+    }
+    return resolve(metaDir, "..");
+}
+
+const PROJECT_ROOT = getProjectRoot();
 
 interface JsonRpcRequest {
     method: string;
@@ -17,35 +32,21 @@ interface JsonRpcResponse {
     id: number | string;
 }
 
-const getShellPath = () => {
-    try {
-        const shell = process.env.SHELL || "bash";
-        const { stdout } = Bun.spawnSync([shell, "-lc", "echo $PATH"]);
-        return stdout.toString().trim();
-    } catch (e) {
-        console.error("Failed to fetch shell PATH:", e);
-        return process.env.PATH || "";
-    }
-};
-
-const SHELL_PATH = getShellPath();
-
 class RpcBridge {
     private proc: any;
     private pending = new Map<string | number, { resolve: (val: any) => void; reject: (err: any) => void }>();
     private buffer = "";
 
     constructor() {
+        console.log(`[RpcBridge] PROJECT_ROOT: ${PROJECT_ROOT}`);
+        console.log(`[RpcBridge] Resolved SERVER_PATH: ${SERVER_PATH}`);
+        
         this.proc = spawn([SERVER_PATH, "--server"], {
-            cwd: resolve(import.meta.dir, ".."), // Run from project root
+            cwd: PROJECT_ROOT,
             stdin: "pipe",
             stdout: "pipe",
             stderr: "inherit",
-            env: {
-                ...process.env,
-                PATH: SHELL_PATH,
-                HOME: process.env.HOME || "/home/chris"
-            }
+            env: process.env
         });
 
         this.readLoop();
@@ -148,7 +149,7 @@ const CORS_HEADERS = {
 };
 
 Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
-    port: parseInt(process.env.PORT || "3000"),
+    port: parseInt(process.env.PORT || "5172"),
     async fetch(req, server) {
         const url = new URL(req.url);
 
@@ -158,10 +159,7 @@ Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
-                    envs: {
-                        PATH: SHELL_PATH,
-                        HOME: process.env.HOME || "/home/chris"
-                    }
+                    envs: process.env
                 }
             });
             if (success) return undefined;
@@ -395,4 +393,4 @@ Type: ${type}
     }
 });
 
-console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "3000")}`);
+console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "5172")}`);

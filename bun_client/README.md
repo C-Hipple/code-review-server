@@ -2,15 +2,9 @@
 
 ## Setup
 
-1. Install dependencies for backend:
+1. Install all dependencies (Backend + Frontend) from the root:
    ```bash
    cd bun_client
-   bun install
-   ```
-
-2. Install dependencies for frontend:
-   ```bash
-   cd frontend
    bun install
    ```
 
@@ -22,11 +16,11 @@
    cd bun_client
    ./start_server.sh
    ```
-   This runs on `http://localhost:3000`.
+   This runs on `http://localhost:5172`.
 
 2. Start the Frontend (Development Mode):
    ```bash
-   cd bun_client/frontend
+   cd bun_client
    bun run dev
    ```
    This runs on `http://localhost:5173`.

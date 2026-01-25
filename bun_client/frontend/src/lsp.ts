@@ -1,6 +1,6 @@
 
 const API_BASE = (typeof window !== "undefined" && window.location.origin === "http://localhost:5173")
-    ? "http://localhost:3000"
+    ? "http://localhost:5172"
     : "";
 
 export interface LspLocation {

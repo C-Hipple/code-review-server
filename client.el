@@ -1879,7 +1879,6 @@ TODO: This doesn't match if the root branch has a special char in it."
   (interactive)
   (crs--switch-and-fetch (projectile-project-name) (crs--get-ref-name)))
 
-(define-key evil-normal-state-map (kbd "SPC b r") 'crs-get-reviews)
 (provide 'crs-client)
 
 ;;; crs-client.el ends here

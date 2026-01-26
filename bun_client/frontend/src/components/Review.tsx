@@ -55,6 +55,7 @@ interface PRMetadata {
     ci_failures: string[];
     body: string;
     url: string;
+    worktree_path: string;
 }
 
 interface PRResponse {
@@ -214,7 +215,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     checkRes.Path,
                     `PR #${number}`,
                     "code-review",
-                    diff
+                    diff,
+                    metadata.worktree_path
                 );
                 const uri = `file://${path}`;
                 setLspUri(uri);

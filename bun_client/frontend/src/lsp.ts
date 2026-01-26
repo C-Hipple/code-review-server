@@ -26,11 +26,11 @@ export class LspClient {
 
     constructor(private onReady?: () => void) { }
 
-    async prepareContext(project: string, root: string, buffer: string, type: string, content: string): Promise<string> {
+    async prepareContext(project: string, root: string, buffer: string, type: string, content: string, worktree: string): Promise<string> {
         const res = await fetch(`${API_BASE}/api/prepare-diff-lsp`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project, root, buffer, type, content })
+            body: JSON.stringify({ project, root, buffer, type, content, worktree })
         });
         if (!res.ok) throw new Error("Failed to prepare LSP context");
         const data = await res.json();

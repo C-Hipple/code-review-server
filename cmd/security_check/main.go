@@ -45,10 +45,11 @@ type PRMetadata struct {
 	Reviewers   []string `json:"reviewers"`
 	Draft       bool     `json:"draft"`
 	CIStatus    string   `json:"ci_status"`
-	CIFailures  []string `json:"ci_failures"`
-	Body        string   `json:"body"`
-	URL         string   `json:"url"`
-}
+		CIFailures         []string `json:"ci_failures"`
+		Body               string   `json:"body"`
+		URL                string   `json:"url"`
+		WorktreePath       string   `json:"worktree_path"`
+	}
 
 func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, error) {
 	// Using gemini-2.5-flash as per the example

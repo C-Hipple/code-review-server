@@ -2,15 +2,17 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/database"
+	"crs/git_tools"
 	"crs/org"
 	"fmt"
 	"log/slog"
-	"strings"
-	"sync"
-	"time"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // waitTimeout waits for the WaitGroup for the specified duration.
@@ -112,6 +114,11 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 	for deserializedChange := range channel {
 		db := config.C.DB
 		doc := org.NewDBClient(db, deserializedChange.FileChange.ItemSerializer)
+
+		if config.C.AutoWorktree {
+			handleWorktreeChange(log, db, deserializedChange)
+		}
+
 		switch deserializedChange.FileChange.ChangeType {
 		case "Addition":
 			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines)
@@ -124,6 +131,81 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 		wg.Done()
 	}
 	log.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+}
+
+func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFileChange) {
+	prBridge, ok := change.FileChange.Item.(PRToOrgBridge)
+	if !ok {
+		return
+	}
+
+	repoName := prBridge.PR.Base.Repo.GetName()
+	ownerName := prBridge.PR.Base.Repo.Owner.GetLogin()
+	branchName := prBridge.PR.Head.GetRef()
+	prNumber := prBridge.PR.GetNumber()
+
+	repoLocation := config.C.RepoLocation
+	if strings.HasPrefix(repoLocation, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			repoLocation = strings.Replace(repoLocation, "~", home, 1)
+		}
+	}
+	repoDir := filepath.Join(repoLocation, repoName)
+	worktreeRoot := filepath.Join(repoLocation, fmt.Sprintf("%s_worktrees", repoName))
+	worktreePath := filepath.Join(worktreeRoot, fmt.Sprintf("%d_%s", prNumber, branchName))
+
+	// Check if repo exists
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		// Log debug if we can't find the repo, but don't error out loudly as it might be expected
+		log.Debug("Skipping worktree management, repo not found locally", "path", repoDir)
+		return
+	}
+
+	if change.FileChange.ChangeType == "Addition" {
+		// Create worktree
+		log.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
+		
+		// Ensure worktree root exists
+		if err := os.MkdirAll(worktreeRoot, 0755); err != nil {
+			log.Error("Failed to create worktree root directory", "path", worktreeRoot, "error", err)
+			return
+		}
+
+		// Check if it's already in DB or exists on disk
+		existingPath, err := db.GetWorktree(prNumber, repoName, ownerName)
+		if err == nil && existingPath != "" {
+			// Already tracked, maybe check if it still exists? For now assume it's good.
+			// Actually, if branch changed, we might need to handle that, but let's assume one branch per PR for now.
+			return
+		}
+
+		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath); err != nil {
+			// If it fails, we log it but don't stop the workflow
+			log.Error("Failed to create worktree", "error", err)
+		} else {
+			if err := db.AddWorktree(prNumber, repoName, ownerName, worktreePath, branchName); err != nil {
+				log.Error("Failed to record worktree in DB", "error", err)
+			}
+		}
+
+	} else if change.FileChange.ChangeType == "Delete" {
+		// Remove worktree
+		path, err := db.GetWorktree(prNumber, repoName, ownerName)
+		if err != nil {
+			log.Error("Error checking for worktree", "error", err)
+			return
+		}
+		if path != "" {
+			log.Info("Removing worktree", "pr", prNumber, "path", path)
+			if err := git_tools.RemoveWorktree(repoDir, path); err != nil {
+				log.Error("Failed to remove worktree", "error", err)
+			}
+			if err := db.RemoveWorktreeRecord(prNumber, repoName, ownerName); err != nil {
+				log.Error("Failed to remove worktree record from DB", "error", err)
+			}
+		}
+	}
 }
 
 func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {

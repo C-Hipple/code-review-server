@@ -253,6 +253,17 @@ func (db *DB) initSchema() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
 	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
+
+	CREATE TABLE IF NOT EXISTS Worktrees (
+		id INTEGER PRIMARY KEY,
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		path TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo, owner)
+	);
 	`
 	_, err = db.conn.Exec(pluginResultsSchema)
 	if err != nil {
@@ -260,6 +271,43 @@ func (db *DB) initSchema() error {
 	}
 
 	return nil
+}
+
+func (db *DB) AddWorktree(prNumber int, repo, owner, path, branch string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO Worktrees (pr_number, repo, owner, path, branch)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo, owner) DO UPDATE SET
+			path = excluded.path,
+			branch = excluded.branch,
+			created_at = CURRENT_TIMESTAMP`,
+		prNumber, repo, owner, path, branch,
+	)
+	return err
+}
+
+func (db *DB) GetWorktree(prNumber int, repo, owner string) (string, error) {
+	var path string
+	err := db.conn.QueryRow(
+		"SELECT path FROM Worktrees WHERE pr_number = ? AND repo = ? AND owner = ?",
+		prNumber, repo, owner,
+	).Scan(&path)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (db *DB) RemoveWorktreeRecord(prNumber int, repo, owner string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM Worktrees WHERE pr_number = ? AND repo = ? AND owner = ?",
+		prNumber, repo, owner,
+	)
+	return err
 }
 
 func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName string, result string, status string, sha string) error {

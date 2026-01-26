@@ -104,6 +104,13 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `url`                  | string   | GitHub HTML URL                                           |
 | `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
 
+#### Using the Worktree
+
+When `worktree_path` is provided, you can use it to quickly switch to the source code for that PR:
+
+- **Shell**: `cd <worktree_path>`
+- **Git Management**: The server manages these using `git worktree`. You can see all active worktrees with `git worktree list` inside the main repository.
+
 #### Rendered Comment Format
 
 Comments are rendered inline within the diff or at the file headers. They use a boxed format with special headers to indicate their type:

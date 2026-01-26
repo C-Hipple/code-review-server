@@ -265,9 +265,10 @@ Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
 
         if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
             const body = await req.json();
-            const { project, root, buffer, type, content } = body;
+            const { project, root, buffer, type, content, worktree } = body;
             const header = `Project: ${project}
 Root: ${root}
+Worktree: ${worktree}
 Buffer: ${buffer}
 Type: ${type}
 `;

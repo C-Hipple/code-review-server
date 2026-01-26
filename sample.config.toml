@@ -10,6 +10,7 @@ JiraDomain = "your-domain.atlassian.net"
 SleepDuration = 10 # Time to wait between updates (in minutes)
 GithubUsername = "your-github-username"
 RepoLocation = "~/" # Base directory where repos are cloned
+AutoWorktree = false # Automatically manage worktrees for PRs
 
 # Workflows define how PRs are gathered and displayed
 [[Workflows]]

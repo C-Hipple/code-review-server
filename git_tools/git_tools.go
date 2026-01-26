@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 
@@ -294,4 +295,50 @@ func GetCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListC
 	ctx := context.Background()
 	checkRuns, _, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, nil)
 	return checkRuns, err
+}
+
+func CreateWorktree(repoDir, branch, worktreePath string) error {
+	// Ensure the worktree directory doesn't exist (git worktree add will fail if it does, but maybe we want to be clean)
+	// Actually let git handle it.
+
+	// git worktree add <path> <branch>
+	cmd := exec.Command("git", "worktree", "add", worktreePath, branch)
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", string(output), "error", err)
+		return fmt.Errorf("git worktree add failed: %s: %w", string(output), err)
+	}
+	slog.Info("Created worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
+	return nil
+}
+
+func RemoveWorktree(repoDir, worktreePath string) error {
+	// git worktree remove <path> --force
+	cmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If the worktree is already gone from disk, git might complain.
+		// We might want to check if the path exists first, but git worktree prune might be needed.
+		slog.Warn("Failed to remove worktree (might already be gone)", "repo", repoDir, "path", worktreePath, "output", string(output), "error", err)
+		// We try to continue to prune anyway
+	}
+
+	// git worktree prune
+	cmdPrune := exec.Command("git", "worktree", "prune")
+	cmdPrune.Dir = repoDir
+	if out, err := cmdPrune.CombinedOutput(); err != nil {
+		slog.Warn("Failed to prune worktrees", "repo", repoDir, "output", string(out), "error", err)
+	}
+
+	// Ensure the directory is actually gone (if git failed to remove it for some reason but we want it gone)
+	if _, err := os.Stat(worktreePath); err == nil {
+		slog.Info("Worktree directory still exists, removing manually", "path", worktreePath)
+		if err := os.RemoveAll(worktreePath); err != nil {
+			return fmt.Errorf("failed to remove worktree directory: %w", err)
+		}
+	}
+
+	return nil
 }

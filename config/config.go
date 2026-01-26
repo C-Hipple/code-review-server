@@ -46,6 +46,7 @@ type Config struct {
 	JiraDomain     string
 	GithubUsername string
 	RepoLocation   string
+	AutoWorktree   bool
 	Plugins        []Plugin
 	DB             *database.DB
 }
@@ -62,6 +63,7 @@ func Initialize() error {
 		Workflows      []RawWorkflow
 		GithubUsername string
 		RepoLocation   string
+		AutoWorktree   bool
 		Plugins        []Plugin
 	}
 	home_dir, err := os.UserHomeDir()
@@ -122,6 +124,7 @@ func Initialize() error {
 		JiraDomain:     intermediate_config.JiraDomain,
 		GithubUsername: intermediate_config.GithubUsername,
 		RepoLocation:   repoLocation,
+		AutoWorktree:   intermediate_config.AutoWorktree,
 		Plugins:        intermediate_config.Plugins,
 		DB:             db,
 	}

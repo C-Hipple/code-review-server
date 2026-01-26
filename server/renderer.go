@@ -373,6 +373,7 @@ type PRMetadata struct {
 	CIFailures         []string `json:"ci_failures"`
 	Body               string   `json:"body"`
 	URL                string   `json:"url"`
+	WorktreePath       string   `json:"worktree_path"`
 }
 
 type PRDetails struct {
@@ -709,6 +710,12 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				Body:               pr.GetBody(),
 				URL:                pr.GetHTMLURL(),
 			}
+
+			// Fetch worktree path if it exists
+			if worktreePath, err := config.C.DB.GetWorktree(number, repo, owner); err == nil {
+				metadata.WorktreePath = worktreePath
+			}
+
 			if pr.Milestone != nil {
 				metadata.Milestone = pr.Milestone.GetTitle()
 			}

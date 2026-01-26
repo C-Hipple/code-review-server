@@ -79,6 +79,38 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
 
+#### PRMetadata Object
+
+| Field                  | Type     | Description                                               |
+|------------------------|----------|-----------------------------------------------------------|
+| `number`               | int      | Pull request number                                       |
+| `title`                | string   | PR title                                                  |
+| `author`               | string   | PR author login                                           |
+| `base_ref`             | string   | Base branch name                                          |
+| `head_ref`             | string   | Head branch name                                          |
+| `state`                | string   | PR state (open, closed, etc.)                             |
+| `milestone`            | string   | Milestone title                                           |
+| `labels`               | []string | List of label names                                       |
+| `assignees`            | []string | List of assignee logins                                   |
+| `reviewers`            | []string | List of requested individual reviewers                    |
+| `requested_teams`      | []string | List of requested team reviewers                          |
+| `approved_by`          | []string | Logins of users who approved                              |
+| `changes_requested_by` | []string | Logins of users who requested changes                      |
+| `commented_by`         | []string | Logins of users who commented                             |
+| `draft`                | bool     | Whether the PR is a draft                                 |
+| `ci_status`            | string   | Summary of CI status                                      |
+| `ci_failures`          | []string | List of failed CI check names and messages                |
+| `body`                 | string   | PR description body                                       |
+| `url`                  | string   | GitHub HTML URL                                           |
+| `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
+
+#### Using the Worktree
+
+When `worktree_path` is provided, you can use it to quickly switch to the source code for that PR:
+
+- **Shell**: `cd $(codereviewserver get-path --owner octocat --repo hello --number 42)` or simply `cd <worktree_path>`
+- **Git Management**: The server manages these using `git worktree`. You can see all active worktrees with `git worktree list` inside the main repository.
+
 #### Rendered Comment Format
 
 Comments are rendered inline within the diff or at the file headers. They use a boxed format with special headers to indicate their type:
@@ -406,6 +438,7 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
       "title": "Example PR",
       "author": "octocat",
       "state": "open",
+      "worktree_path": "/home/user/code/repo_worktrees/42_branch",
       "description": "PR description..."
     },
     "diff": "--- a/file.txt\n+++ b/file.txt\n...",

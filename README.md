@@ -62,7 +62,7 @@ go install
 
 ## Configuration
 
-code-review-server works from a toml config expected at the path `~/config/codereviewserver.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
+code-review-server works from a toml config expected at the path `~/.config/codereviewserver.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
 
 
 ```bash

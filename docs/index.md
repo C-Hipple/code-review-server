@@ -43,7 +43,7 @@ The web client is packaged with bun, and has a bun backend with react frontend.
 (crs-get-reviews)  ;; Load your required reviews into an ephermeral org-mode buffer
 
 ;; To start a review
-(crs-start-review-at-point)  ;; when your cursor is on a github URL 
+(crs-start-review-at-point)  ;; when your cursor is on a github URL
 
 
 (crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
@@ -54,7 +54,7 @@ Starting a review will then load a new code-review buffer which you can read the
 ## Installation
 
 ```bash
-git clone git@github.com/C-Hipple/gtdbot
+git clone git@github.com/C-Hipple/code-review-server
 cd code-review-server
 go install ./...
 ```

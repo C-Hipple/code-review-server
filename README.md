@@ -134,9 +134,9 @@ An Example complete config file is below
 ```toml
 
 Repos = [
-    "C-Hipple/gtdbot",
-    "C-Hipple/diff-lsp",
-    "C-Hipple/diff-lsp.el",
+    "gtdbot",
+    "diff-lsp",
+    "diff-lsp.el",
 ]
 SleepDuration = 5
 OrgFileDir = "~/gtd/"

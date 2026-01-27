@@ -15,7 +15,7 @@ The emacs client is in `client.el` in the root of the repository.
 
 2. Configure your toml config per guidelines below && setup your environment variables
 ```bash
-export GTDBOT_GITHUB_TOKEN="Github Token"  # Required.
+export CRS_GITHUB_TOKEN="Github Token"  # Required.
 export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
 ```
 
@@ -64,7 +64,7 @@ go install ./...
 code-review-server works from a toml config expected at the path `~/.config/codereviewserver.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
 
 ```bash
-export GTDBOT_GITHUB_TOKEN="Github Token"
+export CRS_GITHUB_TOKEN="Github Token"
 ```
 
 The basic format is root level config for general fields and then a list of tables called `[[Workflows]]` configuring each workflow.

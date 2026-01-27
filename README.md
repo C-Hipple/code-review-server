@@ -15,7 +15,7 @@ the emacs client is in client.el
 
 2. Configure your toml config per guidelines below && setup your environment variables
 ```bash
-export GTDBOT_GITHUB_TOKEN="Github Token"  # Required.
+export CRS_GITHUB_TOKEN="Github Token"  # Required.
 export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
 ```
 
@@ -27,7 +27,7 @@ Doing `./...` ensures that the server binary and the included plugins are instal
 
 ### For the web client (using bun)
 
-The web client is packaged with bun, and has a bun backend with a react frontend.  If you build and run the bun backend, you'll get a working webserver on localhost:3000 which lists all of your PRs.  From there you can 
+The web client is packaged with bun, and has a bun backend with a react frontend.  If you build and run the bun backend, you'll get a working webserver on localhost:3000 which lists all of your PRs.  From there you can
 
 4. `cd` to `bun_client`
 5. `bun install && bun run build`
@@ -43,7 +43,7 @@ The web client is packaged with bun, and has a bun backend with a react frontend
 (crs-get-reviews)  ;; Load your required reviews into an ephermeral org-mode buffer
 
 ;; To start a review
-(crs-start-review-at-point)  ;; when your cursor is on a github URL 
+(crs-start-review-at-point)  ;; when your cursor is on a github URL
 
 
 (crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
@@ -62,11 +62,11 @@ go install
 
 ## Configuration
 
-code-review-server works from a toml config expected at the path `~/config/gtdbot.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
+code-review-server works from a toml config expected at the path `~/config/codereviewserver.toml`.  A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
 
 
 ```bash
-export GTDBOT_GITHUB_TOKEN="Github Token"
+export CRS_GITHUB_TOKEN="Github Token"
 ```
 
 the basic format is root level config for general fields
@@ -222,11 +222,11 @@ JiraEpic = "BOARD-123" # the epic key
 ```
 
 
-## Release Checking
+## Release Checking (untested)
 
 Often for work-workflows, it's very important to know when your particular PR is not just merged, but released to production, or in a release client.
 
-You can configure a release check command which is run when PRs are added to the org file or updated.  GTDBOT will call-out to that program and expected a single string in response for
+You can configure a release check command which is run when PRs are added to the org file or updated.  CodeReviewServer will call-out to that program and expected a single string in response for
 
 example. If we have a program on our PATH variable named release-check, you should call it like this:
 
@@ -292,12 +292,3 @@ This project ships with `client.el` for running and configuring this in emacs se
                       :repo "C-Hipple/gtdbot"
                       :files ("*.el")))
 ```
-
-### Keybinds
-
-
-You'll likely want to bind run-gtdbot-oneoff and/or run-gtdbot-service.
-
-By default this package sets (if you use evil mode) `,r l` and `, r s` for those two commands.
-
-If you don't use evil mode, you'll have to pick your own keybinds.

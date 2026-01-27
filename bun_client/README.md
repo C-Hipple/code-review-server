@@ -12,7 +12,7 @@
 
 1. Start the Bun Backend (API Server):
    ```bash
-   # Make sure GTDBOT_GITHUB_TOKEN is set
+   # Make sure CRS_GITHUB_TOKEN is set
    cd bun_client
    ./start_server.sh
    ```

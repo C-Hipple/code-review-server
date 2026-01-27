@@ -206,7 +206,7 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 
 func GetGithubClient() *github.Client {
 	ctx := context.Background()
-	token := os.Getenv("GTDBOT_GITHUB_TOKEN")
+	token := os.Getenv("CRS_GITHUB_TOKEN")
 	if token == "" {
 		slog.Error("Error! No Github Token!")
 		os.Exit(1)

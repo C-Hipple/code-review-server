@@ -1865,19 +1865,20 @@ BRANCH-NAME is the name of the branch to checkout."
 
 
 (defun crs--get-ref-name ()
-  "Extract the branch name from the current crs buffer.
-TODO: This doesn't match if the root branch has a special char in it."
+  "Extract the branch name from the current crs buffer."
   (interactive)
   (save-excursion
     (goto-char (point-min))
-    (let ((found-ref ""))
-      (when (re-search-forward "^Refs:\\s+\\([^[:space:]]+\\)\\s+\\.\\.\\.\\s+\\(.+\\)$" nil t)
-        (setq found-ref (match-string 2)))
-      found-ref)))
+    (when (re-search-forward "^Refs:[[:space:]]+\\([^[:space:]]+\\)[[:space:]]+\\.\\.\\.[[:space:]]+\\([^[:space:]\n\r]+\\)" nil t)
+      (match-string 2))))
 
 (defun crs-checkout-current-project ()
   (interactive)
-  (crs--switch-and-fetch (projectile-project-name) (crs--get-ref-name)))
+  (if-let ((ref-name (crs--get-ref-name)))
+      (progn
+        (message "Checking out: %s" ref-name)
+        (crs--switch-and-fetch (projectile-project-name) ref-name))
+    (message "Warning: Could not find branch name in Refs line")))
 
 (provide 'crs-client)
 

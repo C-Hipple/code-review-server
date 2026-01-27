@@ -15,7 +15,7 @@ All methods are exposed under the `RPCHandler` namespace (e.g., `RPCHandler.GetP
 Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle:
 
 1.  **Spawning**: The client should start the `codereviewserver` binary as a child process.
-2.  **Environment**: Ensure `GTDBOT_GITHUB_TOKEN` is set in the environment if required.
+2.  **Environment**: Ensure `CRS_GITHUB_TOKEN` is set in the environment if required.
 3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
 4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
 5.  **Termination**: The server will terminate when its `stdin` is closed or when it receives an interrupt signal (SIGINT/SIGTERM).

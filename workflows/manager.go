@@ -121,9 +121,9 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 
 		switch deserializedChange.FileChange.ChangeType {
 		case "Addition":
-			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines)
+			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines, deserializedChange.FileChange.TTL)
 		case "Update", "Archive":
-			doc.UpdateDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item, deserializedChange.FileChange.ChangeType == "Archive", deserializedChange.Lines)
+			doc.UpdateDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item, deserializedChange.FileChange.ChangeType == "Archive", deserializedChange.Lines, deserializedChange.FileChange.TTL)
 		case "Delete":
 			doc.DeleteItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item)
 		}

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { rpcCall } from '../api';
+import { rpcCall, API_BASE } from '../api';
 import { Button, Badge, Modal, TextArea, Select, mapStatusToVariant, colors, shadows, Theme, THEME_OPTIONS } from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
 
@@ -185,6 +185,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const [lspUri, setLspUri] = useState<string | null>(null);
     const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
     const [repoExists, setRepoExists] = useState<boolean | null>(null);
+    const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
 
     useEffect(() => {
         loadPR();
@@ -196,6 +197,20 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
         const initLsp = async () => {
             try {
+                // Check LSP availability
+                try {
+                    const lspRes = await fetch(`${API_BASE}/api/check-lsp`);
+                    const lspData = await lspRes.json();
+                    setLspAvailable(lspData.available);
+                    if (!lspData.available) {
+                        return;
+                    }
+                } catch (e) {
+                    console.error("Failed to check LSP availability", e);
+                    setLspAvailable(false);
+                    return;
+                }
+
                 const checkRes = await rpcCall<{ Exists: boolean; Path: string }>('RPCHandler.CheckRepoExists', [{ Repo: repo }]);
                 setRepoExists(checkRes.Exists);
 
@@ -636,6 +651,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     };
 
     const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number, col: number) => {
+        if (!lspAvailable || !repoExists) return;
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
             setLspData(null);
@@ -1734,6 +1750,12 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }}>
                             <span style={{ fontSize: '14px' }}>⚠️</span>
                             Repo not found locally. LSP disabled.
+                        </div>
+                    )}
+                    {lspAvailable === false && (
+                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }} title="diff-lsp binary not found on server path">
+                            <span style={{ fontSize: '14px' }}>⚠️</span>
+                            LSP not active
                         </div>
                     )}
                 </div>

@@ -603,6 +603,14 @@ func (db *DB) DeleteItem(sectionID int64, identifier string) error {
 	return err
 }
 
+func (db *DB) DeleteItemByIdentifier(identifier string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM items WHERE identifier = ?",
+		identifier,
+	)
+	return err
+}
+
 func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error {
 	if len(identifiers) == 0 {
 		// Delete all items in section

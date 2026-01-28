@@ -7,27 +7,18 @@ import (
 )
 
 func TestInitialize_DuplicatePlugins(t *testing.T) {
-	home_dir, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("failed to get home directory: %v", err)
-	}
-	configDir := filepath.Join(home_dir, ".config")
-	err = os.MkdirAll(configDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
-	configPath := filepath.Join(configDir, "codereviewserver.toml")
+	// Use a temporary directory for XDG_CONFIG_HOME to avoid touching real config
+	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
 
-	// Backup existing config if it exists
-	var backupPath string
-	if _, err := os.Stat(configPath); err == nil {
-		backupPath = configPath + ".bak"
-		err = os.Rename(configPath, backupPath)
-		if err != nil {
-			t.Fatalf("failed to backup config: %v", err)
-		}
-		defer os.Rename(backupPath, configPath)
+	// Mock UserHomeDir to avoid accessing real home directory during migration check
+	oldUserHomeDir := UserHomeDir
+	defer func() { UserHomeDir = oldUserHomeDir }()
+	UserHomeDir = func() (string, error) {
+		return tempDir, nil
 	}
+
+	configPath := filepath.Join(tempDir, "codereviewserver.toml")
 
 	content := `
 [[Plugins]]
@@ -38,11 +29,10 @@ Command = "echo 1"
 Name = "test-plugin"
 Command = "echo 2"
 `
-	err = os.WriteFile(configPath, []byte(content), 0644)
+	err := os.WriteFile(configPath, []byte(content), 0644)
 	if err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
-	defer os.Remove(configPath)
 
 	err = Initialize()
 	if err == nil {
@@ -53,27 +43,18 @@ Command = "echo 2"
 }
 
 func TestInitialize_UniquePlugins(t *testing.T) {
-	home_dir, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("failed to get home directory: %v", err)
-	}
-	configDir := filepath.Join(home_dir, ".config")
-	err = os.MkdirAll(configDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
-	configPath := filepath.Join(configDir, "codereviewserver.toml")
+	// Use a temporary directory for XDG_CONFIG_HOME to avoid touching real config
+	tempDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
 
-	// Backup existing config if it exists
-	var backupPath string
-	if _, err := os.Stat(configPath); err == nil {
-		backupPath = configPath + ".bak"
-		err = os.Rename(configPath, backupPath)
-		if err != nil {
-			t.Fatalf("failed to backup config: %v", err)
-		}
-		defer os.Rename(backupPath, configPath)
+	// Mock UserHomeDir to avoid accessing real home directory during migration check
+	oldUserHomeDir := UserHomeDir
+	defer func() { UserHomeDir = oldUserHomeDir }()
+	UserHomeDir = func() (string, error) {
+		return tempDir, nil
 	}
+
+	configPath := filepath.Join(tempDir, "codereviewserver.toml")
 
 	content := `
 [[Plugins]]
@@ -84,14 +65,19 @@ Command = "echo 1"
 Name = "plugin-2"
 Command = "echo 2"
 `
-	err = os.WriteFile(configPath, []byte(content), 0644)
+	err := os.WriteFile(configPath, []byte(content), 0644)
 	if err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
-	defer os.Remove(configPath)
 
 	err = Initialize()
 	if err != nil {
 		t.Errorf("expected no error for unique plugin names, got %v", err)
+	}
+
+	// Verify DB was created in the correct location (subdir of XDG_CONFIG_HOME)
+	dbPath := filepath.Join(tempDir, "codereviewserver", "codereviewserver.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Errorf("expected database to be created at %s, but it was not found", dbPath)
 	}
 }

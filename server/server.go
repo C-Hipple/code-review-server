@@ -149,9 +149,8 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	go RunPlugins(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON))
 
 	// Get the full formatted response for the UI.
-	// Since GetPRDetails already refreshed the cache if skipCache was true,
-	// we use false here to avoid redundant API calls.
-	content, _ := GetFullPRResponse(owner, repo, number, false)
+	// We pass the already fetched details to avoid redundant API calls.
+	content, _ := GetFullPRResponse(owner, repo, number, false, details)
 
 	return details, content, nil
 }

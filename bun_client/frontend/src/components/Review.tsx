@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { rpcCall } from '../api';
+import { rpcCall, API_BASE } from '../api';
 import { Button, Badge, Modal, TextArea, Select, mapStatusToVariant, colors, shadows, Theme, THEME_OPTIONS } from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
 
@@ -167,6 +167,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
 
     const [submitting, setSubmitting] = useState(false);
+    const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+    const [isAddingComment, setIsAddingComment] = useState(false);
 
     // Comment form data
     const [filename, setFilename] = useState('');
@@ -183,6 +185,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const [lspUri, setLspUri] = useState<string | null>(null);
     const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
     const [repoExists, setRepoExists] = useState<boolean | null>(null);
+    const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
 
     useEffect(() => {
         loadPR();
@@ -194,6 +197,20 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
         const initLsp = async () => {
             try {
+                // Check LSP availability
+                try {
+                    const lspRes = await fetch(`${API_BASE}/api/check-lsp`);
+                    const lspData = await lspRes.json();
+                    setLspAvailable(lspData.available);
+                    if (!lspData.available) {
+                        return;
+                    }
+                } catch (e) {
+                    console.error("Failed to check LSP availability", e);
+                    setLspAvailable(false);
+                    return;
+                }
+
                 const checkRes = await rpcCall<{ Exists: boolean; Path: string }>('RPCHandler.CheckRepoExists', [{ Repo: repo }]);
                 setRepoExists(checkRes.Exists);
 
@@ -333,6 +350,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
     const handleAddComment = async () => {
         if (!filename || !commentBody) return;
+        setIsAddingComment(true);
         try {
             const params: any = {
                 Owner: owner,
@@ -354,26 +372,30 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
         } catch (e) {
             console.error(e);
             alert('Error adding comment');
+        } finally {
+            setIsAddingComment(false);
         }
     };
 
     const handleSubmitReview = async () => {
+        setIsSubmittingReview(true);
         try {
-            const res = await rpcCall<PRResponse>('RPCHandler.SubmitReview', [{
+            await rpcCall<PRResponse>('RPCHandler.SubmitReview', [{
                 Owner: owner,
                 Repo: repo,
                 Number: number,
                 Event: reviewEvent,
                 Body: reviewBody
             }]);
-            setContent(res.content || '');
-            setDiff(res.diff || '');
-            setComments(res.comments || []);
-            setOutdatedComments(res.outdated_comments || []);
             setSubmitting(false);
+            setReviewBody('');
+            // Refresh everything after submission
+            await handleSync();
         } catch (e) {
             console.error(e);
             alert('Error submitting review');
+        } finally {
+            setIsSubmittingReview(false);
         }
     };
 
@@ -629,6 +651,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     };
 
     const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number, col: number) => {
+        if (!lspAvailable || !repoExists) return;
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
             setLspData(null);
@@ -1048,6 +1071,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                     value={commentBody}
                                     onChange={e => setCommentBody(e.target.value)}
+                                    disabled={isAddingComment}
                                     style={{
                                         width: '100%',
                                         padding: '8px',
@@ -1062,8 +1086,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     }}
                                 />
                                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                    <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
-                                    <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                                    <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm" disabled={isAddingComment}>Cancel</Button>
+                                    <Button onClick={handleAddComment} size="sm" loading={isAddingComment}>{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
                                 </div>
                             </div>
                         )}
@@ -1283,6 +1307,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                 placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
                                 value={commentBody}
                                 onChange={e => setCommentBody(e.target.value)}
+                                disabled={isAddingComment}
                                 style={{
                                     width: '100%',
                                     padding: '8px',
@@ -1297,8 +1322,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                 }}
                             />
                             <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm">Cancel</Button>
-                                <Button onClick={handleAddComment} size="sm">{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm" disabled={isAddingComment}>Cancel</Button>
+                                <Button onClick={handleAddComment} size="sm" loading={isAddingComment}>{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
                             </div>
                         </div>
                     )}
@@ -1680,15 +1705,15 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     } else {
                         collapseAllFiles();
                     }
-                }} variant="secondary" size="sm">
+                }} variant="secondary" size="sm" disabled={loading}>
                     {collapsedFiles.size > 0 ? '▼ Expand All' : '◀ Collapse All'}
                 </Button>
                 <Button onClick={() => {
                     setFilename('');
                     setPosition('');
                     setShowCommentModal(true);
-                }}>+ Comment</Button>
-                <Button onClick={() => setSubmitting(true)} style={{ background: 'var(--success)' }}>Submit Review</Button>
+                }} disabled={loading}>+ Comment</Button>
+                <Button onClick={() => setSubmitting(true)} style={{ background: 'var(--success)' }} disabled={loading}>Submit Review</Button>
                 <Button
                     onClick={() => setShowPlugins(!showPlugins)}
                     variant={showPlugins ? 'primary' : 'secondary'}
@@ -1727,6 +1752,12 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             Repo not found locally. LSP disabled.
                         </div>
                     )}
+                    {lspAvailable === false && (
+                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }} title="diff-lsp binary not found on server path">
+                            <span style={{ fontSize: '14px' }}>⚠️</span>
+                            LSP not active
+                        </div>
+                    )}
                 </div>
                 <div style={{
                     padding: '16px',
@@ -1749,6 +1780,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         placeholder="Filename"
                         value={filename}
                         onChange={e => setFilename(e.target.value)}
+                        disabled={isAddingComment}
                         style={{
                             padding: '8px',
                             background: 'var(--bg-primary)',
@@ -1762,6 +1794,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         placeholder="Line Position in Diff"
                         value={position}
                         onChange={e => setPosition(e.target.value)}
+                        disabled={isAddingComment}
                         style={{
                             padding: '8px',
                             background: 'var(--bg-primary)',
@@ -1775,10 +1808,11 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         value={commentBody}
                         onChange={e => setCommentBody(e.target.value)}
                         rows={5}
+                        disabled={isAddingComment}
                     />
                     <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                        <Button onClick={resetCommentForm} variant="secondary">Cancel</Button>
-                        <Button onClick={handleAddComment}>Add</Button>
+                        <Button onClick={resetCommentForm} variant="secondary" disabled={isAddingComment}>Cancel</Button>
+                        <Button onClick={handleAddComment} loading={isAddingComment}>Add</Button>
                     </div>
                 </div>
             </Modal>
@@ -1793,6 +1827,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     <select
                         value={reviewEvent}
                         onChange={e => setReviewEvent(e.target.value)}
+                        disabled={isSubmittingReview}
                         style={{
                             padding: '8px',
                             background: 'var(--bg-primary)',
@@ -1810,10 +1845,11 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         value={reviewBody}
                         onChange={e => setReviewBody(e.target.value)}
                         rows={5}
+                        disabled={isSubmittingReview}
                     />
                     <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                        <Button onClick={() => setSubmitting(false)} variant="secondary">Cancel</Button>
-                        <Button onClick={handleSubmitReview} style={{ background: 'var(--success)' }}>Submit</Button>
+                        <Button onClick={() => setSubmitting(false)} variant="secondary" disabled={isSubmittingReview}>Cancel</Button>
+                        <Button onClick={handleSubmitReview} style={{ background: 'var(--success)' }} loading={isSubmittingReview}>Submit</Button>
                     </div>
                 </div>
             </Modal>

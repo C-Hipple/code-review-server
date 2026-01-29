@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -29,6 +30,7 @@ type Item struct {
 	DetailsJSON string // JSON array of detail lines
 	Tags        string // Comma-separated tags
 	Archived    bool
+	TTL         int64
 }
 
 type LocalComment struct {
@@ -98,6 +100,7 @@ func (db *DB) initSchema() error {
 		details_json TEXT NOT NULL,
 		tags TEXT DEFAULT '',
 		archived INTEGER DEFAULT 0,
+		ttl INTEGER DEFAULT 0,
 		UNIQUE(section_id, identifier),
 		FOREIGN KEY(section_id) REFERENCES sections(id) ON DELETE CASCADE
 	);
@@ -235,6 +238,14 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
 		if err != nil {
 			slog.Warn("Error adding sha column to PluginResults", "error", err)
+		}
+	}
+	// Migration: Add ttl column to items if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='ttl'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN ttl INTEGER DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding ttl column to items", "error", err)
 		}
 	}
 
@@ -435,7 +446,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	return sections, rows.Err()
 }
 
-func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, details []string, tags []string, archived bool) (*Item, error) {
+func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, details []string, tags []string, archived bool, ttl int64) (*Item, error) {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return nil, err
@@ -456,15 +467,16 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 	}
 
 	result, err := db.conn.Exec(
-		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, archived, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(section_id, identifier) DO UPDATE SET
 			status = excluded.status,
 			title = excluded.title,
 			details_json = excluded.details_json,
 			tags = excluded.tags,
-			archived = excluded.archived`,
-		sectionID, identifier, status, title, string(detailsJSON), tagsStr, archivedInt,
+			archived = excluded.archived,
+			ttl = excluded.ttl`,
+		sectionID, identifier, status, title, string(detailsJSON), tagsStr, archivedInt, ttl,
 	)
 	if err != nil {
 		return nil, err
@@ -495,6 +507,7 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		DetailsJSON: string(detailsJSON),
 		Tags:        tagsStr,
 		Archived:    archived,
+		TTL:         ttl,
 	}
 
 	return item, nil
@@ -503,9 +516,9 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 	var item Item
 	err := db.conn.QueryRow(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items WHERE section_id = ? AND identifier = ?",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? AND identifier = ?",
 		sectionID, identifier,
-	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.Archived)
+	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.Archived, &item.TTL)
 
 	if err != nil {
 		return nil, err
@@ -515,7 +528,7 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items WHERE section_id = ? ORDER BY id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
 	if err != nil {
@@ -527,7 +540,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	for rows.Next() {
 		var item Item
 		var archivedInt int
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
 			return nil, err
 		}
 		item.Archived = archivedInt == 1
@@ -538,7 +551,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 
 func (db *DB) GetAllItems() ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived FROM items ORDER BY section_id, id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -549,7 +562,31 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 	for rows.Next() {
 		var item Item
 		var archivedInt int
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
+			return nil, err
+		}
+		item.Archived = archivedInt == 1
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+func (db *DB) GetExpiredItems(sectionID int64) ([]*Item, error) {
+	now := time.Now().Unix()
+	rows, err := db.conn.Query(
+		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? AND ttl > 0 AND ttl < ?",
+		sectionID, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*Item
+	for rows.Next() {
+		var item Item
+		var archivedInt int
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
 			return nil, err
 		}
 		item.Archived = archivedInt == 1
@@ -562,6 +599,14 @@ func (db *DB) DeleteItem(sectionID int64, identifier string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM items WHERE section_id = ? AND identifier = ?",
 		sectionID, identifier,
+	)
+	return err
+}
+
+func (db *DB) DeleteItemByIdentifier(identifier string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM items WHERE identifier = ?",
+		identifier,
 	)
 	return err
 }

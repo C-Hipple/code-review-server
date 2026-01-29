@@ -31,6 +31,7 @@ type FileChanges struct {
 	Item           org.OrgTODO
 	Section        org.DBSection
 	ItemSerializer org.OrgSerializer
+	TTL            int64
 }
 
 type SerializedFileChange struct {
@@ -310,11 +311,16 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 	seen_prs := []*github.PullRequest{}
 	pr_strings := []string{}
 	changes := []FileChanges{}
+	
+	// Default TTL: 7 days
+	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
 
 	for _, pr := range prs {
 		pr_strings = append(pr_strings, fmt.Sprintf("%s-%v", pr.Base.Repo.GetFullName(), pr.GetNumber()))
 		seen_prs = append(seen_prs, pr)
-		changes = append(changes, SyncTODOToSectionDB(*doc, pr, *section, includeDiff))
+		fc := SyncTODOToSectionDB(*doc, pr, *section, includeDiff)
+		fc.TTL = ttl
+		changes = append(changes, fc)
 	}
 
 	if prune_command == "Delete" || prune_command == "Archive" {
@@ -333,11 +339,45 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 						Item:           item,
 						Section:        *section,
 						ItemSerializer: doc.Serializer,
+						TTL:            0,
 					}
 					changes = append(changes, fileChange)
 				}
 			}
 		}
+	}
+	
+	// Cleanup expired items
+	expiredItems, err := section.DB.GetExpiredItems(section.ID)
+	if err == nil {
+		for _, item := range expiredItems {
+			// Check if we are already processing this item (e.g. update/add/delete)
+			isBeingProcessed := false
+			for _, change := range changes {
+				if change.Item.Identifier() == item.Identifier {
+					isBeingProcessed = true
+					break
+				}
+			}
+			
+			if !isBeingProcessed {
+				orgItem := &org.DBOrgItem{
+					Item:        item,
+					Serializer:  doc.Serializer,
+					IndentLevel: section.IndentLevel,
+				}
+				fileChange := FileChanges{
+					ChangeType:     "Delete",
+					Item:           orgItem,
+					Section:        *section,
+					ItemSerializer: doc.Serializer,
+					TTL:            0,
+				}
+				changes = append(changes, fileChange)
+			}
+		}
+	} else {
+		log.Error("Error getting expired items", "error", err)
 	}
 
 	for _, output := range changes {
@@ -365,6 +405,7 @@ func SyncTODOToSectionDB(doc org.DBOrgDocument, pr *github.PullRequest, section 
 		Item:           pr_as_org,
 		Section:        section,
 		ItemSerializer: doc.Serializer,
+		TTL:            0, // Set by caller
 	}
 }
 

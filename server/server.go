@@ -424,6 +424,14 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		h.Log.Error("Error deleting local comments after submission", "error", err)
 	}
 
+	// 5. Remove the item from all sections in the database
+	// The identifier is constructed as RepoName + PRNumber (matching PRToOrgBridge.Identifier)
+	identifier := fmt.Sprintf("%s%d", args.Repo, args.Number)
+	err = config.C.DB.DeleteItemByIdentifier(identifier)
+	if err != nil {
+		h.Log.Error("Error removing item from sections after review", "identifier", identifier, "error", err)
+	}
+
 	reply.Okay = true
 
 	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)

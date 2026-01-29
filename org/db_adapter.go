@@ -38,20 +38,20 @@ func (d *DBOrgDocument) GetSection(sectionName string) (*DBSection, error) {
 	}, nil
 }
 
-func (d *DBOrgDocument) AddItemInSection(sectionName string, newItem OrgTODO) error {
+func (d *DBOrgDocument) AddItemInSection(sectionName string, newItem OrgTODO, ttl int64) error {
 	section, err := d.GetSection(sectionName)
 	if err != nil {
 		return err
 	}
-	return section.AddItem(newItem)
+	return section.AddItem(newItem, ttl)
 }
 
-func (d *DBOrgDocument) UpdateItemInSection(sectionName string, newItem OrgTODO, archive bool) error {
+func (d *DBOrgDocument) UpdateItemInSection(sectionName string, newItem OrgTODO, archive bool, ttl int64) error {
 	section, err := d.GetSection(sectionName)
 	if err != nil {
 		return err
 	}
-	return section.UpdateItem(newItem, archive)
+	return section.UpdateItem(newItem, archive, ttl)
 }
 
 func (d *DBOrgDocument) DeleteItemInSection(sectionName string, itemToDelete OrgTODO) error {
@@ -84,7 +84,7 @@ func (d *DBOrgDocument) DeleteItemInSection(sectionName string, itemToDelete Org
 	return section.DeleteItem(itemToDelete)
 }
 
-func (d *DBOrgDocument) AddDeserializedItemInSection(sectionName string, newLines []string) error {
+func (d *DBOrgDocument) AddDeserializedItemInSection(sectionName string, newLines []string, ttl int64) error {
 	section, err := d.GetSection(sectionName)
 	if err != nil {
 		return err
@@ -94,10 +94,10 @@ func (d *DBOrgDocument) AddDeserializedItemInSection(sectionName string, newLine
 	if err != nil {
 		return err
 	}
-	return section.AddItem(item)
+	return section.AddItem(item, ttl)
 }
 
-func (d *DBOrgDocument) UpdateDeserializedItemInSection(sectionName string, newItem OrgTODO, archive bool, newLines []string) error {
+func (d *DBOrgDocument) UpdateDeserializedItemInSection(sectionName string, newItem OrgTODO, archive bool, newLines []string, ttl int64) error {
 	section, err := d.GetSection(sectionName)
 	if err != nil {
 		return err
@@ -107,7 +107,7 @@ func (d *DBOrgDocument) UpdateDeserializedItemInSection(sectionName string, newI
 	if err != nil {
 		return err
 	}
-	return section.UpdateItem(item, archive)
+	return section.UpdateItem(item, archive, ttl)
 }
 
 type DBSection struct {
@@ -138,7 +138,7 @@ func (s *DBSection) GetItems() ([]OrgTODO, error) {
 	return items, nil
 }
 
-func (s *DBSection) AddItem(item OrgTODO) error {
+func (s *DBSection) AddItem(item OrgTODO, ttl int64) error {
 	identifier := item.Identifier()
 	slog.Debug("Adding item with identifier: " + identifier)
 	status := item.GetStatus()
@@ -152,7 +152,7 @@ func (s *DBSection) AddItem(item OrgTODO) error {
 
 	details := item.Details()
 
-	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, false)
+	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, false, ttl)
 	if err != nil {
 		slog.Error("Failed Upsert: ", err.Error(), err)
 	}
@@ -160,7 +160,7 @@ func (s *DBSection) AddItem(item OrgTODO) error {
 	return err
 }
 
-func (s *DBSection) UpdateItem(item OrgTODO, archive bool) error {
+func (s *DBSection) UpdateItem(item OrgTODO, archive bool, ttl int64) error {
 	identifier := item.Identifier()
 	slog.Debug("updating item with identifier: " + identifier)
 	status := item.GetStatus()
@@ -174,7 +174,7 @@ func (s *DBSection) UpdateItem(item OrgTODO, archive bool) error {
 
 	details := item.Details()
 
-	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, archive)
+	_, err := s.DB.UpsertItem(s.ID, identifier, status, title, details, tags, archive, ttl)
 	return err
 }
 

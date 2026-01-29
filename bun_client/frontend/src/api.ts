@@ -1,4 +1,4 @@
-const API_BASE = (typeof window !== "undefined" && (window.location.port === "5173" || window.location.port === "5174"))
+export const API_BASE = (typeof window !== "undefined" && (window.location.port === "5173" || window.location.port === "5174"))
     ? `${window.location.protocol}//${window.location.hostname}:5172`
     : "";
 const RPC_URL = `${API_BASE}/api/rpc`;

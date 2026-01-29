@@ -53,6 +53,19 @@ type Config struct {
 
 var C Config
 
+var UserHomeDir = os.UserHomeDir
+
+func getXDGConfigHome() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return xdg, nil
+	}
+	home, err := UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config"), nil
+}
+
 // Initialize loads the configuration from the config file and initializes the database.
 // This should be called from main() to allow proper error handling.
 func Initialize() error {
@@ -66,11 +79,13 @@ func Initialize() error {
 		AutoWorktree   bool
 		Plugins        []Plugin
 	}
-	home_dir, err := os.UserHomeDir()
+	
+	configHome, err := getXDGConfigHome()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to get config home: %w", err)
 	}
-	configPath := filepath.Join(home_dir, ".config/codereviewserver.toml")
+
+	configPath := filepath.Join(configHome, "codereviewserver.toml")
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config file at %s: %w", configPath, err)
@@ -105,7 +120,30 @@ func Initialize() error {
 	}
 
 	// Initialize database
-	dbPath := filepath.Join(home_dir, ".config/codereviewserver.db")
+	appDir := filepath.Join(configHome, "codereviewserver")
+	dbPath := filepath.Join(appDir, "codereviewserver.db")
+
+	// Attempt to migrate legacy database if it exists
+	homeDir, err := UserHomeDir()
+	if err == nil {
+		legacyDBPath := filepath.Join(homeDir, ".config/codereviewserver.db")
+		if _, err := os.Stat(legacyDBPath); err == nil {
+			// Legacy DB exists
+			if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+				// New DB does not exist, migrate
+				slog.Info("Migrating database to new location", "old", legacyDBPath, "new", dbPath)
+				if err := os.MkdirAll(appDir, 0755); err != nil {
+					slog.Error("Failed to create new database directory", "error", err)
+				} else {
+					if err := os.Rename(legacyDBPath, dbPath); err != nil {
+						slog.Warn("Failed to move legacy database, falling back to legacy path", "error", err)
+						dbPath = legacyDBPath
+					}
+				}
+			}
+		}
+	}
+
 	if _, err := os.Stat(dbPath); err == nil {
 		slog.Info("Found database file", "path", dbPath)
 	} else {

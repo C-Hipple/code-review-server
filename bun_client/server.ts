@@ -3,7 +3,7 @@ import { resolve, join, dirname } from "path";
 import { assets } from "./embedded_assets";
 
 const SERVER_PATH = Bun.which("crs") || "crs";
-const DIFF_LSP_PATH = Bun.which("diff-lsp") || "diff-lsp";
+const DIFF_LSP_PATH = Bun.which("diff-lsp");
 
 // Resolve the project root. 
 // When compiled, import.meta.dir is a virtual path (/$bunfs/root).
@@ -148,7 +148,7 @@ const CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 };
 
-Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
+Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess }>({
     port: parseInt(process.env.PORT || "5172"),
     async fetch(req, server) {
         const url = new URL(req.url);
@@ -263,6 +263,12 @@ Bun.serve<{ cmd: string, envs: Record<string, string>, proc?: Subprocess }>({
             return handleRpc("RPCHandler.CheckRepoExists", [body]);
         }
 
+        if (url.pathname === "/api/check-lsp" && req.method === "GET") {
+            return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
+                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+            });
+        }
+
         if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
             const body = await req.json();
             const { project, root, buffer, type, content, worktree } = body;
@@ -324,54 +330,65 @@ Type: ${type}
         open(ws) {
             console.log("LSP WebSocket connected");
             const { cmd, envs } = ws.data;
-            const proc = spawn([cmd], {
-                stdin: "pipe",
-                stdout: "pipe",
-                stderr: "inherit",
-                env: { ...process.env, ...envs }
-            });
-            ws.data.proc = proc;
+            if (!cmd) {
+                console.warn("diff-lsp not found, closing websocket");
+                ws.close();
+                return;
+            }
 
-            const reader = proc.stdout.getReader();
-            (async () => {
-                let buffer = Buffer.alloc(0);
-                try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        buffer = Buffer.concat([buffer, value]);
+            try {
+                const proc = spawn([cmd], {
+                    stdin: "pipe",
+                    stdout: "pipe",
+                    stderr: "inherit",
+                    env: { ...process.env, ...envs }
+                });
+                ws.data.proc = proc;
 
+                const reader = proc.stdout.getReader();
+                (async () => {
+                    let buffer = Buffer.alloc(0);
+                    try {
                         while (true) {
-                            const separatorIndex = buffer.indexOf('\r\n\r\n');
-                            if (separatorIndex === -1) break;
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buffer = Buffer.concat([buffer, value]);
 
-                            const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
-                            const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
-                            
-                            if (!lengthMatch) {
-                                console.error("Invalid LSP header:", headerPart);
-                                // Skip past this separator
-                                buffer = buffer.subarray(separatorIndex + 4);
-                                continue;
-                            }
+                            while (true) {
+                                const separatorIndex = buffer.indexOf('\r\n\r\n');
+                                if (separatorIndex === -1) break;
 
-                            const contentLength = parseInt(lengthMatch[1], 10);
-                            const totalMessageLength = separatorIndex + 4 + contentLength;
+                                const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
+                                const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
+                                
+                                if (!lengthMatch) {
+                                    console.error("Invalid LSP header:", headerPart);
+                                    // Skip past this separator
+                                    buffer = buffer.subarray(separatorIndex + 4);
+                                    continue;
+                                }
 
-                            if (buffer.length >= totalMessageLength) {
-                                const jsonBuf = buffer.subarray(separatorIndex + 4, totalMessageLength);
-                                const jsonStr = jsonBuf.toString('utf-8');
-                                ws.send(jsonStr);
-                                buffer = buffer.subarray(totalMessageLength);
-                            } else {
-                                break;
+                                const contentLength = parseInt(lengthMatch[1], 10);
+                                const totalMessageLength = separatorIndex + 4 + contentLength;
+
+                                if (buffer.length >= totalMessageLength) {
+                                    const jsonBuf = buffer.subarray(separatorIndex + 4, totalMessageLength);
+                                    const jsonStr = jsonBuf.toString('utf-8');
+                                    ws.send(jsonStr);
+                                    buffer = buffer.subarray(totalMessageLength);
+                                } else {
+                                    break;
+                                }
                             }
                         }
+                    } catch (e) {
+                        console.error("Error reading from LSP:", e);
                     }
-                } catch (e) {
-                    console.error("Error reading from LSP:", e);
-                }
-            })();
+                })();
+            } catch (e) {
+                console.error("Error spawning LSP process:", e);
+                ws.close();
+            }
         },
         message(ws, message) {
             console.log("LSP Server received message:", message);
@@ -380,15 +397,23 @@ Type: ${type}
                 const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
                 const length = new TextEncoder().encode(msgStr).length;
                 const wrapped = `Content-Length: ${length}\r\n\r\n${msgStr}`;
-                proc.stdin.write(wrapped);
-                proc.stdin.flush();
+                try {
+                    proc.stdin.write(wrapped);
+                    proc.stdin.flush();
+                } catch (e) {
+                    console.error("Error writing to LSP process:", e);
+                }
             }
         },
         close(ws) {
             console.log("LSP WebSocket closed");
             const proc = ws.data.proc;
             if (proc) {
-                proc.kill();
+                try {
+                    proc.kill();
+                } catch (e) {
+                    console.error("Error killing LSP process:", e);
+                }
             }
         },
     }

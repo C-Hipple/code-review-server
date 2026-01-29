@@ -29,7 +29,7 @@ func main() {
 	flag.Parse()
 
 	if *testFlag {
-		content, err := server.GetFullPRResponse("C-Hipple", "gtdbot", 9, false)
+		content, err := server.GetFullPRResponse("C-Hipple", "gtdbot", 9, false, nil)
 		if err != nil {
 			slog.Error("Error getting PR response", "error", err)
 			os.Exit(1)

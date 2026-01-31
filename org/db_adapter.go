@@ -1,9 +1,10 @@
 package org
 
 import (
+	"crs/config"
+	"crs/database"
 	"database/sql"
 	"fmt"
-    "crs/database"
 	"log/slog"
 	"strings"
 )
@@ -21,7 +22,8 @@ func NewDBClient(db *database.DB, serializer OrgSerializer) *DBOrgDocument {
 }
 
 func (d *DBOrgDocument) GetSection(sectionName string) (*DBSection, error) {
-	section, err := d.DB.GetOrCreateSection(sectionName, 2)
+	priority := config.C.SectionPriority[sectionName]
+	section, err := d.DB.GetOrCreateSection(sectionName, 2, priority)
 	if err != nil {
 		return nil, err
 	}

@@ -47,8 +47,9 @@ type Config struct {
 	GithubUsername string
 	RepoLocation   string
 	AutoWorktree   bool
-	Plugins        []Plugin
-	DB             *database.DB
+	SectionPriority map[string]int // Map of section title to priority (lower is better)
+	Plugins         []Plugin
+	DB              *database.DB
 }
 
 var C Config
@@ -77,39 +78,30 @@ func getXDGConfigHome() (string, error) {
 	return filepath.Join(home, ".config"), nil
 }
 
-// Initialize loads the configuration from the config file and initializes the database.
-// This should be called from main() to allow proper error handling.
-func Initialize() error {
+// parseConfig parses the configuration from bytes and returns a Config struct.
+// It does NOT initialize the database.
+func parseConfig(data []byte) (*Config, error) {
 	var intermediate_config struct {
-		Repos          []string
-		JiraDomain     string
-		SleepDuration  int64
-		Workflows      []RawWorkflow
-		GithubUsername string
-		RepoLocation   string
-		AutoWorktree   bool
-		Plugins        []Plugin
-	}
-	
-	configHome, err := getXDGConfigHome()
-	if err != nil {
-		return fmt.Errorf("failed to get config home: %w", err)
+		Repos           []string
+		JiraDomain      string
+		SleepDuration   int64
+		Workflows       []RawWorkflow
+		GithubUsername  string
+		RepoLocation    string
+		AutoWorktree    bool
+		SectionPriority map[string]int
+		Plugins         []Plugin
 	}
 
-	configPath := filepath.Join(configHome, "codereviewserver.toml")
-	the_bytes, err := os.ReadFile(configPath)
+	err := toml.Unmarshal(data, &intermediate_config)
 	if err != nil {
-		return fmt.Errorf("failed to read config file at %s: %w", configPath, err)
-	}
-	err = toml.Unmarshal(the_bytes, &intermediate_config)
-	if err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	pluginNames := make(map[string]bool)
 	for _, p := range intermediate_config.Plugins {
 		if pluginNames[p.Name] {
-			return fmt.Errorf("duplicate plugin name found: %s", p.Name)
+			return nil, fmt.Errorf("duplicate plugin name found: %s", p.Name)
 		}
 		pluginNames[p.Name] = true
 	}
@@ -128,6 +120,38 @@ func Initialize() error {
 	parsed_sleep_duration := time.Duration(10) * time.Minute
 	if intermediate_config.SleepDuration != 0 {
 		parsed_sleep_duration = time.Duration(intermediate_config.SleepDuration) * time.Minute
+	}
+
+	return &Config{
+		Repos:           intermediate_config.Repos,
+		RawWorkflows:    intermediate_config.Workflows,
+		SleepDuration:   parsed_sleep_duration,
+		JiraDomain:      intermediate_config.JiraDomain,
+		GithubUsername:  intermediate_config.GithubUsername,
+		RepoLocation:    repoLocation,
+		AutoWorktree:    intermediate_config.AutoWorktree,
+		SectionPriority: intermediate_config.SectionPriority,
+		Plugins:         intermediate_config.Plugins,
+	}, nil
+}
+
+// Initialize loads the configuration from the config file and initializes the database.
+// This should be called from main() to allow proper error handling.
+func Initialize() error {
+	configHome, err := getXDGConfigHome()
+	if err != nil {
+		return fmt.Errorf("failed to get config home: %w", err)
+	}
+
+	configPath := filepath.Join(configHome, "codereviewserver.toml")
+	the_bytes, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config file at %s: %w", configPath, err)
+	}
+
+	config, err := parseConfig(the_bytes)
+	if err != nil {
+		return err
 	}
 
 	// Initialize database
@@ -176,16 +200,7 @@ func Initialize() error {
 	}
 	slog.Info("Database initialized successfully")
 
-	C = Config{
-		Repos:          intermediate_config.Repos,
-		RawWorkflows:   intermediate_config.Workflows,
-		SleepDuration:  parsed_sleep_duration,
-		JiraDomain:     intermediate_config.JiraDomain,
-		GithubUsername: intermediate_config.GithubUsername,
-		RepoLocation:   repoLocation,
-		AutoWorktree:   intermediate_config.AutoWorktree,
-		Plugins:        intermediate_config.Plugins,
-		DB:             db,
-	}
+	config.DB = db
+	C = *config
 	return nil
 }

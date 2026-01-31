@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestInitialize_DuplicatePlugins(t *testing.T) {
@@ -79,5 +80,104 @@ Command = "echo 2"
 	dbPath := filepath.Join(tempDir, ".crs", "codereviewserver.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Errorf("expected database to be created at %s, but it was not found", dbPath)
+	}
+}
+
+func TestParseConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    *Config
+		wantErr bool
+	}{
+		{
+			name: "Basic Config",
+			content: `
+GithubUsername = "user"
+Repos = ["owner/repo"]
+`,
+			want: &Config{
+				GithubUsername: "user",
+				Repos:          []string{"owner/repo"},
+				RepoLocation:   "~/",
+				SleepDuration:  10 * time.Minute,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Section Priority",
+			content: `
+[SectionPriority]
+"High Priority" = 10
+"Low Priority" = 100
+`,
+			want: &Config{
+				RepoLocation:  "~/",
+				SleepDuration: 10 * time.Minute,
+				SectionPriority: map[string]int{
+					"High Priority": 10,
+					"Low Priority":  100,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Custom Sleep and Repo Location",
+			content: `
+RepoLocation = "/custom/path"
+SleepDuration = 5
+`,
+			want: &Config{
+				RepoLocation:  "/custom/path",
+				SleepDuration: 5 * time.Minute,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Duplicate Plugins",
+			content: `
+[[Plugins]]
+Name = "dup"
+Command = "echo 1"
+
+[[Plugins]]
+Name = "dup"
+Command = "echo 2"
+`,
+			want:    nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseConfig([]byte(tt.content))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if got.GithubUsername != tt.want.GithubUsername {
+					t.Errorf("GithubUsername = %v, want %v", got.GithubUsername, tt.want.GithubUsername)
+				}
+				if got.RepoLocation != tt.want.RepoLocation {
+					t.Errorf("RepoLocation = %v, want %v", got.RepoLocation, tt.want.RepoLocation)
+				}
+				if got.SleepDuration != tt.want.SleepDuration {
+					t.Errorf("SleepDuration = %v, want %v", got.SleepDuration, tt.want.SleepDuration)
+				}
+				if len(got.Repos) != len(tt.want.Repos) {
+					t.Errorf("Repos length = %v, want %v", len(got.Repos), len(tt.want.Repos))
+				}
+				if len(got.SectionPriority) != len(tt.want.SectionPriority) {
+					t.Errorf("SectionPriority length = %v, want %v", len(got.SectionPriority), len(tt.want.SectionPriority))
+				}
+				for k, v := range tt.want.SectionPriority {
+					if got.SectionPriority[k] != v {
+						t.Errorf("SectionPriority[%s] = %v, want %v", k, got.SectionPriority[k], v)
+					}
+				}
+			}
+		})
 	}
 }

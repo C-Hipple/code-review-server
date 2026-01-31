@@ -76,7 +76,9 @@ Repos = ["owner/repo"]
 SleepDuration = 1 # int (in minutes, optional, default=1 minute)
 GithubUsername = "username" # [optional]
 RepoLocation = "~/" # [optional, default="~/"]
+SectionPriority = { "Section Name" = 10 } # [optional]
 ```
+`SectionPriority` allows you to define the order of sections in your client.  Lower numbers come first. This map keys the section title to an integer.
 
 `GithubUsername` is used for determining when using the `NotMyPRs` or `FilterMyPRs` filters. It is also required for `FilterWaitingOnMe` and `FilterWaitingOnAuthor` to correctly identify your interaction state.
 `RepoLocation` is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.

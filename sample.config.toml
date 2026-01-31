@@ -11,6 +11,11 @@ SleepDuration = 10 # Time to wait between updates (in minutes)
 GithubUsername = "your-github-username"
 RepoLocation = "~/" # Base directory where repos are cloned
 AutoWorktree = false # Automatically manage worktrees for PRs
+[SectionPriority]
+"My Open PRs" = 10
+"Needs My Team's Review" = 20
+"Closed PRs" = 100
+
 
 # Workflows define how PRs are gathered and displayed
 [[Workflows]]

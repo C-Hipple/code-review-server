@@ -170,6 +170,8 @@ Each workflow can use the available filters:
 *   `FilterCIFailing` - Only include PRs with failing CI/Actions
 *   `FilterStale` - PRs with no activity for more than 3 days
 *   `FilterNotStale` - PRs with activity within the last 3 days
+*   `FilterWaitingOnMe` - PRs where you are a requested reviewer and need to act
+*   `FilterWaitingOnAuthor` - PRs where you were the last to act and are waiting on the author
 
 ### Team-Based Filtering
 

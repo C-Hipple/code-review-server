@@ -554,3 +554,162 @@ func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
 	}
 	return filtered
 }
+
+type InteractionState struct {
+	LastMeTime     time.Time
+	LastOthersTime time.Time
+	LastCommitTime time.Time
+}
+
+func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
+	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *pr.Number)
+	if val, found := GlobalCache.Get(cacheKey); found {
+		return val.(InteractionState)
+	}
+
+	client := GetGithubClient()
+	ctx := context.Background()
+	myLogin := config.C.GithubUsername
+
+	state := InteractionState{}
+
+	// Commits activity (proxy via UpdatedAt or specifically head SHA update)
+	if pr.UpdatedAt != nil {
+		state.LastCommitTime = *pr.UpdatedAt
+	}
+
+	// Fetch Reviews
+	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
+	if err == nil {
+		for _, r := range reviews {
+			if r.SubmittedAt == nil {
+				continue
+			}
+			if r.User != nil && *r.User.Login == myLogin {
+				if r.SubmittedAt.After(state.LastMeTime) {
+					state.LastMeTime = *r.SubmittedAt
+				}
+			} else {
+				if r.SubmittedAt.After(state.LastOthersTime) {
+					state.LastOthersTime = *r.SubmittedAt
+				}
+			}
+		}
+	}
+
+	// Fetch Review Comments
+	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
+	if err == nil {
+		for _, c := range reviewComments {
+			if c.CreatedAt == nil {
+				continue
+			}
+			if c.User != nil && *c.User.Login == myLogin {
+				if c.CreatedAt.After(state.LastMeTime) {
+					state.LastMeTime = *c.CreatedAt
+				}
+			} else {
+				if c.CreatedAt.After(state.LastOthersTime) {
+					state.LastOthersTime = *c.CreatedAt
+				}
+			}
+		}
+	}
+
+	// Fetch Issue Comments
+	issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+	if err == nil {
+		for _, c := range issueComments {
+			if c.CreatedAt == nil {
+				continue
+			}
+			if c.User != nil && *c.User.Login == myLogin {
+				if c.CreatedAt.After(state.LastMeTime) {
+					state.LastMeTime = *c.CreatedAt
+				}
+			} else {
+				if c.CreatedAt.After(state.LastOthersTime) {
+					state.LastOthersTime = *c.CreatedAt
+				}
+			}
+		}
+	}
+
+	GlobalCache.Set(cacheKey, state, 10*time.Minute)
+	return state
+}
+
+func GetMyTeams() []string {
+	cacheKey := "my_teams"
+	if val, found := GlobalCache.Get(cacheKey); found {
+		return val.([]string)
+	}
+
+	client := GetGithubClient()
+	ctx := context.Background()
+
+	// List teams for the authenticated user
+	// Note: go-github v48 might have different structure. Checking...
+	teams, _, err := client.Teams.ListUserTeams(ctx, nil)
+	if err != nil {
+		slog.Error("Error fetching user teams", "error", err)
+		return []string{}
+	}
+
+	slugs := []string{}
+	for _, t := range teams {
+		if t.Slug != nil {
+			slugs = append(slugs, *t.Slug)
+		}
+	}
+
+	GlobalCache.Set(cacheKey, slugs, 30*time.Minute)
+	return slugs
+}
+
+func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+	myLogin := config.C.GithubUsername
+	myTeams := GetMyTeams()
+
+	for _, pr := range prs {
+		// Is Requested?
+		isRequested := false
+		for _, r := range pr.RequestedReviewers {
+			if r.Login != nil && *r.Login == myLogin {
+				isRequested = true
+				break
+			}
+		}
+		if !isRequested {
+			for _, t := range pr.RequestedTeams {
+				if t.Slug != nil && slices.Contains(myTeams, *t.Slug) {
+					isRequested = true
+					break
+				}
+			}
+		}
+
+		if isRequested {
+			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
+			if !actedSinceOthers {
+				filtered = append(filtered, pr)
+			}
+		}
+	}
+	return filtered
+}
+
+func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+
+	for _, pr := range prs {
+		state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+		actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
+		if actedSinceOthers {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
+}

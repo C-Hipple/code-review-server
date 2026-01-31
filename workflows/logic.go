@@ -311,9 +311,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 	seen_prs := []*github.PullRequest{}
 	pr_strings := []string{}
 	changes := []FileChanges{}
-	
-	// Default TTL: 7 days
-	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
+	ttl := time.Now().Add(2 * time.Hour).Unix()
 
 	for _, pr := range prs {
 		pr_strings = append(pr_strings, fmt.Sprintf("%s-%v", pr.Base.Repo.GetFullName(), pr.GetNumber()))

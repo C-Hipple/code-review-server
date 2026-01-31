@@ -157,6 +157,8 @@ Each workflow can use the available filters:
 *   `FilterIsDraft` - Only include draft PRs
 *   `FilterNotMyPRs` - Exclude PRs authored by you
 *   `FilterMyPRs` - Only include PRs authored by you
+*   `FilterCIPassing` - Only include PRs with passing CI/Actions
+*   `FilterCIFailing` - Only include PRs with failing CI/Actions
 
 ### Team-Based Filtering
 

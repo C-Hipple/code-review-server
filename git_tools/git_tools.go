@@ -1,8 +1,8 @@
 package git_tools
 
 import (
-	"crs/config"
 	"context"
+	"crs/config"
 	"fmt"
 	"log/slog"
 	"os"
@@ -283,7 +283,6 @@ func FilterPRsByAssignedTeam(prs []*github.PullRequest, target_team string) []*g
 	}
 	return filtered
 }
-
 
 func SubmitReview(client *github.Client, owner string, repo string, number int, review *github.PullRequestReviewRequest) error {
 	ctx := context.Background()
@@ -712,4 +711,19 @@ func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
 		}
 	}
 	return filtered
+}
+
+func MakeLabelFilter(targetLabel string) PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		filtered := []*github.PullRequest{}
+		for _, pr := range prs {
+			for _, label := range pr.Labels {
+				if label.Name != nil && *label.Name == targetLabel {
+					filtered = append(filtered, pr)
+					break
+				}
+			}
+		}
+		return filtered
+	}
 }

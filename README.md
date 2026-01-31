@@ -172,6 +172,7 @@ Each workflow can use the available filters:
 *   `FilterNotStale` - PRs with activity within the last 3 days
 *   `FilterWaitingOnMe` - PRs where you are a requested reviewer and need to act
 *   `FilterWaitingOnAuthor` - PRs where you were the last to act and are waiting on the author
+*   `FilterByLabel:<label_name>` - Only include PRs with the specified label (e.g., `FilterByLabel:bug`)
 
 ### Team-Based Filtering
 

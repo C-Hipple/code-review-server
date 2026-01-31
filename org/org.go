@@ -106,7 +106,10 @@ func (oi OrgItem) Details() []string {
 func (oi OrgItem) Repo() string {
 	for _, line := range oi.Details() {
 		if strings.HasPrefix(line, "Repo:") {
-			return strings.Split(line, ": ")[1]
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				return strings.TrimSpace(parts[1])
+			}
 		}
 	}
 	return ""
@@ -140,5 +143,5 @@ func (oi OrgItem) CheckDone() bool {
 }
 
 func (oi OrgItem) Identifier() string {
-	return oi.Repo() + oi.ID()
+	return fmt.Sprintf("%s-%s", oi.Repo(), oi.ID())
 }

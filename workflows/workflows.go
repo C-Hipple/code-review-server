@@ -44,7 +44,6 @@ type SingleRepoSyncReviewRequestsWorkflow struct {
 	Owner               string
 	Repo                string
 	Filters             []git_tools.PRFilter
-	OrgFileName         string
 	SectionTitle        string
 	ReleaseCheckCommand string
 	Prune               string
@@ -53,10 +52,6 @@ type SingleRepoSyncReviewRequestsWorkflow struct {
 
 func (w SingleRepoSyncReviewRequestsWorkflow) GetName() string {
 	return w.Name
-}
-
-func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgFilename() string {
-	return w.OrgFileName
 }
 
 func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgSectionName() string {
@@ -108,7 +103,6 @@ type SyncReviewRequestsWorkflow struct {
 	IncludeDiff bool
 
 	// org output info
-	OrgFileName         string
 	SectionTitle        string
 	ReleaseCheckCommand string
 }
@@ -142,10 +136,6 @@ func (w SyncReviewRequestsWorkflow) GetName() string {
 	return w.Name
 }
 
-func (w SyncReviewRequestsWorkflow) GetOrgFilename() string {
-	return w.OrgFileName
-}
-
 func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
@@ -155,7 +145,6 @@ type ListMyPRsWorkflow struct {
 	Owner               string
 	Repos               []string
 	Filters             []git_tools.PRFilter
-	OrgFileName         string
 	SectionTitle        string
 	PRState             string
 	ReleaseCheckCommand string
@@ -165,10 +154,6 @@ type ListMyPRsWorkflow struct {
 
 func (w ListMyPRsWorkflow) GetName() string {
 	return w.Name
-}
-
-func (w ListMyPRsWorkflow) GetOrgFilename() string {
-	return w.OrgFileName
 }
 
 func (w ListMyPRsWorkflow) GetOrgSectionName() string {

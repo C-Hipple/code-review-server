@@ -78,14 +78,14 @@ The general fields are:
 ```
 Repos: list[str] # List of "owner/repo" strings.
 SleepDuration: int (in minutes, optional, default=1 minute)
-OrgFileDir: str
 GithubUsername: str [optional]
 RepoLocation: str [optional, default="~/"]
 ```
 
 `Repos` is a list of repositories in the format "owner/repo".  Workflows can also define their own `Repos` list which overrides this global list.
 
-OrgFileDir will default to "~/" if it's not defined.  Github username is used for determining when using the NotMyPRs or MyPRs filters
+Github username is used for determining when using the NotMyPRs or MyPRs filters
+
 RepoLocation is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 
 
@@ -95,7 +95,6 @@ WorkflowType: str
 Name: str
 Owner: str
 Filters: list[str]
-OrgFileName: str
 SectionTitle: str
 ReleaseCommandCheck: str
 Prune: string
@@ -141,14 +140,12 @@ Repos = [
     "C-Hipple/diff-lsp.el",
 ]
 SleepDuration = 5
-OrgFileDir = "~/gtd/"
 
 [[Workflows]]
 WorkflowType = "SyncReviewRequestsWorkflow"
 Name = "List Open PRs"
 Owner = "C-Hipple"
 Filters = ["FilterNotDraft"]
-OrgFileName = "reviews.org"
 SectionTitle = "Open PRs"
 Prune = "Archive"
 
@@ -156,7 +153,6 @@ Prune = "Archive"
 WorkflowType = "ListMyPRsWorkflow"
 Name = "List Closed PRs"
 Owner = "C-Hipple"
-OrgFileName = "reviews.org"
 SectionTitle = "Closed PRs"
 Prune = "Delete"
 ```
@@ -181,7 +177,6 @@ Name = "Growth Team Reviews"
 Owner = "your-org"
 Filters = ["FilterNotDraft"]
 Teams = ["growth-pod-review", "growth-and-purchase-pod"]
-OrgFileName = "reviews.org"
 SectionTitle = "Growth Team Reviews"
 Prune = "Archive"
 
@@ -191,7 +186,6 @@ Name = "Backend Team Reviews"
 Owner = "your-org"
 Filters = ["FilterNotDraft"]
 Teams = ["backend-team", "api-reviewers"]
-OrgFileName = "reviews.org"
 SectionTitle = "Backend Reviews"
 Prune = "Archive"
 ```
@@ -218,7 +212,6 @@ WorkflowType = "ProjectListWorkflow"
 Name = "Project - Example"
 Owner = "C-Hipple"
 Repo = "diff-lsp"
-OrgFileName = "reviews.org"
 SectionTitle = "Diff LSP Upgrade Project"
 JiraEpic = "BOARD-123" # the epic key
 ```

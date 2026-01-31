@@ -102,6 +102,8 @@ var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullR
 	"FilterIsDraft":           git_tools.FilterIsDraft,
 	"FilterNotMyPRs":          git_tools.FilterNotMyPRs,
 	"FilterMyPRs":             git_tools.FilterMyPRs,
+	"FilterCIPassing":         git_tools.FilterCIPassing,
+	"FilterCIFailing":         git_tools.FilterCIFailing,
 }
 
 func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {

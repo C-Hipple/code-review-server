@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/go-github/v48/github"
 	"golang.org/x/oauth2"
@@ -360,4 +362,173 @@ func RemoveWorktree(repoDir, worktreePath string) error {
 	}
 
 	return nil
+}
+
+type CIStatusInfo struct {
+	Statuses      []string
+	OverallStatus string
+}
+
+type CacheEntry struct {
+	Value      interface{}
+	Expiration time.Time
+}
+
+type DataCache struct {
+	mu    sync.RWMutex
+	store map[string]CacheEntry
+}
+
+func NewDataCache() *DataCache {
+	return &DataCache{
+		store: make(map[string]CacheEntry),
+	}
+}
+
+func (c *DataCache) Set(key string, value interface{}, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.store[key] = CacheEntry{
+		Value:      value,
+		Expiration: time.Now().Add(ttl),
+	}
+}
+
+func (c *DataCache) Get(key string) (interface{}, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, found := c.store[key]
+	if !found {
+		return nil, false
+	}
+	if time.Now().After(entry.Expiration) {
+		return nil, false
+	}
+	return entry.Value, true
+}
+
+var GlobalCache = NewDataCache()
+
+func GetCIStatus(owner string, repo string, branch string) CIStatusInfo {
+	cacheKey := fmt.Sprintf("ci_status:%s/%s:%s", owner, repo, branch)
+	if val, found := GlobalCache.Get(cacheKey); found {
+		return val.(CIStatusInfo)
+	}
+
+	client := GetGithubClient()
+	// branch typically comes as "username:branch_name" from GitHub API
+	branchParts := strings.Split(branch, ":")
+	apiBranch := branch
+	if len(branchParts) > 1 {
+		apiBranch = branchParts[1]
+	}
+
+	opts := github.ListWorkflowRunsOptions{Branch: apiBranch}
+	runs, _, err := client.Actions.ListRepositoryWorkflowRuns(context.Background(), owner, repo, &opts)
+
+	if err != nil {
+		slog.Error("Error getting workflow runs", "error", err, "owner", owner, "repo", repo, "branch", apiBranch)
+		return CIStatusInfo{Statuses: []string{}, OverallStatus: "TODO"}
+	}
+
+	var statuses []string
+	hasFailure := false
+	hasInProgress := false
+	allSuccess := true
+
+	processedRuns := ProcessWorkflowRuns(runs.WorkflowRuns)
+
+	for _, run := range processedRuns {
+		status := "<nil>" // completed, in_progress
+		if run.Status != nil {
+			status = "[" + *run.Status + "]"
+			if *run.Status == "in_progress" {
+				hasInProgress = true
+			}
+		}
+		conclusion := " "
+		if run.Conclusion != nil {
+			if *run.Conclusion == "success" {
+				conclusion = "✅"
+				status = "" // We know the status if it was a success
+			} else if *run.Conclusion == "failure" {
+				conclusion = "❌"
+				hasFailure = true
+				allSuccess = false
+			} else if *run.Conclusion != "success" {
+				allSuccess = false // Any conclusion that is not success means not all are success
+			}
+		} else {
+			// If conclusion is nil, it might still be in progress or pending
+			allSuccess = false
+			if run.Status != nil && *run.Status != "completed" {
+				hasInProgress = true
+			}
+		}
+
+		name := "Unknown Workflow Name"
+		if run.Name != nil {
+			name = *run.Name
+		}
+
+		item := fmt.Sprintf("[%s] %s %s", conclusion, status, name)
+		statuses = append(statuses, item)
+	}
+
+	overallStatus := ""
+	if hasFailure {
+		overallStatus = "TODO"
+	} else if hasInProgress {
+		overallStatus = "WAITING"
+	} else if allSuccess && len(processedRuns) > 0 {
+		overallStatus = "DONE"
+	} else {
+		// Default to DONE if no failures and no in_progress, assuming non-success conclusions are also acceptable for DONE.
+		overallStatus = "DONE"
+	}
+
+	info := CIStatusInfo{Statuses: statuses, OverallStatus: overallStatus}
+	GlobalCache.Set(cacheKey, info, 5*time.Minute)
+	return info
+}
+
+func ProcessWorkflowRuns(runs []*github.WorkflowRun) []*github.WorkflowRun {
+	latestPerName := make(map[string]*github.WorkflowRun)
+	for _, run := range runs {
+		if run == nil || run.Name == nil {
+			continue
+		}
+		latestByName, exists := latestPerName[*run.Name]
+		if !exists || (run.CreatedAt != nil && (*run.CreatedAt).After(latestByName.CreatedAt.Time)) {
+			latestPerName[*run.Name] = run
+		}
+	}
+
+	var output []*github.WorkflowRun
+	for _, run := range latestPerName {
+		output = append(output, run)
+	}
+	return output
+}
+
+func FilterCIPassing(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+	for _, pr := range prs {
+		info := GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+		if info.OverallStatus == "DONE" {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
+}
+
+func FilterCIFailing(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+	for _, pr := range prs {
+		info := GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+		if info.OverallStatus == "TODO" {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
 }

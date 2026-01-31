@@ -168,11 +168,10 @@ func (prb PRToOrgBridge) Details() []string {
 			details = append(details, "Merged with Empty Merge Commit SHA?")
 		}
 	} else {
-
-		ciStatus, ciHeader := getCIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
-		if len(ciStatus) > 0 {
-			details = append(details, fmt.Sprintf("*** %s CI Status\n", ciHeader))
-			details = append(details, ciStatus...)
+		ciInfo := git_tools.GetCIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
+		if len(ciInfo.Statuses) > 0 {
+			details = append(details, fmt.Sprintf("*** %s CI Status\n", ciInfo.OverallStatus))
+			details = append(details, ciInfo.Statuses...)
 		}
 	}
 
@@ -410,81 +409,6 @@ func SyncTODOToSectionDB(doc org.DBOrgDocument, pr *github.PullRequest, section 
 // Assume git_tools.GetGithubClient() and processWorkflowRuns are defined elsewhere
 // and work as intended.
 
-func getCIStatus(owner string, repo string, branch string) ([]string, string) {
-	client := git_tools.GetGithubClient()
-	branch = strings.Split(branch, ":")[1] // Comes as username:branch_name from github api.
-	opts := github.ListWorkflowRunsOptions{Branch: branch}
-	runs, _, err := client.Actions.ListRepositoryWorkflowRuns(context.Background(), owner, repo, &opts)
-
-	if err != nil {
-		slog.Error("Error getting combined status", "error", err)
-		return []string{}, "TODO"
-	}
-
-	var statuses []string
-	hasFailure := false
-	hasInProgress := false
-	allSuccess := true
-
-	processedRuns := processWorkflowRuns(runs.WorkflowRuns)
-
-	for _, run := range processedRuns {
-		status := "<nil>" // completed, in_progress
-		if run.Status != nil {
-			status = "[" + *run.Status + "]"
-			if *run.Status == "in_progress" {
-				hasInProgress = true
-			}
-		}
-		conclusion := " "
-		if run.Conclusion != nil {
-			if *run.Conclusion == "success" {
-				conclusion = "✅"
-				status = "" // We know the status if it was a success
-			} else if *run.Conclusion == "failure" {
-				conclusion = "❌"
-				hasFailure = true
-				allSuccess = false
-			} else if *run.Conclusion != "success" {
-				allSuccess = false // Any conclusion that is not success means not all are success
-			}
-		} else {
-			// If conclusion is nil, it might still be in progress or pending
-			allSuccess = false
-			if run.Status != nil && *run.Status != "completed" {
-				hasInProgress = true
-			}
-		}
-
-		name := "Unknown Workflow Name"
-		if run.Name != nil {
-			name = *run.Name
-		}
-
-		item := fmt.Sprintf("[%s] %s %s", conclusion, status, name)
-		statuses = append(statuses, item)
-	}
-
-	overallStatus := ""
-	if hasFailure {
-		overallStatus = "TODO"
-	} else if hasInProgress {
-		overallStatus = "WAITING"
-	} else if allSuccess {
-		overallStatus = "DONE"
-	} else {
-		// This case implies no failures, no in_progress, and not all successes.
-		// This could happen if all runs are completed but some had non-success conclusions other than failure (e.g., cancelled, skipped).
-		// Based on the prompt, if there are no failures and no in_progress, and it's not allSuccess, it should be DONE.
-		// However, if we strictly interpret "DONE if all of the runs have a success conclusion",
-		// then this state would be something else. Given the prompt, we'll default to DONE
-		// if no failures and no in_progress, assuming non-success conclusions are also acceptable for DONE.
-		// If a more specific state is needed for 'cancelled', 'skipped', etc., the logic here would need adjustment.
-		overallStatus = "DONE"
-	}
-
-	return statuses, overallStatus
-}
 
 func getPRDiff(owner string, repo string, number int) []string {
 	client := git_tools.GetGithubClient()
@@ -511,32 +435,6 @@ func getPRDiff(owner string, repo string, number int) []string {
 	return []string{"*** Diff\n", diff}
 }
 
-func processWorkflowRuns(runs []*github.WorkflowRun) []*github.WorkflowRun {
-	latest_per_name := make(map[string]*github.WorkflowRun) // Initialize the map
-	for _, run := range runs {
-		if run == nil {
-			continue
-		}
-		if run.Name == nil {
-			continue
-		}
-		// fmt.Println("name: ", *run.Name, run)
-		lastest_by_name := latest_per_name[*run.Name]
-		if lastest_by_name == nil {
-			latest_per_name[*run.Name] = run
-			continue
-		}
-		if (*run.CreatedAt).After(lastest_by_name.CreatedAt.Time) {
-			latest_per_name[*run.Name] = run
-		}
-	}
-
-	var output []*github.WorkflowRun
-	for _, run := range latest_per_name {
-		output = append(output, run)
-	}
-	return output
-}
 
 // If a command was given by the workflow,
 func GetReleaseStatus(command *string, repo *string, sha *string) (string, error) {

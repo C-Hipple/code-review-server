@@ -159,6 +159,8 @@ Each workflow can use the available filters:
 *   `FilterMyPRs` - Only include PRs authored by you
 *   `FilterCIPassing` - Only include PRs with passing CI/Actions
 *   `FilterCIFailing` - Only include PRs with failing CI/Actions
+*   `FilterStale` - PRs with no activity for more than 3 days
+*   `FilterNotStale` - PRs with activity within the last 3 days
 
 ### Team-Based Filtering
 

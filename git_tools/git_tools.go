@@ -532,3 +532,25 @@ func FilterCIFailing(prs []*github.PullRequest) []*github.PullRequest {
 	}
 	return filtered
 }
+
+func FilterStale(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+	threshold := time.Now().Add(-3 * 24 * time.Hour)
+	for _, pr := range prs {
+		if pr.UpdatedAt != nil && pr.UpdatedAt.Before(threshold) {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
+}
+
+func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
+	filtered := []*github.PullRequest{}
+	threshold := time.Now().Add(-3 * 24 * time.Hour)
+	for _, pr := range prs {
+		if pr.UpdatedAt != nil && pr.UpdatedAt.After(threshold) {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
+}

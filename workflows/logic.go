@@ -40,7 +40,7 @@ type SerializedFileChange struct {
 }
 
 func (fc FileChanges) Report(log *slog.Logger) {
-	log.Info(fmt.Sprintf("[%s] %-20s - %s", fc.ChangeType[:2], fc.Section.Name(), fc.Item.Summary()))
+	log.Info(fmt.Sprintf("[%s] %-20s - %s (%s)", fc.ChangeType[:2], fc.Section.Name(), fc.Item.Summary(), fc.Item.Identifier()))
 }
 
 func (fc *FileChanges) Deserialize() SerializedFileChange {
@@ -65,7 +65,7 @@ func (prb PRToOrgBridge) ID() string {
 }
 
 func (prb PRToOrgBridge) Repo() string {
-	return prb.PR.Head.Repo.GetName()
+	return prb.PR.Base.Repo.GetFullName()
 
 }
 
@@ -88,7 +88,7 @@ func (prb PRToOrgBridge) Title() string {
 }
 
 func (prb PRToOrgBridge) Identifier() string {
-	return prb.Repo() + prb.ID()
+	return fmt.Sprintf("%s-%s", prb.Repo(), prb.ID())
 }
 
 func (prb PRToOrgBridge) ItemTitle(indent_level int, release_check_command string) string {
@@ -131,7 +131,7 @@ func (prb PRToOrgBridge) GetStatus() string {
 
 func (prb PRToOrgBridge) Details() []string {
 	details := []string{}
-	details = append(details, fmt.Sprintf("%d\n", prb.PR.GetNumber()))
+	details = append(details, fmt.Sprintf("%d", prb.PR.GetNumber()))
 	details = append(details, "Repo: "+prb.PR.Base.Repo.GetFullName())
 	details = append(details, fmt.Sprintf("%s\n", prb.PR.GetHTMLURL()))
 	details = append(details, fmt.Sprintf("Title: %s\n", prb.PR.GetTitle()))

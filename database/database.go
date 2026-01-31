@@ -603,6 +603,12 @@ func (db *DB) DeleteItem(sectionID int64, identifier string) error {
 	return err
 }
 
+func (db *DB) GetItemCount() (int, error) {
+	var count int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM items").Scan(&count)
+	return count, err
+}
+
 func (db *DB) DeleteItemByIdentifier(identifier string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM items WHERE identifier = ?",

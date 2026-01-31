@@ -162,7 +162,7 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 		return
 	}
 
-	if change.FileChange.ChangeType == "Addition" {
+	if change.FileChange.ChangeType == "Addition" || change.FileChange.ChangeType == "Update" {
 		// Create worktree
 		log.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
 		

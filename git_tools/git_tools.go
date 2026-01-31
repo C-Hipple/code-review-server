@@ -306,8 +306,13 @@ func CreateWorktree(repoDir, branch, worktreePath string) error {
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", string(output), "error", err)
-		return fmt.Errorf("git worktree add failed: %s: %w", string(output), err)
+		outputStr := string(output)
+		if strings.Contains(outputStr, "already exists") {
+			slog.Info("Worktree already exists, skipping creation", "repo", repoDir, "branch", branch, "path", worktreePath)
+			return nil
+		}
+		slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", outputStr, "error", err)
+		return fmt.Errorf("git worktree add failed: %s: %w", outputStr, err)
 	}
 	slog.Info("Created worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
 	return nil

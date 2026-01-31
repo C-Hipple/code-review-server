@@ -17,42 +17,42 @@ func TestDeduplicateChanges(t *testing.T) {
 		{
 			name: "Single Add",
 			changes: []SerializedFileChange{
-				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
 			},
 			expected: 1,
 		},
 		{
 			name: "Add and Update",
 			changes: []SerializedFileChange{
-				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
 			},
 			expected: 1,
 		},
 		{
 			name: "Add, Update and Delete",
 			changes: []SerializedFileChange{
-				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
 			},
 			expected: 1,
 		},
 		{
 			name: "Only Deletes",
 			changes: []SerializedFileChange{
-				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
 			},
 			expected: 1,
 		},
 		{
 			name: "Multiple Items",
 			changes: []SerializedFileChange{
-				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 2", []string{"2", "test-repo"}, "TODO", []string{}, 0, 1)}},
-				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 2", []string{"2", "test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Update", Item: org.NewOrgItem("Test Item 1", []string{"1", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Addition", Item: org.NewOrgItem("Test Item 2", []string{"2", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
+				{FileChange: &FileChanges{ChangeType: "Delete", Item: org.NewOrgItem("Test Item 2", []string{"2", "Repo: test-repo"}, "TODO", []string{}, 0, 1)}},
 			},
 			expected: 2,
 		},

@@ -84,7 +84,11 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileC
 		return RunResult{}, errors.New("Section Not Found")
 	}
 
+	beforeCount, _ := db.GetItemCount()
+	log.Info("Starting workflow", "items_before", beforeCount)
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	afterCount, _ := db.GetItemCount()
+	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
@@ -119,7 +123,12 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 		return RunResult{}, errors.New("Section Not Found")
 	}
 	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
+	
+	beforeCount, _ := db.GetItemCount()
+	log.Info("Starting workflow", "items_before", beforeCount)
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	afterCount, _ := db.GetItemCount()
+	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
@@ -177,7 +186,12 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 		return RunResult{}, errors.New("Section Not Found")
 	}
 	prs = git_tools.ApplyPRFilters(prs, []git_tools.PRFilter{git_tools.MyPRs})
+	
+	beforeCount, _ := db.GetItemCount()
+	log.Info("Starting workflow", "items_before", beforeCount)
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	afterCount, _ := db.GetItemCount()
+	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
@@ -222,6 +236,11 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_chan
 		log.Error("Error getting specific PRs", "error", err)
 		return RunResult{}, err
 	}
+	
+	beforeCount, _ := db.GetItemCount()
+	log.Info("Starting workflow", "items_before", beforeCount)
 	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	afterCount, _ := db.GetItemCount()
+	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }

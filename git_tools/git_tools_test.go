@@ -209,3 +209,117 @@ func TestMakeLabelFilter(t *testing.T) {
         })
     }
 }
+
+func TestMakeAuthorFilter(t *testing.T) {
+// Helper to create a user
+makeUser := func(login string) *github.User {
+return &github.User{Login: &login}
+}
+
+// Helper to create a PR with an author
+makePR := func(number int, author string) *github.PullRequest {
+return &github.PullRequest{
+Number: &number,
+User:   makeUser(author),
+}
+}
+
+tests := []struct {
+name          string
+filterAuthor  string
+prs           []*github.PullRequest
+expectedCount int
+}{
+{
+name:          "No PRs",
+filterAuthor:  "alice",
+prs:           []*github.PullRequest{},
+expectedCount: 0,
+},
+{
+name:         "Single matching author",
+filterAuthor: "alice",
+prs: []*github.PullRequest{
+makePR(1, "alice"),
+makePR(2, "bob"),
+},
+expectedCount: 1,
+},
+{
+name:         "No matching author",
+filterAuthor: "charlie",
+prs: []*github.PullRequest{
+makePR(1, "alice"),
+makePR(2, "bob"),
+},
+expectedCount: 0,
+},
+}
+
+for _, tt := range tests {
+t.Run(tt.name, func(t *testing.T) {
+filter := MakeAuthorFilter(tt.filterAuthor)
+result := filter(tt.prs)
+if len(result) != tt.expectedCount {
+t.Errorf("expected %d PRs, got %d", tt.expectedCount, len(result))
+}
+})
+}
+}
+
+func TestMakeExcludeAuthorFilter(t *testing.T) {
+// Helper to create a user
+makeUser := func(login string) *github.User {
+return &github.User{Login: &login}
+}
+
+// Helper to create a PR with an author
+makePR := func(number int, author string) *github.PullRequest {
+return &github.PullRequest{
+Number: &number,
+User:   makeUser(author),
+}
+}
+
+tests := []struct {
+name          string
+excludeAuthor string
+prs           []*github.PullRequest
+expectedCount int
+}{
+{
+name:          "No PRs",
+excludeAuthor: "alice",
+prs:           []*github.PullRequest{},
+expectedCount: 0,
+},
+{
+name:          "Exclude one author",
+excludeAuthor: "alice",
+prs: []*github.PullRequest{
+makePR(1, "alice"),
+makePR(2, "bob"),
+},
+expectedCount: 1, // Only bob remains
+},
+{
+name:          "Exclude nothing",
+excludeAuthor: "charlie",
+prs: []*github.PullRequest{
+makePR(1, "alice"),
+makePR(2, "bob"),
+},
+expectedCount: 2,
+},
+}
+
+for _, tt := range tests {
+t.Run(tt.name, func(t *testing.T) {
+filter := MakeExcludeAuthorFilter(tt.excludeAuthor)
+result := filter(tt.prs)
+if len(result) != tt.expectedCount {
+t.Errorf("expected %d PRs, got %d", tt.expectedCount, len(result))
+}
+})
+}
+}

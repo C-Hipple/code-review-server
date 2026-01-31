@@ -173,6 +173,8 @@ Each workflow can use the available filters:
 *   `FilterWaitingOnMe` - PRs where you are a requested reviewer and need to act
 *   `FilterWaitingOnAuthor` - PRs where you were the last to act and are waiting on the author
 *   `FilterByLabel:<label_name>` - Only include PRs with the specified label (e.g., `FilterByLabel:bug`)
+*   `FilterByAuthor:<username>` - Only include PRs authored by the specified user
+*   `FilterExcludeAuthor:<username>` - Exclude PRs authored by the specified user
 
 ### Team-Based Filtering
 

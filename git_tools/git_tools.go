@@ -727,3 +727,14 @@ func MakeLabelFilter(targetLabel string) PRFilter {
 		return filtered
 	}
 }
+func MakeAuthorFilter(authorLogin string) PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		return FilterPRsByAuthor(prs, authorLogin)
+	}
+}
+
+func MakeExcludeAuthorFilter(authorLogin string) PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		return FilterPRsExcludeAuthor(prs, authorLogin)
+	}
+}

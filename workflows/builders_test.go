@@ -275,6 +275,27 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 			expectedCount: 2,
 			expectedPRs:   []int{4}, // Only PR 4 has both bug AND urgent
 		},
+		{
+			name:          "FilterByAuthor with argument",
+			filtersConfig: []string{"FilterByAuthor:alice"},
+			prs:           []*github.PullRequest{}, // Testing parsing only here, verifying 1 filter created
+			expectedCount: 1,
+			expectedPRs:   []int{},
+		},
+		{
+			name:          "FilterExcludeAuthor with argument",
+			filtersConfig: []string{"FilterExcludeAuthor:bob"},
+			prs:           []*github.PullRequest{},
+			expectedCount: 1,
+			expectedPRs:   []int{},
+		},
+		{
+			name:          "FilterByAuthor missing argument",
+			filtersConfig: []string{"FilterByAuthor"},
+			prs:           []*github.PullRequest{},
+			expectedCount: 0,
+			expectedPRs:   []int{},
+		},
 	}
 
 	for _, tt := range tests {

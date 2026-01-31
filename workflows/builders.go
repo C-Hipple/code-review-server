@@ -139,6 +139,24 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 			continue
 		}
 
+		if filterName == "FilterByAuthor" {
+			if filterArg == "" {
+				slog.Warn("FilterByAuthor requires an argument (e.g. FilterByAuthor:username)", "name", name)
+				continue
+			}
+			filters = append(filters, git_tools.MakeAuthorFilter(filterArg))
+			continue
+		}
+
+		if filterName == "FilterExcludeAuthor" {
+			if filterArg == "" {
+				slog.Warn("FilterExcludeAuthor requires an argument (e.g. FilterExcludeAuthor:username)", "name", name)
+				continue
+			}
+			filters = append(filters, git_tools.MakeExcludeAuthorFilter(filterArg))
+			continue
+		}
+
 		filter_func := filter_func_map[filterName]
 		if filter_func == nil {
 			slog.Warn("Unmatched filter function", "name", name)

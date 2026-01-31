@@ -84,7 +84,7 @@ RepoLocation: str [optional, default="~/"]
 
 `Repos` is a list of repositories in the format "owner/repo".  Workflows can also define their own `Repos` list which overrides this global list.
 
-Github username is used for determining when using the NotMyPRs or FilterMyPRs filters
+Github username is used for determining when using the NotMyPRs or FilterMyPRs filters, as well as for smart filters like FilterWaitingOnMe and FilterWaitingOnAuthor to correctly determine your review status.
 
 RepoLocation is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 

@@ -11,7 +11,6 @@ import (
 type DBOrgDocument struct {
 	DB         *database.DB
 	Serializer OrgSerializer
-	OrgFileDir string
 }
 
 func NewDBClient(db *database.DB, serializer OrgSerializer) *DBOrgDocument {

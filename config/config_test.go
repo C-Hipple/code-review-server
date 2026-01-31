@@ -75,8 +75,8 @@ Command = "echo 2"
 		t.Errorf("expected no error for unique plugin names, got %v", err)
 	}
 
-	// Verify DB was created in the correct location (subdir of XDG_CONFIG_HOME)
-	dbPath := filepath.Join(tempDir, "codereviewserver", "codereviewserver.db")
+	// Verify DB was created in the correct location (subdir of HOME/.crs)
+	dbPath := filepath.Join(tempDir, ".crs", "codereviewserver.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		t.Errorf("expected database to be created at %s, but it was not found", dbPath)
 	}

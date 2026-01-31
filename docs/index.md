@@ -78,7 +78,7 @@ GithubUsername = "username" # [optional]
 RepoLocation = "~/" # [optional, default="~/"]
 ```
 
-`GithubUsername` is used for determining when using the `NotMyPRs` or `MyPRs` filters.
+`GithubUsername` is used for determining when using the `NotMyPRs` or `FilterMyPRs` filters.
 `RepoLocation` is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 
 Each workflow entry can take the fields:
@@ -156,6 +156,7 @@ Each workflow can use the available filters:
 *   `FilterNotDraft` - Exclude draft PRs
 *   `FilterIsDraft` - Only include draft PRs
 *   `FilterNotMyPRs` - Exclude PRs authored by you
+*   `FilterMyPRs` - Only include PRs authored by you
 
 ### Team-Based Filtering
 

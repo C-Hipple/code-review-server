@@ -162,7 +162,7 @@ func FilterPRsByLabel(prs []*github.PullRequest, label string) []*github.PullReq
 	return filtered
 }
 
-func MyPRs(prs []*github.PullRequest) []*github.PullRequest {
+func FilterMyPRs(prs []*github.PullRequest) []*github.PullRequest {
 	return FilterPRsByAuthor(prs, config.C.GithubUsername)
 }
 

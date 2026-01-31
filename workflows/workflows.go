@@ -176,7 +176,7 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
 	}
-	prs = git_tools.ApplyPRFilters(prs, []git_tools.PRFilter{git_tools.MyPRs})
+	prs = git_tools.ApplyPRFilters(prs, []git_tools.PRFilter{git_tools.FilterMyPRs})
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)

@@ -76,12 +76,14 @@ and then a list of tables called [[Workflows]] configuring each workflow.
 The general fields are:
 -
 ```
-Repos: list[str]
+Repos: list[str] # List of "owner/repo" strings.
 SleepDuration: int (in minutes, optional, default=1 minute)
 OrgFileDir: str
 GithubUsername: str [optional]
 RepoLocation: str [optional, default="~/"]
 ```
+
+`Repos` is a list of repositories in the format "owner/repo".  Workflows can also define their own `Repos` list which overrides this global list.
 
 OrgFileDir will default to "~/" if it's not defined.  Github username is used for determining when using the NotMyPRs or MyPRs filters
 RepoLocation is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
@@ -119,7 +121,7 @@ IncludeDiff will add a subsection which includes the entire diff for the pull re
 ### Workflow specific configurations
 Single Repo Sync workflow takes an additional parameter, Repo.
 ```
-Repo: str
+Repo: str # "owner/repo" format
 ```
 
 ListMyPRsWorkflow takes the additional parameter PRState, which is passed through to the github API when filtering for PRs.
@@ -134,9 +136,9 @@ An Example complete config file is below
 ```toml
 
 Repos = [
-    "gtdbot",
-    "diff-lsp",
-    "diff-lsp.el",
+    "C-Hipple/gtdbot",
+    "C-Hipple/diff-lsp",
+    "C-Hipple/diff-lsp.el",
 ]
 SleepDuration = 5
 OrgFileDir = "~/gtd/"

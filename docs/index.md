@@ -116,7 +116,7 @@ The `WorkflowType` is one of the following strings:
 
 `SingleRepoSyncReviewRequestsWorkflow` takes an additional parameter, `Repo`.
 ```toml
-Repo = "repo-name"
+Repo = "owner/repo"
 ```
 
 `ListMyPRsWorkflow` takes the additional parameter `PRState`, which is passed through to the github API when filtering for PRs.

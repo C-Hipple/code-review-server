@@ -45,9 +45,23 @@ func GetPRs(client *github.Client, state string, owner string, repo string) ([]*
 	return prs, nil
 }
 
-func GetManyRepoPRs(client *github.Client, state string, owner string, repos []string) ([]*github.PullRequest, error) {
+func ParseRepoName(repoEntry string) (owner string, repo string, err error) {
+	parts := strings.Split(repoEntry, "/")
+	if len(parts) == 2 {
+		return parts[0], parts[1], nil
+	}
+	return "", "", fmt.Errorf("invalid repo entry: %s (expected 'owner/repo')", repoEntry)
+}
+
+func GetManyRepoPRs(client *github.Client, state string, repos []string) ([]*github.PullRequest, error) {
 	var prs []*github.PullRequest
-	for _, repo := range repos {
+	for _, repoEntry := range repos {
+		owner, repo, err := ParseRepoName(repoEntry)
+		if err != nil {
+			slog.Error("Skipping invalid repo entry", "entry", repoEntry, "error", err)
+			continue
+		}
+
 		repo_prs, err := GetPRs(
 			client,
 			state,

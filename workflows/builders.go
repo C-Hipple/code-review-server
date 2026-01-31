@@ -42,10 +42,15 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) Wor
 }
 
 func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
+	workflowRepos := *repos
+	if len(raw.Repos) > 0 {
+		workflowRepos = raw.Repos
+	}
+
 	wf := SyncReviewRequestsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
-		Repos:               *repos,
+		Repos:               workflowRepos,
 		Filters:             BuildFiltersList(raw),
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
@@ -56,10 +61,15 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) Wo
 }
 
 func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
+	workflowRepos := *repos
+	if len(raw.Repos) > 0 {
+		workflowRepos = raw.Repos
+	}
+
 	wf := ListMyPRsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
-		Repos:               *repos,
+		Repos:               workflowRepos,
 		Filters:             BuildFiltersList(raw),
 		PRState:             raw.PRState,
 		SectionTitle:        raw.SectionTitle,

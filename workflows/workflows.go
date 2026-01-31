@@ -64,11 +64,17 @@ func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgSectionName() string {
 }
 
 func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+	owner, repo, err := git_tools.ParseRepoName(w.Repo)
+	if err != nil {
+		log.Error("Error parsing repo name", "repo", w.Repo, "error", err)
+		return RunResult{}, err
+	}
+
 	prs, err := git_tools.GetPRs(
 		git_tools.GetGithubClient(),
 		"open",
-		w.Owner,
-		w.Repo,
+		owner,
+		repo,
 	)
 	if err != nil {
 		log.Error("Error getting PRs", "error", err)
@@ -109,7 +115,7 @@ type SyncReviewRequestsWorkflow struct {
 
 func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
-	prs, err := git_tools.GetManyRepoPRs(client, "open", w.Owner, w.Repos)
+	prs, err := git_tools.GetManyRepoPRs(client, "open", w.Repos)
 	if err != nil {
 		log.Error("Error getting PRs", "error", err)
 		return RunResult{}, err
@@ -171,7 +177,7 @@ func (w ListMyPRsWorkflow) GetOrgSectionName() string {
 
 func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
-	prs, err := git_tools.GetManyRepoPRs(client, w.PRState, w.Owner, w.Repos)
+	prs, err := git_tools.GetManyRepoPRs(client, w.PRState, w.Repos)
 	if err != nil {
 		log.Error("Error getting PRs", "error", err)
 		return RunResult{}, err

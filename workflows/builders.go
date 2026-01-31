@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"log/slog"
+	"strings"
 	"crs/config"
 	"crs/git_tools"
 
@@ -110,6 +111,14 @@ var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullR
 	"FilterWaitingOnAuthor":    git_tools.FilterWaitingOnAuthor,
 }
 
+func ParseFilterString(raw string) (string, string) {
+	if strings.Contains(raw, ":") {
+		parts := strings.SplitN(raw, ":", 2)
+		return parts[0], parts[1]
+	}
+	return raw, ""
+}
+
 func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 	filters := []git_tools.PRFilter{}
 
@@ -119,7 +128,18 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 	}
 
 	for _, name := range raw.Filters {
-		filter_func := filter_func_map[name]
+		filterName, filterArg := ParseFilterString(name)
+
+		if filterName == "FilterByLabel" {
+			if filterArg == "" {
+				slog.Warn("FilterByLabel requires an argument (e.g. FilterByLabel:bug)", "name", name)
+				continue
+			}
+			filters = append(filters, git_tools.MakeLabelFilter(filterArg))
+			continue
+		}
+
+		filter_func := filter_func_map[filterName]
 		if filter_func == nil {
 			slog.Warn("Unmatched filter function", "name", name)
 			continue

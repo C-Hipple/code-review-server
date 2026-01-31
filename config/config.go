@@ -40,7 +40,7 @@ type Plugin struct {
 
 // Define your classes
 type Config struct {
-	Repos          []string
+	Repos          []string // List of repositories in "owner/repo" format. Workflows can override this.
 	RawWorkflows   []RawWorkflow
 	SleepDuration  time.Duration
 	JiraDomain     string

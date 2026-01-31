@@ -3,7 +3,7 @@
 
 # List of repositories to monitor
 # Currently these are all matched to the workflow owner.
-Repos = ["go-github", "go-toml"]
+Repos = ["google/go-github", "pelletier/go-toml"]
 
 # General Settings
 JiraDomain = "your-domain.atlassian.net"
@@ -24,7 +24,7 @@ IncludeDiff = true
 WorkflowType = "SingleRepoSyncReviewRequestsWorkflow"
 Name = "Team Reviews"
 Owner = "my-org"
-Repo = "main-repo"
+Repo = "my-org/main-repo"
 Teams = ["my-team", "my-other-team"]
 SectionTitle = "Needs My Team's Review"
 

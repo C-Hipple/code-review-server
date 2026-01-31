@@ -40,9 +40,12 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 		return "", err
 	}
 
-	// Sort sections by ID to maintain order
+	// Sort sections by Priority then Name
 	sort.Slice(sections, func(i, j int) bool {
-		return sections[i].ID < sections[j].ID
+		if sections[i].Priority != sections[j].Priority {
+			return sections[i].Priority < sections[j].Priority
+		}
+		return sections[i].SectionName < sections[j].SectionName
 	})
 
 	// Build the org file content
@@ -83,9 +86,12 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		return "", nil, err
 	}
 
-	// Sort sections by ID to maintain order
+	// Sort sections by Priority then Name
 	sort.Slice(sections, func(i, j int) bool {
-		return sections[i].ID < sections[j].ID
+		if sections[i].Priority != sections[j].Priority {
+			return sections[i].Priority < sections[j].Priority
+		}
+		return sections[i].SectionName < sections[j].SectionName
 	})
 
 	// Fetch all items at once to avoid N+1 queries
@@ -125,7 +131,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 			}
 
 			// Structured representation
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName)
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 			reviewItems = append(reviewItems, reviewItem)
 		}
 		// Add blank line between sections
@@ -137,14 +143,15 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
-	Section string `json:"section"`
-	Status  string `json:"status"`
-	Title   string `json:"title"`
-	Owner   string `json:"owner"`
-	Repo    string `json:"repo"`
-	Number  int    `json:"number"`
-	Author  string `json:"author"`
-	URL     string `json:"url"`
+	Section  string `json:"section"`
+	Priority int    `json:"section_priority"`
+	Status   string `json:"status"`
+	Title    string `json:"title"`
+	Owner    string `json:"owner"`
+	Repo     string `json:"repo"`
+	Number   int    `json:"number"`
+	Author   string `json:"author"`
+	URL      string `json:"url"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -163,7 +170,7 @@ func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
 		}
 
 		for _, item := range items {
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName)
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 			reviewItems = append(reviewItems, reviewItem)
 		}
 	}
@@ -172,16 +179,17 @@ func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
 }
 
 // parseItemToReviewItem extracts structured metadata from an item's details
-func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName string) ReviewItem {
+func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName string, priority int) ReviewItem {
 	details, err := item.GetDetails()
 	if err != nil {
 		details = []string{}
 	}
 
 	reviewItem := ReviewItem{
-		Section: sectionName,
-		Status:  item.Status,
-		Title:   item.Title,
+		Section:  sectionName,
+		Priority: priority,
+		Status:   item.Status,
+		Title:    item.Title,
 	}
 
 	for _, line := range details {

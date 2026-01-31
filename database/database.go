@@ -19,6 +19,7 @@ type Section struct {
 	ID          int64
 	SectionName string
 	IndentLevel int
+	Priority    int
 }
 
 type Item struct {
@@ -88,6 +89,7 @@ func (db *DB) initSchema() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		section_name TEXT NOT NULL,
 		indent_level INTEGER NOT NULL DEFAULT 2,
+		priority INTEGER DEFAULT 0,
 		UNIQUE(section_name)
 	);
 
@@ -249,6 +251,16 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add priority column to sections if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('sections') WHERE name='priority'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE sections ADD COLUMN priority INTEGER DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding priority column to sections", "error", err)
+		}
+	}
+
+
 	pluginResultsSchema := `
 	CREATE TABLE IF NOT EXISTS PluginResults (
 		id INTEGER PRIMARY KEY,
@@ -382,17 +394,17 @@ func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName st
 	return sha, nil
 }
 
-func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section, error) {
+func (db *DB) GetOrCreateSection(sectionName string, indentLevel int, priority int) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, section_name, indent_level FROM sections WHERE section_name = ?",
+		"SELECT id, section_name, indent_level, priority FROM sections WHERE section_name = ?",
 		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.IndentLevel)
+	).Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority)
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (section_name, indent_level) VALUES (?, ?)",
-			sectionName, indentLevel,
+			"INSERT INTO sections (section_name, indent_level, priority) VALUES (?, ?, ?)",
+			sectionName, indentLevel, priority,
 		)
 		if err != nil {
 			return nil, err
@@ -406,10 +418,21 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section,
 			ID:          id,
 			SectionName: sectionName,
 			IndentLevel: indentLevel,
+			Priority:    priority,
 		}
 		return &section, nil
 	} else if err != nil {
 		return nil, err
+	}
+
+	// If priority changed, update it
+	if section.Priority != priority {
+		_, err := db.conn.Exec("UPDATE sections SET priority = ? WHERE id = ?", priority, section.ID)
+		if err != nil {
+			slog.Warn("Failed to update section priority", "section", sectionName, "error", err)
+		} else {
+			section.Priority = priority
+		}
 	}
 
 	return &section, nil
@@ -418,9 +441,9 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int) (*Section,
 func (db *DB) GetSection(sectionName string) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, section_name, indent_level FROM sections WHERE section_name = ?",
+		"SELECT id, section_name, indent_level, priority FROM sections WHERE section_name = ?",
 		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.IndentLevel)
+	).Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority)
 
 	if err != nil {
 		return nil, err
@@ -429,7 +452,7 @@ func (db *DB) GetSection(sectionName string) (*Section, error) {
 }
 
 func (db *DB) GetAllSections() ([]*Section, error) {
-	rows, err := db.conn.Query("SELECT id, section_name, indent_level FROM sections ORDER BY section_name")
+	rows, err := db.conn.Query("SELECT id, section_name, indent_level, priority FROM sections ORDER BY priority ASC, section_name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +461,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	var sections []*Section
 	for rows.Next() {
 		var section Section
-		if err := rows.Scan(&section.ID, &section.SectionName, &section.IndentLevel); err != nil {
+		if err := rows.Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority); err != nil {
 			return nil, err
 		}
 		sections = append(sections, &section)

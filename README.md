@@ -80,7 +80,10 @@ Repos: list[str] # List of "owner/repo" strings.
 SleepDuration: int (in minutes, optional, default=1 minute)
 GithubUsername: str [optional]
 RepoLocation: str [optional, default="~/"]
+SectionPriority: map[string]int [optional]
 ```
+
+`SectionPriority` allows you to define the order of sections in your client.  Lower numbers come first. This map keys the section title to an integer.
 
 `Repos` is a list of repositories in the format "owner/repo".  Workflows can also define their own `Repos` list which overrides this global list.
 

@@ -260,9 +260,13 @@ func (ms ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
 
 	// Advisory lock to prevent multiple concurrent syncs
-	home, err := os.UserHomeDir()
+	crsHome, err := os.UserHomeDir() // Fallback to home if getCRSHome fails but we use config.UserHomeDir elsewhere
 	if err == nil {
-		lockPath := filepath.Join(home, ".config/codereviewserver_sync.lock")
+		crsHome = filepath.Join(crsHome, ".crs")
+		if err := os.MkdirAll(crsHome, 0755); err != nil {
+			log.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
+		}
+		lockPath := filepath.Join(crsHome, "codereviewserver_sync.lock")
 		lockFile, err := os.Create(lockPath)
 		if err == nil {
 			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)

@@ -55,6 +55,17 @@ var C Config
 
 var UserHomeDir = os.UserHomeDir
 
+func getCRSHome() (string, error) {
+	if crsHome := os.Getenv("CRS_HOME"); crsHome != "" {
+		return crsHome, nil
+	}
+	home, err := UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".crs"), nil
+}
+
 func getXDGConfigHome() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return xdg, nil
@@ -120,25 +131,35 @@ func Initialize() error {
 	}
 
 	// Initialize database
-	appDir := filepath.Join(configHome, "codereviewserver")
-	dbPath := filepath.Join(appDir, "codereviewserver.db")
+	crsHome, err := getCRSHome()
+	if err != nil {
+		return fmt.Errorf("failed to get CRS home: %w", err)
+	}
+	dbPath := filepath.Join(crsHome, "codereviewserver.db")
 
 	// Attempt to migrate legacy database if it exists
 	homeDir, err := UserHomeDir()
 	if err == nil {
-		legacyDBPath := filepath.Join(homeDir, ".config/codereviewserver.db")
-		if _, err := os.Stat(legacyDBPath); err == nil {
-			// Legacy DB exists
-			if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-				// New DB does not exist, migrate
-				slog.Info("Migrating database to new location", "old", legacyDBPath, "new", dbPath)
-				if err := os.MkdirAll(appDir, 0755); err != nil {
-					slog.Error("Failed to create new database directory", "error", err)
-				} else {
-					if err := os.Rename(legacyDBPath, dbPath); err != nil {
-						slog.Warn("Failed to move legacy database, falling back to legacy path", "error", err)
-						dbPath = legacyDBPath
+		legacyPaths := []string{
+			filepath.Join(homeDir, ".config/codereviewserver.db"),
+			filepath.Join(homeDir, ".config/codereviewserver/codereviewserver.db"),
+		}
+
+		for _, legacyDBPath := range legacyPaths {
+			if _, err := os.Stat(legacyDBPath); err == nil {
+				// Legacy DB exists
+				if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+					// New DB does not exist, migrate
+					slog.Info("Migrating database to new location", "old", legacyDBPath, "new", dbPath)
+					if err := os.MkdirAll(crsHome, 0755); err != nil {
+						slog.Error("Failed to create new CRS directory", "error", err)
+					} else {
+						if err := os.Rename(legacyDBPath, dbPath); err != nil {
+							slog.Warn("Failed to move legacy database, falling back to legacy path", "error", err)
+							dbPath = legacyDBPath
+						}
 					}
+					break // Only migrate the first found legacy DB
 				}
 			}
 		}

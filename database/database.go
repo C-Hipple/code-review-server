@@ -18,7 +18,6 @@ type DB struct {
 type Section struct {
 	ID          int64
 	SectionName string
-	IndentLevel int
 	Priority    int
 }
 
@@ -88,7 +87,6 @@ func (db *DB) initSchema() error {
 	CREATE TABLE IF NOT EXISTS sections (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		section_name TEXT NOT NULL,
-		indent_level INTEGER NOT NULL DEFAULT 2,
 		priority INTEGER DEFAULT 0,
 		UNIQUE(section_name)
 	);
@@ -394,17 +392,17 @@ func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName st
 	return sha, nil
 }
 
-func (db *DB) GetOrCreateSection(sectionName string, indentLevel int, priority int) (*Section, error) {
+func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, section_name, indent_level, priority FROM sections WHERE section_name = ?",
+		"SELECT id, section_name, priority FROM sections WHERE section_name = ?",
 		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority)
+	).Scan(&section.ID, &section.SectionName, &section.Priority)
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (section_name, indent_level, priority) VALUES (?, ?, ?)",
-			sectionName, indentLevel, priority,
+			"INSERT INTO sections (section_name, priority) VALUES (?, ?)",
+			sectionName, priority,
 		)
 		if err != nil {
 			return nil, err
@@ -417,7 +415,6 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int, priority i
 		section = Section{
 			ID:          id,
 			SectionName: sectionName,
-			IndentLevel: indentLevel,
 			Priority:    priority,
 		}
 		return &section, nil
@@ -441,9 +438,9 @@ func (db *DB) GetOrCreateSection(sectionName string, indentLevel int, priority i
 func (db *DB) GetSection(sectionName string) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, section_name, indent_level, priority FROM sections WHERE section_name = ?",
+		"SELECT id, section_name, priority FROM sections WHERE section_name = ?",
 		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority)
+	).Scan(&section.ID, &section.SectionName, &section.Priority)
 
 	if err != nil {
 		return nil, err
@@ -452,7 +449,7 @@ func (db *DB) GetSection(sectionName string) (*Section, error) {
 }
 
 func (db *DB) GetAllSections() ([]*Section, error) {
-	rows, err := db.conn.Query("SELECT id, section_name, indent_level, priority FROM sections ORDER BY priority ASC, section_name ASC")
+	rows, err := db.conn.Query("SELECT id, section_name, priority FROM sections ORDER BY priority ASC, section_name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +458,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	var sections []*Section
 	for rows.Next() {
 		var section Section
-		if err := rows.Scan(&section.ID, &section.SectionName, &section.IndentLevel, &section.Priority); err != nil {
+		if err := rows.Scan(&section.ID, &section.SectionName, &section.Priority); err != nil {
 			return nil, err
 		}
 		sections = append(sections, &section)

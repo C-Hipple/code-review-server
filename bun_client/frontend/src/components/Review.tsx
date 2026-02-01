@@ -190,12 +190,12 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
 
     // Code Viewer Modal State
-    const [codeViewerState, setCodeViewerState] = useState<{
-        isOpen: boolean;
+    const [codeViewers, setCodeViewers] = useState<Array<{
+        id: number;
         filePath: string;
         line: number;
         position?: { x: number, y: number };
-    } | null>(null);
+    }>>([]);
 
     useEffect(() => {
         loadPR();
@@ -1246,14 +1246,13 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const filePath = r.uri.replace('file://', '');
-                                                        // Open the modal offset from the click position
-                                                        // or simply to the right/left of the tooltip
-                                                        setCodeViewerState({
-                                                            isOpen: true,
+                                                        // Open a new modal offset from the click position
+                                                        setCodeViewers(prev => [...prev, {
+                                                            id: Date.now(),
                                                             filePath,
                                                             line: r.range.start.line + 1,
                                                             position: { x: e.clientX + 20, y: e.clientY - 50 }
-                                                        });
+                                                        }]);
                                                     }}
                                                     style={{
                                                         cursor: 'pointer',
@@ -2046,18 +2045,19 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 </div>
             )}
 
-            {/* Code Viewer Modal */}
-            {codeViewerState && (
+            {/* Code Viewer Modals */}
+            {codeViewers.map(viewer => (
                 <CodeViewerModal
-                    isOpen={codeViewerState.isOpen}
-                    onClose={() => setCodeViewerState(null)}
-                    filePath={codeViewerState.filePath}
+                    key={viewer.id}
+                    isOpen={true}
+                    onClose={() => setCodeViewers(prev => prev.filter(v => v.id !== viewer.id))}
+                    filePath={viewer.filePath}
                     repoPath={metadata?.repo_path || ''}
-                    initialLine={codeViewerState.line}
+                    initialLine={viewer.line}
                     theme={theme}
-                    initialPosition={codeViewerState.position}
+                    initialPosition={viewer.position}
                 />
-            )}
+            ))}
         </div>
     );
 }

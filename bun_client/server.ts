@@ -5,7 +5,7 @@ import { assets } from "./embedded_assets";
 const SERVER_PATH = Bun.which("crs") || "crs";
 const DIFF_LSP_PATH = Bun.which("diff-lsp");
 
-// Resolve the project root. 
+// Resolve the project root.
 // When compiled, import.meta.dir is a virtual path (/$bunfs/root).
 // We must use a real path for the OS to spawn processes correctly.
 function getProjectRoot() {
@@ -40,7 +40,7 @@ class RpcBridge {
     constructor() {
         console.log(`[RpcBridge] PROJECT_ROOT: ${PROJECT_ROOT}`);
         console.log(`[RpcBridge] Resolved SERVER_PATH: ${SERVER_PATH}`);
-        
+
         this.proc = spawn([SERVER_PATH, "--server"], {
             cwd: PROJECT_ROOT,
             stdin: "pipe",
@@ -154,7 +154,7 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
         const url = new URL(req.url);
 
         if (url.pathname === "/api/lsp") {
-          console.log("lsp call happening")
+            console.log("lsp call happening")
 
             const success = server.upgrade(req, {
                 data: {
@@ -258,10 +258,6 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
             return handleRpc("RPCHandler.GetPluginOutput", [body]);
         }
 
-        if (url.pathname === "/api/check-repo-exists" && req.method === "POST") {
-            const body = await req.json();
-            return handleRpc("RPCHandler.CheckRepoExists", [body]);
-        }
 
         if (url.pathname === "/api/check-lsp" && req.method === "GET") {
             return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
@@ -360,7 +356,7 @@ Type: ${type}
 
                                 const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
                                 const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
-                                
+
                                 if (!lengthMatch) {
                                     console.error("Invalid LSP header:", headerPart);
                                     // Skip past this separator
@@ -391,7 +387,6 @@ Type: ${type}
             }
         },
         message(ws, message) {
-            console.log("LSP Server received message:", message);
             const proc = ws.data.proc;
             if (proc && proc.stdin && typeof proc.stdin !== "number") {
                 const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);

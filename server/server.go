@@ -489,43 +489,25 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 	return nil
 }
 
-type CheckRepoExistsArgs struct {
-	Repo string `json:"Repo"`
-}
 
-type CheckRepoExistsReply struct {
-	Exists bool   `json:"Exists"`
-	Path   string `json:"Path"`
-}
-
-func (h *RPCHandler) CheckRepoExists(args *CheckRepoExistsArgs, reply *CheckRepoExistsReply) error {
+// GetLocalRepoPath returns the expected location of a local repository.
+// It does NOT check if the directory actually exists.
+func GetLocalRepoPath(repo string) (string, error) {
 	repoLocation := config.C.RepoLocation
 	if len(repoLocation) > 0 && repoLocation[:2] == "~/" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			h.Log.Error("Error getting user home directory", "error", err)
-			return err
+			return "", err
 		}
 		repoLocation = fmt.Sprintf("%s/%s", home, repoLocation[2:])
 	}
 
-	repoPath := fmt.Sprintf("%s/%s", repoLocation, args.Repo)
+	repoPath := fmt.Sprintf("%s/%s", repoLocation, repo)
+	print(repoPath)
 	// Clean path to remove double slashes if any
-	repoPath = filepath.Clean(repoPath)
-
-	info, err := os.Stat(repoPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			reply.Exists = false
-			return nil
-		}
-		h.Log.Error("Error checking repo existence", "error", err)
-		return err
-	}
-	reply.Exists = info.IsDir()
-	reply.Path = repoPath
-	return nil
+	return filepath.Clean(repoPath), nil
 }
+
 
 type GetPluginOutputArgs struct {
 	Owner  string `json:"Owner"`

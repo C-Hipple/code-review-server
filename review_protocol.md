@@ -89,6 +89,7 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `base_ref`             | string   | Base branch name                                          |
 | `head_ref`             | string   | Head branch name                                          |
 | `state`                | string   | PR state (open, closed, etc.)                             |
+| `repo_path`            | string   | Absolute path to the local repository (if it exists)      |
 | `milestone`            | string   | Milestone title                                           |
 | `labels`               | []string | List of label names                                       |
 | `assignees`            | []string | List of assignee logins                                   |
@@ -102,6 +103,7 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `ci_failures`          | []string | List of failed CI check names and messages                |
 | `body`                 | string   | PR description body                                       |
 | `url`                  | string   | GitHub HTML URL                                           |
+| `repo_path`            | string   | Absolute path to the local repository                     |
 | `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
 
 #### Using the Worktree
@@ -376,21 +378,6 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 ---
 
-### `RPCHandler.CheckRepoExists`
-
-Checks if a repository is stored locally in the user's home directory (`~/RepoName`). This is useful for determining if features like LSP (which often require local source code) should be enabled.
-
-**Arguments** (`CheckRepoExistsArgs`):
-| Field  | Type   | Required | Description                       |
-|--------|--------|----------|-----------------------------------|
-| `Repo` | string | Yes      | Repository name (e.g., `"hello"`) |
-
-**Reply** (`CheckRepoExistsReply`):
-| Field    | Type   | Description                                      |
-|----------|--------|--------------------------------------------------|
-| `Exists` | bool   | `true` if the directory exists and is a directory|
-| `Path`   | string | The full absolute path to the repository         |
-
 ---
 
 ## Workflow
@@ -438,6 +425,7 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
       "title": "Example PR",
       "author": "octocat",
       "state": "open",
+      "repo_path": "/home/user/code/hello",
       "worktree_path": "/home/user/code/repo_worktrees/42_branch",
       "description": "PR description..."
     },

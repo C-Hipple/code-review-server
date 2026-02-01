@@ -55,6 +55,7 @@ interface PRMetadata {
     ci_failures: string[];
     body: string;
     url: string;
+    repo_path: string;
     worktree_path: string;
 }
 
@@ -211,10 +212,10 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     return;
                 }
 
-                const checkRes = await rpcCall<{ Exists: boolean; Path: string }>('RPCHandler.CheckRepoExists', [{ Repo: repo }]);
-                setRepoExists(checkRes.Exists);
+                const repoPath = metadata.repo_path;
+                setRepoExists(!!repoPath);
 
-                if (!checkRes.Exists) {
+                if (!repoPath) {
                     console.log(`Repo ${repo} not found locally, skipping LSP initialization.`);
                     return;
                 }
@@ -229,7 +230,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 // We use "code-review" as type to match server configuration
                 const path = await client.prepareContext(
                     repo,
-                    checkRes.Path,
+                    repoPath,
                     `PR #${number}`,
                     "code-review",
                     diff,
@@ -663,8 +664,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
             if (lspClient && lspUri) {
                 console.log("Fetching LSP data for URI:", lspUri);
                 try {
-                    // Header is 4 lines, but it seems we need +5 to align correctly (maybe implicit newline or 1-based issue?)
-                    const line = originalLineIndex + 5;
+                    // Header is 5 lines followed by a newline, so diff starts at line 6 (0-indexed)
+                    const line = originalLineIndex + 6;
                     // Add 1 to col to account for the diff prefix (+/- / space)
                     const diffCol = col + 1;
                     const [hover, refs] = await Promise.all([

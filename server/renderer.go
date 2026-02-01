@@ -389,6 +389,7 @@ type PRMetadata struct {
 	CIFailures         []string `json:"ci_failures"`
 	Body               string   `json:"body"`
 	URL                string   `json:"url"`
+	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
 }
 
@@ -737,11 +738,19 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				metadata.Milestone = pr.Milestone.GetTitle()
 			}
 
+
 			// Cache the metadata
 			metadataJSON, err := json.Marshal(metadata)
 			if err == nil {
 				config.C.DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON))
 			}
+		}
+	}
+
+	// Always ensure RepoPath is set based on current configuration, even if metadata was cached
+	if path, err := GetLocalRepoPath(repo); err == nil {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			metadata.RepoPath = path
 		}
 	}
 

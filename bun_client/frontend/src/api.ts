@@ -52,3 +52,18 @@ export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
     }
     return data.result;
 }
+
+/**
+ * Read file contents from a repository
+ */
+export async function readFile(repoPath: string, filePath: string): Promise<string> {
+    const res = await fetch(`${API_BASE}/api/read-file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoPath, filePath })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.content;
+}
+

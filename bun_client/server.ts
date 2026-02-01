@@ -265,6 +265,52 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
             });
         }
 
+        // Read file contents from repository
+        if (url.pathname === "/api/read-file" && req.method === "POST") {
+            const body = await req.json();
+            const { repoPath, filePath } = body;
+
+            if (!filePath) {
+                return new Response(JSON.stringify({ error: "filePath is required" }), {
+                    status: 400,
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            }
+
+            let resolved: string;
+
+            // If filePath is absolute, use it directly
+            if (filePath.startsWith('/')) {
+                resolved = filePath;
+            } else if (repoPath) {
+                // Security: Ensure filePath is within repoPath
+                resolved = resolve(repoPath, filePath);
+                if (!resolved.startsWith(repoPath)) {
+                    return new Response(JSON.stringify({ error: "Invalid path" }), {
+                        status: 400,
+                        headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    });
+                }
+            } else {
+                return new Response(JSON.stringify({ error: "Either absolute filePath or repoPath is required" }), {
+                    status: 400,
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            }
+
+            const file = Bun.file(resolved);
+            if (await file.exists()) {
+                const content = await file.text();
+                return new Response(JSON.stringify({ content }), {
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            }
+            return new Response(JSON.stringify({ error: "File not found" }), {
+                status: 404,
+                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+            });
+        }
+
         if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
             const body = await req.json();
             const { project, root, buffer, type, content, worktree } = body;

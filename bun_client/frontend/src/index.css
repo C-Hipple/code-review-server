@@ -433,6 +433,236 @@
   --overlay-bg: rgba(0, 0, 0, 0.9);
 }
 
+/* Tokyo Night Theme */
+[data-theme='tokyo-night'] {
+  --bg-primary: #24283b;
+  --bg-secondary: #1a1b26;
+  --bg-tertiary: #414868;
+  --text-primary: #c0caf5;
+  --text-secondary: #9aa5ce;
+  --text-tertiary: #565f89;
+  --accent: #7aa2f7;
+  --accent-dim: rgba(122, 162, 247, 0.15);
+  --border: #3b4261;
+  --success: #9ece6a;
+  --danger: #f7768e;
+  --warning: #e0af68;
+
+  --text-success: #9ece6a;
+  --text-danger: #f7768e;
+  --text-warning: #e0af68;
+  --text-merged: #bb9af7;
+
+  --bg-success-dim: rgba(158, 206, 106, 0.15);
+  --bg-danger-dim: rgba(247, 118, 142, 0.15);
+  --bg-warning-dim: rgba(224, 175, 104, 0.15);
+  --bg-merged-dim: rgba(187, 154, 247, 0.15);
+  --bg-info-dim: rgba(122, 162, 247, 0.1);
+  --bg-info-dim-strong: rgba(122, 162, 247, 0.15);
+
+  --border-success-dim: rgba(158, 206, 106, 0.4);
+  --border-danger-dim: rgba(247, 118, 142, 0.4);
+  --border-warning-dim: rgba(224, 175, 104, 0.4);
+  --border-info-dim: rgba(122, 162, 247, 0.2);
+  --border-merged-dim: rgba(187, 154, 247, 0.3);
+
+  --diff-add-bg: rgba(158, 206, 106, 0.12);
+  --diff-add-gutter-bg: rgba(158, 206, 106, 0.2);
+  --diff-del-bg: rgba(247, 118, 142, 0.12);
+  --diff-del-gutter-bg: rgba(247, 118, 142, 0.2);
+  --diff-hunk-bg: rgba(122, 162, 247, 0.1);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(122, 162, 247, 0.2);
+  --overlay-bg: rgba(0, 0, 0, 0.8);
+}
+
+/* Catppuccin Mocha Theme */
+[data-theme='catppuccin'] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-tertiary: #313244;
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  --text-tertiary: #585b70;
+  --accent: #89b4fa;
+  --accent-dim: rgba(137, 180, 250, 0.15);
+  --border: #45475a;
+  --success: #a6e3a1;
+  --danger: #f38ba8;
+  --warning: #f9e2af;
+
+  --text-success: #a6e3a1;
+  --text-danger: #f38ba8;
+  --text-warning: #f9e2af;
+  --text-merged: #cba6f7;
+
+  --bg-success-dim: rgba(166, 227, 161, 0.15);
+  --bg-danger-dim: rgba(243, 139, 168, 0.15);
+  --bg-warning-dim: rgba(249, 226, 175, 0.15);
+  --bg-merged-dim: rgba(203, 166, 247, 0.15);
+  --bg-info-dim: rgba(137, 180, 250, 0.1);
+  --bg-info-dim-strong: rgba(137, 180, 250, 0.15);
+
+  --border-success-dim: rgba(166, 227, 161, 0.4);
+  --border-danger-dim: rgba(243, 139, 168, 0.4);
+  --border-warning-dim: rgba(249, 226, 175, 0.4);
+  --border-info-dim: rgba(137, 180, 250, 0.2);
+  --border-merged-dim: rgba(203, 166, 247, 0.3);
+
+  --diff-add-bg: rgba(166, 227, 161, 0.12);
+  --diff-add-gutter-bg: rgba(166, 227, 161, 0.2);
+  --diff-del-bg: rgba(243, 139, 168, 0.12);
+  --diff-del-gutter-bg: rgba(243, 139, 168, 0.2);
+  --diff-hunk-bg: rgba(137, 180, 250, 0.1);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(137, 180, 250, 0.2);
+  --overlay-bg: rgba(0, 0, 0, 0.8);
+}
+
+/* Everforest Dark Theme */
+[data-theme='everforest'] {
+  --bg-primary: #2d353b;
+  --bg-secondary: #232a2e;
+  --bg-tertiary: #3d484d;
+  --text-primary: #d3c6aa;
+  --text-secondary: #9da9a0;
+  --text-tertiary: #859289;
+  --accent: #7fbbb3;
+  --accent-dim: rgba(127, 187, 179, 0.15);
+  --border: #475258;
+  --success: #a7c080;
+  --danger: #e67e80;
+  --warning: #dbbc7f;
+
+  --text-success: #a7c080;
+  --text-danger: #e67e80;
+  --text-warning: #dbbc7f;
+  --text-merged: #d699b6;
+
+  --bg-success-dim: rgba(167, 192, 128, 0.15);
+  --bg-danger-dim: rgba(230, 126, 128, 0.15);
+  --bg-warning-dim: rgba(219, 188, 127, 0.15);
+  --bg-merged-dim: rgba(214, 153, 182, 0.15);
+  --bg-info-dim: rgba(127, 187, 179, 0.1);
+  --bg-info-dim-strong: rgba(127, 187, 179, 0.15);
+
+  --border-success-dim: rgba(167, 192, 128, 0.4);
+  --border-danger-dim: rgba(230, 126, 128, 0.4);
+  --border-warning-dim: rgba(219, 188, 127, 0.4);
+  --border-info-dim: rgba(127, 187, 179, 0.2);
+  --border-merged-dim: rgba(214, 153, 182, 0.3);
+
+  --diff-add-bg: rgba(167, 192, 128, 0.12);
+  --diff-add-gutter-bg: rgba(167, 192, 128, 0.2);
+  --diff-del-bg: rgba(230, 126, 128, 0.12);
+  --diff-del-gutter-bg: rgba(230, 126, 128, 0.2);
+  --diff-hunk-bg: rgba(127, 187, 179, 0.1);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 0 1px rgba(127, 187, 179, 0.2);
+  --overlay-bg: rgba(0, 0, 0, 0.7);
+}
+
+/* Rose Pine Moon Theme */
+[data-theme='rose-pine'] {
+  --bg-primary: #232136;
+  --bg-secondary: #2a273f;
+  --bg-tertiary: #393552;
+  --text-primary: #e0def4;
+  --text-secondary: #908caa;
+  --text-tertiary: #6e6a86;
+  --accent: #c4a7e7;
+  --accent-dim: rgba(196, 167, 231, 0.15);
+  --border: #44415a;
+  --success: #31748f;
+  --danger: #eb6f92;
+  --warning: #f6c177;
+
+  --text-success: #31748f;
+  --text-danger: #eb6f92;
+  --text-warning: #f6c177;
+  --text-merged: #ebbcba;
+
+  --bg-success-dim: rgba(49, 116, 143, 0.15);
+  --bg-danger-dim: rgba(235, 111, 146, 0.15);
+  --bg-warning-dim: rgba(246, 193, 119, 0.15);
+  --bg-merged-dim: rgba(235, 188, 186, 0.15);
+  --bg-info-dim: rgba(196, 167, 231, 0.1);
+  --bg-info-dim-strong: rgba(196, 167, 231, 0.15);
+
+  --border-success-dim: rgba(49, 116, 143, 0.4);
+  --border-danger-dim: rgba(235, 111, 146, 0.4);
+  --border-warning-dim: rgba(246, 193, 119, 0.4);
+  --border-info-dim: rgba(196, 167, 231, 0.2);
+  --border-merged-dim: rgba(235, 188, 186, 0.3);
+
+  --diff-add-bg: rgba(49, 116, 143, 0.12);
+  --diff-add-gutter-bg: rgba(49, 116, 143, 0.2);
+  --diff-del-bg: rgba(235, 111, 146, 0.12);
+  --diff-del-gutter-bg: rgba(235, 111, 146, 0.2);
+  --diff-hunk-bg: rgba(196, 167, 231, 0.1);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(196, 167, 231, 0.2);
+  --overlay-bg: rgba(0, 0, 0, 0.8);
+}
+
+/* SynthWave '84 Theme */
+[data-theme='synthwave-84'] {
+  --bg-primary: #262335;
+  --bg-secondary: #242231;
+  --bg-tertiary: #34294f;
+  --text-primary: #ffffff;
+  --text-secondary: #ff7edb;
+  --text-tertiary: #b6b1b1;
+  --accent: #03edf9;
+  --accent-dim: rgba(3, 237, 249, 0.15);
+  --border: #34294f;
+  --success: #72f1b8;
+  --danger: #fe4450;
+  --warning: #f97e72;
+
+  --text-success: #72f1b8;
+  --text-danger: #fe4450;
+  --text-warning: #f97e72;
+  --text-merged: #fede5d;
+
+  --bg-success-dim: rgba(114, 241, 184, 0.15);
+  --bg-danger-dim: rgba(254, 68, 80, 0.15);
+  --bg-warning-dim: rgba(249, 126, 114, 0.15);
+  --bg-merged-dim: rgba(254, 222, 93, 0.15);
+  --bg-info-dim: rgba(3, 237, 249, 0.1);
+  --bg-info-dim-strong: rgba(3, 237, 249, 0.15);
+
+  --border-success-dim: rgba(114, 241, 184, 0.4);
+  --border-danger-dim: rgba(254, 68, 80, 0.4);
+  --border-warning-dim: rgba(249, 126, 114, 0.4);
+  --border-info-dim: rgba(3, 237, 249, 0.2);
+  --border-merged-dim: rgba(254, 222, 93, 0.3);
+
+  --diff-add-bg: rgba(114, 241, 184, 0.12);
+  --diff-add-gutter-bg: rgba(114, 241, 184, 0.2);
+  --diff-del-bg: rgba(254, 68, 80, 0.12);
+  --diff-del-gutter-bg: rgba(254, 68, 80, 0.2);
+  --diff-hunk-bg: rgba(3, 237, 249, 0.1);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.7);
+  --shadow-glow: 0 0 0 1px rgba(3, 237, 249, 0.2);
+  --overlay-bg: rgba(0, 0, 0, 0.9);
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);

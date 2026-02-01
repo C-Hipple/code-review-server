@@ -65,7 +65,7 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 
 		// Build items
 		for _, item := range items {
-			itemLines := r.buildItemLines(item, section.IndentLevel)
+			itemLines := r.buildItemLines(item, 2)
 			for _, line := range itemLines {
 				content.WriteString(line)
 				if !strings.HasSuffix(line, "\n") {
@@ -122,7 +122,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		// Build items
 		for _, item := range items {
 			// String representation
-			itemLines := r.buildItemLines(item, section.IndentLevel)
+			itemLines := r.buildItemLines(item, 2)
 			for _, line := range itemLines {
 				content.WriteString(line)
 				if !strings.HasSuffix(line, "\n") {
@@ -266,7 +266,7 @@ func (r *OrgRenderer) buildSectionHeader(section *database.Section, items []*dat
 		status = "DONE"
 	}
 
-	indentStars := strings.Repeat("*", section.IndentLevel-1)
+	indentStars := strings.Repeat("*", 1)
 	ratio := fmt.Sprintf("[%d/%d]", doneCount, len(items))
 
 	return fmt.Sprintf("%s %s %s %s", indentStars, status, section.SectionName, ratio)

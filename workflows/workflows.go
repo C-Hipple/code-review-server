@@ -4,7 +4,6 @@ import (
 	"crs/config"
 	"crs/git_tools"
 	"crs/jira"
-	"crs/org"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -78,8 +77,7 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileC
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
-	section, err := doc.GetSection(w.SectionTitle)
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -87,7 +85,7 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileC
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -116,8 +114,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 	}
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
-	section, err := doc.GetSection(w.SectionTitle)
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -126,7 +123,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -170,8 +167,7 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C.DB
-	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
-	section, err := doc.GetSection(w.SectionTitle)
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -180,7 +176,7 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -210,9 +206,7 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C.DB
-	doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: w.ReleaseCheckCommand})
-
-	section, err := doc.GetSection(w.SectionTitle)
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
 	if err != nil {
 		return RunResult{}, errors.New("Section Not Found")
 	}
@@ -230,7 +224,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_chan
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, doc, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil

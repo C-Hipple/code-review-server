@@ -4,7 +4,7 @@ import (
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
-	"crs/org"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -41,7 +41,7 @@ type ManagerService struct {
 func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []SerializedFileChange {
 	changesByIdentifier := make(map[string][]SerializedFileChange)
 	for _, change := range changes {
-		identifier := change.FileChange.Item.Identifier()
+		identifier := change.FileChange.Identifier
 		changesByIdentifier[identifier] = append(changesByIdentifier[identifier], change)
 	}
 
@@ -86,8 +86,17 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 			continue
 		}
 		fileChange.Report(log)
-		key := fileChange.Section.Name()
-		changesMap[key] = append(changesMap[key], fileChange.Deserialize())
+		key := fileChange.SectionName
+		
+		var lines []string
+		if fileChange.ChangeType != "Delete" {
+			lines = fileChange.GetLines(2)
+		}
+		
+		changesMap[key] = append(changesMap[key], SerializedFileChange{
+			FileChange: &fileChange,
+			Lines:      lines,
+		})
 	}
 
 	var serialziedChannel = make(chan SerializedFileChange)
@@ -113,19 +122,32 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 	changeCount := 0
 	for deserializedChange := range channel {
 		db := config.C.DB
-		doc := org.NewDBClient(db, deserializedChange.FileChange.ItemSerializer)
 
 		if config.C.AutoWorktree {
 			handleWorktreeChange(log, db, deserializedChange)
 		}
 
 		switch deserializedChange.FileChange.ChangeType {
-		case "Addition":
-			doc.AddDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.Lines, deserializedChange.FileChange.TTL)
-		case "Update", "Archive":
-			doc.UpdateDeserializedItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item, deserializedChange.FileChange.ChangeType == "Archive", deserializedChange.Lines, deserializedChange.FileChange.TTL)
+		case "Addition", "Update", "Archive":
+			archived := deserializedChange.FileChange.ChangeType == "Archive"
+			_, err := db.UpsertItem(
+				deserializedChange.FileChange.SectionID,
+				deserializedChange.FileChange.Identifier,
+				deserializedChange.FileChange.Status,
+				deserializedChange.FileChange.Title,
+				deserializedChange.FileChange.Details,
+				deserializedChange.FileChange.Tags,
+				archived,
+				deserializedChange.FileChange.TTL,
+			)
+			if err != nil {
+				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+			}
 		case "Delete":
-			doc.DeleteItemInSection(deserializedChange.FileChange.Section.Name(), deserializedChange.FileChange.Item)
+			err := db.DeleteItem(deserializedChange.FileChange.SectionID, deserializedChange.FileChange.Identifier)
+			if err != nil {
+				log.Error("Error deleting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+			}
 		}
 		changeCount++
 		wg.Done()
@@ -134,15 +156,54 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 }
 
 func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFileChange) {
-	prBridge, ok := change.FileChange.Item.(PRToOrgBridge)
-	if !ok {
+	// Identifier is Repo-PRNumber for PRs
+	parts := strings.Split(change.FileChange.Identifier, "-")
+	if len(parts) < 2 {
 		return
 	}
-
-	repoName := prBridge.PR.Base.Repo.GetName()
-	ownerName := prBridge.PR.Base.Repo.Owner.GetLogin()
-	branchName := prBridge.PR.Head.GetRef()
-	prNumber := prBridge.PR.GetNumber()
+	
+	repoFull := parts[0]
+	// Owner is part of RepoFull
+	repoParts := strings.Split(repoFull, "/")
+	if len(repoParts) < 2 {
+		return
+	}
+	ownerName := repoParts[0]
+	repoName := repoParts[1]
+	prNumberStr := parts[1]
+	
+	var prNumber int
+	fmt.Sscanf(prNumberStr, "%d", &prNumber)
+	if prNumber == 0 {
+		return
+	}
+	
+	// We need head SHA and branch name. These are NOT in FileChanges.
+	// We might need to fetch them from DB if they were cached.
+	_, sha, _ := db.GetPullRequest(prNumber, repoFull)
+	if sha == "" {
+		// If we don't have it in DB, we can't easily manage worktree here without a refactor
+		// to include more info in FileChanges or performing a GitHub API call.
+		// For now, let's assume we can't do it if not in DB.
+		return
+	}
+	
+	// We also don't have HeadRef here. 
+	// This shows handleWorktreeChange was relying on PRToOrgBridge struct.
+	// Let's try to get it from metadata cache.
+	metadataJSON, _ := db.GetPRMetadataCache(ownerName, repoName, prNumber)
+	if metadataJSON == "" {
+		return
+	}
+	
+	var metadata struct {
+		HeadRef string `json:"head_ref"`
+	}
+	json.Unmarshal([]byte(metadataJSON), &metadata)
+	branchName := metadata.HeadRef
+	if branchName == "" {
+		return
+	}
 
 	repoLocation := config.C.RepoLocation
 	if strings.HasPrefix(repoLocation, "~") {
@@ -322,8 +383,6 @@ func (ms *ManagerService) Initialize() {
 	// Does this sync since GetSection has creation side effect
 	db := config.C.DB
 	for _, wf := range ms.Workflows {
-		// Don't need to check release command here
-		doc := org.NewDBClient(db, org.BaseOrgSerializer{ReleaseCheckCommand: ""})
-		doc.GetSection(wf.GetOrgSectionName())
+		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C.SectionPriority[wf.GetOrgSectionName()])
 	}
 }

@@ -5,6 +5,7 @@ import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarized
 import { rpcCall, API_BASE } from '../api';
 import { Button, Badge, Modal, TextArea, Select, mapStatusToVariant, colors, shadows, Theme, THEME_OPTIONS } from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
+import CodeViewerModal from './CodeViewerModal';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
 const stripHtmlComments = (text: string): string => {
@@ -187,6 +188,14 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
     const [repoExists, setRepoExists] = useState<boolean | null>(null);
     const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
+
+    // Code Viewer Modal State
+    const [codeViewers, setCodeViewers] = useState<Array<{
+        id: number;
+        filePath: string;
+        line: number;
+        position?: { x: number, y: number };
+    }>>([]);
 
     useEffect(() => {
         loadPR();
@@ -1230,9 +1239,31 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                 {lspData.refs && lspData.refs.length > 0 && (
                                     <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', fontSize: '12px' }}>
                                         <div style={{ fontWeight: 600, marginBottom: '5px', color: 'var(--text-secondary)' }}>References ({lspData.refs.length}):</div>
-                                        <ul style={{ margin: '0 0 0 15px', padding: 0, color: 'var(--accent)' }}>
+                                        <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
                                             {lspData.refs.map((r, i) => (
-                                                <li key={i}>{r.uri.split('/').pop()} : {r.range.start.line + 1}</li>
+                                                <li
+                                                    key={i}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        const filePath = r.uri.replace('file://', '');
+                                                        // Open a new modal offset from the click position
+                                                        setCodeViewers(prev => [...prev, {
+                                                            id: Date.now(),
+                                                            filePath,
+                                                            line: r.range.start.line + 1,
+                                                            position: { x: e.clientX + 20, y: e.clientY - 50 }
+                                                        }]);
+                                                    }}
+                                                    style={{
+                                                        cursor: 'pointer',
+                                                        color: 'var(--accent)',
+                                                        textDecoration: 'underline',
+                                                        marginBottom: '2px',
+                                                    }}
+                                                    className="hover-link"
+                                                >
+                                                    {r.uri.split('/').pop()} : {r.range.start.line + 1}
+                                                </li>
                                             ))}
                                         </ul>
                                     </div>
@@ -2013,6 +2044,20 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     </div>
                 </div>
             )}
+
+            {/* Code Viewer Modals */}
+            {codeViewers.map(viewer => (
+                <CodeViewerModal
+                    key={viewer.id}
+                    isOpen={true}
+                    onClose={() => setCodeViewers(prev => prev.filter(v => v.id !== viewer.id))}
+                    filePath={viewer.filePath}
+                    repoPath={metadata?.repo_path || ''}
+                    initialLine={viewer.line}
+                    theme={theme}
+                    initialPosition={viewer.position}
+                />
+            ))}
         </div>
     );
 }

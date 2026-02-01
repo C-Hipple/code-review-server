@@ -194,6 +194,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
         isOpen: boolean;
         filePath: string;
         line: number;
+        position?: { x: number, y: number };
     } | null>(null);
 
     useEffect(() => {
@@ -1245,10 +1246,13 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const filePath = r.uri.replace('file://', '');
+                                                        // Open the modal offset from the click position
+                                                        // or simply to the right/left of the tooltip
                                                         setCodeViewerState({
                                                             isOpen: true,
                                                             filePath,
-                                                            line: r.range.start.line + 1
+                                                            line: r.range.start.line + 1,
+                                                            position: { x: e.clientX + 20, y: e.clientY - 50 }
                                                         });
                                                     }}
                                                     style={{
@@ -2051,6 +2055,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     repoPath={metadata?.repo_path || ''}
                     initialLine={codeViewerState.line}
                     theme={theme}
+                    initialPosition={codeViewerState.position}
                 />
             )}
         </div>

@@ -12,6 +12,7 @@ interface CodeViewerModalProps {
     repoPath: string;
     initialLine?: number;
     theme: Theme;
+    initialPosition?: { x: number, y: number };
 }
 
 // Map file extensions to Prism language identifiers
@@ -42,13 +43,14 @@ export default function CodeViewerModal({
     repoPath,
     initialLine = 1,
     theme,
+    initialPosition,
 }: CodeViewerModalProps) {
     const [content, setContent] = useState<string>('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     // Modal position and size
-    const [position, setPosition] = useState({ x: 100, y: 100 });
+    const [position, setPosition] = useState(initialPosition || { x: 100, y: 100 });
     const [size, setSize] = useState({ width: 800, height: 600 });
     const [isDragging, setIsDragging] = useState(false);
     const [isResizing, setIsResizing] = useState<string | null>(null);
@@ -277,12 +279,35 @@ export default function CodeViewerModal({
                 {/* Content */}
                 <div
                     ref={contentRef}
+                    className="code-viewer-content"
                     style={{
                         flex: 1,
                         overflow: 'auto',
                         background: 'var(--bg-primary)',
                     }}
                 >
+                    <style>{`
+                        .code-viewer-content::-webkit-scrollbar {
+                            width: 10px;
+                            height: 10px;
+                        }
+                        .code-viewer-content::-webkit-scrollbar-track {
+                            background: var(--bg-secondary);
+                        }
+                        .code-viewer-content::-webkit-scrollbar-thumb {
+                            background: var(--border);
+                            border-radius: 5px;
+                            border: 2px solid var(--bg-secondary);
+                        }
+                        .code-viewer-content::-webkit-scrollbar-thumb:hover {
+                            background: var(--text-tertiary);
+                        }
+                        /* Firefox */
+                        .code-viewer-content {
+                            scrollbar-width: thin;
+                            scrollbar-color: var(--border) var(--bg-secondary);
+                        }
+                    `}</style>
                     {loading && (
                         <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
                             Loading...

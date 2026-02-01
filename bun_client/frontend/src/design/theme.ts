@@ -11,7 +11,12 @@ export const VALID_THEMES = [
     'solarized-dark',
     'dracula',
     'nord',
-    'night-owl'
+    'night-owl',
+    'tokyo-night',
+    'catppuccin',
+    'everforest',
+    'rose-pine',
+    'synthwave-84'
 ] as const;
 
 export type Theme = (typeof VALID_THEMES)[number];
@@ -31,6 +36,11 @@ export const THEME_OPTIONS: ThemeOption[] = [
     { value: 'dracula', label: '🧛 Dracula' },
     { value: 'nord', label: '❄️ Nord' },
     { value: 'night-owl', label: '🦉 Night Owl' },
+    { value: 'tokyo-night', label: '🌃 Tokyo Night' },
+    { value: 'catppuccin', label: '🐱 Catppuccin' },
+    { value: 'everforest', label: '🌲 Everforest' },
+    { value: 'rose-pine', label: '🌹 Rose Pine' },
+    { value: 'synthwave-84', label: '🕹️ SynthWave \'84' },
 ];
 
 /**

@@ -67,3 +67,17 @@ export async function readFile(repoPath: string, filePath: string): Promise<stri
     return data.content;
 }
 
+/**
+ * List all files in a repository
+ */
+export async function listFiles(repoPath: string): Promise<string[]> {
+    const res = await fetch(`${API_BASE}/api/list-files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoPath })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.files;
+}
+

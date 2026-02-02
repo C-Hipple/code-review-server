@@ -1,5 +1,6 @@
 import { spawn, Subprocess } from "bun";
-import { resolve, join, dirname } from "path";
+import { resolve, join, dirname, relative } from "path";
+import { readdir, stat } from "node:fs/promises";
 import { assets } from "./embedded_assets";
 
 const SERVER_PATH = Bun.which("crs") || "crs";
@@ -159,7 +160,7 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
-                    envs: process.env
+                    envs: process.env as Record<string, string>
                 }
             });
             if (success) return undefined;
@@ -309,6 +310,50 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
                 status: 404,
                 headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
             });
+        }
+
+        // List files in repository recursively
+        if (url.pathname === "/api/list-files" && req.method === "POST") {
+            const body = await req.json();
+            const { repoPath } = body;
+
+            if (!repoPath) {
+                return new Response(JSON.stringify({ error: "repoPath is required" }), {
+                    status: 400,
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            }
+
+            try {
+                const listFilesRecursive = async (dir: string, baseDir: string): Promise<string[]> => {
+                    const entries = await readdir(dir, { withFileTypes: true });
+                    const files: string[] = [];
+
+                    for (const entry of entries) {
+                        const name = entry.name;
+                        if (name === "node_modules" || name === ".git" || name === ".next" || name === "dist") continue;
+
+                        const res = resolve(dir, name);
+                        if (entry.isDirectory()) {
+                            files.push(...(await listFilesRecursive(res, baseDir)));
+                        } else {
+                            files.push(relative(baseDir, res));
+                        }
+                    }
+                    return files;
+                };
+
+                const files = await listFilesRecursive(repoPath, repoPath);
+                return new Response(JSON.stringify({ files }), {
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            } catch (err) {
+                console.error("Error listing files:", err);
+                return new Response(JSON.stringify({ error: String(err) }), {
+                    status: 500,
+                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                });
+            }
         }
 
         if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {

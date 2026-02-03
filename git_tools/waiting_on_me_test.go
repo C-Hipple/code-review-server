@@ -87,13 +87,20 @@ func TestFilterWaitingOnMe(t *testing.T) {
 			},
 			shouldInclude: false,
 		},
+		{
+			name:          "Nil PR should be ignored",
+			pr:            nil,
+			shouldInclude: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Prime cache
-			cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *tt.pr.Number)
-			GlobalCache.Set(cacheKey, tt.state, 1*time.Hour)
+			if tt.pr != nil {
+				// Prime cache
+				cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *tt.pr.Number)
+				GlobalCache.Set(cacheKey, tt.state, 1*time.Hour)
+			}
 
 			result := FilterWaitingOnMe([]*github.PullRequest{tt.pr})
 			included := len(result) > 0
@@ -109,12 +116,6 @@ func TestCalculateInteractionState(t *testing.T) {
 	myLogin := "myself"
 	other := "other"
 	now := time.Now()
-
-	makePR := func(updatedAt time.Time) *github.PullRequest {
-		return &github.PullRequest{
-			UpdatedAt: &updatedAt,
-		}
-	}
 
 	makeReview := func(user string, submittedAt time.Time) *github.PullRequestReview {
 		return &github.PullRequestReview{
@@ -152,7 +153,7 @@ func TestCalculateInteractionState(t *testing.T) {
 	}{
 		{
 			name: "Basic times calculation",
-			pr:   makePR(now.Add(-1 * time.Hour)),
+			pr:   &github.PullRequest{},
 			reviews: []*github.PullRequestReview{
 				makeReview(myLogin, now.Add(-30 * time.Minute)),
 				makeReview(other, now.Add(-45 * time.Minute)),
@@ -160,12 +161,11 @@ func TestCalculateInteractionState(t *testing.T) {
 			expectedState: InteractionState{
 				LastMeTime:     now.Add(-30 * time.Minute),
 				LastOthersTime: now.Add(-45 * time.Minute),
-				LastCommitTime: now.Add(-1 * time.Hour),
 			},
 		},
 		{
 			name: "Threaded review comments - reply by other",
-			pr:   makePR(now),
+			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
 				makeComment(1, myLogin, now.Add(-20 * time.Minute), 0),
 				makeComment(2, other, now.Add(-10 * time.Minute), 1),
@@ -173,13 +173,12 @@ func TestCalculateInteractionState(t *testing.T) {
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-20 * time.Minute),
 				LastOthersTime:         now.Add(-10 * time.Minute),
-				LastCommitTime:         now,
 				HasUnrespondedComments: true,
 			},
 		},
 		{
 			name: "Threaded review comments - replied back by me",
-			pr:   makePR(now),
+			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
 				makeComment(1, myLogin, now.Add(-20 * time.Minute), 0),
 				makeComment(2, other, now.Add(-10 * time.Minute), 1),
@@ -188,13 +187,12 @@ func TestCalculateInteractionState(t *testing.T) {
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-5 * time.Minute),
 				LastOthersTime:         now.Add(-10 * time.Minute),
-				LastCommitTime:         now,
 				HasUnrespondedComments: false,
 			},
 		},
 		{
 			name: "Issue comments - reply by other",
-			pr:   makePR(now),
+			pr:   &github.PullRequest{},
 			issueComments: []*github.IssueComment{
 				makeIssueComment(myLogin, now.Add(-20 * time.Minute)),
 				makeIssueComment(other, now.Add(-10 * time.Minute)),
@@ -202,9 +200,25 @@ func TestCalculateInteractionState(t *testing.T) {
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-20 * time.Minute),
 				LastOthersTime:         now.Add(-10 * time.Minute),
-				LastCommitTime:         now,
 				HasUnrespondedComments: true,
 			},
+		},
+		{
+			name: "Nil checks (should not panic)",
+			pr:   nil,
+			reviews: []*github.PullRequestReview{
+				nil,
+				{User: nil},
+				{User: &github.User{Login: nil}},
+			},
+			reviewComments: []*github.PullRequestComment{
+				nil,
+				{User: nil},
+			},
+			issueComments: []*github.IssueComment{
+				nil,
+			},
+			expectedState: InteractionState{},
 		},
 	}
 
@@ -212,7 +226,6 @@ func TestCalculateInteractionState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := CalculateInteractionState(myLogin, tt.pr, tt.reviews, tt.reviewComments, tt.issueComments)
 
-			// Simple check for times (within a second due to rounding in GitHub if any, though here it's direct)
 			if !state.LastMeTime.Equal(tt.expectedState.LastMeTime) {
 				t.Errorf("LastMeTime: expected %v, got %v", tt.expectedState.LastMeTime, state.LastMeTime)
 			}

@@ -564,17 +564,16 @@ type InteractionState struct {
 func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews []*github.PullRequestReview, reviewComments []*github.PullRequestComment, issueComments []*github.IssueComment) InteractionState {
 	state := InteractionState{}
 
-	// Commits activity (proxy via UpdatedAt or specifically head SHA update)
-	if pr.UpdatedAt != nil {
-		state.LastCommitTime = *pr.UpdatedAt
+	if pr == nil {
+		return state
 	}
 
 	// Fetch Reviews
 	for _, r := range reviews {
-		if r.SubmittedAt == nil {
+		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
 			continue
 		}
-		if r.User != nil && *r.User.Login == myLogin {
+		if *r.User.Login == myLogin {
 			if r.SubmittedAt.After(state.LastMeTime) {
 				state.LastMeTime = *r.SubmittedAt
 			}
@@ -591,7 +590,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	participation := make(map[int64]bool)
 
 	for _, c := range reviewComments {
-		if c.ID == nil || c.User == nil || c.User.Login == nil {
+		if c == nil || c.ID == nil || c.User == nil || c.User.Login == nil {
 			continue
 		}
 
@@ -625,7 +624,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	iParticipated := false
 	lastCommenter := ""
 	for _, c := range issueComments {
-		if c.User == nil || c.User.Login == nil {
+		if c == nil || c.User == nil || c.User.Login == nil {
 			continue
 		}
 		if *c.User.Login == myLogin {
@@ -648,6 +647,10 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 }
 
 func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
+	if pr == nil || pr.Number == nil {
+		return InteractionState{}
+	}
+
 	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *pr.Number)
 	if val, found := GlobalCache.Get(cacheKey); found {
 		return val.(InteractionState)
@@ -658,15 +661,39 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	myLogin := config.C.GithubUsername
 
 	// Fetch Reviews
-	reviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
+	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
+	if err != nil {
+		slog.Error("Error listing reviews", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		return InteractionState{}
+	}
 
 	// Fetch Review Comments
-	reviewComments, _, _ := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
+	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
+	if err != nil {
+		slog.Error("Error listing review comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		return InteractionState{}
+	}
 
 	// Fetch Issue Comments
-	issueComments, _, _ := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+	issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+	if err != nil {
+		slog.Error("Error listing issue comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		return InteractionState{}
+	}
 
 	state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, issueComments)
+
+	// Fetch more accurate LastCommitTime
+	commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, nil)
+	if err == nil && len(commits) > 0 {
+		latestCommit := commits[len(commits)-1]
+		if latestCommit.Commit != nil && latestCommit.Commit.Committer != nil && latestCommit.Commit.Committer.Date != nil {
+			state.LastCommitTime = *latestCommit.Commit.Committer.Date
+		}
+	} else if err != nil {
+		slog.Error("Error listing commits", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		return InteractionState{} // Don't cache incomplete state
+	}
 
 	GlobalCache.Set(cacheKey, state, 10*time.Minute)
 	return state
@@ -705,12 +732,16 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 	myLogin := config.C.GithubUsername
 
 	for _, pr := range prs {
+		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
+			continue
+		}
+
 		state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 
 		// Is Personally Requested?
 		isRequested := false
 		for _, r := range pr.RequestedReviewers {
-			if r.Login != nil && *r.Login == myLogin {
+			if r != nil && r.Login != nil && *r.Login == myLogin {
 				isRequested = true
 				break
 			}

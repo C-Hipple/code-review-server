@@ -215,8 +215,13 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
                         <h2 style={{ margin: 0, fontSize: '18px' }}>Your Reviews</h2>
                         {!loading && sections.length > 0 && (
                             <div style={{ display: 'flex', gap: '8px' }}>
-                                <Button variant="secondary" size="sm" onClick={expandAll}>Expand All</Button>
-                                <Button variant="secondary" size="sm" onClick={collapseAll}>Collapse All</Button>
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={collapsedSections.size === sections.length ? expandAll : collapseAll}
+                                >
+                                    {collapsedSections.size === sections.length ? 'Expand All' : 'Collapse All'}
+                                </Button>
                             </div>
                         )}
                     </div>

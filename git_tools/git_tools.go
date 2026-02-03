@@ -124,7 +124,7 @@ func ApplyPRFilters(prs []*github.PullRequest, filters []PRFilter) []*github.Pul
 func FilterPRsByAuthor(prs []*github.PullRequest, author string) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
-		if *pr.User.Login == author {
+		if strings.EqualFold(*pr.User.Login, author) {
 			filtered = append(filtered, pr)
 		}
 	}
@@ -134,7 +134,7 @@ func FilterPRsByAuthor(prs []*github.PullRequest, author string) []*github.PullR
 func FilterPRsExcludeAuthor(prs []*github.PullRequest, author string) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
-		if *pr.User.Login != author {
+		if !strings.EqualFold(*pr.User.Login, author) {
 			filtered = append(filtered, pr)
 		}
 	}
@@ -211,7 +211,7 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
 		for _, reviewer := range pr.RequestedReviewers {
-			if *reviewer.Login == config.C.GithubUsername {
+			if strings.EqualFold(*reviewer.Login, config.C.GithubUsername) {
 				filtered = append(filtered, pr)
 				break
 			}

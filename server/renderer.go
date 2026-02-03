@@ -565,13 +565,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	// 1. Try to load metadata from cache first (unless skipCache)
 	if !skipCache {
-		cachedMetadataJSON, err := config.C.DB.GetPRMetadataCache(owner, repo, number)
+		cachedMetadataJSON, err := config.C().DB.GetPRMetadataCache(owner, repo, number)
 		if err == nil && cachedMetadataJSON != "" {
 			if err := json.Unmarshal([]byte(cachedMetadataJSON), &metadata); err == nil {
 				slog.Debug("Using cached PR metadata", "pr", number, "repo", repo)
 				// We have cached metadata, but we still need SHA for diff lookup
 				// Get it from the PullRequests table
-				_, sha, _ := config.C.DB.GetPullRequest(number, repo)
+				_, sha, _ := config.C().DB.GetPullRequest(number, repo)
 				headSHA = sha
 			} else {
 				needsFreshFetch = true
@@ -653,7 +653,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 			// Cache Reviews
 			if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
-				config.C.DB.UpsertPRReviews(number, repo, string(reviewsJSON))
+				config.C().DB.UpsertPRReviews(number, repo, string(reviewsJSON))
 			}
 
 			// Fetch CI Status
@@ -730,7 +730,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			// Fetch worktree path if it exists
-			if worktreePath, err := config.C.DB.GetWorktree(number, repo, owner); err == nil {
+			if worktreePath, err := config.C().DB.GetWorktree(number, repo, owner); err == nil {
 				metadata.WorktreePath = worktreePath
 			}
 
@@ -742,7 +742,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			// Cache the metadata
 			metadataJSON, err := json.Marshal(metadata)
 			if err == nil {
-				config.C.DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON))
+				config.C().DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON))
 			}
 		}
 	}
@@ -757,7 +757,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// 3. Fetch Diff (with caching)
 	var diff string
 	if !skipCache {
-		cachedDiff, _, err := config.C.DB.GetPullRequest(number, repo)
+		cachedDiff, _, err := config.C().DB.GetPullRequest(number, repo)
 		if err == nil && cachedDiff != "" {
 			diff = cachedDiff
 		}
@@ -769,7 +769,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		} else {
 			diff = d
 			// Store in cache
-			config.C.DB.UpsertPullRequest(number, repo, headSHA, diff)
+			config.C().DB.UpsertPullRequest(number, repo, headSHA, diff)
 		}
 	}
 
@@ -782,7 +782,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// 4. Fetch Comments (GitHub + Local)
 	var githubComments []*github.PullRequestComment
 	if !skipCache {
-		cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
+		cachedCommentsJSON, err := config.C().DB.GetPRComments(number, repo)
 		if err == nil && cachedCommentsJSON != "" {
 			json.Unmarshal([]byte(cachedCommentsJSON), &githubComments)
 		}
@@ -803,21 +803,21 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			})
 
 			commentsJSON, _ := json.Marshal(githubComments)
-			config.C.DB.UpsertPRComments(number, repo, string(commentsJSON))
+			config.C().DB.UpsertPRComments(number, repo, string(commentsJSON))
 		}
 	}
 
 	comments := convertToPRComments(githubComments)
 	comments = filterComments(comments)
 
-	localComments, _ := config.C.DB.GetLocalCommentsForPR(owner, repo, number)
+	localComments, _ := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
 	comments = append(comments, convertLocalCommentsToPRComments(localComments)...)
 
 	commentJSONs, outdatedCommentJSONs := splitComments(comments)
 
 	// 5. Load Reviews from DB
 	var reviews []ReviewJSON
-	cachedReviewsJSON, err := config.C.DB.GetPRReviews(number, repo)
+	cachedReviewsJSON, err := config.C().DB.GetPRReviews(number, repo)
 	if err == nil && cachedReviewsJSON != "" {
 		json.Unmarshal([]byte(cachedReviewsJSON), &reviews)
 	}
@@ -843,13 +843,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 		reviews = formattedReviews
 		if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
-			config.C.DB.UpsertPRReviews(number, repo, string(reviewsJSON))
+			config.C().DB.UpsertPRReviews(number, repo, string(reviewsJSON))
 		}
 	}
 
 	// 6. Fetch Commits
 	var commits []CommitJSON
-	// We can cache commits here in the future via config.C.DB.GetPRCommits, but for now we'll fetch them
+	// We can cache commits here in the future via config.C().DB.GetPRCommits, but for now we'll fetch them
 	// effectively moving the fetch from GetFullPRResponse to here.
 	// If we want to truly "read from cache", we should add DB support for commits, but 
 	// consolidating the fetch here is the first step and avoids the double fetch in GetFullPRResponse.
@@ -1264,7 +1264,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 
 	// Check database first - skip API call if cached
 	if !skipCache {
-		cachedBody, cachedSha, err := config.C.DB.GetPullRequest(number, repo)
+		cachedBody, cachedSha, err := config.C().DB.GetPullRequest(number, repo)
 		if err != nil {
 			slog.Error("Error checking database for PR", "pr", number, "repo", repo, "error", err)
 			// Continue to fetch from API
@@ -1323,7 +1323,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 
 	// Check database first - skip API call if cached
 	if !skipCache {
-		cachedCommentsJSON, err := config.C.DB.GetPRComments(number, repo)
+		cachedCommentsJSON, err := config.C().DB.GetPRComments(number, repo)
 		if err != nil {
 			slog.Error("Error checking database for PR comments", "pr", number, "repo", repo, "error", err)
 			// Continue to fetch from API
@@ -1356,7 +1356,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		if err != nil {
 			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", err)
 		} else {
-			if err := config.C.DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+			if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
 				slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
 				// Continue even if storage fails
 			}
@@ -1368,7 +1368,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	}
 
 	// Fetch LocalComments from database for this specific PR and add them to the comments list
-	localComments, err := config.C.DB.GetLocalCommentsForPR(owner, repo, number)
+	localComments, err := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		// Continue without local comments
@@ -1688,7 +1688,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*git
 	client := git_tools.GetGithubClient()
 
 	if !skipCache {
-		cachedReviewersJSON, err := config.C.DB.GetRequestedReviewers(number, repo)
+		cachedReviewersJSON, err := config.C().DB.GetRequestedReviewers(number, repo)
 		if err != nil {
 			slog.Error("Error checking database for requested reviewers", "pr", number, "repo", repo, "error", err)
 		} else if cachedReviewersJSON != "" {
@@ -1710,7 +1710,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*git
 	if err != nil {
 		slog.Error("Error marshaling reviewers for storage", "error", err)
 	} else {
-		if err := config.C.DB.UpsertRequestedReviewers(number, repo, string(reviewersJSON)); err != nil {
+		if err := config.C().DB.UpsertRequestedReviewers(number, repo, string(reviewersJSON)); err != nil {
 			slog.Error("Error storing requested reviewers in database", "error", err)
 		}
 	}
@@ -1727,7 +1727,7 @@ func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache b
 	client := git_tools.GetGithubClient()
 
 	if !skipCache {
-		cachedStatusJSON, err := config.C.DB.GetCIStatus(prNumber, repo, sha)
+		cachedStatusJSON, err := config.C().DB.GetCIStatus(prNumber, repo, sha)
 		if err != nil {
 			slog.Error("Error checking database for CI status", "pr", prNumber, "repo", repo, "sha", sha, "error", err)
 		} else if cachedStatusJSON != "" {
@@ -1765,7 +1765,7 @@ func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache b
 	if err != nil {
 		slog.Error("Error marshaling CI status for storage", "error", err)
 	} else {
-		if err := config.C.DB.UpsertCIStatus(prNumber, repo, sha, string(statusJSON)); err != nil {
+		if err := config.C().DB.UpsertCIStatus(prNumber, repo, sha, string(statusJSON)); err != nil {
 			slog.Error("Error storing CI status in database", "error", err)
 		}
 	}

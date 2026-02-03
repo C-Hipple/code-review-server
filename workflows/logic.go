@@ -283,7 +283,7 @@ func getComments(owner string, repo string, number int) (int, []string) {
 		if marshalErr != nil {
 			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", marshalErr)
 		} else {
-			if err := config.C.DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+			if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
 				slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
 				// Continue even if storage fails
 			}
@@ -454,7 +454,7 @@ func getPRDiff(owner string, repo string, number int) []string {
 	}
 	
 	// Store the result in the database
-	if err := config.C.DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
+	if err := config.C().DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
 		slog.Error("Error storing PR diff in database", "pr", number, "repo", repo, "error", err)
 		// Continue even if storage fails
 	}

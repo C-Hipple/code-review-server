@@ -14,7 +14,7 @@ import (
 func RunPlugins(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
 	var wg sync.WaitGroup
 
-	for _, plugin := range config.C.Plugins {
+	for _, plugin := range config.C().Plugins {
 		wg.Add(1)
 		go func(p config.Plugin) {
 			defer wg.Done()
@@ -32,7 +32,7 @@ func RunPlugins(owner, repo string, number int, sha string, diff string, comment
 
 func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
 	// Check if we need to rerun this plugin
-	storedSHA, err := config.C.DB.GetPluginResultSHA(owner, repo, number, plugin.Name)
+	storedSHA, err := config.C().DB.GetPluginResultSHA(owner, repo, number, plugin.Name)
 	if err != nil {
 		slog.Error("Failed to get stored SHA for plugin", "plugin", plugin.Name, "error", err)
 		// Continue anyway - we'll run the plugin
@@ -45,7 +45,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	}
 
 	// Set status to pending
-	err = config.C.DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "pending", sha)
+	err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "pending", sha)
 	if err != nil {
 		slog.Error("Failed to set plugin status to pending", "plugin", plugin.Name, "error", err)
 	}
@@ -73,14 +73,14 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	resultStr := string(output)
 	if err != nil {
 		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "output", resultStr)
-		config.C.DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nOutput: %s", err, resultStr), "error", sha)
+		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nOutput: %s", err, resultStr), "error", sha)
 		return
 	}
 
 	slog.Info("Plugin executed", "plugin", plugin.Name, "result_len", len(resultStr), "sha", sha)
 
 	// Store result
-	err = config.C.DB.UpsertPluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)
+	err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)
 	if err != nil {
 		slog.Error("Failed to store plugin result", "plugin", plugin.Name, "error", err)
 	}

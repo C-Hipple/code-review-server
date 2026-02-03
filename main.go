@@ -21,7 +21,7 @@ func main() {
 		slog.Error("Failed to initialize configuration", "error", err)
 		os.Exit(1)
 	}
-	defer config.C.DB.Close()
+	defer config.C().DB.Close()
 
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	serverFlag := flag.Bool("server", false, "Run as an RPC server")
@@ -43,11 +43,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	workflows_list := workflows.MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
+	cfg := config.C()
+	workflows_list := workflows.MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
 	ms := workflows.NewManagerService(
 		workflows_list,
 		*oneOff,
-		config.C.SleepDuration,
+		cfg.SleepDuration,
 	)
 	ms.Initialize()
 

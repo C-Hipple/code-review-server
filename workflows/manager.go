@@ -121,9 +121,9 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	changeCount := 0
 	for deserializedChange := range channel {
-		db := config.C.DB
+		db := config.C().DB
 
-		if config.C.AutoWorktree {
+		if config.C().AutoWorktree {
 			handleWorktreeChange(log, db, deserializedChange)
 		}
 
@@ -205,7 +205,7 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 		return
 	}
 
-	repoLocation := config.C.RepoLocation
+	repoLocation := config.C().RepoLocation
 	if strings.HasPrefix(repoLocation, "~") {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -350,8 +350,9 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				log.Error("Failed to reload config before cycle", "error", err)
 			} else {
 				// Re-generate workflows
-				ms.Workflows = MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
-				ms.sleepTime = config.C.SleepDuration
+				cfg := config.C()
+				ms.Workflows = MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
+				ms.sleepTime = cfg.SleepDuration
 				ms.Initialize()
 			}
 
@@ -379,8 +380,8 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 func (ms *ManagerService) Initialize() {
 	// Ensure all required sections exist.
 	// Does this sync since GetSection has creation side effect
-	db := config.C.DB
+	db := config.C().DB
 	for _, wf := range ms.Workflows {
-		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C.SectionPriority[wf.GetOrgSectionName()])
+		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
 	}
 }

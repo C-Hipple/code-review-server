@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"sync"
 )
 
 // This struct implements all possible values a workflow can define, then they're written as-needed.
@@ -52,7 +53,24 @@ type Config struct {
 	DB              *database.DB
 }
 
-var C Config
+var (
+	c  Config
+	mu sync.RWMutex
+)
+
+// C returns a copy of the current configuration.
+func C() Config {
+	mu.RLock()
+	defer mu.RUnlock()
+	return c
+}
+
+// SetC updates the current configuration. Primarily for tests.
+func SetC(newCfg Config) {
+	mu.Lock()
+	defer mu.Unlock()
+	c = newCfg
+}
 
 var UserHomeDir = os.UserHomeDir
 
@@ -153,16 +171,18 @@ func loadConfig() (*Config, error) {
 }
 
 // Reload reloads the configuration from the config file.
-// It updates the global C struct but maintains the existing DB connection.
+// It updates the global c struct but maintains the existing DB connection.
 func Reload() error {
 	newCfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	// Persist the database connection
-	newCfg.DB = C.DB
-	C = *newCfg
+	newCfg.DB = c.DB
+	c = *newCfg
 	slog.Info("Configuration reloaded successfully")
 	return nil
 }
@@ -222,6 +242,8 @@ func Initialize() error {
 	slog.Info("Database initialized successfully")
 
 	config.DB = db
-	C = *config
+	mu.Lock()
+	defer mu.Unlock()
+	c = *config
 	return nil
 }

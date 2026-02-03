@@ -78,6 +78,10 @@ type GetReviewsReply struct {
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
+	if err := config.Reload(); err != nil {
+		h.Log.Error("Error reloading config", "error", err)
+	}
+
 	renderer := NewOrgRenderer(config.C().DB)
 	content, items, err := renderer.RenderAndGetItems()
 	if err != nil {

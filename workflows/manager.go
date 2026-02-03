@@ -317,7 +317,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 	}
 }
 
-func (ms ManagerService) Run(log *slog.Logger) {
+func (ms *ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
 
 	// Advisory lock to prevent multiple concurrent syncs
@@ -355,9 +355,28 @@ func (ms ManagerService) Run(log *slog.Logger) {
 		}
 	} else {
 		cycle_count := 0
-		log.Info("Starting service mode with sleep duration:" + ms.sleepTime.String())
 		for {
-			log.Info("Cycle", "count", cycle_count)
+			// Reload config and workflows before each cycle
+			if err := config.Reload(); err != nil {
+				log.Error("Failed to reload config before cycle", "error", err)
+			} else {
+				// Re-generate workflows
+				rawWorkflows := MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
+				used_workflows := []Workflow{}
+				for _, wf := range rawWorkflows {
+					if strings.Contains(fmt.Sprintf("%T", wf), "ListMyPRsWorkflow") {
+						fixed := wf.(ListMyPRsWorkflow)
+						used_workflows = append(used_workflows, fixed)
+					} else {
+						used_workflows = append(used_workflows, wf)
+					}
+				}
+				ms.Workflows = used_workflows
+				ms.sleepTime = config.C.SleepDuration
+				ms.Initialize()
+			}
+
+			log.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
 			var cycle_wg sync.WaitGroup
 			cycle_wg.Add(1)
 			ms.workflow_chan = make(chan FileChanges)

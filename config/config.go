@@ -137,19 +137,40 @@ func parseConfig(data []byte) (*Config, error) {
 
 // Initialize loads the configuration from the config file and initializes the database.
 // This should be called from main() to allow proper error handling.
-func Initialize() error {
+func loadConfig() (*Config, error) {
 	configHome, err := getXDGConfigHome()
 	if err != nil {
-		return fmt.Errorf("failed to get config home: %w", err)
+		return nil, fmt.Errorf("failed to get config home: %w", err)
 	}
 
 	configPath := filepath.Join(configHome, "codereviewserver.toml")
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to read config file at %s: %w", configPath, err)
+		return nil, fmt.Errorf("failed to read config file at %s: %w", configPath, err)
 	}
 
-	config, err := parseConfig(the_bytes)
+	return parseConfig(the_bytes)
+}
+
+// Reload reloads the configuration from the config file.
+// It updates the global C struct but maintains the existing DB connection.
+func Reload() error {
+	newCfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Persist the database connection
+	newCfg.DB = C.DB
+	C = *newCfg
+	slog.Info("Configuration reloaded successfully")
+	return nil
+}
+
+// Initialize loads the configuration from the config file and initializes the database.
+// This should be called from main() to allow proper error handling.
+func Initialize() error {
+	config, err := loadConfig()
 	if err != nil {
 		return err
 	}

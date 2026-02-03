@@ -555,9 +555,96 @@ func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
 }
 
 type InteractionState struct {
-	LastMeTime     time.Time
-	LastOthersTime time.Time
-	LastCommitTime time.Time
+	LastMeTime            time.Time
+	LastOthersTime        time.Time
+	LastCommitTime        time.Time
+	HasUnrespondedComments bool
+}
+
+func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews []*github.PullRequestReview, reviewComments []*github.PullRequestComment, issueComments []*github.IssueComment) InteractionState {
+	state := InteractionState{}
+
+	// Commits activity (proxy via UpdatedAt or specifically head SHA update)
+	if pr.UpdatedAt != nil {
+		state.LastCommitTime = *pr.UpdatedAt
+	}
+
+	// Fetch Reviews
+	for _, r := range reviews {
+		if r.SubmittedAt == nil {
+			continue
+		}
+		if r.User != nil && *r.User.Login == myLogin {
+			if r.SubmittedAt.After(state.LastMeTime) {
+				state.LastMeTime = *r.SubmittedAt
+			}
+		} else {
+			if r.SubmittedAt.After(state.LastOthersTime) {
+				state.LastOthersTime = *r.SubmittedAt
+			}
+		}
+	}
+
+	// Fetch Review Comments
+	// Group comments by their "thread"
+	threads := make(map[int64]string) // Thread Root ID -> Last Commenter Login
+	participation := make(map[int64]bool)
+
+	for _, c := range reviewComments {
+		if c.ID == nil || c.User == nil || c.User.Login == nil {
+			continue
+		}
+
+		rootID := *c.ID
+		if c.InReplyTo != nil {
+			rootID = *c.InReplyTo
+		}
+
+		threads[rootID] = *c.User.Login
+
+		if *c.User.Login == myLogin {
+			participation[rootID] = true
+			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
+				state.LastMeTime = *c.CreatedAt
+			}
+		} else {
+			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
+				state.LastOthersTime = *c.CreatedAt
+			}
+		}
+	}
+
+	for rootID, lastCommenter := range threads {
+		if participation[rootID] && lastCommenter != myLogin {
+			state.HasUnrespondedComments = true
+			break
+		}
+	}
+
+	// Fetch Issue Comments
+	iParticipated := false
+	lastCommenter := ""
+	for _, c := range issueComments {
+		if c.User == nil || c.User.Login == nil {
+			continue
+		}
+		if *c.User.Login == myLogin {
+			iParticipated = true
+			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
+				state.LastMeTime = *c.CreatedAt
+			}
+		} else {
+			lastCommenter = *c.User.Login
+			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
+				state.LastOthersTime = *c.CreatedAt
+			}
+		}
+	}
+	if iParticipated && lastCommenter != "" && lastCommenter != myLogin {
+		state.HasUnrespondedComments = true
+	}
+
+	return state
 }
 
 func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
@@ -570,69 +657,16 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	ctx := context.Background()
 	myLogin := config.C.GithubUsername
 
-	state := InteractionState{}
-
-	// Commits activity (proxy via UpdatedAt or specifically head SHA update)
-	if pr.UpdatedAt != nil {
-		state.LastCommitTime = *pr.UpdatedAt
-	}
-
 	// Fetch Reviews
-	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
-	if err == nil {
-		for _, r := range reviews {
-			if r.SubmittedAt == nil {
-				continue
-			}
-			if r.User != nil && *r.User.Login == myLogin {
-				if r.SubmittedAt.After(state.LastMeTime) {
-					state.LastMeTime = *r.SubmittedAt
-				}
-			} else {
-				if r.SubmittedAt.After(state.LastOthersTime) {
-					state.LastOthersTime = *r.SubmittedAt
-				}
-			}
-		}
-	}
+	reviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
 
 	// Fetch Review Comments
-	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
-	if err == nil {
-		for _, c := range reviewComments {
-			if c.CreatedAt == nil {
-				continue
-			}
-			if c.User != nil && *c.User.Login == myLogin {
-				if c.CreatedAt.After(state.LastMeTime) {
-					state.LastMeTime = *c.CreatedAt
-				}
-			} else {
-				if c.CreatedAt.After(state.LastOthersTime) {
-					state.LastOthersTime = *c.CreatedAt
-				}
-			}
-		}
-	}
+	reviewComments, _, _ := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
 
 	// Fetch Issue Comments
-	issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
-	if err == nil {
-		for _, c := range issueComments {
-			if c.CreatedAt == nil {
-				continue
-			}
-			if c.User != nil && *c.User.Login == myLogin {
-				if c.CreatedAt.After(state.LastMeTime) {
-					state.LastMeTime = *c.CreatedAt
-				}
-			} else {
-				if c.CreatedAt.After(state.LastOthersTime) {
-					state.LastOthersTime = *c.CreatedAt
-				}
-			}
-		}
-	}
+	issueComments, _, _ := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+
+	state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, issueComments)
 
 	GlobalCache.Set(cacheKey, state, 10*time.Minute)
 	return state
@@ -669,10 +703,11 @@ func GetMyTeams() []string {
 func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	myLogin := config.C.GithubUsername
-	myTeams := GetMyTeams()
 
 	for _, pr := range prs {
-		// Is Requested?
+		state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+
+		// Is Personally Requested?
 		isRequested := false
 		for _, r := range pr.RequestedReviewers {
 			if r.Login != nil && *r.Login == myLogin {
@@ -680,21 +715,21 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 				break
 			}
 		}
-		if !isRequested {
-			for _, t := range pr.RequestedTeams {
-				if t.Slug != nil && slices.Contains(myTeams, *t.Slug) {
-					isRequested = true
-					break
-				}
-			}
-		}
+
+		// A PR is "Waiting on me" if:
+		// 1. I am individually requested AND I haven't acted since the last push or last other action.
+		// 2. OR I have unresponded comments.
 
 		if isRequested {
-			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
 			if !actedSinceOthers {
 				filtered = append(filtered, pr)
+				continue
 			}
+		}
+
+		if state.HasUnrespondedComments {
+			filtered = append(filtered, pr)
 		}
 	}
 	return filtered

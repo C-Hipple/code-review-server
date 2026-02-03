@@ -270,19 +270,8 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 }
 
 func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {
-	used_workflows := []Workflow{}
-	for _, wf := range workflows {
-		if strings.Contains(fmt.Sprintf("%T", wf), "ListMyPRsWorkflow") {
-			// TODO: match the release getter with the repo
-			fixed := wf.(ListMyPRsWorkflow)
-			used_workflows = append(used_workflows, fixed)
-		} else {
-			used_workflows = append(used_workflows, wf)
-		}
-	}
-
 	return ManagerService{
-		Workflows:     used_workflows,
+		Workflows:     workflows,
 		workflow_chan: make(chan FileChanges),
 		sleepTime:     sleepTime,
 		oneoff:        oneoff,
@@ -361,17 +350,7 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				log.Error("Failed to reload config before cycle", "error", err)
 			} else {
 				// Re-generate workflows
-				rawWorkflows := MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
-				used_workflows := []Workflow{}
-				for _, wf := range rawWorkflows {
-					if strings.Contains(fmt.Sprintf("%T", wf), "ListMyPRsWorkflow") {
-						fixed := wf.(ListMyPRsWorkflow)
-						used_workflows = append(used_workflows, fixed)
-					} else {
-						used_workflows = append(used_workflows, wf)
-					}
-				}
-				ms.Workflows = used_workflows
+				ms.Workflows = MatchWorkflows(config.C.RawWorkflows, &config.C.Repos, config.C.JiraDomain)
 				ms.sleepTime = config.C.SleepDuration
 				ms.Initialize()
 			}

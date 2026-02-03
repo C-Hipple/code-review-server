@@ -847,28 +847,37 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 	}
 
-	// 6. Fetch Commits
+	// 6. Fetch Commits (with caching)
 	var commits []CommitJSON
-	// We can cache commits here in the future via config.C().DB.GetPRCommits, but for now we'll fetch them
-	// effectively moving the fetch from GetFullPRResponse to here.
-	// If we want to truly "read from cache", we should add DB support for commits, but 
-	// consolidating the fetch here is the first step and avoids the double fetch in GetFullPRResponse.
-	ghCommits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
-	if err != nil {
-		slog.Error("Error fetching commits", "error", err)
-	} else {
-		for _, c := range ghCommits {
-			msg := c.Commit.GetMessage()
-			// if idx := strings.Index(msg, "\n"); idx != -1 {
-			// 	msg = msg[:idx]
-			// }
-			commits = append(commits, CommitJSON{
-				SHA:     c.GetSHA(),
-				Message: msg,
-				Author:  c.Commit.Author.GetName(),
-				Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
-				URL:     c.GetHTMLURL(),
-			})
+	if !skipCache {
+		cachedCommitsJSON, err := config.C().DB.GetPRCommits(number, repo)
+		if err == nil && cachedCommitsJSON != "" {
+			json.Unmarshal([]byte(cachedCommitsJSON), &commits)
+		}
+	}
+	if commits == nil {
+		ghCommits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
+		if err != nil {
+			slog.Error("Error fetching commits", "error", err)
+		} else {
+			for _, c := range ghCommits {
+				msg := c.Commit.GetMessage()
+				// if idx := strings.Index(msg, "\n"); idx != -1 {
+				// 	msg = msg[:idx]
+				// }
+				commits = append(commits, CommitJSON{
+					SHA:     c.GetSHA(),
+					Message: msg,
+					Author:  c.Commit.Author.GetName(),
+					Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
+					URL:     c.GetHTMLURL(),
+				})
+			}
+
+			// Cache the commits
+			if commitsJSON, err := json.Marshal(commits); err == nil {
+				config.C().DB.UpsertPRCommits(number, repo, string(commitsJSON))
+			}
 		}
 	}
 

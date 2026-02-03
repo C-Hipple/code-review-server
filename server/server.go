@@ -58,7 +58,7 @@ type HelloReply struct {
 
 func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	var count int
-	err := config.C.DB.QueryRow("SELECT COUNT(*) FROM sections").Scan(&count)
+	err := config.C().DB.QueryRow("SELECT COUNT(*) FROM sections").Scan(&count)
 	if err != nil {
 		h.Log.Error("Error counting items", "error", err)
 		return err
@@ -78,7 +78,7 @@ type GetReviewsReply struct {
 }
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
-	renderer := NewOrgRenderer(config.C.DB)
+	renderer := NewOrgRenderer(config.C().DB)
 	content, items, err := renderer.RenderAndGetItems()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
@@ -136,13 +136,13 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 
 	// Trigger async plugin execution
 	commentsJSON := "[]"
-	rawComments, _ := config.C.DB.GetPRComments(number, repo)
+	rawComments, _ := config.C().DB.GetPRComments(number, repo)
 	if rawComments != "" {
 		commentsJSON = rawComments
 	}
 
 	// Extract SHA from DB
-	_, sha, _ := config.C.DB.GetPullRequest(number, repo)
+	_, sha, _ := config.C().DB.GetPullRequest(number, repo)
 
 	// Run plugins in background
 	metadataJSON, _ := json.Marshal(details.Metadata)
@@ -176,7 +176,7 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	comment, err := config.C.DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
+	comment, err := config.C().DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	if err != nil {
 		h.Log.Error("Error inserting local comment", "error", err)
 		return err
@@ -216,7 +216,7 @@ type EditCommentReply struct {
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
-	err := config.C.DB.UpdateLocalComment(args.ID, args.Body)
+	err := config.C().DB.UpdateLocalComment(args.ID, args.Body)
 	if err != nil {
 		h.Log.Error("Error updating local comment", "error", err)
 		return err
@@ -255,7 +255,7 @@ type DeleteCommentReply struct {
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
-	err := config.C.DB.DeleteLocalComment(args.ID)
+	err := config.C().DB.DeleteLocalComment(args.ID)
 	if err != nil {
 		h.Log.Error("Error deleting local comment", "error", err)
 		return err
@@ -294,7 +294,7 @@ type SetFeedbackReply struct {
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
-	err := config.C.DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
+	err := config.C().DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 	if err != nil {
 		h.Log.Error("Error inserting feedback", "error", err)
 		return err
@@ -331,7 +331,7 @@ type RemovePRCommentsReply struct {
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
-	err := config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	err := config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error removing local comments", "error", err)
 		return err
@@ -372,7 +372,7 @@ type SubmitReviewReply struct {
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
 	// 1. Fetch Local Comments
-	comments, err := config.C.DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	comments, err := config.C().DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error fetching local comments", "error", err)
 		return err
@@ -418,7 +418,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 
 	// 4. Clean up Local Comments
-	err = config.C.DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	err = config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error deleting local comments after submission", "error", err)
 	}
@@ -426,7 +426,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// 5. Remove the item from all sections in the database
 	// The identifier is constructed as RepoName + PRNumber (matching PRToOrgBridge.Identifier)
 	identifier := fmt.Sprintf("%s%d", args.Repo, args.Number)
-	err = config.C.DB.DeleteItemByIdentifier(identifier)
+	err = config.C().DB.DeleteItemByIdentifier(identifier)
 	if err != nil {
 		h.Log.Error("Error removing item from sections after review", "identifier", identifier, "error", err)
 	}
@@ -485,7 +485,7 @@ type ListPluginsReply struct {
 }
 
 func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply) error {
-	reply.Plugins = config.C.Plugins
+	reply.Plugins = config.C().Plugins
 	return nil
 }
 
@@ -493,7 +493,7 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 // GetLocalRepoPath returns the expected location of a local repository.
 // It does NOT check if the directory actually exists.
 func GetLocalRepoPath(repo string) (string, error) {
-	repoLocation := config.C.RepoLocation
+	repoLocation := config.C().RepoLocation
 	if len(repoLocation) > 0 && repoLocation[:2] == "~/" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -521,7 +521,7 @@ type GetPluginOutputReply struct {
 
 // GetPluginOutput returns all stored plugin outputs for the given PR
 func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPluginOutputReply) error {
-	results, err := config.C.DB.GetPluginResults(args.Owner, args.Repo, args.Number)
+	results, err := config.C().DB.GetPluginResults(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error fetching plugin results", "error", err)
 		return err

@@ -165,11 +165,11 @@ func FilterPRsByLabel(prs []*github.PullRequest, label string) []*github.PullReq
 }
 
 func FilterMyPRs(prs []*github.PullRequest) []*github.PullRequest {
-	return FilterPRsByAuthor(prs, config.C.GithubUsername)
+	return FilterPRsByAuthor(prs, config.C().GithubUsername)
 }
 
 func FilterNotMyPRs(prs []*github.PullRequest) []*github.PullRequest {
-	return FilterPRsExcludeAuthor(prs, config.C.GithubUsername)
+	return FilterPRsExcludeAuthor(prs, config.C().GithubUsername)
 }
 
 func FilterIsDraft(prs []*github.PullRequest) []*github.PullRequest {
@@ -211,7 +211,7 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
 		for _, reviewer := range pr.RequestedReviewers {
-			if strings.EqualFold(*reviewer.Login, config.C.GithubUsername) {
+			if strings.EqualFold(*reviewer.Login, config.C().GithubUsername) {
 				filtered = append(filtered, pr)
 				break
 			}
@@ -658,7 +658,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	client := GetGithubClient()
 	ctx := context.Background()
-	myLogin := config.C.GithubUsername
+	myLogin := config.C().GithubUsername
 
 	// Fetch Reviews
 	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
@@ -729,7 +729,7 @@ func GetMyTeams() []string {
 
 func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
-	myLogin := config.C.GithubUsername
+	myLogin := config.C().GithubUsername
 
 	for _, pr := range prs {
 		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {

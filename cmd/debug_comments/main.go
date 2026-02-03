@@ -16,7 +16,7 @@ func main() {
 		fmt.Printf("Failed to initialize configuration: %v\n", err)
 		os.Exit(1)
 	}
-	defer config.C.DB.Close()
+	defer config.C().DB.Close()
 
 	owner := "C-Hipple"
 	repo := "gtdbot"

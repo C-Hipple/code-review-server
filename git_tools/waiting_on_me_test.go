@@ -11,7 +11,9 @@ import (
 
 func TestFilterWaitingOnMe(t *testing.T) {
 	myLogin := "myself"
-	config.C.GithubUsername = myLogin
+	cfg := config.C()
+	cfg.GithubUsername = myLogin
+	config.SetC(cfg)
 
 	owner := "owner"
 	repo := "repo"

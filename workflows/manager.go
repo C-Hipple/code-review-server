@@ -121,9 +121,9 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	changeCount := 0
 	for deserializedChange := range channel {
-		db := config.C.DB
+		db := config.C().DB
 
-		if config.C.AutoWorktree {
+		if config.C().AutoWorktree {
 			handleWorktreeChange(log, db, deserializedChange)
 		}
 
@@ -205,7 +205,7 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 		return
 	}
 
-	repoLocation := config.C.RepoLocation
+	repoLocation := config.C().RepoLocation
 	if strings.HasPrefix(repoLocation, "~") {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -270,19 +270,8 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 }
 
 func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {
-	used_workflows := []Workflow{}
-	for _, wf := range workflows {
-		if strings.Contains(fmt.Sprintf("%T", wf), "ListMyPRsWorkflow") {
-			// TODO: match the release getter with the repo
-			fixed := wf.(ListMyPRsWorkflow)
-			used_workflows = append(used_workflows, fixed)
-		} else {
-			used_workflows = append(used_workflows, wf)
-		}
-	}
-
 	return ManagerService{
-		Workflows:     used_workflows,
+		Workflows:     workflows,
 		workflow_chan: make(chan FileChanges),
 		sleepTime:     sleepTime,
 		oneoff:        oneoff,
@@ -317,7 +306,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 	}
 }
 
-func (ms ManagerService) Run(log *slog.Logger) {
+func (ms *ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
 
 	// Advisory lock to prevent multiple concurrent syncs
@@ -355,9 +344,19 @@ func (ms ManagerService) Run(log *slog.Logger) {
 		}
 	} else {
 		cycle_count := 0
-		log.Info("Starting service mode with sleep duration:" + ms.sleepTime.String())
 		for {
-			log.Info("Cycle", "count", cycle_count)
+			// Reload config and workflows before each cycle
+			if err := config.Reload(); err != nil {
+				log.Error("Failed to reload config before cycle", "error", err)
+			} else {
+				// Re-generate workflows
+				cfg := config.C()
+				ms.Workflows = MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
+				ms.sleepTime = cfg.SleepDuration
+				ms.Initialize()
+			}
+
+			log.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
 			var cycle_wg sync.WaitGroup
 			cycle_wg.Add(1)
 			ms.workflow_chan = make(chan FileChanges)
@@ -381,8 +380,8 @@ func (ms ManagerService) Run(log *slog.Logger) {
 func (ms *ManagerService) Initialize() {
 	// Ensure all required sections exist.
 	// Does this sync since GetSection has creation side effect
-	db := config.C.DB
+	db := config.C().DB
 	for _, wf := range ms.Workflows {
-		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C.SectionPriority[wf.GetOrgSectionName()])
+		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
 	}
 }

@@ -76,8 +76,8 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileC
 	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
-	db := config.C.DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
+	db := config.C().DB
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -113,8 +113,8 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, fi
 		return RunResult{}, err
 	}
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
-	db := config.C.DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
+	db := config.C().DB
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -166,8 +166,8 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change
 	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
-	db := config.C.DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
+	db := config.C().DB
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -205,8 +205,8 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 
 func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
-	db := config.C.DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C.SectionPriority[w.SectionTitle])
+	db := config.C().DB
+	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		return RunResult{}, errors.New("Section Not Found")
 	}

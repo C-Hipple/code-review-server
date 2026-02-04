@@ -213,14 +213,12 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 }
 
 func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
-	if w.JiraEpic == "" {
-		return nil
-	}
-	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
-	return []PRRequirement{{Owner: w.Owner, Repo: w.Repo, PRNumbers: projectPRs}}
+	// Reverted to manual fetching to avoid long-running Jira lookups in the manager collection phase.
+	return nil
 }
 
 func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+	client := git_tools.GetGithubClient()
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
@@ -229,6 +227,13 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 	if w.JiraEpic == "" {
 		// I used to let just define []int for PR #s in config, could easily bring that back
 		return RunResult{}, errors.New("ProjectList requires Jira Epic")
+	}
+	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
+
+	prs, err = git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
+	if err != nil {
+		log.Error("Error getting specific PRs", "error", err)
+		return RunResult{}, err
 	}
 	
 	beforeCount, _ := db.GetItemCount()

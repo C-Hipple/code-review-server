@@ -792,7 +792,7 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 		shouldFilter bool
 	}
 
-	resultChan := make(chan prResult, len(prs))
+	resultChan := make(chan prResult)
 	var wg sync.WaitGroup
 
 	for _, pr := range prs {
@@ -859,7 +859,7 @@ func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
 		shouldFilter bool
 	}
 
-	resultChan := make(chan prResult, len(prs))
+	resultChan := make(chan prResult)
 	var wg sync.WaitGroup
 
 	for _, pr := range prs {

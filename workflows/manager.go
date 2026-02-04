@@ -89,12 +89,12 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 		}
 		fileChange.Report(log)
 		key := fileChange.SectionName
-		
+
 		var lines []string
 		if fileChange.ChangeType != "Delete" {
 			lines = fileChange.GetLines(2)
 		}
-		
+
 		changesMap[key] = append(changesMap[key], SerializedFileChange{
 			FileChange: &fileChange,
 			Lines:      lines,
@@ -163,7 +163,7 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 	if len(parts) < 2 {
 		return
 	}
-	
+
 	repoFull := parts[0]
 	// Owner is part of RepoFull
 	repoParts := strings.Split(repoFull, "/")
@@ -173,13 +173,13 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 	ownerName := repoParts[0]
 	repoName := repoParts[1]
 	prNumberStr := parts[1]
-	
+
 	var prNumber int
 	fmt.Sscanf(prNumberStr, "%d", &prNumber)
 	if prNumber == 0 {
 		return
 	}
-	
+
 	// We need head SHA and branch name. These are NOT in FileChanges.
 	// We might need to fetch them from DB if they were cached.
 	_, sha, _ := db.GetPullRequest(prNumber, repoFull)
@@ -189,15 +189,15 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 		// For now, let's assume we can't do it if not in DB.
 		return
 	}
-	
-	// We also don't have HeadRef here. 
+
+	// We also don't have HeadRef here.
 	// This shows handleWorktreeChange was relying on PRToOrgBridge struct.
 	// Let's try to get it from metadata cache.
 	metadataJSON, _ := db.GetPRMetadataCache(ownerName, repoName, prNumber)
 	if metadataJSON == "" {
 		return
 	}
-	
+
 	var metadata struct {
 		HeadRef string `json:"head_ref"`
 	}
@@ -228,7 +228,7 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 	if change.FileChange.ChangeType == "Addition" || change.FileChange.ChangeType == "Update" {
 		// Create worktree
 		log.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
-		
+
 		// Ensure worktree root exists
 		if err := os.MkdirAll(worktreeRoot, 0755); err != nil {
 			log.Error("Failed to create worktree root directory", "path", worktreeRoot, "error", err)
@@ -334,6 +334,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			repoStatePRs[repoKey][state] = prs
 		}
 	}
+
 	for repoKey, prMap := range specificPRs {
 		owner, repo, _ := git_tools.ParseRepoName(repoKey)
 		numbers := []int{}

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/google/go-github/v48/github"
 )
 
 // waitTimeout waits for the WaitGroup for the specified duration.
@@ -278,11 +280,11 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 	}
 }
 
-func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
+func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
 	// Helper which times the workflow run command.
 	log.Info("Starting Workflow", "workflow", workflow.GetName())
 	start := time.Now()
-	result, err := workflow.Run(log, workflow_chan, file_change_wg)
+	result, err := workflow.Run(log, prs, workflow_chan, file_change_wg)
 	duration := time.Since(start)
 	if err != nil {
 		log.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
@@ -291,13 +293,89 @@ func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, workfl
 }
 
 func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGroup) {
+	client := git_tools.GetGithubClient()
+
+	// Map to store fetched PRs: repo -> state -> PRs
+	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
+	// Map to store specific PRs: repo -> PRNumber -> PR
+	specificPRs := make(map[string]map[int]*github.PullRequest)
+
+	// Collection phase
+	for _, wf := range ms.Workflows {
+		reqs := wf.GetPRRequirements()
+		for _, req := range reqs {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			if len(req.PRNumbers) > 0 {
+				if specificPRs[repoKey] == nil {
+					specificPRs[repoKey] = make(map[int]*github.PullRequest)
+				}
+				for _, num := range req.PRNumbers {
+					specificPRs[repoKey][num] = nil // Mark for fetching
+				}
+			} else {
+				if repoStatePRs[repoKey] == nil {
+					repoStatePRs[repoKey] = make(map[string][]*github.PullRequest)
+				}
+				repoStatePRs[repoKey][req.State] = nil // Mark for fetching
+			}
+		}
+	}
+
+	// Fetching phase
+	for repoKey, states := range repoStatePRs {
+		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		for state := range states {
+			log.Debug("Fetching PRs", "repo", repoKey, "state", state)
+			prs, err := git_tools.GetPRs(client, state, owner, repo)
+			if err != nil {
+				log.Error("Failed to fetch PRs", "repo", repoKey, "state", state, "error", err)
+				continue
+			}
+			repoStatePRs[repoKey][state] = prs
+		}
+	}
+	for repoKey, prMap := range specificPRs {
+		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		numbers := []int{}
+		for num := range prMap {
+			numbers = append(numbers, num)
+		}
+		if len(numbers) > 0 {
+			log.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
+			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
+			if err != nil {
+				log.Error("Failed to fetch specific PRs", "repo", repoKey, "error", err)
+				continue
+			}
+			for _, pr := range prs {
+				specificPRs[repoKey][*pr.Number] = pr
+			}
+		}
+	}
+
 	var wg sync.WaitGroup
 	for _, workflow := range ms.Workflows {
+		// Collect PRs for THIS workflow
+		var workflowPRs []*github.PullRequest
+		reqs := workflow.GetPRRequirements()
+		for _, req := range reqs {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			if len(req.PRNumbers) > 0 {
+				for _, num := range req.PRNumbers {
+					if pr := specificPRs[repoKey][num]; pr != nil {
+						workflowPRs = append(workflowPRs, pr)
+					}
+				}
+			} else {
+				workflowPRs = append(workflowPRs, repoStatePRs[repoKey][req.State]...)
+			}
+		}
+
 		wg.Add(1)
-		go func(workflow Workflow) {
+		go func(workflow Workflow, prs []*github.PullRequest) {
 			defer wg.Done()
-			ms.runWorkflow(log, workflow, ms.workflow_chan, file_change_wg)
-		}(workflow)
+			ms.runWorkflow(log, workflow, prs, ms.workflow_chan, file_change_wg)
+		}(workflow, workflowPRs)
 	}
 	if waitTimeout(&wg, 240*time.Second) {
 		log.Error("RunOnce waitgroup timed out waiting for workflows")

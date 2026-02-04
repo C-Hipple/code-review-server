@@ -20,9 +20,17 @@ import (
 	"github.com/google/go-github/v48/github"
 )
 
+type PRRequirement struct {
+	Owner     string
+	Repo      string
+	State     string // "open", "closed", etc.
+	PRNumbers []int  // Optional, if empty fetch all for state
+}
+
 type Workflow interface {
 	GetName() string
-	Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
+	GetPRRequirements() []PRRequirement
+	Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
 	GetOrgSectionName() string
 }
 

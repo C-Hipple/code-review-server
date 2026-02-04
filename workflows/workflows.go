@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+
+	"github.com/google/go-github/v48/github"
 )
 
 type RunResult struct {
@@ -57,21 +59,18 @@ func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
-func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+func (w SingleRepoSyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
 	owner, repo, err := git_tools.ParseRepoName(w.Repo)
 	if err != nil {
-		log.Error("Error parsing repo name", "repo", w.Repo, "error", err)
-		return RunResult{}, err
+		return nil
 	}
+	return []PRRequirement{{Owner: owner, Repo: repo, State: "open"}}
+}
 
-	prs, err := git_tools.GetPRs(
-		git_tools.GetGithubClient(),
-		"open",
-		owner,
-		repo,
-	)
+func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+	_, _, err := git_tools.ParseRepoName(w.Repo)
 	if err != nil {
-		log.Error("Error getting PRs", "error", err)
+		log.Error("Error parsing repo name", "repo", w.Repo, "error", err)
 		return RunResult{}, err
 	}
 
@@ -105,13 +104,18 @@ type SyncReviewRequestsWorkflow struct {
 	ReleaseCheckCommand string
 }
 
-func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-	client := git_tools.GetGithubClient()
-	prs, err := git_tools.GetManyRepoPRs(client, "open", w.Repos)
-	if err != nil {
-		log.Error("Error getting PRs", "error", err)
-		return RunResult{}, err
+func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
+	reqs := []PRRequirement{}
+	for _, repoEntry := range w.Repos {
+		owner, repo, err := git_tools.ParseRepoName(repoEntry)
+		if err == nil {
+			reqs = append(reqs, PRRequirement{Owner: owner, Repo: repo, State: "open"})
+		}
 	}
+	return reqs
+}
+
+func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
@@ -157,13 +161,18 @@ func (w ListMyPRsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
-func (w ListMyPRsWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-	client := git_tools.GetGithubClient()
-	prs, err := git_tools.GetManyRepoPRs(client, w.PRState, w.Repos)
-	if err != nil {
-		log.Error("Error getting PRs", "error", err)
-		return RunResult{}, err
+func (w ListMyPRsWorkflow) GetPRRequirements() []PRRequirement {
+	reqs := []PRRequirement{}
+	for _, repoEntry := range w.Repos {
+		owner, repo, err := git_tools.ParseRepoName(repoEntry)
+		if err == nil {
+			reqs = append(reqs, PRRequirement{Owner: owner, Repo: repo, State: w.PRState})
+		}
 	}
+	return reqs
+}
+
+func (w ListMyPRsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C().DB
@@ -203,7 +212,12 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
-func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
+	// Reverted to manual fetching to avoid long-running Jira lookups in the manager collection phase.
+	return nil
+}
+
+func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
@@ -216,7 +230,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, c chan FileChanges, file_chan
 	}
 	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
 
-	prs, err := git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
+	prs, err = git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
 	if err != nil {
 		log.Error("Error getting specific PRs", "error", err)
 		return RunResult{}, err

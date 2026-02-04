@@ -5,6 +5,7 @@ import (
 	"crs/config"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"slices"
@@ -220,6 +221,15 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 	return filtered
 }
 
+type loggingRoundTripper struct {
+	next http.RoundTripper
+}
+
+func (l *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	slog.Info("GitHub API Call", "method", req.Method, "url", req.URL.String())
+	return l.next.RoundTrip(req)
+}
+
 func GetGithubClient() *github.Client {
 	ctx := context.Background()
 	token := os.Getenv("CRS_GITHUB_TOKEN")
@@ -232,6 +242,11 @@ func GetGithubClient() *github.Client {
 		&oauth2.Token{AccessToken: token},
 	)
 	tc := oauth2.NewClient(ctx, ts)
+	next := tc.Transport
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	tc.Transport = &loggingRoundTripper{next: next}
 	return github.NewClient(tc)
 }
 

@@ -154,6 +154,13 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRCommits (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		commits_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS CIStatus (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -175,6 +182,7 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
 	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
 	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
+	CREATE INDEX IF NOT EXISTS idx_prcommits_lookup ON PRCommits(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	`
 
@@ -978,6 +986,41 @@ func (db *DB) UpsertPRReviews(prNumber int, repo, reviewsJSON string) error {
 func (db *DB) DeletePRReviews(prNumber int, repo string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM PRReviews WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
+func (db *DB) GetPRCommits(prNumber int, repo string) (string, error) {
+	var commitsJSON string
+	err := db.conn.QueryRow(
+		"SELECT commits_json FROM PRCommits WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&commitsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return commitsJSON, nil
+}
+
+func (db *DB) UpsertPRCommits(prNumber int, repo, commitsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRCommits (pr_number, repo, commits_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			commits_json = excluded.commits_json`,
+		prNumber, repo, commitsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRCommits(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRCommits WHERE pr_number = ? AND repo = ?",
 		prNumber, repo,
 	)
 	return err

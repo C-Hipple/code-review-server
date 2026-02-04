@@ -657,45 +657,101 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	}
 
 	client := GetGithubClient()
-	ctx := context.Background()
+	// Add timeout to prevent hanging indefinitely
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	myLogin := config.C().GithubUsername
 
-	// Fetch Reviews
-	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
-	if err != nil {
-		slog.Error("Error listing reviews", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
-		return InteractionState{}
+	// Use goroutines to fetch data in parallel instead of sequentially
+	type result struct {
+		reviews        []*github.PullRequestReview
+		reviewComments []*github.PullRequestComment
+		issueComments  []*github.IssueComment
+		commits        []*github.RepositoryCommit
+		err            error
 	}
+
+	resultChan := make(chan result, 4)
+
+	// Fetch Reviews
+	go func() {
+		reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
+		if err != nil {
+			slog.Warn("Error listing reviews", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		}
+		resultChan <- result{reviews: reviews, err: err}
+	}()
 
 	// Fetch Review Comments
-	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
-	if err != nil {
-		slog.Error("Error listing review comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
-		return InteractionState{}
-	}
+	go func() {
+		reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
+		if err != nil {
+			slog.Warn("Error listing review comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		}
+		resultChan <- result{reviewComments: reviewComments, err: err}
+	}()
 
 	// Fetch Issue Comments
-	issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
-	if err != nil {
-		slog.Error("Error listing issue comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
-		return InteractionState{}
+	go func() {
+		issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+		if err != nil {
+			slog.Warn("Error listing issue comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		}
+		resultChan <- result{issueComments: issueComments, err: err}
+	}()
+
+	// Fetch Commits
+	go func() {
+		commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, nil)
+		if err != nil {
+			slog.Warn("Error listing commits", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
+		}
+		resultChan <- result{commits: commits, err: err}
+	}()
+
+	// Collect results
+	var reviews []*github.PullRequestReview
+	var reviewComments []*github.PullRequestComment
+	var issueComments []*github.IssueComment
+	var commits []*github.RepositoryCommit
+	hasError := false
+
+	for i := 0; i < 4; i++ {
+		res := <-resultChan
+		if res.err != nil {
+			hasError = true
+		}
+		if res.reviews != nil {
+			reviews = res.reviews
+		}
+		if res.reviewComments != nil {
+			reviewComments = res.reviewComments
+		}
+		if res.issueComments != nil {
+			issueComments = res.issueComments
+		}
+		if res.commits != nil {
+			commits = res.commits
+		}
 	}
 
 	state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, issueComments)
 
-	// Fetch more accurate LastCommitTime
-	commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, nil)
-	if err == nil && len(commits) > 0 {
+	// Set LastCommitTime from commits
+	if len(commits) > 0 {
 		latestCommit := commits[len(commits)-1]
 		if latestCommit.Commit != nil && latestCommit.Commit.Committer != nil && latestCommit.Commit.Committer.Date != nil {
 			state.LastCommitTime = *latestCommit.Commit.Committer.Date
 		}
-	} else if err != nil {
-		slog.Error("Error listing commits", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
-		return InteractionState{} // Don't cache incomplete state
 	}
 
-	GlobalCache.Set(cacheKey, state, 10*time.Minute)
+	// Cache the result even if there were errors (with shorter TTL)
+	// This prevents retry storms
+	ttl := 10 * time.Minute
+	if hasError {
+		ttl = 2 * time.Minute // Shorter cache for partial/error states
+	}
+	GlobalCache.Set(cacheKey, state, ttl)
 	return state
 }
 
@@ -728,54 +784,114 @@ func GetMyTeams() []string {
 }
 
 func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
-	filtered := []*github.PullRequest{}
 	myLogin := config.C().GithubUsername
+
+	// Process PRs concurrently to avoid sequential API calls
+	type prResult struct {
+		pr           *github.PullRequest
+		shouldFilter bool
+	}
+
+	resultChan := make(chan prResult, len(prs))
+	var wg sync.WaitGroup
 
 	for _, pr := range prs {
 		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
 			continue
 		}
 
-		state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+		wg.Add(1)
+		go func(pr *github.PullRequest) {
+			defer wg.Done()
 
-		// Is Personally Requested?
-		isRequested := false
-		for _, r := range pr.RequestedReviewers {
-			if r != nil && r.Login != nil && *r.Login == myLogin {
-				isRequested = true
-				break
+			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+
+			// Is Personally Requested?
+			isRequested := false
+			for _, r := range pr.RequestedReviewers {
+				if r != nil && r.Login != nil && *r.Login == myLogin {
+					isRequested = true
+					break
+				}
 			}
-		}
 
-		// A PR is "Waiting on me" if:
-		// 1. I am individually requested AND I haven't acted since the last push or last other action.
-		// 2. OR I have unresponded comments.
+			// A PR is "Waiting on me" if:
+			// 1. I am individually requested AND I haven't acted since the last push or last other action.
+			// 2. OR I have unresponded comments.
+			shouldFilter := false
 
-		if isRequested {
-			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
-			if !actedSinceOthers {
-				filtered = append(filtered, pr)
-				continue
+			if isRequested {
+				actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
+				if !actedSinceOthers {
+					shouldFilter = true
+				}
 			}
-		}
 
-		if state.HasUnrespondedComments {
-			filtered = append(filtered, pr)
+			if state.HasUnrespondedComments {
+				shouldFilter = true
+			}
+
+			resultChan <- prResult{pr: pr, shouldFilter: shouldFilter}
+		}(pr)
+	}
+
+	// Close channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	filtered := []*github.PullRequest{}
+	for result := range resultChan {
+		if result.shouldFilter {
+			filtered = append(filtered, result.pr)
 		}
 	}
+
 	return filtered
 }
 
 func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
-	filtered := []*github.PullRequest{}
+	// Process PRs concurrently to avoid sequential API calls
+	type prResult struct {
+		pr           *github.PullRequest
+		shouldFilter bool
+	}
+
+	resultChan := make(chan prResult, len(prs))
+	var wg sync.WaitGroup
 
 	for _, pr := range prs {
-		state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
-		actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
-		if actedSinceOthers {
-			filtered = append(filtered, pr)
+		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
+			continue
+		}
+
+		wg.Add(1)
+		go func(pr *github.PullRequest) {
+			defer wg.Done()
+
+			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
+
+			resultChan <- prResult{pr: pr, shouldFilter: actedSinceOthers}
+		}(pr)
+	}
+
+	// Close channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	filtered := []*github.PullRequest{}
+	for result := range resultChan {
+		if result.shouldFilter {
+			filtered = append(filtered, result.pr)
 		}
 	}
+
 	return filtered
 }
 

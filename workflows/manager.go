@@ -1,0 +1,466 @@
+package workflows
+
+import (
+	"crs/config"
+	"crs/database"
+	"crs/git_tools"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/google/go-github/v48/github"
+)
+
+// waitTimeout waits for the WaitGroup for the specified duration.
+// It returns true if the wait timed out, false otherwise.
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		wg.Wait()
+	}()
+	select {
+	case <-c:
+		return false
+	case <-time.After(timeout):
+		return true
+	}
+}
+
+type ManagerService struct {
+	Workflows     []Workflow
+	workflow_chan chan FileChanges
+	sleepTime     time.Duration
+	oneoff        bool
+}
+
+func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []SerializedFileChange {
+	changesByIdentifier := make(map[string][]SerializedFileChange)
+	for _, change := range changes {
+		identifier := change.FileChange.Identifier
+		changesByIdentifier[identifier] = append(changesByIdentifier[identifier], change)
+	}
+
+	finalChanges := []SerializedFileChange{}
+	log.Debug("Deduplicating changes", "count", len(changesByIdentifier))
+
+	for identifier, itemChanges := range changesByIdentifier {
+		var updateChange *SerializedFileChange
+		var addChange *SerializedFileChange
+		var deleteChange *SerializedFileChange
+
+		for i, change := range itemChanges {
+			switch change.FileChange.ChangeType {
+			case "Addition":
+				addChange = &itemChanges[i]
+			case "Update", "Archive":
+				updateChange = &itemChanges[i]
+			case "Delete":
+				deleteChange = &itemChanges[i]
+			}
+		}
+
+		if updateChange != nil {
+			log.Debug("Found update, discarding other changes", "identifier", identifier)
+			finalChanges = append(finalChanges, *updateChange)
+		} else if addChange != nil {
+			log.Debug("Found add, discarding delete", "identifier", identifier)
+			finalChanges = append(finalChanges, *addChange)
+		} else if deleteChange != nil {
+			log.Debug("Found delete", "identifier", identifier)
+			finalChanges = append(finalChanges, *deleteChange)
+		}
+	}
+	return finalChanges
+}
+
+func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGroup) {
+	changesMap := make(map[string][]SerializedFileChange)
+	for fileChange := range channel {
+		if fileChange.ChangeType == "No Change" {
+			wg.Done()
+			continue
+		}
+		fileChange.Report(log)
+		key := fileChange.SectionName
+
+		var lines []string
+		if fileChange.ChangeType != "Delete" {
+			lines = fileChange.GetLines(2)
+		}
+
+		changesMap[key] = append(changesMap[key], SerializedFileChange{
+			FileChange: &fileChange,
+			Lines:      lines,
+		})
+	}
+
+	var serialziedChannel = make(chan SerializedFileChange)
+	go ApplyChanges(log, serialziedChannel, wg)
+
+	for _, changes := range changesMap {
+		deduplicatedChanges := deduplicateChanges(log, changes)
+		numDeduplicated := len(changes) - len(deduplicatedChanges)
+		if numDeduplicated > 0 {
+			log.Debug("Deduplicated changes, adjusting WaitGroup", "count", numDeduplicated)
+			for i := 0; i < numDeduplicated; i++ {
+				wg.Done()
+			}
+		}
+		for _, change := range deduplicatedChanges {
+			serialziedChannel <- change
+		}
+	}
+	close(serialziedChannel)
+}
+
+func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
+	changeCount := 0
+	for deserializedChange := range channel {
+		db := config.C().DB
+
+		if config.C().AutoWorktree {
+			handleWorktreeChange(log, db, deserializedChange)
+		}
+
+		switch deserializedChange.FileChange.ChangeType {
+		case "Addition", "Update", "Archive":
+			archived := deserializedChange.FileChange.ChangeType == "Archive"
+			_, err := db.UpsertItem(
+				deserializedChange.FileChange.SectionID,
+				deserializedChange.FileChange.Identifier,
+				deserializedChange.FileChange.Status,
+				deserializedChange.FileChange.Title,
+				deserializedChange.FileChange.Details,
+				deserializedChange.FileChange.Tags,
+				archived,
+				deserializedChange.FileChange.TTL,
+			)
+			if err != nil {
+				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+			}
+		case "Delete":
+			err := db.DeleteItem(deserializedChange.FileChange.SectionID, deserializedChange.FileChange.Identifier)
+			if err != nil {
+				log.Error("Error deleting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+			}
+		}
+		changeCount++
+		wg.Done()
+	}
+	log.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+}
+
+func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFileChange) {
+	// Identifier is Repo-PRNumber for PRs
+	parts := strings.Split(change.FileChange.Identifier, "-")
+	if len(parts) < 2 {
+		return
+	}
+
+	repoFull := parts[0]
+	// Owner is part of RepoFull
+	repoParts := strings.Split(repoFull, "/")
+	if len(repoParts) < 2 {
+		return
+	}
+	ownerName := repoParts[0]
+	repoName := repoParts[1]
+	prNumberStr := parts[1]
+
+	var prNumber int
+	fmt.Sscanf(prNumberStr, "%d", &prNumber)
+	if prNumber == 0 {
+		return
+	}
+
+	// We need head SHA and branch name. These are NOT in FileChanges.
+	// We might need to fetch them from DB if they were cached.
+	_, sha, _ := db.GetPullRequest(prNumber, repoFull)
+	if sha == "" {
+		// If we don't have it in DB, we can't easily manage worktree here without a refactor
+		// to include more info in FileChanges or performing a GitHub API call.
+		// For now, let's assume we can't do it if not in DB.
+		return
+	}
+
+	// We also don't have HeadRef here.
+	// This shows handleWorktreeChange was relying on PRToOrgBridge struct.
+	// Let's try to get it from metadata cache.
+	metadataJSON, _ := db.GetPRMetadataCache(ownerName, repoName, prNumber)
+	if metadataJSON == "" {
+		return
+	}
+
+	var metadata struct {
+		HeadRef string `json:"head_ref"`
+	}
+	json.Unmarshal([]byte(metadataJSON), &metadata)
+	branchName := metadata.HeadRef
+	if branchName == "" {
+		return
+	}
+
+	repoLocation := config.C().RepoLocation
+	if strings.HasPrefix(repoLocation, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			repoLocation = strings.Replace(repoLocation, "~", home, 1)
+		}
+	}
+	repoDir := filepath.Join(repoLocation, repoName)
+	worktreeRoot := filepath.Join(repoLocation, fmt.Sprintf("%s_worktrees", repoName))
+	worktreePath := filepath.Join(worktreeRoot, fmt.Sprintf("%d_%s", prNumber, branchName))
+
+	// Check if repo exists
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		// Log debug if we can't find the repo, but don't error out loudly as it might be expected
+		log.Debug("Skipping worktree management, repo not found locally", "path", repoDir)
+		return
+	}
+
+	if change.FileChange.ChangeType == "Addition" || change.FileChange.ChangeType == "Update" {
+		// Create worktree
+		log.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
+
+		// Ensure worktree root exists
+		if err := os.MkdirAll(worktreeRoot, 0755); err != nil {
+			log.Error("Failed to create worktree root directory", "path", worktreeRoot, "error", err)
+			return
+		}
+
+		// Check if it's already in DB or exists on disk
+		existingPath, err := db.GetWorktree(prNumber, repoName, ownerName)
+		if err == nil && existingPath != "" {
+			// Already tracked, maybe check if it still exists? For now assume it's good.
+			// Actually, if branch changed, we might need to handle that, but let's assume one branch per PR for now.
+			return
+		}
+
+		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath); err != nil {
+			// If it fails, we log it but don't stop the workflow
+			log.Error("Failed to create worktree", "error", err)
+		} else {
+			if err := db.AddWorktree(prNumber, repoName, ownerName, worktreePath, branchName); err != nil {
+				log.Error("Failed to record worktree in DB", "error", err)
+			}
+		}
+
+	} else if change.FileChange.ChangeType == "Delete" {
+		// Remove worktree
+		path, err := db.GetWorktree(prNumber, repoName, ownerName)
+		if err != nil {
+			log.Error("Error checking for worktree", "error", err)
+			return
+		}
+		if path != "" {
+			log.Info("Removing worktree", "pr", prNumber, "path", path)
+			if err := git_tools.RemoveWorktree(repoDir, path); err != nil {
+				log.Error("Failed to remove worktree", "error", err)
+			}
+			if err := db.RemoveWorktreeRecord(prNumber, repoName, ownerName); err != nil {
+				log.Error("Failed to remove worktree record from DB", "error", err)
+			}
+		}
+	}
+}
+
+func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {
+	return ManagerService{
+		Workflows:     workflows,
+		workflow_chan: make(chan FileChanges),
+		sleepTime:     sleepTime,
+		oneoff:        oneoff,
+	}
+}
+
+func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
+	// Helper which times the workflow run command.
+	log.Info("Starting Workflow", "workflow", workflow.GetName())
+	start := time.Now()
+	result, err := workflow.Run(log, prs, workflow_chan, file_change_wg)
+	duration := time.Since(start)
+	if err != nil {
+		log.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
+	}
+	log.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
+}
+
+func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGroup) {
+	client := git_tools.GetGithubClient()
+
+	// Map to store fetched PRs: repo -> state -> PRs
+	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
+	// Map to store specific PRs: repo -> PRNumber -> PR
+	specificPRs := make(map[string]map[int]*github.PullRequest)
+
+	// Collection phase
+	for _, wf := range ms.Workflows {
+		reqs := wf.GetPRRequirements()
+		for _, req := range reqs {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			if len(req.PRNumbers) > 0 {
+				if specificPRs[repoKey] == nil {
+					specificPRs[repoKey] = make(map[int]*github.PullRequest)
+				}
+				for _, num := range req.PRNumbers {
+					specificPRs[repoKey][num] = nil // Mark for fetching
+				}
+			} else {
+				if repoStatePRs[repoKey] == nil {
+					repoStatePRs[repoKey] = make(map[string][]*github.PullRequest)
+				}
+				repoStatePRs[repoKey][req.State] = nil // Mark for fetching
+			}
+		}
+	}
+
+	// Fetching phase
+	for repoKey, states := range repoStatePRs {
+		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		for state := range states {
+			log.Debug("Fetching PRs", "repo", repoKey, "state", state)
+			prs, err := git_tools.GetPRs(client, state, owner, repo)
+			if err != nil {
+				log.Error("Failed to fetch PRs", "repo", repoKey, "state", state, "error", err)
+				continue
+			}
+			repoStatePRs[repoKey][state] = prs
+		}
+	}
+
+	for repoKey, prMap := range specificPRs {
+		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		numbers := []int{}
+		for num := range prMap {
+			numbers = append(numbers, num)
+		}
+		if len(numbers) > 0 {
+			log.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
+			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
+			if err != nil {
+				log.Error("Failed to fetch specific PRs", "repo", repoKey, "error", err)
+				continue
+			}
+			for _, pr := range prs {
+				specificPRs[repoKey][*pr.Number] = pr
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	for _, workflow := range ms.Workflows {
+		// Collect PRs for THIS workflow
+		var workflowPRs []*github.PullRequest
+		reqs := workflow.GetPRRequirements()
+		for _, req := range reqs {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			if len(req.PRNumbers) > 0 {
+				for _, num := range req.PRNumbers {
+					if pr := specificPRs[repoKey][num]; pr != nil {
+						workflowPRs = append(workflowPRs, pr)
+					}
+				}
+			} else {
+				workflowPRs = append(workflowPRs, repoStatePRs[repoKey][req.State]...)
+			}
+		}
+
+		wg.Add(1)
+		go func(workflow Workflow, prs []*github.PullRequest) {
+			defer wg.Done()
+			ms.runWorkflow(log, workflow, prs, ms.workflow_chan, file_change_wg)
+		}(workflow, workflowPRs)
+	}
+	if waitTimeout(&wg, 240*time.Second) {
+		log.Error("RunOnce waitgroup timed out waiting for workflows")
+	} else {
+		log.Info("Completed RunOnce Waitgroup")
+	}
+}
+
+func (ms *ManagerService) Run(log *slog.Logger) {
+	log.Info("Starting Service")
+
+	// Advisory lock to prevent multiple concurrent syncs
+	crsHome, err := os.UserHomeDir() // Fallback to home if getCRSHome fails but we use config.UserHomeDir elsewhere
+	if err == nil {
+		crsHome = filepath.Join(crsHome, ".crs")
+		if err := os.MkdirAll(crsHome, 0755); err != nil {
+			log.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
+		}
+		lockPath := filepath.Join(crsHome, "codereviewserver_sync.lock")
+		lockFile, err := os.Create(lockPath)
+		if err == nil {
+			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err != nil {
+				log.Warn("Another instance is already running background sync, skipping sync in this process.")
+				lockFile.Close()
+				return
+			}
+			defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			defer lockFile.Close()
+		}
+	}
+
+	if ms.oneoff {
+		var listener_wg sync.WaitGroup
+		listener_wg.Add(1)
+		go ListenChanges(log, ms.workflow_chan, &listener_wg)
+
+		log.Info("Running Once")
+		ms.RunOnce(log, &listener_wg)
+		close(ms.workflow_chan)
+		listener_wg.Done()
+		if waitTimeout(&listener_wg, 240*time.Second) {
+			log.Error("Listener waitgroup timed out waiting for changes to be applied")
+		}
+	} else {
+		cycle_count := 0
+		for {
+			// Reload config and workflows before each cycle
+			if err := config.Reload(); err != nil {
+				log.Error("Failed to reload config before cycle", "error", err)
+			} else {
+				// Re-generate workflows
+				cfg := config.C()
+				ms.Workflows = MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
+				ms.sleepTime = cfg.SleepDuration
+				ms.Initialize()
+			}
+
+			log.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
+			var cycle_wg sync.WaitGroup
+			cycle_wg.Add(1)
+			ms.workflow_chan = make(chan FileChanges)
+
+			go ListenChanges(log, ms.workflow_chan, &cycle_wg)
+			ms.RunOnce(log, &cycle_wg)
+			close(ms.workflow_chan)
+			cycle_wg.Done()
+
+			if waitTimeout(&cycle_wg, 240*time.Second) {
+				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
+			}
+			// Render org files after each cycle
+			time.Sleep(ms.sleepTime)
+			cycle_count++
+		}
+	}
+	log.Info("Exiting Service")
+}
+
+func (ms *ManagerService) Initialize() {
+	// Ensure all required sections exist.
+	// Does this sync since GetSection has creation side effect
+	db := config.C().DB
+	for _, wf := range ms.Workflows {
+		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
+	}
+}

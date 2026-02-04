@@ -1,0 +1,668 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { colors, shadows } from '../design';
+import { readFile, listFiles } from '../api';
+import type { Theme } from '../design';
+
+interface CodeViewerModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    filePath: string;
+    repoPath: string;
+    initialLine?: number;
+    theme: Theme;
+    initialPosition?: { x: number, y: number };
+}
+
+interface FileNode {
+    name: string;
+    path: string;
+    isDirectory: boolean;
+    children?: FileNode[];
+}
+
+// Map file extensions to Prism language identifiers
+const getLanguageFromFilename = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const languageMap: Record<string, string> = {
+        'js': 'javascript', 'jsx': 'jsx', 'ts': 'typescript', 'tsx': 'tsx',
+        'py': 'python', 'rb': 'ruby', 'go': 'go', 'rs': 'rust',
+        'java': 'java', 'kt': 'kotlin', 'c': 'c', 'h': 'c',
+        'cpp': 'cpp', 'cc': 'cpp', 'hpp': 'cpp', 'cs': 'csharp',
+        'html': 'html', 'css': 'css', 'scss': 'scss', 'json': 'json',
+        'yaml': 'yaml', 'yml': 'yaml', 'toml': 'toml', 'xml': 'xml',
+        'sh': 'bash', 'bash': 'bash', 'sql': 'sql', 'md': 'markdown',
+        'el': 'lisp', 'lisp': 'lisp', 'hs': 'haskell', 'ml': 'ocaml',
+        'ex': 'elixir', 'exs': 'elixir', 'clj': 'clojure', 'swift': 'swift',
+        'php': 'php', 'lua': 'lua', 'vim': 'vim', 'proto': 'protobuf',
+    };
+    const basename = filename.split('/').pop()?.toLowerCase() || '';
+    if (basename === 'dockerfile') return 'docker';
+    if (basename === 'makefile') return 'makefile';
+    return languageMap[ext] || 'text';
+};
+
+const getIconFromFilename = (filename: string, isDirectory: boolean): string => {
+    if (isDirectory) return '📁';
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const iconMap: Record<string, string> = {
+        'js': '🟨', 'jsx': '⚛️', 'ts': '🟦', 'tsx': '⚛️',
+        'py': '🐍', 'rb': '💎', 'go': '🐹', 'rs': '🦀',
+        'java': '☕', 'kt': '🎯', 'c': '©️', 'h': 'H',
+        'cpp': 'C+', 'cc': 'C+', 'hpp': 'H+', 'cs': '♯',
+        'html': '🌐', 'css': '🎨', 'scss': '🎨', 'json': '📋',
+        'yaml': '📜', 'yml': '📜', 'toml': '⚙️', 'xml': '📜',
+        'sh': '🐚', 'bash': '🐚', 'sql': '🗄️', 'md': '📝',
+        'el': 'λ', 'lisp': 'λ', 'hs': 'λ', 'ml': 'λ',
+        'ex': '💧', 'exs': '💧', 'clj': 'λ', 'swift': '🍎',
+        'php': '🐘', 'lua': '🌙', 'vim': '💚', 'proto': '🔌',
+    };
+    const basename = filename.split('/').pop()?.toLowerCase() || '';
+    if (basename === 'dockerfile') return '🐳';
+    if (basename === 'makefile') return '🛠️';
+    if (basename === 'package.json') return '📦';
+    if (basename === '.gitignore') return '🚫';
+
+    return iconMap[ext] || '📄';
+};
+
+const buildFileTree = (files: string[]): FileNode[] => {
+    const root: FileNode[] = [];
+    files.forEach(path => {
+        const parts = path.split('/');
+        let currentLevel = root;
+        let currentPath = '';
+        parts.forEach((part, i) => {
+            currentPath = currentPath ? `${currentPath}/${part}` : part;
+            const isLast = i === parts.length - 1;
+            let node = currentLevel.find(n => n.name === part);
+            if (!node) {
+                node = { name: part, path: currentPath, isDirectory: !isLast, children: isLast ? undefined : [] };
+                currentLevel.push(node);
+            }
+            if (!isLast) {
+                currentLevel = node.children!;
+            }
+        });
+    });
+    const sortNodes = (nodes: FileNode[]) => {
+        nodes.sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1;
+            if (!a.isDirectory && b.isDirectory) return 1;
+            return a.name.localeCompare(b.name);
+        });
+        nodes.forEach(n => {
+            if (n.children) sortNodes(n.children);
+        });
+    };
+    sortNodes(root);
+    return root;
+};
+
+export default function CodeViewerModal({
+    isOpen,
+    onClose,
+    filePath,
+    repoPath,
+    initialLine = 1,
+    theme,
+    initialPosition,
+}: CodeViewerModalProps) {
+    const [currentFilePath, setCurrentFilePath] = useState(filePath);
+    const [content, setContent] = useState<string>('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const [allFiles, setAllFiles] = useState<string[]>([]);
+    const [showFileTree, setShowFileTree] = useState(false);
+    const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+
+    // Modal position and size
+    const [position, setPosition] = useState(initialPosition || { x: 100, y: 100 });
+    const [size, setSize] = useState({ width: 900, height: 600 });
+    const [isDragging, setIsDragging] = useState(false);
+    const [isResizing, setIsResizing] = useState<string | null>(null);
+    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+    const modalRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
+    const targetLineRef = useRef<HTMLDivElement>(null);
+
+    // Ensure modal stays within viewport bounds
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const margin = 20;
+        const vWidth = window.innerWidth;
+        const vHeight = window.innerHeight;
+
+        let newSize = { ...size };
+        let newPos = { ...position };
+
+        // Adjust size if it's larger than viewport
+        if (newSize.width > vWidth - margin * 2) {
+            newSize.width = vWidth - margin * 2;
+        }
+        if (newSize.height > vHeight - margin * 2) {
+            newSize.height = vHeight - margin * 2;
+        }
+
+        // Adjust position to stay on screen
+        if (newPos.x + newSize.width > vWidth - margin) {
+            newPos.x = vWidth - newSize.width - margin;
+        }
+        if (newPos.y + newSize.height > vHeight - margin) {
+            newPos.y = vHeight - newSize.height - margin;
+        }
+
+        // Ensure position isn't negative
+        if (newPos.x < margin) newPos.x = margin;
+        if (newPos.y < margin) newPos.y = margin;
+
+        if (newPos.x !== position.x || newPos.y !== position.y) {
+            setPosition(newPos);
+        }
+        if (newSize.width !== size.width || newSize.height !== size.height) {
+            setSize(newSize);
+        }
+    }, [isOpen]);
+
+    // Sync currentFilePath when prop changes (if user clicks another file link in Review.tsx)
+    useEffect(() => {
+        setCurrentFilePath(filePath);
+    }, [filePath]);
+
+    // Fetch file list
+    useEffect(() => {
+        if (!isOpen || !repoPath) return;
+        listFiles(repoPath).then(setAllFiles).catch(console.error);
+    }, [isOpen, repoPath]);
+
+    const fileTree = useMemo(() => buildFileTree(allFiles), [allFiles]);
+
+    // Fetch file content
+    useEffect(() => {
+        if (!isOpen || !currentFilePath) return;
+
+        const fetchContent = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                // If currentFilePath is relative, it might need to be resolved
+                // but if it's from the tree, it's relative to repoPath.
+                // If it's absolute, readFile handles it.
+                // Our server.ts expects absolute or relative to repoPath.
+                const text = await readFile(repoPath, currentFilePath);
+                setContent(text);
+            } catch (e) {
+                setError(e instanceof Error ? e.message : 'Failed to load file');
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchContent();
+    }, [isOpen, currentFilePath, repoPath]);
+
+    // Scroll to target line when content loads
+    useEffect(() => {
+        if (content && targetLineRef.current) {
+            setTimeout(() => {
+                targetLineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        }
+    }, [content, initialLine]);
+
+    // Handle ESC key
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, onClose]);
+
+    // Handle dragging
+    useEffect(() => {
+        if (!isDragging) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            setPosition({
+                x: e.clientX - dragOffset.x,
+                y: e.clientY - dragOffset.y,
+            });
+        };
+
+        const handleMouseUp = () => setIsDragging(false);
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isDragging, dragOffset]);
+
+    // Handle resizing
+    useEffect(() => {
+        if (!isResizing) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const minWidth = 400;
+            const minHeight = 300;
+
+            if (isResizing.includes('e')) {
+                setSize(s => ({ ...s, width: Math.max(minWidth, e.clientX - position.x) }));
+            }
+            if (isResizing.includes('s')) {
+                setSize(s => ({ ...s, height: Math.max(minHeight, e.clientY - position.y) }));
+            }
+            if (isResizing.includes('w')) {
+                const newWidth = Math.max(minWidth, size.width + (position.x - e.clientX));
+                if (newWidth > minWidth) {
+                    setPosition(p => ({ ...p, x: e.clientX }));
+                    setSize(s => ({ ...s, width: newWidth }));
+                }
+            }
+            if (isResizing.includes('n')) {
+                const newHeight = Math.max(minHeight, size.height + (position.y - e.clientY));
+                if (newHeight > minHeight) {
+                    setPosition(p => ({ ...p, y: e.clientY }));
+                    setSize(s => ({ ...s, height: newHeight }));
+                }
+            }
+        };
+
+        const handleMouseUp = () => setIsResizing(null);
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isResizing, position, size]);
+
+    const startDrag = (e: React.MouseEvent) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        setIsDragging(true);
+        setDragOffset({
+            x: e.clientX - position.x,
+            y: e.clientY - position.y,
+        });
+    };
+
+    // Get theme for syntax highlighting
+    const syntaxTheme = useMemo(() => {
+        switch (theme) {
+            case 'light': return oneLight;
+            case 'gruvbox-dark': return gruvboxDark;
+            case 'gruvbox-light': return gruvboxLight;
+            case 'solarized-light': return solarizedlight;
+            case 'solarized-dark': return solarizedDarkAtom;
+            case 'dracula': return dracula;
+            case 'nord': return nord;
+            case 'night-owl': return nightOwl;
+            default: return oneDark;
+        }
+    }, [theme]);
+
+    const toggleDir = (path: string) => {
+        const newExpanded = new Set(expandedDirs);
+        if (newExpanded.has(path)) {
+            newExpanded.delete(path);
+        } else {
+            newExpanded.add(path);
+        }
+        setExpandedDirs(newExpanded);
+    };
+
+    const renderFileTree = (nodes: FileNode[], depth: number = 0) => {
+        return nodes.map(node => (
+            <div key={node.path}>
+                <div
+                    style={{
+                        padding: '4px 8px',
+                        paddingLeft: `${depth * 12 + 8}px`,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        fontSize: '12px',
+                        background: (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--bg-tertiary)' : 'transparent',
+                        color: (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--accent)' : 'var(--text-primary)',
+                        userSelect: 'none',
+                        transition: 'background 0.1s ease',
+                    }}
+                    onClick={() => {
+                        if (node.isDirectory) {
+                            toggleDir(node.path);
+                        } else {
+                            setCurrentFilePath(node.path);
+                        }
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
+                    onMouseLeave={e => e.currentTarget.style.background = (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--bg-tertiary)' : 'transparent'}
+                >
+                    <span style={{ fontSize: '14px', width: '16px', textAlign: 'center' }}>
+                        {node.isDirectory ? (expandedDirs.has(node.path) ? '▾' : '▸') : ''}
+                    </span>
+                    <span style={{ fontSize: '14px' }}>{getIconFromFilename(node.name, node.isDirectory)}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+                </div>
+                {node.isDirectory && expandedDirs.has(node.path) && node.children && (
+                    <div>{renderFileTree(node.children, depth + 1)}</div>
+                )}
+            </div>
+        ));
+    };
+
+    if (!isOpen) return null;
+
+    const displayFilename = currentFilePath.split('/').pop() || currentFilePath;
+    const language = getLanguageFromFilename(displayFilename);
+    const lines = content.split('\n');
+
+    return (
+        <div
+            style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 999,
+                pointerEvents: 'none',
+            }}
+        >
+            <div
+                ref={modalRef}
+                style={{
+                    position: 'absolute',
+                    top: position.y,
+                    left: position.x,
+                    width: size.width,
+                    height: size.height,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    boxShadow: shadows.lg,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    pointerEvents: 'auto',
+                    overflow: 'hidden',
+                }}
+            >
+                {/* Header - draggable */}
+                <div
+                    style={{
+                        padding: '12px 16px',
+                        background: 'var(--bg-tertiary)',
+                        borderBottom: '1px solid var(--border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'move',
+                        userSelect: 'none',
+                    }}
+                    onMouseDown={startDrag}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                        <button
+                            onClick={() => setShowFileTree(!showFileTree)}
+                            style={{
+                                background: 'var(--bg-secondary)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '4px',
+                                padding: '4px 8px',
+                                color: 'var(--text-primary)',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                            }}
+                        >
+                            {showFileTree ? '◀ Hide Tree' : '▶ Files'}
+                        </button>
+                        <span style={{ fontSize: '16px', marginLeft: '8px' }}>{getIconFromFilename(displayFilename, false)}</span>
+                        <span
+                            style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '13px',
+                                color: 'var(--text-primary)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}
+                            title={currentFilePath}
+                        >
+                            {displayFilename}
+                        </span>
+                        {currentFilePath === filePath && initialLine && (
+                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                (line {initialLine})
+                            </span>
+                        )}
+                    </div>
+                    <button
+                        onClick={onClose}
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-secondary)',
+                            fontSize: '20px',
+                            cursor: 'pointer',
+                            padding: '0 4px',
+                            lineHeight: 1,
+                        }}
+                    >
+                        ×
+                    </button>
+                </div>
+
+                {/* Sidebar and Content Container */}
+                <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                    {/* Sidebar */}
+                    {showFileTree && (
+                        <div
+                            className="custom-scrollbar"
+                            style={{
+                                width: '250px',
+                                minWidth: '150px',
+                                borderRight: '1px solid var(--border)',
+                                background: 'var(--bg-secondary)',
+                                overflowY: 'auto',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                animation: 'slideIn 0.2s ease-out',
+                            }}
+                        >
+                            <style>{`
+                                @keyframes slideIn {
+                                    from { width: 0; opacity: 0; }
+                                    to { width: 250px; opacity: 1; }
+                                }
+                                .custom-scrollbar::-webkit-scrollbar {
+                                    width: 10px;
+                                    height: 10px;
+                                }
+                                .custom-scrollbar::-webkit-scrollbar-track {
+                                    background: var(--bg-secondary);
+                                }
+                                .custom-scrollbar::-webkit-scrollbar-thumb {
+                                    background: var(--border);
+                                    border-radius: 5px;
+                                    border: 2px solid var(--bg-secondary);
+                                }
+                                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+                                    background: var(--text-tertiary);
+                                }
+                                /* Firefox */
+                                .custom-scrollbar {
+                                    scrollbar-width: thin;
+                                    scrollbar-color: var(--border) var(--bg-secondary);
+                                }
+                            `}</style>
+                            <div style={{
+                                padding: '10px 12px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                color: 'var(--text-tertiary)',
+                                borderBottom: '1px solid var(--border)',
+                                background: 'var(--bg-tertiary)',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px'
+                            }}>
+                                Project Explorer
+                            </div>
+                            <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                                {renderFileTree(fileTree)}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Main Content */}
+                    <div
+                        ref={contentRef}
+                        className="custom-scrollbar"
+                        style={{
+                            flex: 1,
+                            overflow: 'auto',
+                            background: 'var(--bg-primary)',
+                        }}
+                    >
+                        {loading && (
+                            <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
+                                Loading...
+                            </div>
+                        )}
+                        {error && (
+                            <div style={{ padding: '20px', color: colors.danger }}>
+                                Error: {error}
+                            </div>
+                        )}
+                        {!loading && !error && content && (
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
+                                {lines.map((line, idx) => {
+                                    const lineNum = idx + 1;
+                                    const isTargetLine = currentFilePath === filePath && lineNum === initialLine;
+                                    return (
+                                        <div
+                                            key={idx}
+                                            ref={isTargetLine ? targetLineRef : undefined}
+                                            style={{
+                                                display: 'flex',
+                                                background: isTargetLine ? colors.bgWarningDim : 'transparent',
+                                                borderLeft: isTargetLine ? `3px solid ${colors.warning}` : '3px solid transparent',
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    width: '50px',
+                                                    minWidth: '50px',
+                                                    padding: '0 8px',
+                                                    textAlign: 'right',
+                                                    color: 'var(--text-tertiary)',
+                                                    background: 'var(--bg-secondary)',
+                                                    borderRight: '1px solid var(--border)',
+                                                    userSelect: 'none',
+                                                }}
+                                            >
+                                                {lineNum}
+                                            </span>
+                                            <span style={{ padding: '0 8px', flex: 1, whiteSpace: 'pre' }}>
+                                                <SyntaxHighlighter
+                                                    language={language}
+                                                    style={syntaxTheme}
+                                                    customStyle={{
+                                                        background: 'transparent',
+                                                        margin: 0,
+                                                        padding: 0,
+                                                        display: 'inline',
+                                                    }}
+                                                    PreTag="span"
+                                                    CodeTag="span"
+                                                >
+                                                    {line || ' '}
+                                                </SyntaxHighlighter>
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Resize handles */}
+                {/* Right edge */}
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        right: 0,
+                        width: '5px',
+                        height: '100%',
+                        cursor: 'ew-resize',
+                    }}
+                    onMouseDown={() => setIsResizing('e')}
+                />
+                {/* Bottom edge */}
+                <div
+                    style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '5px',
+                        cursor: 'ns-resize',
+                    }}
+                    onMouseDown={() => setIsResizing('s')}
+                />
+                {/* Bottom-right corner */}
+                <div
+                    style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        right: 0,
+                        width: '15px',
+                        height: '15px',
+                        cursor: 'nwse-resize',
+                    }}
+                    onMouseDown={() => setIsResizing('se')}
+                />
+                {/* Left edge */}
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '5px',
+                        height: '100%',
+                        cursor: 'ew-resize',
+                    }}
+                    onMouseDown={() => setIsResizing('w')}
+                />
+                {/* Top edge */}
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '5px',
+                        cursor: 'ns-resize',
+                    }}
+                    onMouseDown={() => setIsResizing('n')}
+                />
+            </div>
+        </div>
+    );
+}

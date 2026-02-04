@@ -1,0 +1,37 @@
+Just random musings
+
+* Task Tools:
+Tasks are currently deprecated and don't work.  Now that our leankit workflow has switched up it's a lot less important.
+** Passing partial Task structs
+
+Gather Cards and Gather PRs both return task ob
+in Matching, that list is filtered 
+
+Then you need to know the state,
+- not all tasks have cards
+- not all tasks have PRs
+
+Then we can implement serialization/deserialization for all cases easily in org_serializer. 
+
+We need both 
+
+** Matching
+** Return 1 slice of []Task
+Then syncing org files has to look at all the different Tasks and figure out where they go
+That requires org sync logic to know that XYZ cards to go this section, other cards to go other sections 
+
+** Return multiple slices of []Task based on where they're going
+Keep the input streams completely separate, in separate workflows 
+
+Not all PRs will have a card, since my team needs to review other team's PRs. That should go into a separate org section.
+v1 different sections, v2 use org tags
+Internal Code Review vs Code Review
+
+* Workflows
+[x] Workflows get the data they need
+[ ] There's a centralized gathering which saves API calls, then workflows are able to pick off the data they need. 
+
+* Writing to the org file
+[x] yeehaww each routine can write, we'll see if has problems
+[x] gather up the changes from each in some kind of struct, then have a function which does all the writes in 1 open/close.
+

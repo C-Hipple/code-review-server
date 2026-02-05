@@ -637,7 +637,6 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 
 	// Fetch Issue Comments
 	iParticipated := false
-	lastCommenter := ""
 	for _, c := range issueComments {
 		if c == nil || c.User == nil || c.User.Login == nil {
 			continue
@@ -648,13 +647,12 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 				state.LastMeTime = *c.CreatedAt
 			}
 		} else {
-			lastCommenter = *c.User.Login
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
 				state.LastOthersTime = *c.CreatedAt
 			}
 		}
 	}
-	if iParticipated && lastCommenter != "" && lastCommenter != myLogin {
+	if iParticipated && state.LastOthersTime.After(state.LastMeTime) {
 		state.HasUnrespondedComments = true
 	}
 

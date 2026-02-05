@@ -12,6 +12,7 @@ func TestBuildFiltersList(t *testing.T) {
 		name           string
 		rawWorkflow    config.RawWorkflow
 		expectedCount  int
+		wantErr        bool
 	}{
 		{
 			name: "Empty filters",
@@ -57,20 +58,68 @@ func TestBuildFiltersList(t *testing.T) {
 			expectedCount: 3, // team filter + 2 standard filters
 		},
 		{
-			name: "Unknown filter is skipped",
+			name: "Unknown filter returns error",
 			rawWorkflow: config.RawWorkflow{
 				Name:    "test",
 				Filters: []string{"FilterNotDraft", "UnknownFilter"},
 			},
-			expectedCount: 1,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			filters := BuildFiltersList(&tt.rawWorkflow)
+			filters, err := BuildFiltersList(&tt.rawWorkflow)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if len(filters) != tt.expectedCount {
 				t.Errorf("expected %d filters, got %d", tt.expectedCount, len(filters))
+			}
+		})
+	}
+}
+
+// TestBuildFiltersList_AllKnownFilters ensures every entry in filter_func_map
+// resolves through BuildFiltersList without error.  If a new filter is added to
+// the map, or an existing key is mistyped, this test will fail.
+func TestBuildFiltersList_AllKnownFilters(t *testing.T) {
+	for name := range filter_func_map {
+		t.Run(name, func(t *testing.T) {
+			raw := config.RawWorkflow{
+				Name:    "test",
+				Filters: []string{name},
+			}
+			filters, err := BuildFiltersList(&raw)
+			if err != nil {
+				t.Fatalf("BuildFiltersList returned error for known filter %q: %v", name, err)
+			}
+			if len(filters) != 1 {
+				t.Errorf("expected 1 filter for %q, got %d", name, len(filters))
+			}
+		})
+	}
+
+	// Parameterized filters each require an argument; verify they resolve too.
+	parameterized := []string{"FilterByLabel:somelabel", "FilterByAuthor:someuser", "FilterExcludeAuthor:someuser"}
+	for _, name := range parameterized {
+		t.Run(name, func(t *testing.T) {
+			raw := config.RawWorkflow{
+				Name:    "test",
+				Filters: []string{name},
+			}
+			filters, err := BuildFiltersList(&raw)
+			if err != nil {
+				t.Fatalf("BuildFiltersList returned error for parameterized filter %q: %v", name, err)
+			}
+			if len(filters) != 1 {
+				t.Errorf("expected 1 filter for %q, got %d", name, len(filters))
 			}
 		})
 	}
@@ -102,7 +151,10 @@ func TestBuildFiltersList_TeamFilterBehavior(t *testing.T) {
 		Teams: []string{"growth-team", "backend-team"},
 	}
 
-	filters := BuildFiltersList(&rawWorkflow)
+	filters, err := BuildFiltersList(&rawWorkflow)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 filter (auto-added team filter), got %d", len(filters))
 	}
@@ -159,8 +211,14 @@ func TestBuildFiltersListPerWorkflowTeams(t *testing.T) {
 		Teams: []string{"backend-team"},
 	}
 
-	filters1 := BuildFiltersList(&workflow1)
-	filters2 := BuildFiltersList(&workflow2)
+	filters1, err := BuildFiltersList(&workflow1)
+	if err != nil {
+		t.Fatalf("unexpected error for workflow1: %v", err)
+	}
+	filters2, err := BuildFiltersList(&workflow2)
+	if err != nil {
+		t.Fatalf("unexpected error for workflow2: %v", err)
+	}
 
 	prs := []*github.PullRequest{
 		makePR(1, "growth-team"),
@@ -227,8 +285,9 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 		name          string
 		filtersConfig []string
 		prs           []*github.PullRequest
-		expectedCount int      // Number of filters created
-		expectedPRs   []int    // IDs of PRs that pass the filter
+		expectedCount int
+		expectedPRs   []int
+		wantErr       bool
 	}{
 		{
 			name:          "FilterByLabel with simple label",
@@ -251,13 +310,9 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 			expectedPRs:   []int{1},
 		},
 		{
-			name:          "FilterByLabel with missing argument (invalid)",
-			filtersConfig: []string{"FilterByLabel"}, // Should be skipped or strictly checked if logic allows
-			prs: []*github.PullRequest{
-				makePR(1, "bug"),
-			},
-			expectedCount: 0, // Current logic: no colon -> filterName="FilterByLabel" -> map lookup nil -> skip
-			expectedPRs:   []int{},
+			name:          "FilterByLabel missing argument returns error",
+			filtersConfig: []string{"FilterByLabel"},
+			wantErr:       true,
 		},
 		{
 			name:          "Multiple FilterByLabel",
@@ -268,17 +323,13 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 				makePR(3, "feature"),
 				makePR(4, "bug", "urgent"),
 			},
-			// Note: Filters are additive (AND logic usually implies applying all filters sequentially).
-			// If BuildFiltersList returns a list of filters, the workflow usually applies them one by one.
-			// Ideally we want to test if the constructed filters work.
-			// Let's assume the workflow applies all filters.
 			expectedCount: 2,
 			expectedPRs:   []int{4}, // Only PR 4 has both bug AND urgent
 		},
 		{
 			name:          "FilterByAuthor with argument",
 			filtersConfig: []string{"FilterByAuthor:alice"},
-			prs:           []*github.PullRequest{}, // Testing parsing only here, verifying 1 filter created
+			prs:           []*github.PullRequest{},
 			expectedCount: 1,
 			expectedPRs:   []int{},
 		},
@@ -290,11 +341,14 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 			expectedPRs:   []int{},
 		},
 		{
-			name:          "FilterByAuthor missing argument",
+			name:          "FilterByAuthor missing argument returns error",
 			filtersConfig: []string{"FilterByAuthor"},
-			prs:           []*github.PullRequest{},
-			expectedCount: 0,
-			expectedPRs:   []int{},
+			wantErr:       true,
+		},
+		{
+			name:          "FilterExcludeAuthor missing argument returns error",
+			filtersConfig: []string{"FilterExcludeAuthor"},
+			wantErr:       true,
 		},
 	}
 
@@ -304,13 +358,21 @@ func TestBuildFiltersList_ParameterizedFilters(t *testing.T) {
 				Name:    "test",
 				Filters: tt.filtersConfig,
 			}
-			filters := BuildFiltersList(&rawWorkflow)
+			filters, err := BuildFiltersList(&rawWorkflow)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
 			if len(filters) != tt.expectedCount {
 				t.Errorf("expected %d filters, got %d", tt.expectedCount, len(filters))
 			}
 
-			// If we created filters, verify they work as expected (chaining them)
 			if tt.expectedCount > 0 {
 				currentPRs := tt.prs
 				for _, filter := range filters {
@@ -353,6 +415,57 @@ func TestParseFilterString(t *testing.T) {
 			}
 			if arg != tt.expectedArg {
 				t.Errorf("expected arg %q, got %q", tt.expectedArg, arg)
+			}
+		})
+	}
+}
+
+func TestMatchWorkflows_SkipsInvalid(t *testing.T) {
+	repos := []string{"owner/repo"}
+
+	tests := []struct {
+		name            string
+		rawWorkflows    []config.RawWorkflow
+		expectedCount   int
+	}{
+		{
+			name: "unknown WorkflowType is skipped",
+			rawWorkflows: []config.RawWorkflow{
+				{WorkflowType: "NonExistentWorkflow", Name: "bad"},
+				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "good", Owner: "owner"},
+			},
+			expectedCount: 1,
+		},
+		{
+			name: "typo in WorkflowType is skipped",
+			rawWorkflows: []config.RawWorkflow{
+				{WorkflowType: "SyncReviewRequestWorkflow", Name: "typo"}, // missing 's' in Requests
+			},
+			expectedCount: 0,
+		},
+		{
+			name: "unknown filter causes workflow to be skipped",
+			rawWorkflows: []config.RawWorkflow{
+				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "bad-filter", Owner: "owner", Filters: []string{"FilterNonExistent"}},
+				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "good", Owner: "owner", Filters: []string{"FilterNotDraft"}},
+			},
+			expectedCount: 1,
+		},
+		{
+			name: "all valid workflows are kept",
+			rawWorkflows: []config.RawWorkflow{
+				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "wf1", Owner: "owner"},
+				{WorkflowType: "SingleRepoSyncReviewRequestsWorkflow", Name: "wf2", Owner: "owner", Repo: "repo"},
+			},
+			expectedCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflows := MatchWorkflows(tt.rawWorkflows, &repos, "")
+			if len(workflows) != tt.expectedCount {
+				t.Errorf("expected %d workflows, got %d", tt.expectedCount, len(workflows))
 			}
 		})
 	}

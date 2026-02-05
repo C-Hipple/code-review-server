@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"crs/config"
@@ -12,89 +13,113 @@ import (
 func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDomain string) []Workflow {
 	workflows := []Workflow{}
 	for _, raw_workflow := range workflow_maps {
-		if raw_workflow.WorkflowType == "SyncReviewRequestsWorkflow" {
-			workflows = append(workflows, BuildSyncReviewRequestWorkflow(&raw_workflow, repos))
+		var wf Workflow
+		var err error
+		switch raw_workflow.WorkflowType {
+		case "SyncReviewRequestsWorkflow":
+			wf, err = BuildSyncReviewRequestWorkflow(&raw_workflow, repos)
+		case "SingleRepoSyncReviewRequestsWorkflow":
+			wf, err = BuildSingleRepoReviewWorkflow(&raw_workflow, repos)
+		case "ListMyPRsWorkflow":
+			wf, err = BuildListMyPRsWorkflow(&raw_workflow, repos)
+		case "ProjectListWorkflow":
+			wf, err = BuildProjectListWorkflow(&raw_workflow, jiraDomain)
+		default:
+			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "type", raw_workflow.WorkflowType)
+			continue
 		}
-		if raw_workflow.WorkflowType == "SingleRepoSyncReviewRequestsWorkflow" {
-			workflows = append(workflows, BuildSingleRepoReviewWorkflow(&raw_workflow, repos))
+		if err != nil {
+			slog.Warn("Skipping improperly configured workflow", "name", raw_workflow.Name, "error", err)
+			continue
 		}
-		if raw_workflow.WorkflowType == "ListMyPRsWorkflow" {
-			workflows = append(workflows, BuildListMyPRsWorkflow(&raw_workflow, repos))
-		}
-		if raw_workflow.WorkflowType == "ProjectListWorkflow" {
-			workflows = append(workflows, BuildProjectListWorkflow(&raw_workflow, jiraDomain))
-		}
+		workflows = append(workflows, wf)
 	}
 	return workflows
 }
 
-func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
+func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	filters, err := BuildFiltersList(raw)
+	if err != nil {
+		return nil, err
+	}
 	wf := SingleRepoSyncReviewRequestsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repo:                raw.Repo,
-		Filters:             BuildFiltersList(raw),
+		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
-	return wf
+	return wf, nil
 }
 
-func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
+func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
 	workflowRepos := *repos
 	if len(raw.Repos) > 0 {
 		workflowRepos = raw.Repos
 	}
 
+	filters, err := BuildFiltersList(raw)
+	if err != nil {
+		return nil, err
+	}
 	wf := SyncReviewRequestsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repos:               workflowRepos,
-		Filters:             BuildFiltersList(raw),
+		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
-	return wf
+	return wf, nil
 }
 
-func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) Workflow {
+func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
 	workflowRepos := *repos
 	if len(raw.Repos) > 0 {
 		workflowRepos = raw.Repos
 	}
 
+	filters, err := BuildFiltersList(raw)
+	if err != nil {
+		return nil, err
+	}
 	wf := ListMyPRsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repos:               workflowRepos,
-		Filters:             BuildFiltersList(raw),
+		Filters:             filters,
 		PRState:             raw.PRState,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
-	return wf
+	return wf, nil
 }
 
-func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) Workflow {
+func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workflow, error) {
+	filters, err := BuildFiltersList(raw)
+	if err != nil {
+		return nil, err
+	}
 	wf := ProjectListWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repo:                raw.Repo,
 		JiraDomain:          jiraDomain,
 		JiraEpic:            raw.JiraEpic,
-		Filters:             BuildFiltersList(raw),
+		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
-	return wf
+	return wf, nil
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{
@@ -119,7 +144,7 @@ func ParseFilterString(raw string) (string, string) {
 	return raw, ""
 }
 
-func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
+func BuildFiltersList(raw *config.RawWorkflow) ([]git_tools.PRFilter, error) {
 	filters := []git_tools.PRFilter{}
 
 	// Automatically add team filter if Teams is configured
@@ -132,8 +157,7 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 
 		if filterName == "FilterByLabel" {
 			if filterArg == "" {
-				slog.Warn("FilterByLabel requires an argument (e.g. FilterByLabel:bug)", "name", name)
-				continue
+				return nil, fmt.Errorf("FilterByLabel requires an argument (e.g. FilterByLabel:bug)")
 			}
 			filters = append(filters, git_tools.MakeLabelFilter(filterArg))
 			continue
@@ -141,8 +165,7 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 
 		if filterName == "FilterByAuthor" {
 			if filterArg == "" {
-				slog.Warn("FilterByAuthor requires an argument (e.g. FilterByAuthor:username)", "name", name)
-				continue
+				return nil, fmt.Errorf("FilterByAuthor requires an argument (e.g. FilterByAuthor:username)")
 			}
 			filters = append(filters, git_tools.MakeAuthorFilter(filterArg))
 			continue
@@ -150,8 +173,7 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 
 		if filterName == "FilterExcludeAuthor" {
 			if filterArg == "" {
-				slog.Warn("FilterExcludeAuthor requires an argument (e.g. FilterExcludeAuthor:username)", "name", name)
-				continue
+				return nil, fmt.Errorf("FilterExcludeAuthor requires an argument (e.g. FilterExcludeAuthor:username)")
 			}
 			filters = append(filters, git_tools.MakeExcludeAuthorFilter(filterArg))
 			continue
@@ -159,10 +181,9 @@ func BuildFiltersList(raw *config.RawWorkflow) []git_tools.PRFilter {
 
 		filter_func := filter_func_map[filterName]
 		if filter_func == nil {
-			slog.Warn("Unmatched filter function", "name", name)
-			continue
+			return nil, fmt.Errorf("unknown filter %q", filterName)
 		}
 		filters = append(filters, filter_func)
 	}
-	return filters
+	return filters, nil
 }

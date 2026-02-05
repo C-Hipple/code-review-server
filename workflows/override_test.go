@@ -33,7 +33,10 @@ func TestBuildSyncReviewRequestWorkflow_RepoOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wf := BuildSyncReviewRequestWorkflow(&tt.rawWorkflow, &globalRepos)
+			wf, err := BuildSyncReviewRequestWorkflow(&tt.rawWorkflow, &globalRepos)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			syncWf, ok := wf.(SyncReviewRequestsWorkflow)
 			if !ok {
 				t.Fatalf("Expected SyncReviewRequestsWorkflow, got %T", wf)
@@ -72,7 +75,10 @@ func TestBuildListMyPRsWorkflow_RepoOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wf := BuildListMyPRsWorkflow(&tt.rawWorkflow, &globalRepos)
+			wf, err := BuildListMyPRsWorkflow(&tt.rawWorkflow, &globalRepos)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			listWf, ok := wf.(ListMyPRsWorkflow)
 			if !ok {
 				t.Fatalf("Expected ListMyPRsWorkflow, got %T", wf)

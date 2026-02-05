@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:localhost)"
+      "WebFetch(domain:localhost)",
+      "Bash(grep:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go build:*)"
     ]
   }
 }

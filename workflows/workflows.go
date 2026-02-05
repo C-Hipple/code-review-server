@@ -64,7 +64,16 @@ func (w SingleRepoSyncReviewRequestsWorkflow) GetPRRequirements() []PRRequiremen
 	if err != nil {
 		return nil
 	}
-	return []PRRequirement{{Owner: owner, Repo: repo, State: "open"}}
+	return []PRRequirement{{
+		Owner: owner,
+		Repo:  repo,
+		State: "open",
+		AuxData: AuxDataRequirement{
+			Comments: true,
+			CIStatus: true,
+			Diff:     w.IncludeDiff,
+		},
+	}}
 }
 
 func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
@@ -109,7 +118,16 @@ func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
 	for _, repoEntry := range w.Repos {
 		owner, repo, err := git_tools.ParseRepoName(repoEntry)
 		if err == nil {
-			reqs = append(reqs, PRRequirement{Owner: owner, Repo: repo, State: "open"})
+			reqs = append(reqs, PRRequirement{
+				Owner: owner,
+				Repo:  repo,
+				State: "open",
+				AuxData: AuxDataRequirement{
+					Comments: true,
+					CIStatus: true,
+					Diff:     w.IncludeDiff,
+				},
+			})
 		}
 	}
 	return reqs
@@ -166,7 +184,16 @@ func (w ListMyPRsWorkflow) GetPRRequirements() []PRRequirement {
 	for _, repoEntry := range w.Repos {
 		owner, repo, err := git_tools.ParseRepoName(repoEntry)
 		if err == nil {
-			reqs = append(reqs, PRRequirement{Owner: owner, Repo: repo, State: w.PRState})
+			reqs = append(reqs, PRRequirement{
+				Owner: owner,
+				Repo:  repo,
+				State: w.PRState,
+				AuxData: AuxDataRequirement{
+					Comments: true,
+					CIStatus: true,
+					Diff:     w.IncludeDiff,
+				},
+			})
 		}
 	}
 	return reqs

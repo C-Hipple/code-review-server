@@ -221,11 +221,21 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 	return filtered
 }
 
+// githubSemaphore limits concurrent in-flight GitHub API requests to 50
+// to avoid hitting GitHub's secondary rate limits.
+var githubSemaphore = make(chan struct{}, 50)
+
 type loggingRoundTripper struct {
 	next http.RoundTripper
 }
 
 func (l *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	select {
+	case githubSemaphore <- struct{}{}:
+		defer func() { <-githubSemaphore }()
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
 	slog.Info("GitHub API Call", "method", req.Method, "url", req.URL.String())
 	return l.next.RoundTrip(req)
 }

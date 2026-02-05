@@ -1289,14 +1289,10 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
     )
   (evil-define-key 'insert comment-edit-mode-map
     "C-c C-c" #'crs-submit-comment
-    "C-c C-k" #'crs-abort-comment
-    ", c" #'crs-submit-comment
-    ", k" #'crs-abort-comment)
+    "C-c C-k" #'crs-abort-comment)
   (evil-define-key 'visual comment-edit-mode-map
     "C-c C-c" #'crs-submit-comment
-    "C-c C-k" #'crs-abort-comment
-    ", c" #'crs-submit-comment
-    ", k" #'crs-abort-comment))
+    "C-c C-k" #'crs-abort-comment))
 
 ;; Buffer-local variables for plugin output mode
 (defvar-local crs--plugin-owner nil

@@ -25,6 +25,25 @@ type PRRequirement struct {
 	Repo      string
 	State     string // "open", "closed", etc.
 	PRNumbers []int  // Optional, if empty fetch all for state
+	AuxData   AuxDataRequirement
+}
+
+// AuxDataRequirement specifies what auxiliary data a workflow needs
+type AuxDataRequirement struct {
+	Comments bool // PR review comments
+	CIStatus bool // CI/workflow status
+	Diff     bool // PR diff content
+}
+
+// PRAuxData holds pre-fetched auxiliary data for a PR
+type PRAuxData struct {
+	Comments          []*github.PullRequestComment
+	FormattedComments []string
+	CommentsCount     int
+	CIStatus          *git_tools.CIStatusInfo
+	Diff              string
+	DiffLines         []string
+	HeadSHA           string // SHA of the PR head for DB storage
 }
 
 type Workflow interface {
@@ -177,6 +196,17 @@ func (prb PRToOrgBridge) Details() []string {
 		details = append(details, "Requested Teams:\n")
 	}
 
+	// Get pre-fetched aux data if available
+	var auxData *PRAuxData
+	if store := GetCurrentAuxDataStore(); store != nil {
+		key := PRKey{
+			Owner:  *prb.PR.Base.Repo.Owner.Login,
+			Repo:   *prb.PR.Base.Repo.Name,
+			Number: *prb.PR.Number,
+		}
+		auxData, _ = store.Get(key)
+	}
+
 	// TODO: Consider putting these in subsection?
 	if prb.PR.MergedAt != nil {
 		details = append(details, fmt.Sprintf("Merged at: %s\n", *prb.PR.MergedAt))
@@ -186,15 +216,42 @@ func (prb PRToOrgBridge) Details() []string {
 			details = append(details, "Merged with Empty Merge Commit SHA?")
 		}
 	} else {
-		ciInfo := git_tools.GetCIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
+		// CI Status - use pre-fetched or fallback to fetch
+		var ciInfo git_tools.CIStatusInfo
+		if auxData != nil && auxData.CIStatus != nil {
+			ciInfo = *auxData.CIStatus
+		} else {
+			ciInfo = git_tools.GetCIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
+		}
 		if len(ciInfo.Statuses) > 0 {
 			details = append(details, fmt.Sprintf("*** %s CI Status\n", ciInfo.OverallStatus))
 			details = append(details, ciInfo.Statuses...)
 		}
 	}
 
+	// Diff - use pre-fetched or fallback to fetch
 	if prb.IncludeDiff {
-		diff := getPRDiff(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Base.Repo.Name, prb.PR.GetNumber())
+		var diff []string
+		headSHA := ""
+		if prb.PR.Head != nil && prb.PR.Head.SHA != nil {
+			headSHA = *prb.PR.Head.SHA
+		}
+
+		if auxData != nil && len(auxData.DiffLines) > 0 {
+			diff = auxData.DiffLines
+			// Store pre-fetched diff in database
+			if auxData.Diff != "" {
+				sha := auxData.HeadSHA
+				if sha == "" {
+					sha = headSHA
+				}
+				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetFullName(), sha, auxData.Diff); err != nil {
+					slog.Error("Error storing pre-fetched PR diff in database", "pr", prb.PR.GetNumber(), "error", err)
+				}
+			}
+		} else {
+			diff = getPRDiff(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Base.Repo.Name, prb.PR.GetNumber(), headSHA)
+		}
 		if len(diff) > 0 {
 			details = append(details, diff...)
 		}
@@ -203,7 +260,16 @@ func (prb PRToOrgBridge) Details() []string {
 	escaped_body := removePRBodySections(prb.PR.Body)
 	escaped_body = escapeBody(&escaped_body)
 	details = append(details, fmt.Sprintf("*** BODY\n %s\n", escaped_body)) // TODO: Do we need this end newline?
-	comments_count, comments := getComments(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Number)
+
+	// Comments - use pre-fetched or fallback to fetch
+	var comments_count int
+	var comments []string
+	if auxData != nil && auxData.Comments != nil {
+		// Format pre-fetched comments
+		comments_count, comments = formatComments(auxData.Comments)
+	} else {
+		comments_count, comments = getComments(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Number)
+	}
 	if len(comments) != 0 {
 		details = append(details, fmt.Sprintf("*** Comments [%v]\n", comments_count))
 		details = append(details, comments...)
@@ -283,28 +349,32 @@ func removePRBodySections(body *string) string {
 
 func getComments(owner string, repo string, number int) (int, []string) {
 	comments, err := git_tools.GetPRComments(git_tools.GetGithubClient(), owner, repo, number)
-	comments = filterComments(comments)
-	
-	// Store the result in the database
-	if err == nil {
-		commentsJSON, marshalErr := json.Marshal(comments)
-		if marshalErr != nil {
-			slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", marshalErr)
-		} else {
-			if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
-				slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
-				// Continue even if storage fails
-			}
-		}
-	}
-	
-	trees := buildCommentTrees(comments)
-	// debugPrintCommentTree(trees)
-
 	if err != nil {
 		slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", err)
 		return 0, []string{}
 	}
+
+	comments = filterComments(comments)
+
+	// Store the result in the database
+	commentsJSON, marshalErr := json.Marshal(comments)
+	if marshalErr != nil {
+		slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", marshalErr)
+	} else {
+		if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+			slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
+			// Continue even if storage fails
+		}
+	}
+
+	return formatComments(comments)
+}
+
+// formatComments formats pre-fetched PR comments into display strings
+func formatComments(comments []*github.PullRequestComment) (int, []string) {
+	comments = filterComments(comments)
+	trees := buildCommentTrees(comments)
+
 	str_comments := []string{}
 	for _, tree := range trees {
 		for i, comment := range tree {
@@ -445,28 +515,22 @@ func SyncTODOToSectionDB(db *database.DB, pr *github.PullRequest, section *datab
 // and work as intended.
 
 
-func getPRDiff(owner string, repo string, number int) []string {
+// getPRDiff fetches and stores the PR diff. If headSHA is provided, it skips the API call to get the PR.
+func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 	client := git_tools.GetGithubClient()
-	
-	// Get the PR object to get the latest SHA for storage
-	pr, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
-	latestSha := ""
-	if err == nil && pr.Head != nil && pr.Head.SHA != nil {
-		latestSha = *pr.Head.SHA
-	}
-	
+
 	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
 	if err != nil {
 		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		return []string{}
 	}
-	
+
 	// Store the result in the database
-	if err := config.C().DB.UpsertPullRequest(number, repo, latestSha, diff); err != nil {
+	if err := config.C().DB.UpsertPullRequest(number, repo, headSHA, diff); err != nil {
 		slog.Error("Error storing PR diff in database", "pr", number, "repo", repo, "error", err)
 		// Continue even if storage fails
 	}
-	
+
 	return []string{"*** Diff\n", diff}
 }
 

@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"context"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -354,6 +355,11 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		}
 	}
 
+	// Pre-fetch auxiliary data for all PRs
+	auxDataStore := ms.prefetchAuxData(log, client, repoStatePRs, specificPRs)
+	SetCurrentAuxDataStore(auxDataStore)
+	defer SetCurrentAuxDataStore(nil)
+
 	var wg sync.WaitGroup
 	for _, workflow := range ms.Workflows {
 		// Collect PRs for THIS workflow
@@ -463,4 +469,124 @@ func (ms *ManagerService) Initialize() {
 	for _, wf := range ms.Workflows {
 		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
 	}
+}
+
+// prefetchAuxData gathers auxiliary data for all PRs that need it
+func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client,
+	repoStatePRs map[string]map[string][]*github.PullRequest,
+	specificPRs map[string]map[int]*github.PullRequest) *AuxDataStore {
+
+	store := NewAuxDataStore()
+
+	// Collect all PRs and merge their aux data requirements
+	prRequirements := make(map[PRKey]AuxDataRequirement)
+	prObjects := make(map[PRKey]*github.PullRequest)
+
+	for _, wf := range ms.Workflows {
+		for _, req := range wf.GetPRRequirements() {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+
+			var prs []*github.PullRequest
+			if len(req.PRNumbers) > 0 {
+				for _, num := range req.PRNumbers {
+					if pr := specificPRs[repoKey][num]; pr != nil {
+						prs = append(prs, pr)
+					}
+				}
+			} else {
+				prs = repoStatePRs[repoKey][req.State]
+			}
+
+			for _, pr := range prs {
+				if pr == nil || pr.Number == nil {
+					continue
+				}
+				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
+				prObjects[key] = pr
+
+				// Merge requirements (OR them together)
+				existing := prRequirements[key]
+				existing.Comments = existing.Comments || req.AuxData.Comments
+				existing.CIStatus = existing.CIStatus || req.AuxData.CIStatus
+				existing.Diff = existing.Diff || req.AuxData.Diff
+				prRequirements[key] = existing
+			}
+		}
+	}
+
+	// Fetch aux data in parallel
+	var wg sync.WaitGroup
+	for key, auxReq := range prRequirements {
+		// Skip if no aux data is needed
+		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff {
+			continue
+		}
+
+		wg.Add(1)
+		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest) {
+			defer wg.Done()
+			auxData := fetchAuxDataForPR(log, client, key, auxReq, pr)
+			store.Set(key, auxData)
+		}(key, auxReq, prObjects[key])
+	}
+	wg.Wait()
+
+	log.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
+	return store
+}
+
+// fetchAuxDataForPR fetches the requested auxiliary data for a single PR
+func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
+	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
+
+	auxData := &PRAuxData{}
+
+	// Store the head SHA from the PR object (avoids extra API call later)
+	if pr != nil && pr.Head != nil && pr.Head.SHA != nil {
+		auxData.HeadSHA = *pr.Head.SHA
+	}
+
+	// Use separate goroutines for parallel fetching within this PR
+	var wg sync.WaitGroup
+
+	if req.Comments {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			comments, err := git_tools.GetPRComments(client, key.Owner, key.Repo, key.Number)
+			if err != nil {
+				log.Warn("Failed to fetch comments for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				return
+			}
+			auxData.Comments = comments
+			auxData.CommentsCount = len(comments)
+		}()
+	}
+
+	if req.CIStatus && pr != nil && pr.Head != nil && pr.Head.Label != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ciInfo := git_tools.GetCIStatus(key.Owner, key.Repo, *pr.Head.Label)
+			auxData.CIStatus = &ciInfo
+		}()
+	}
+
+	if req.Diff {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+			diffResp, _, err := client.PullRequests.GetRaw(ctx, key.Owner, key.Repo, key.Number, github.RawOptions{Type: github.Diff})
+			if err != nil {
+				log.Warn("Failed to fetch diff for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				return
+			}
+			auxData.Diff = diffResp
+			auxData.DiffLines = []string{"*** Diff\n", diffResp}
+		}()
+	}
+
+	wg.Wait()
+	return auxData
 }

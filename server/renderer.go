@@ -611,16 +611,46 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			// Fetch actual reviews to see who has approved/commented/etc.
-			ghReviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+			var cachedReviews []ReviewJSON
+			if !skipCache {
+				if cachedReviewsJSON, err := config.C().DB.GetPRReviews(number, repo); err == nil && cachedReviewsJSON != "" {
+					json.Unmarshal([]byte(cachedReviewsJSON), &cachedReviews)
+				}
+			}
+
 			approvedBy := []string{}
 			changesRequestedBy := []string{}
 			commentedBy := []string{}
-
-			// Map to keep track of the latest review state for each user
 			latestReviewState := make(map[string]string)
-			for _, review := range ghReviews {
-				if review.User != nil && review.State != nil {
-					latestReviewState[review.User.GetLogin()] = review.GetState()
+
+			if cachedReviews != nil {
+				for _, r := range cachedReviews {
+					latestReviewState[r.User] = r.State
+				}
+			} else {
+				ghReviews, _, _ := client.PullRequests.ListReviews(ctx, owner, repo, number, nil)
+				for _, review := range ghReviews {
+					if review.User != nil && review.State != nil {
+						latestReviewState[review.User.GetLogin()] = review.GetState()
+					}
+				}
+				var formattedReviews []ReviewJSON
+				for _, r := range ghReviews {
+					var submittedAt time.Time
+					if r.SubmittedAt != nil {
+						submittedAt = *r.SubmittedAt
+					}
+					formattedReviews = append(formattedReviews, ReviewJSON{
+						ID:          r.GetID(),
+						User:        r.User.GetLogin(),
+						Body:        r.GetBody(),
+						State:       r.GetState(),
+						SubmittedAt: submittedAt,
+						HTMLURL:     r.GetHTMLURL(),
+					})
+				}
+				if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
+					config.C().DB.UpsertPRReviews(number, repo, string(reviewsJSON))
 				}
 			}
 
@@ -633,27 +663,6 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				case "COMMENTED":
 					commentedBy = append(commentedBy, user)
 				}
-			}
-
-			// Capture Reviews for display
-			var formattedReviews []ReviewJSON
-			for _, r := range ghReviews {
-				var submittedAt time.Time
-				if r.SubmittedAt != nil {
-					submittedAt = *r.SubmittedAt
-				}
-				formattedReviews = append(formattedReviews, ReviewJSON{
-					ID:          r.GetID(),
-					User:        r.User.GetLogin(),
-					Body:        r.GetBody(),
-					State:       r.GetState(),
-					SubmittedAt: submittedAt,
-					HTMLURL:     r.GetHTMLURL(),
-				})
-			}
-			// Cache Reviews
-			if reviewsJSON, err := json.Marshal(formattedReviews); err == nil {
-				config.C().DB.UpsertPRReviews(number, repo, string(reviewsJSON))
 			}
 
 			// Fetch CI Status

@@ -31,6 +31,23 @@ jobs:
     - name: Install dependencies
       run: bun install
 
+    - name: Log tool versions
+      run: |
+        echo "=== Bun Version ==="
+        bun --version
+        echo ""
+        echo "=== Node Version ==="
+        node --version
+        echo ""
+        echo "=== Prettier Version ==="
+        bunx prettier --version
+        echo ""
+        echo "=== ESLint Version ==="
+        bunx eslint --version
+        echo ""
+        echo "=== TypeScript Version ==="
+        bunx tsc --version
+
     - name: Run ESLint
       run: bun run lint
 

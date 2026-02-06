@@ -17,7 +17,10 @@
       "Bash(npx prettier@latest --write:*)",
       "Bash(npx eslint:*)",
       "Bash(npx prettier:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(for file in scripts/build.ts server.test.ts server.ts test_rpc.ts)",
+      "Bash(do echo \"Checking $file:\")",
+      "Bash(done)"
     ]
   }
 }

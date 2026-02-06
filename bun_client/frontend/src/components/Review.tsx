@@ -13,18 +13,7 @@ import {
     nightOwl,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall, API_BASE } from '../api';
-import {
-    Button,
-    Badge,
-    Modal,
-    TextArea,
-    Select,
-    mapStatusToVariant,
-    colors,
-    shadows,
-    Theme,
-    THEME_OPTIONS,
-} from '../design';
+import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
 import CodeViewerModal from './CodeViewerModal';
 
@@ -172,7 +161,13 @@ const getLanguageFromFilename = (filename: string): string => {
     return languageMap[ext] || 'text';
 };
 
-export default function Review({ owner, repo, number, theme, onThemeChange }: ReviewProps) {
+export default function Review({
+    owner,
+    repo,
+    number,
+    theme,
+    onThemeChange: _onThemeChange,
+}: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
     const [comments, setComments] = useState<Comment[]>([]);

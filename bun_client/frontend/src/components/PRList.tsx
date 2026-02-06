@@ -8,7 +8,6 @@ import {
     Select,
     mapStatusToVariant,
     Theme,
-    THEME_OPTIONS,
     ReviewLocation,
 } from '../design';
 
@@ -76,9 +75,9 @@ function getUniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[]
 export default function PRList({
     onOpenReview,
     onOpenPluginOutput,
-    theme,
+    theme: _theme,
     reviewLocation,
-    onThemeChange,
+    onThemeChange: _onThemeChange,
 }: PRListProps) {
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);

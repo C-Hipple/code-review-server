@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { rpcCall } from './api';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';

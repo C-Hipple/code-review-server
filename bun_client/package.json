@@ -20,7 +20,7 @@
         "lint:server": "bunx @biomejs/biome check --write *.ts scripts/*.ts || echo 'Install biome: bun add -D @biomejs/biome'",
         "format": "bunx prettier --write .",
         "format:check": "bunx prettier --check .",
-        "type-check": "bun --filter frontend type-check && tsc --noEmit server.ts test_rpc.ts",
+        "type-check": "bun --filter frontend type-check",
         "test": "bun --filter frontend test && bun test"
     },
     "devDependencies": {

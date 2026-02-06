@@ -28,7 +28,6 @@ export class LspClient {
     > = new Map();
     private nextId = 1;
     private onNotification: ((method: string, params: any) => void) | null = null;
-    private ready = false;
 
     constructor(private onReady?: () => void) {}
 
@@ -77,7 +76,6 @@ export class LspClient {
         this.ws.onerror = e => console.error('LSP WebSocket error', e);
         this.ws.onclose = () => {
             console.log('LSP WebSocket closed');
-            this.ready = false;
         };
     }
 

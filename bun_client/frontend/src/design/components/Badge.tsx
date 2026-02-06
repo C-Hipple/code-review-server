@@ -1,5 +1,5 @@
 import React from 'react';
-import { colors, borderRadius, spacing } from '../styles/tokens';
+import { borderRadius, spacing } from '../styles/tokens';
 import { fontSize, fontWeight } from '../styles/typography';
 import { getStatusColor, type StatusVariant } from '../styles/utils';
 

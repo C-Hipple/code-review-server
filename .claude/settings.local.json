@@ -16,7 +16,8 @@
       "Bash(bun install:*)",
       "Bash(npx prettier@latest --write:*)",
       "Bash(npx eslint:*)",
-      "Bash(npx prettier:*)"
+      "Bash(npx prettier:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

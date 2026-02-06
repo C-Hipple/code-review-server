@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
-import { Button, Badge, Card, Select, mapStatusToVariant, Theme, THEME_OPTIONS } from '../design';
+import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
 
 interface PluginOutputProps {
     owner: string;
@@ -24,8 +24,8 @@ export default function PluginOutput({
     owner,
     repo,
     number,
-    theme,
-    onThemeChange,
+    theme: _theme,
+    onThemeChange: _onThemeChange,
     onClose,
 }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);

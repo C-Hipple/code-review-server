@@ -10,7 +10,9 @@
       "Bash(gh pr edit:*)",
       "Bash(gh pr diff:*)",
       "Bash(gh pr list:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npm run type-check:*)",
+      "Bash(bun run build:*)"
     ]
   }
 }

@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react';
-import { rpcCall } from './api';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
-import { Modal, Select, Theme, VALID_THEMES, THEME_OPTIONS, ReviewLocation, REVIEW_LOCATION_OPTIONS } from './design';
+import {
+    Modal,
+    Select,
+    Theme,
+    VALID_THEMES,
+    THEME_OPTIONS,
+    ReviewLocation,
+    REVIEW_LOCATION_OPTIONS,
+} from './design';
 
 interface PRParams {
     owner: string;
@@ -111,7 +118,14 @@ function App() {
 
     return (
         <div className="app-container" style={{ minHeight: '100vh', padding: '20px' }}>
-            <header style={{ marginBottom: '30px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <header
+                style={{
+                    marginBottom: '30px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                }}
+            >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <h1
                         onClick={handleBack}
@@ -147,7 +161,7 @@ function App() {
                             padding: '8px 16px',
                             borderRadius: '6px',
                             fontSize: '14px',
-                            cursor: 'pointer'
+                            cursor: 'pointer',
                         }}
                     >
                         ← Back to List
@@ -192,9 +206,25 @@ function App() {
                 title="Preferences"
                 size="sm"
             >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '10px 0' }}>
+                <div
+                    style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '20px',
+                        padding: '10px 0',
+                    }}
+                >
                     <div>
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        <div
+                            style={{
+                                fontSize: '13px',
+                                fontWeight: 600,
+                                color: 'var(--text-secondary)',
+                                marginBottom: '8px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                            }}
+                        >
                             Theme
                         </div>
                         <Select
@@ -204,7 +234,16 @@ function App() {
                         />
                     </div>
                     <div>
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        <div
+                            style={{
+                                fontSize: '13px',
+                                fontWeight: 600,
+                                color: 'var(--text-secondary)',
+                                marginBottom: '8px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                            }}
+                        >
                             Preferred Review Location
                         </div>
                         <Select
@@ -212,7 +251,13 @@ function App() {
                             onChange={e => setReviewLocation(e.target.value as ReviewLocation)}
                             options={REVIEW_LOCATION_OPTIONS}
                         />
-                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+                        <div
+                            style={{
+                                fontSize: '11px',
+                                color: 'var(--text-tertiary)',
+                                marginTop: '6px',
+                            }}
+                        >
                             Determines where to open PRs when clicking their title in the list.
                         </div>
                     </div>
@@ -227,7 +272,7 @@ function App() {
                             border: 'none',
                             borderRadius: '6px',
                             cursor: 'pointer',
-                            fontWeight: 500
+                            fontWeight: 500,
                         }}
                     >
                         Close
@@ -239,4 +284,3 @@ function App() {
 }
 
 export default App;
-

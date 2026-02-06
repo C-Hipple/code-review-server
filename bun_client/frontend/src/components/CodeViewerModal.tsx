@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import {
+    oneDark,
+    oneLight,
+    gruvboxDark,
+    gruvboxLight,
+    solarizedlight,
+    solarizedDarkAtom,
+    dracula,
+    nord,
+    nightOwl,
+} from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { colors, shadows } from '../design';
 import { readFile, listFiles } from '../api';
 import type { Theme } from '../design';
@@ -12,7 +22,7 @@ interface CodeViewerModalProps {
     repoPath: string;
     initialLine?: number;
     theme: Theme;
-    initialPosition?: { x: number, y: number };
+    initialPosition?: { x: number; y: number };
 }
 
 interface FileNode {
@@ -26,16 +36,46 @@ interface FileNode {
 const getLanguageFromFilename = (filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     const languageMap: Record<string, string> = {
-        'js': 'javascript', 'jsx': 'jsx', 'ts': 'typescript', 'tsx': 'tsx',
-        'py': 'python', 'rb': 'ruby', 'go': 'go', 'rs': 'rust',
-        'java': 'java', 'kt': 'kotlin', 'c': 'c', 'h': 'c',
-        'cpp': 'cpp', 'cc': 'cpp', 'hpp': 'cpp', 'cs': 'csharp',
-        'html': 'html', 'css': 'css', 'scss': 'scss', 'json': 'json',
-        'yaml': 'yaml', 'yml': 'yaml', 'toml': 'toml', 'xml': 'xml',
-        'sh': 'bash', 'bash': 'bash', 'sql': 'sql', 'md': 'markdown',
-        'el': 'lisp', 'lisp': 'lisp', 'hs': 'haskell', 'ml': 'ocaml',
-        'ex': 'elixir', 'exs': 'elixir', 'clj': 'clojure', 'swift': 'swift',
-        'php': 'php', 'lua': 'lua', 'vim': 'vim', 'proto': 'protobuf',
+        js: 'javascript',
+        jsx: 'jsx',
+        ts: 'typescript',
+        tsx: 'tsx',
+        py: 'python',
+        rb: 'ruby',
+        go: 'go',
+        rs: 'rust',
+        java: 'java',
+        kt: 'kotlin',
+        c: 'c',
+        h: 'c',
+        cpp: 'cpp',
+        cc: 'cpp',
+        hpp: 'cpp',
+        cs: 'csharp',
+        html: 'html',
+        css: 'css',
+        scss: 'scss',
+        json: 'json',
+        yaml: 'yaml',
+        yml: 'yaml',
+        toml: 'toml',
+        xml: 'xml',
+        sh: 'bash',
+        bash: 'bash',
+        sql: 'sql',
+        md: 'markdown',
+        el: 'lisp',
+        lisp: 'lisp',
+        hs: 'haskell',
+        ml: 'ocaml',
+        ex: 'elixir',
+        exs: 'elixir',
+        clj: 'clojure',
+        swift: 'swift',
+        php: 'php',
+        lua: 'lua',
+        vim: 'vim',
+        proto: 'protobuf',
     };
     const basename = filename.split('/').pop()?.toLowerCase() || '';
     if (basename === 'dockerfile') return 'docker';
@@ -47,16 +87,46 @@ const getIconFromFilename = (filename: string, isDirectory: boolean): string => 
     if (isDirectory) return '📁';
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     const iconMap: Record<string, string> = {
-        'js': '🟨', 'jsx': '⚛️', 'ts': '🟦', 'tsx': '⚛️',
-        'py': '🐍', 'rb': '💎', 'go': '🐹', 'rs': '🦀',
-        'java': '☕', 'kt': '🎯', 'c': '©️', 'h': 'H',
-        'cpp': 'C+', 'cc': 'C+', 'hpp': 'H+', 'cs': '♯',
-        'html': '🌐', 'css': '🎨', 'scss': '🎨', 'json': '📋',
-        'yaml': '📜', 'yml': '📜', 'toml': '⚙️', 'xml': '📜',
-        'sh': '🐚', 'bash': '🐚', 'sql': '🗄️', 'md': '📝',
-        'el': 'λ', 'lisp': 'λ', 'hs': 'λ', 'ml': 'λ',
-        'ex': '💧', 'exs': '💧', 'clj': 'λ', 'swift': '🍎',
-        'php': '🐘', 'lua': '🌙', 'vim': '💚', 'proto': '🔌',
+        js: '🟨',
+        jsx: '⚛️',
+        ts: '🟦',
+        tsx: '⚛️',
+        py: '🐍',
+        rb: '💎',
+        go: '🐹',
+        rs: '🦀',
+        java: '☕',
+        kt: '🎯',
+        c: '©️',
+        h: 'H',
+        cpp: 'C+',
+        cc: 'C+',
+        hpp: 'H+',
+        cs: '♯',
+        html: '🌐',
+        css: '🎨',
+        scss: '🎨',
+        json: '📋',
+        yaml: '📜',
+        yml: '📜',
+        toml: '⚙️',
+        xml: '📜',
+        sh: '🐚',
+        bash: '🐚',
+        sql: '🗄️',
+        md: '📝',
+        el: 'λ',
+        lisp: 'λ',
+        hs: 'λ',
+        ml: 'λ',
+        ex: '💧',
+        exs: '💧',
+        clj: 'λ',
+        swift: '🍎',
+        php: '🐘',
+        lua: '🌙',
+        vim: '💚',
+        proto: '🔌',
     };
     const basename = filename.split('/').pop()?.toLowerCase() || '';
     if (basename === 'dockerfile') return '🐳';
@@ -78,7 +148,12 @@ const buildFileTree = (files: string[]): FileNode[] => {
             const isLast = i === parts.length - 1;
             let node = currentLevel.find(n => n.name === part);
             if (!node) {
-                node = { name: part, path: currentPath, isDirectory: !isLast, children: isLast ? undefined : [] };
+                node = {
+                    name: part,
+                    path: currentPath,
+                    isDirectory: !isLast,
+                    children: isLast ? undefined : [],
+                };
                 currentLevel.push(node);
             }
             if (!isLast) {
@@ -211,7 +286,9 @@ export default function CodeViewerModal({
         if (content && contentRef.current && currentFilePath === filePath && initialLine) {
             setTimeout(() => {
                 // Find the line element by its line number
-                const lineElement = contentRef.current?.querySelector(`code > span:nth-child(${initialLine})`);
+                const lineElement = contentRef.current?.querySelector(
+                    `code > span:nth-child(${initialLine})`
+                );
                 if (lineElement) {
                     lineElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }
@@ -283,7 +360,10 @@ export default function CodeViewerModal({
                         setSize(s => ({ ...s, width: Math.max(minWidth, e.clientX - position.x) }));
                     }
                     if (isResizing.includes('s')) {
-                        setSize(s => ({ ...s, height: Math.max(minHeight, e.clientY - position.y) }));
+                        setSize(s => ({
+                            ...s,
+                            height: Math.max(minHeight, e.clientY - position.y),
+                        }));
                     }
                     if (isResizing.includes('w')) {
                         const newWidth = Math.max(minWidth, size.width + (position.x - e.clientX));
@@ -293,7 +373,10 @@ export default function CodeViewerModal({
                         }
                     }
                     if (isResizing.includes('n')) {
-                        const newHeight = Math.max(minHeight, size.height + (position.y - e.clientY));
+                        const newHeight = Math.max(
+                            minHeight,
+                            size.height + (position.y - e.clientY)
+                        );
                         if (newHeight > minHeight) {
                             setPosition(p => ({ ...p, y: e.clientY }));
                             setSize(s => ({ ...s, height: newHeight }));
@@ -336,67 +419,108 @@ export default function CodeViewerModal({
     // Get theme for syntax highlighting
     const syntaxTheme = useMemo(() => {
         switch (theme) {
-            case 'light': return oneLight;
-            case 'gruvbox-dark': return gruvboxDark;
-            case 'gruvbox-light': return gruvboxLight;
-            case 'solarized-light': return solarizedlight;
-            case 'solarized-dark': return solarizedDarkAtom;
-            case 'dracula': return dracula;
-            case 'nord': return nord;
-            case 'night-owl': return nightOwl;
-            default: return oneDark;
+            case 'light':
+                return oneLight;
+            case 'gruvbox-dark':
+                return gruvboxDark;
+            case 'gruvbox-light':
+                return gruvboxLight;
+            case 'solarized-light':
+                return solarizedlight;
+            case 'solarized-dark':
+                return solarizedDarkAtom;
+            case 'dracula':
+                return dracula;
+            case 'nord':
+                return nord;
+            case 'night-owl':
+                return nightOwl;
+            default:
+                return oneDark;
         }
     }, [theme]);
 
-    const toggleDir = useCallback((path: string) => {
-        const newExpanded = new Set(expandedDirs);
-        if (newExpanded.has(path)) {
-            newExpanded.delete(path);
-        } else {
-            newExpanded.add(path);
-        }
-        setExpandedDirs(newExpanded);
-    }, [expandedDirs]);
+    const toggleDir = useCallback(
+        (path: string) => {
+            const newExpanded = new Set(expandedDirs);
+            if (newExpanded.has(path)) {
+                newExpanded.delete(path);
+            } else {
+                newExpanded.add(path);
+            }
+            setExpandedDirs(newExpanded);
+        },
+        [expandedDirs]
+    );
 
-    const renderFileTree = useCallback((nodes: FileNode[], depth: number = 0): React.ReactNode => {
-        return nodes.map(node => (
-            <div key={node.path}>
-                <div
-                    style={{
-                        padding: '4px 8px',
-                        paddingLeft: `${depth * 12 + 8}px`,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontSize: '12px',
-                        background: (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--bg-tertiary)' : 'transparent',
-                        color: (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--accent)' : 'var(--text-primary)',
-                        userSelect: 'none',
-                        transition: 'background 0.1s ease',
-                    }}
-                    onClick={() => {
-                        if (node.isDirectory) {
-                            toggleDir(node.path);
-                        } else {
-                            setCurrentFilePath(node.path);
+    const renderFileTree = useCallback(
+        (nodes: FileNode[], depth: number = 0): React.ReactNode => {
+            return nodes.map(node => (
+                <div key={node.path}>
+                    <div
+                        style={{
+                            padding: '4px 8px',
+                            paddingLeft: `${depth * 12 + 8}px`,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            fontSize: '12px',
+                            background:
+                                currentFilePath === node.path ||
+                                currentFilePath.endsWith('/' + node.path)
+                                    ? 'var(--bg-tertiary)'
+                                    : 'transparent',
+                            color:
+                                currentFilePath === node.path ||
+                                currentFilePath.endsWith('/' + node.path)
+                                    ? 'var(--accent)'
+                                    : 'var(--text-primary)',
+                            userSelect: 'none',
+                            transition: 'background 0.1s ease',
+                        }}
+                        onClick={() => {
+                            if (node.isDirectory) {
+                                toggleDir(node.path);
+                            } else {
+                                setCurrentFilePath(node.path);
+                            }
+                        }}
+                        onMouseEnter={e =>
+                            (e.currentTarget.style.background = 'var(--bg-tertiary)')
                         }
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
-                    onMouseLeave={e => e.currentTarget.style.background = (currentFilePath === node.path || currentFilePath.endsWith('/' + node.path)) ? 'var(--bg-tertiary)' : 'transparent'}
-                >
-                    <span style={{ fontSize: '14px', width: '16px', textAlign: 'center' }}>
-                        {node.isDirectory ? (expandedDirs.has(node.path) ? '▾' : '▸') : ''}
-                    </span>
-                    <span style={{ fontSize: '14px' }}>{getIconFromFilename(node.name, node.isDirectory)}</span>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+                        onMouseLeave={e =>
+                            (e.currentTarget.style.background =
+                                currentFilePath === node.path ||
+                                currentFilePath.endsWith('/' + node.path)
+                                    ? 'var(--bg-tertiary)'
+                                    : 'transparent')
+                        }
+                    >
+                        <span style={{ fontSize: '14px', width: '16px', textAlign: 'center' }}>
+                            {node.isDirectory ? (expandedDirs.has(node.path) ? '▾' : '▸') : ''}
+                        </span>
+                        <span style={{ fontSize: '14px' }}>
+                            {getIconFromFilename(node.name, node.isDirectory)}
+                        </span>
+                        <span
+                            style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}
+                        >
+                            {node.name}
+                        </span>
+                    </div>
+                    {node.isDirectory && expandedDirs.has(node.path) && node.children && (
+                        <div>{renderFileTree(node.children, depth + 1)}</div>
+                    )}
                 </div>
-                {node.isDirectory && expandedDirs.has(node.path) && node.children && (
-                    <div>{renderFileTree(node.children, depth + 1)}</div>
-                )}
-            </div>
-        ));
-    }, [expandedDirs, currentFilePath, toggleDir]);
+            ));
+        },
+        [expandedDirs, currentFilePath, toggleDir]
+    );
 
     if (!isOpen) return null;
 
@@ -432,7 +556,7 @@ export default function CodeViewerModal({
                     flexDirection: 'column',
                     pointerEvents: 'auto',
                     overflow: 'hidden',
-                    willChange: (isDragging || isResizing) ? 'transform' : 'auto',
+                    willChange: isDragging || isResizing ? 'transform' : 'auto',
                 }}
             >
                 {/* Header - draggable */}
@@ -449,7 +573,14 @@ export default function CodeViewerModal({
                     }}
                     onMouseDown={startDrag}
                 >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                    <div
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            overflow: 'hidden',
+                        }}
+                    >
                         <button
                             onClick={() => setShowFileTree(!showFileTree)}
                             style={{
@@ -467,7 +598,9 @@ export default function CodeViewerModal({
                         >
                             {showFileTree ? '◀ Hide Tree' : '▶ Files'}
                         </button>
-                        <span style={{ fontSize: '16px', marginLeft: '8px' }}>{getIconFromFilename(displayFilename, false)}</span>
+                        <span style={{ fontSize: '16px', marginLeft: '8px' }}>
+                            {getIconFromFilename(displayFilename, false)}
+                        </span>
                         <span
                             style={{
                                 fontFamily: 'var(--font-mono)',
@@ -546,19 +679,24 @@ export default function CodeViewerModal({
                                     scrollbar-color: var(--border) var(--bg-secondary);
                                 }
                             `}</style>
-                            <div style={{
-                                padding: '10px 12px',
-                                fontSize: '11px',
-                                fontWeight: 700,
-                                color: 'var(--text-tertiary)',
-                                borderBottom: '1px solid var(--border)',
-                                background: 'var(--bg-tertiary)',
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.5px'
-                            }}>
+                            <div
+                                style={{
+                                    padding: '10px 12px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    color: 'var(--text-tertiary)',
+                                    borderBottom: '1px solid var(--border)',
+                                    background: 'var(--bg-tertiary)',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
                                 Project Explorer
                             </div>
-                            <div className="custom-scrollbar" style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                            <div
+                                className="custom-scrollbar"
+                                style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+                            >
                                 {renderFileTree(fileTree)}
                             </div>
                         </div>
@@ -591,12 +729,17 @@ export default function CodeViewerModal({
                                 showLineNumbers={true}
                                 wrapLines={true}
                                 lineProps={(lineNumber: number) => {
-                                    const isTargetLine = currentFilePath === filePath && lineNumber === initialLine;
+                                    const isTargetLine =
+                                        currentFilePath === filePath && lineNumber === initialLine;
                                     return {
                                         style: {
                                             display: 'block',
-                                            background: isTargetLine ? colors.bgWarningDim : 'transparent',
-                                            borderLeft: isTargetLine ? `3px solid ${colors.warning}` : '3px solid transparent',
+                                            background: isTargetLine
+                                                ? colors.bgWarningDim
+                                                : 'transparent',
+                                            borderLeft: isTargetLine
+                                                ? `3px solid ${colors.warning}`
+                                                : '3px solid transparent',
                                             paddingLeft: '8px',
                                         },
                                     };

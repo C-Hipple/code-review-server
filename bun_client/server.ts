@@ -1,53 +1,56 @@
-import { spawn, Subprocess } from "bun";
-import { resolve, join, dirname, relative } from "path";
-import { readdir, stat } from "node:fs/promises";
-import { assets } from "./embedded_assets";
+import { readdir } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { type Subprocess, spawn } from 'bun';
+import { assets } from './embedded_assets';
 
-const SERVER_PATH = Bun.which("crs") || "crs";
-const DIFF_LSP_PATH = Bun.which("diff-lsp");
+const SERVER_PATH = Bun.which('crs') || 'crs';
+const DIFF_LSP_PATH = Bun.which('diff-lsp');
 
 // Resolve the project root.
 // When compiled, import.meta.dir is a virtual path (/$bunfs/root).
 // We must use a real path for the OS to spawn processes correctly.
 function getProjectRoot() {
     const metaDir = import.meta.dir;
-    if (metaDir.startsWith("/$bunfs")) {
+    if (metaDir.startsWith('/$bunfs')) {
         // If we are in bun_client directory, the project root is one level up
         const cwd = process.cwd();
-        return cwd.endsWith("bun_client") ? resolve(cwd, "..") : cwd;
+        return cwd.endsWith('bun_client') ? resolve(cwd, '..') : cwd;
     }
-    return resolve(metaDir, "..");
+    return resolve(metaDir, '..');
 }
 
 const PROJECT_ROOT = getProjectRoot();
 
 interface JsonRpcRequest {
     method: string;
-    params: any[];
+    params: unknown[];
     id: number | string;
 }
 
 interface JsonRpcResponse {
-    result?: any;
-    error?: any;
+    result?: unknown;
+    error?: unknown;
     id: number | string;
 }
 
 class RpcBridge {
-    private proc: any;
-    private pending = new Map<string | number, { resolve: (val: any) => void; reject: (err: any) => void }>();
-    private buffer = "";
+    private proc: ReturnType<typeof spawn>;
+    private pending = new Map<
+        string | number,
+        { resolve: (val: unknown) => void; reject: (err: unknown) => void }
+    >();
+    private buffer = '';
 
     constructor() {
         console.log(`[RpcBridge] PROJECT_ROOT: ${PROJECT_ROOT}`);
         console.log(`[RpcBridge] Resolved SERVER_PATH: ${SERVER_PATH}`);
 
-        this.proc = spawn([SERVER_PATH, "--server"], {
+        this.proc = spawn([SERVER_PATH, '--server'], {
             cwd: PROJECT_ROOT,
-            stdin: "pipe",
-            stdout: "pipe",
-            stderr: "inherit",
-            env: process.env
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'inherit',
+            env: process.env,
         });
 
         this.readLoop();
@@ -62,7 +65,7 @@ class RpcBridge {
                 this.handleChunk(new TextDecoder().decode(value));
             }
         } catch (e) {
-            console.error("Error reading from server:", e);
+            console.error('Error reading from server:', e);
         }
     }
 
@@ -72,18 +75,18 @@ class RpcBridge {
         let depth = 0;
         let start = 0;
         let inString = false;
-        let escape = false;
+        let isEscaped = false;
 
         for (let i = 0; i < this.buffer.length; i++) {
             const char = this.buffer[i];
 
-            if (escape) {
-                escape = false;
+            if (isEscaped) {
+                isEscaped = false;
                 continue;
             }
 
             if (char === '\\') {
-                escape = true;
+                isEscaped = true;
                 continue;
             }
 
@@ -105,7 +108,7 @@ class RpcBridge {
                             const obj = JSON.parse(jsonStr);
                             this.handleResponse(obj);
                         } catch (e) {
-                            console.error("Failed to parse JSON:", jsonStr, e);
+                            console.error('Failed to parse JSON:', jsonStr, e);
                         }
                         // Remove processed part
                         this.buffer = this.buffer.substring(i + 1);
@@ -117,18 +120,21 @@ class RpcBridge {
     }
 
     private handleResponse(res: JsonRpcResponse) {
-        if (res.id !== undefined && this.pending.has(res.id)) {
-            const { resolve, reject } = this.pending.get(res.id)!;
-            this.pending.delete(res.id);
-            if (res.error) {
-                reject(res.error);
-            } else {
-                resolve(res.result);
+        if (res.id !== undefined) {
+            const pending = this.pending.get(res.id);
+            if (pending) {
+                const { resolve, reject } = pending;
+                this.pending.delete(res.id);
+                if (res.error) {
+                    reject(res.error);
+                } else {
+                    resolve(res.result);
+                }
             }
         }
     }
 
-    public call(method: string, params: any[]): Promise<any> {
+    public call(method: string, params: unknown[]): Promise<unknown> {
         const id = Date.now() + Math.random();
         const req: JsonRpcRequest = { method, params, id };
 
@@ -136,7 +142,7 @@ class RpcBridge {
             this.pending.set(id, { resolve, reject });
             const data = JSON.stringify(req);
             // Go's jsonrpc (JSON-RPC 1.0) expects newline-delimited JSON.
-            this.proc.stdin.write(data + "\n");
+            this.proc.stdin.write(`${data}\n`);
         });
     }
 }
@@ -144,44 +150,48 @@ class RpcBridge {
 const bridge = new RpcBridge();
 
 const CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE, PATCH",
-    "Access-Control-Allow-Headers": "Content-Type",
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, DELETE, PATCH',
+    'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess }>({
-    port: parseInt(process.env.PORT || "5172"),
+Bun.serve<{
+    cmd: string | null;
+    envs: Record<string, string>;
+    proc?: Subprocess;
+}>({
+    port: parseInt(process.env.PORT || '5172', 10),
     async fetch(req, server) {
         const url = new URL(req.url);
 
-        if (url.pathname === "/api/lsp") {
-            console.log("lsp call happening")
+        if (url.pathname === '/api/lsp') {
+            console.log('lsp call happening');
 
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
-                    envs: process.env as Record<string, string>
-                }
+                    envs: process.env as Record<string, string>,
+                },
             });
             if (success) return undefined;
-            return new Response("Upgrade failed", { status: 500 });
+            return new Response('Upgrade failed', { status: 500 });
         }
 
         // CORS
-        if (req.method === "OPTIONS") {
+        if (req.method === 'OPTIONS') {
             return new Response(null, {
                 headers: CORS_HEADERS,
             });
         }
 
         // Helper to handle RPC calls
-        const handleRpc = async (method: string, params: any[]) => {
+        const handleRpc = async (method: string, params: unknown[]) => {
             try {
                 const result = await bridge.call(method, params);
                 return new Response(JSON.stringify({ result }), {
                     headers: {
                         ...CORS_HEADERS,
-                        "Content-Type": "application/json",
+                        'Content-Type': 'application/json',
                     },
                 });
             } catch (err) {
@@ -190,91 +200,96 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
                     status: 500,
                     headers: {
                         ...CORS_HEADERS,
-                        "Content-Type": "application/json",
+                        'Content-Type': 'application/json',
                     },
                 });
             }
         };
 
         // Specialized Handlers for the "New JSON Format"
-        if (url.pathname === "/api/get-pr" && req.method === "POST") {
+        if (url.pathname === '/api/get-pr' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.GetPR", [body]);
+            return handleRpc('RPCHandler.GetPR', [body]);
         }
 
-        if (url.pathname === "/api/add-comment" && req.method === "POST") {
+        if (url.pathname === '/api/add-comment' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.AddComment", [body]);
+            return handleRpc('RPCHandler.AddComment', [body]);
         }
 
-        if (url.pathname === "/api/edit-comment" && req.method === "POST") {
+        if (url.pathname === '/api/edit-comment' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.EditComment", [body]);
+            return handleRpc('RPCHandler.EditComment', [body]);
         }
 
-        if (url.pathname === "/api/delete-comment" && req.method === "POST") {
+        if (url.pathname === '/api/delete-comment' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.DeleteComment", [body]);
+            return handleRpc('RPCHandler.DeleteComment', [body]);
         }
 
-        if (url.pathname === "/api/sync-pr" && req.method === "POST") {
+        if (url.pathname === '/api/sync-pr' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.SyncPR", [body]);
+            return handleRpc('RPCHandler.SyncPR', [body]);
         }
 
-        if (url.pathname === "/api/submit-review" && req.method === "POST") {
+        if (url.pathname === '/api/submit-review' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.SubmitReview", [body]);
+            return handleRpc('RPCHandler.SubmitReview', [body]);
         }
 
-        if (url.pathname === "/api/reviews" && req.method === "POST") {
-            return handleRpc("RPCHandler.GetAllReviews", [{}]);
+        if (url.pathname === '/api/reviews' && req.method === 'POST') {
+            return handleRpc('RPCHandler.GetAllReviews', [{}]);
         }
 
-        if (url.pathname === "/api/set-feedback" && req.method === "POST") {
+        if (url.pathname === '/api/set-feedback' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.SetFeedback", [body]);
+            return handleRpc('RPCHandler.SetFeedback', [body]);
         }
 
-        if (url.pathname === "/api/remove-pr-comments" && req.method === "POST") {
+        if (url.pathname === '/api/remove-pr-comments' && req.method === 'POST') {
             const body = await req.json();
-            return handleRpc("RPCHandler.RemovePRComments", [body]);
+            return handleRpc('RPCHandler.RemovePRComments', [body]);
         }
 
-        if (url.pathname === "/api/list-plugins" && (req.method === "POST" || req.method === "GET")) {
-            return handleRpc("RPCHandler.ListPlugins", [{}]);
+        if (
+            url.pathname === '/api/list-plugins' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            return handleRpc('RPCHandler.ListPlugins', [{}]);
         }
 
-        if (url.pathname === "/api/get-plugin-output" && (req.method === "POST" || req.method === "GET")) {
-            let body;
-            if (req.method === "GET") {
+        if (
+            url.pathname === '/api/get-plugin-output' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            let body: unknown;
+            if (req.method === 'GET') {
                 body = {
-                    Owner: url.searchParams.get("owner"),
-                    Repo: url.searchParams.get("repo"),
-                    Number: parseInt(url.searchParams.get("number") || "0", 10),
+                    Owner: url.searchParams.get('owner'),
+                    Repo: url.searchParams.get('repo'),
+                    Number: parseInt(url.searchParams.get('number') || '0', 10),
                 };
             } else {
                 body = await req.json();
             }
-            return handleRpc("RPCHandler.GetPluginOutput", [body]);
+            return handleRpc('RPCHandler.GetPluginOutput', [body]);
         }
 
-
-        if (url.pathname === "/api/check-lsp" && req.method === "GET") {
+        if (url.pathname === '/api/check-lsp' && req.method === 'GET') {
             return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
-                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
             });
         }
 
         // Read file contents from repository
-        if (url.pathname === "/api/read-file" && req.method === "POST") {
+        if (url.pathname === '/api/read-file' && req.method === 'POST') {
             const body = await req.json();
             const { repoPath, filePath } = body;
 
             if (!filePath) {
-                return new Response(JSON.stringify({ error: "filePath is required" }), {
+                return new Response(JSON.stringify({ error: 'filePath is required' }), {
                     status: 400,
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 });
             }
 
@@ -287,51 +302,65 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
                 // Security: Ensure filePath is within repoPath
                 resolved = resolve(repoPath, filePath);
                 if (!resolved.startsWith(repoPath)) {
-                    return new Response(JSON.stringify({ error: "Invalid path" }), {
+                    return new Response(JSON.stringify({ error: 'Invalid path' }), {
                         status: 400,
-                        headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                     });
                 }
             } else {
-                return new Response(JSON.stringify({ error: "Either absolute filePath or repoPath is required" }), {
-                    status: 400,
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
-                });
+                return new Response(
+                    JSON.stringify({
+                        error: 'Either absolute filePath or repoPath is required',
+                    }),
+                    {
+                        status: 400,
+                        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+                    }
+                );
             }
 
             const file = Bun.file(resolved);
             if (await file.exists()) {
                 const content = await file.text();
                 return new Response(JSON.stringify({ content }), {
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 });
             }
-            return new Response(JSON.stringify({ error: "File not found" }), {
+            return new Response(JSON.stringify({ error: 'File not found' }), {
                 status: 404,
-                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
             });
         }
 
         // List files in repository recursively
-        if (url.pathname === "/api/list-files" && req.method === "POST") {
+        if (url.pathname === '/api/list-files' && req.method === 'POST') {
             const body = await req.json();
             const { repoPath } = body;
 
             if (!repoPath) {
-                return new Response(JSON.stringify({ error: "repoPath is required" }), {
+                return new Response(JSON.stringify({ error: 'repoPath is required' }), {
                     status: 400,
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 });
             }
 
             try {
-                const listFilesRecursive = async (dir: string, baseDir: string): Promise<string[]> => {
+                const listFilesRecursive = async (
+                    dir: string,
+                    baseDir: string
+                ): Promise<string[]> => {
                     const entries = await readdir(dir, { withFileTypes: true });
                     const files: string[] = [];
 
                     for (const entry of entries) {
                         const name = entry.name;
-                        if (name === "node_modules" || name === ".git" || name === ".next" || name === "dist") continue;
+                        if (
+                            name === 'node_modules' ||
+                            name === '.git' ||
+                            name === '.next' ||
+                            name === 'dist'
+                        )
+                            continue;
 
                         const res = resolve(dir, name);
                         if (entry.isDirectory()) {
@@ -345,18 +374,18 @@ Bun.serve<{ cmd: string | null, envs: Record<string, string>, proc?: Subprocess 
 
                 const files = await listFilesRecursive(repoPath, repoPath);
                 return new Response(JSON.stringify({ files }), {
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 });
             } catch (err) {
-                console.error("Error listing files:", err);
+                console.error('Error listing files:', err);
                 return new Response(JSON.stringify({ error: String(err) }), {
                     status: 500,
-                    headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 });
             }
         }
 
-        if (url.pathname === "/api/prepare-diff-lsp" && req.method === "POST") {
+        if (url.pathname === '/api/prepare-diff-lsp' && req.method === 'POST') {
             const body = await req.json();
             const { project, root, buffer, type, content, worktree } = body;
             const header = `Project: ${project}
@@ -367,22 +396,22 @@ Type: ${type}
 `;
             const fullContent = header + content;
             const filename = `diff_lsp_${crypto.randomUUID()}-bun`;
-            const filePath = join("/tmp", filename);
+            const filePath = join('/tmp', filename);
             await Bun.write(filePath, fullContent);
             return new Response(JSON.stringify({ path: filePath }), {
-                headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
             });
         }
 
         // Generic legacy RPC endpoint
-        if (url.pathname === "/api/rpc" && req.method === "POST") {
+        if (url.pathname === '/api/rpc' && req.method === 'POST') {
             const body = await req.json();
             return handleRpc(body.method, body.params);
         }
 
         // Serve static files
         let path = url.pathname;
-        if (path === "/") path = "/index.html";
+        if (path === '/') path = '/index.html';
 
         // 1. Try embedded assets (for single-binary distribution)
         if (assets[path]) {
@@ -390,7 +419,7 @@ Type: ${type}
         }
 
         // 2. Fallback to disk (for development)
-        const publicPath = resolve(import.meta.dir, "frontend/dist");
+        const publicPath = resolve(import.meta.dir, 'frontend/dist');
         const filePath = resolve(publicPath, path.substring(1));
 
         if (filePath.startsWith(publicPath)) {
@@ -401,34 +430,34 @@ Type: ${type}
         }
 
         // 3. SPA fallback: serve index.html
-        if (assets["/index.html"]) {
-            return new Response(Bun.file(assets["/index.html"]));
+        if (assets['/index.html']) {
+            return new Response(Bun.file(assets['/index.html']));
         }
 
-        const indexPath = resolve(import.meta.dir, "frontend/dist/index.html");
+        const indexPath = resolve(import.meta.dir, 'frontend/dist/index.html');
         const indexFile = Bun.file(indexPath);
         if (await indexFile.exists()) {
             return new Response(indexFile);
         }
 
-        return new Response("Not Found", { status: 404 });
+        return new Response('Not Found', { status: 404 });
     },
     websocket: {
         open(ws) {
-            console.log("LSP WebSocket connected");
+            console.log('LSP WebSocket connected');
             const { cmd, envs } = ws.data;
             if (!cmd) {
-                console.warn("diff-lsp not found, closing websocket");
+                console.warn('diff-lsp not found, closing websocket');
                 ws.close();
                 return;
             }
 
             try {
                 const proc = spawn([cmd], {
-                    stdin: "pipe",
-                    stdout: "pipe",
-                    stderr: "inherit",
-                    env: { ...process.env, ...envs }
+                    stdin: 'pipe',
+                    stdout: 'pipe',
+                    stderr: 'inherit',
+                    env: { ...process.env, ...envs },
                 });
                 ws.data.proc = proc;
 
@@ -445,11 +474,13 @@ Type: ${type}
                                 const separatorIndex = buffer.indexOf('\r\n\r\n');
                                 if (separatorIndex === -1) break;
 
-                                const headerPart = buffer.subarray(0, separatorIndex).toString('utf-8');
+                                const headerPart = buffer
+                                    .subarray(0, separatorIndex)
+                                    .toString('utf-8');
                                 const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
 
                                 if (!lengthMatch) {
-                                    console.error("Invalid LSP header:", headerPart);
+                                    console.error('Invalid LSP header:', headerPart);
                                     // Skip past this separator
                                     buffer = buffer.subarray(separatorIndex + 4);
                                     continue;
@@ -459,7 +490,10 @@ Type: ${type}
                                 const totalMessageLength = separatorIndex + 4 + contentLength;
 
                                 if (buffer.length >= totalMessageLength) {
-                                    const jsonBuf = buffer.subarray(separatorIndex + 4, totalMessageLength);
+                                    const jsonBuf = buffer.subarray(
+                                        separatorIndex + 4,
+                                        totalMessageLength
+                                    );
                                     const jsonStr = jsonBuf.toString('utf-8');
                                     ws.send(jsonStr);
                                     buffer = buffer.subarray(totalMessageLength);
@@ -469,40 +503,41 @@ Type: ${type}
                             }
                         }
                     } catch (e) {
-                        console.error("Error reading from LSP:", e);
+                        console.error('Error reading from LSP:', e);
                     }
                 })();
             } catch (e) {
-                console.error("Error spawning LSP process:", e);
+                console.error('Error spawning LSP process:', e);
                 ws.close();
             }
         },
         message(ws, message) {
             const proc = ws.data.proc;
-            if (proc && proc.stdin && typeof proc.stdin !== "number") {
-                const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
+            if (proc?.stdin && typeof proc.stdin !== 'number') {
+                const msgStr =
+                    typeof message === 'string' ? message : new TextDecoder().decode(message);
                 const length = new TextEncoder().encode(msgStr).length;
                 const wrapped = `Content-Length: ${length}\r\n\r\n${msgStr}`;
                 try {
                     proc.stdin.write(wrapped);
                     proc.stdin.flush();
                 } catch (e) {
-                    console.error("Error writing to LSP process:", e);
+                    console.error('Error writing to LSP process:', e);
                 }
             }
         },
         close(ws) {
-            console.log("LSP WebSocket closed");
+            console.log('LSP WebSocket closed');
             const proc = ws.data.proc;
             if (proc) {
                 try {
                     proc.kill();
                 } catch (e) {
-                    console.error("Error killing LSP process:", e);
+                    console.error('Error killing LSP process:', e);
                 }
             }
         },
-    }
+    },
 });
 
-console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || "5172")}`);
+console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || '5172', 10)}`);

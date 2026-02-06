@@ -1,6 +1,8 @@
-export const API_BASE = (typeof window !== "undefined" && (window.location.port === "5173" || window.location.port === "5174"))
-    ? `${window.location.protocol}//${window.location.hostname}:5172`
-    : "";
+export const API_BASE =
+    typeof window !== 'undefined' &&
+    (window.location.port === '5173' || window.location.port === '5174')
+        ? `${window.location.protocol}//${window.location.hostname}:5172`
+        : '';
 const RPC_URL = `${API_BASE}/api/rpc`;
 
 export interface RpcResponse<T> {
@@ -27,13 +29,15 @@ export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
 
     const url = specializedPath ? `${API_BASE}${specializedPath}` : RPC_URL;
     const body = specializedPath
-        ? (method === 'RPCHandler.GetAllReviews' || method === 'RPCHandler.ListPlugins' ? {} : params[0])
+        ? method === 'RPCHandler.GetAllReviews' || method === 'RPCHandler.ListPlugins'
+            ? {}
+            : params[0]
         : { method, params, id };
 
     const response = await fetch(url, {
-        method: "POST",
+        method: 'POST',
         headers: {
-            "Content-Type": "application/json",
+            'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
     });
@@ -42,7 +46,7 @@ export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
 
     // For specialized endpoints, the server returns { result: ... }
     // For generic RPC, it returns { result: { result: ... } } because bridge.call returns res.result
-    // Wait, let's check server.ts implementation. 
+    // Wait, let's check server.ts implementation.
     // bridge.call returns res.result (the Go result field).
     // server.ts wraps it: return new Response(JSON.stringify({ result }), ...)
     // So both return { result: ... } where ... is the Go reply struct.
@@ -58,9 +62,9 @@ export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
  */
 export async function readFile(repoPath: string, filePath: string): Promise<string> {
     const res = await fetch(`${API_BASE}/api/read-file`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repoPath, filePath })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoPath, filePath }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -72,12 +76,11 @@ export async function readFile(repoPath: string, filePath: string): Promise<stri
  */
 export async function listFiles(repoPath: string): Promise<string[]> {
     const res = await fetch(`${API_BASE}/api/list-files`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repoPath })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoPath }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     return data.files;
 }
-

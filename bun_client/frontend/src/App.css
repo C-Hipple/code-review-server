@@ -26,7 +26,6 @@
     text-decoration: underline;
 }
 
-
 .pr-item-card button:active {
     transform: scale(0.95);
 }

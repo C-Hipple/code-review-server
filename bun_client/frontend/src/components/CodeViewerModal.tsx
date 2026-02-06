@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { colors, shadows } from '../design';
@@ -127,7 +127,8 @@ export default function CodeViewerModal({
 
     const modalRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const targetLineRef = useRef<HTMLDivElement>(null);
+    const animationFrameId = useRef<number | null>(null);
+    const resizeFrameId = useRef<number | null>(null);
 
     // Ensure modal stays within viewport bounds
     useEffect(() => {
@@ -207,12 +208,16 @@ export default function CodeViewerModal({
 
     // Scroll to target line when content loads
     useEffect(() => {
-        if (content && targetLineRef.current) {
+        if (content && contentRef.current && currentFilePath === filePath && initialLine) {
             setTimeout(() => {
-                targetLineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // Find the line element by its line number
+                const lineElement = contentRef.current?.querySelector(`code > span:nth-child(${initialLine})`);
+                if (lineElement) {
+                    lineElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
             }, 100);
         }
-    }, [content, initialLine]);
+    }, [content, initialLine, currentFilePath, filePath]);
 
     // Handle ESC key
     useEffect(() => {
@@ -228,64 +233,94 @@ export default function CodeViewerModal({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, onClose]);
 
-    // Handle dragging
+    // Handle dragging with requestAnimationFrame throttling
     useEffect(() => {
         if (!isDragging) return;
 
         const handleMouseMove = (e: MouseEvent) => {
-            setPosition({
-                x: e.clientX - dragOffset.x,
-                y: e.clientY - dragOffset.y,
-            });
+            if (!animationFrameId.current) {
+                animationFrameId.current = requestAnimationFrame(() => {
+                    setPosition({
+                        x: e.clientX - dragOffset.x,
+                        y: e.clientY - dragOffset.y,
+                    });
+                    animationFrameId.current = null;
+                });
+            }
         };
 
-        const handleMouseUp = () => setIsDragging(false);
+        const handleMouseUp = () => {
+            setIsDragging(false);
+            if (animationFrameId.current) {
+                cancelAnimationFrame(animationFrameId.current);
+                animationFrameId.current = null;
+            }
+        };
 
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
         return () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            if (animationFrameId.current) {
+                cancelAnimationFrame(animationFrameId.current);
+                animationFrameId.current = null;
+            }
         };
     }, [isDragging, dragOffset]);
 
-    // Handle resizing
+    // Handle resizing with requestAnimationFrame throttling
     useEffect(() => {
         if (!isResizing) return;
 
         const handleMouseMove = (e: MouseEvent) => {
-            const minWidth = 400;
-            const minHeight = 300;
+            if (!resizeFrameId.current) {
+                resizeFrameId.current = requestAnimationFrame(() => {
+                    const minWidth = 400;
+                    const minHeight = 300;
 
-            if (isResizing.includes('e')) {
-                setSize(s => ({ ...s, width: Math.max(minWidth, e.clientX - position.x) }));
-            }
-            if (isResizing.includes('s')) {
-                setSize(s => ({ ...s, height: Math.max(minHeight, e.clientY - position.y) }));
-            }
-            if (isResizing.includes('w')) {
-                const newWidth = Math.max(minWidth, size.width + (position.x - e.clientX));
-                if (newWidth > minWidth) {
-                    setPosition(p => ({ ...p, x: e.clientX }));
-                    setSize(s => ({ ...s, width: newWidth }));
-                }
-            }
-            if (isResizing.includes('n')) {
-                const newHeight = Math.max(minHeight, size.height + (position.y - e.clientY));
-                if (newHeight > minHeight) {
-                    setPosition(p => ({ ...p, y: e.clientY }));
-                    setSize(s => ({ ...s, height: newHeight }));
-                }
+                    if (isResizing.includes('e')) {
+                        setSize(s => ({ ...s, width: Math.max(minWidth, e.clientX - position.x) }));
+                    }
+                    if (isResizing.includes('s')) {
+                        setSize(s => ({ ...s, height: Math.max(minHeight, e.clientY - position.y) }));
+                    }
+                    if (isResizing.includes('w')) {
+                        const newWidth = Math.max(minWidth, size.width + (position.x - e.clientX));
+                        if (newWidth > minWidth) {
+                            setPosition(p => ({ ...p, x: e.clientX }));
+                            setSize(s => ({ ...s, width: newWidth }));
+                        }
+                    }
+                    if (isResizing.includes('n')) {
+                        const newHeight = Math.max(minHeight, size.height + (position.y - e.clientY));
+                        if (newHeight > minHeight) {
+                            setPosition(p => ({ ...p, y: e.clientY }));
+                            setSize(s => ({ ...s, height: newHeight }));
+                        }
+                    }
+                    resizeFrameId.current = null;
+                });
             }
         };
 
-        const handleMouseUp = () => setIsResizing(null);
+        const handleMouseUp = () => {
+            setIsResizing(null);
+            if (resizeFrameId.current) {
+                cancelAnimationFrame(resizeFrameId.current);
+                resizeFrameId.current = null;
+            }
+        };
 
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
         return () => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            if (resizeFrameId.current) {
+                cancelAnimationFrame(resizeFrameId.current);
+                resizeFrameId.current = null;
+            }
         };
     }, [isResizing, position, size]);
 
@@ -313,7 +348,7 @@ export default function CodeViewerModal({
         }
     }, [theme]);
 
-    const toggleDir = (path: string) => {
+    const toggleDir = useCallback((path: string) => {
         const newExpanded = new Set(expandedDirs);
         if (newExpanded.has(path)) {
             newExpanded.delete(path);
@@ -321,9 +356,9 @@ export default function CodeViewerModal({
             newExpanded.add(path);
         }
         setExpandedDirs(newExpanded);
-    };
+    }, [expandedDirs]);
 
-    const renderFileTree = (nodes: FileNode[], depth: number = 0) => {
+    const renderFileTree = useCallback((nodes: FileNode[], depth: number = 0): React.ReactNode => {
         return nodes.map(node => (
             <div key={node.path}>
                 <div
@@ -361,13 +396,12 @@ export default function CodeViewerModal({
                 )}
             </div>
         ));
-    };
+    }, [expandedDirs, currentFilePath, toggleDir]);
 
     if (!isOpen) return null;
 
     const displayFilename = currentFilePath.split('/').pop() || currentFilePath;
     const language = getLanguageFromFilename(displayFilename);
-    const lines = content.split('\n');
 
     return (
         <div
@@ -385,8 +419,9 @@ export default function CodeViewerModal({
                 ref={modalRef}
                 style={{
                     position: 'absolute',
-                    top: position.y,
-                    left: position.x,
+                    top: 0,
+                    left: 0,
+                    transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
                     width: size.width,
                     height: size.height,
                     background: 'var(--bg-secondary)',
@@ -397,6 +432,7 @@ export default function CodeViewerModal({
                     flexDirection: 'column',
                     pointerEvents: 'auto',
                     overflow: 'hidden',
+                    willChange: (isDragging || isResizing) ? 'transform' : 'auto',
                 }}
             >
                 {/* Header - draggable */}
@@ -549,54 +585,41 @@ export default function CodeViewerModal({
                             </div>
                         )}
                         {!loading && !error && content && (
-                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
-                                {lines.map((line, idx) => {
-                                    const lineNum = idx + 1;
-                                    const isTargetLine = currentFilePath === filePath && lineNum === initialLine;
-                                    return (
-                                        <div
-                                            key={idx}
-                                            ref={isTargetLine ? targetLineRef : undefined}
-                                            style={{
-                                                display: 'flex',
-                                                background: isTargetLine ? colors.bgWarningDim : 'transparent',
-                                                borderLeft: isTargetLine ? `3px solid ${colors.warning}` : '3px solid transparent',
-                                            }}
-                                        >
-                                            <span
-                                                style={{
-                                                    width: '50px',
-                                                    minWidth: '50px',
-                                                    padding: '0 8px',
-                                                    textAlign: 'right',
-                                                    color: 'var(--text-tertiary)',
-                                                    background: 'var(--bg-secondary)',
-                                                    borderRight: '1px solid var(--border)',
-                                                    userSelect: 'none',
-                                                }}
-                                            >
-                                                {lineNum}
-                                            </span>
-                                            <span style={{ padding: '0 8px', flex: 1, whiteSpace: 'pre' }}>
-                                                <SyntaxHighlighter
-                                                    language={language}
-                                                    style={syntaxTheme}
-                                                    customStyle={{
-                                                        background: 'transparent',
-                                                        margin: 0,
-                                                        padding: 0,
-                                                        display: 'inline',
-                                                    }}
-                                                    PreTag="span"
-                                                    CodeTag="span"
-                                                >
-                                                    {line || ' '}
-                                                </SyntaxHighlighter>
-                                            </span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                            <SyntaxHighlighter
+                                language={language}
+                                style={syntaxTheme}
+                                showLineNumbers={true}
+                                wrapLines={true}
+                                lineProps={(lineNumber: number) => {
+                                    const isTargetLine = currentFilePath === filePath && lineNumber === initialLine;
+                                    return {
+                                        style: {
+                                            display: 'block',
+                                            background: isTargetLine ? colors.bgWarningDim : 'transparent',
+                                            borderLeft: isTargetLine ? `3px solid ${colors.warning}` : '3px solid transparent',
+                                            paddingLeft: '8px',
+                                        },
+                                    };
+                                }}
+                                lineNumberStyle={{
+                                    minWidth: '50px',
+                                    paddingRight: '8px',
+                                    textAlign: 'right',
+                                    color: 'var(--text-tertiary)',
+                                    background: 'var(--bg-secondary)',
+                                    borderRight: '1px solid var(--border)',
+                                    userSelect: 'none',
+                                }}
+                                customStyle={{
+                                    margin: 0,
+                                    padding: 0,
+                                    background: 'transparent',
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '13px',
+                                }}
+                            >
+                                {content}
+                            </SyntaxHighlighter>
                         )}
                     </div>
                 </div>

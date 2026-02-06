@@ -378,6 +378,42 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 ---
 
+### `RPCHandler.GetRateLimitStatus`
+
+Returns the current GitHub API rate limit status, including remaining quota, reset time, and usage metrics.
+
+**Arguments** (`GetRateLimitStatusArgs`):
+```json
+{}
+```
+
+**Reply** (`GetRateLimitStatusReply`):
+| Field                | Type   | Description                                                   |
+|----------------------|--------|---------------------------------------------------------------|
+| `remaining`          | int    | Number of API requests remaining in the current window        |
+| `limit`              | int    | Total API request limit (typically 5000 for authenticated)    |
+| `reset_at`           | string | Timestamp when the rate limit resets (formatted string)       |
+| `total_requests`     | int64  | Total number of API requests made since server start          |
+| `throttled_count`    | int64  | Number of requests that were throttled due to low quota       |
+| `rate_limited_count` | int64  | Number of times the server hit a 429/403 rate limit response |
+
+**Example Response**:
+```json
+{
+  "remaining": 4850,
+  "limit": 5000,
+  "reset_at": "2026-02-05 20:15:32 EST",
+  "total_requests": 150,
+  "throttled_count": 0,
+  "rate_limited_count": 0
+}
+```
+
+This endpoint is useful for monitoring GitHub API usage and determining if the server is approaching rate limits. The server automatically:
+- Throttles requests when `remaining < 100`
+- Blocks requests when `remaining <= 10` (emergency reserve)
+- Retries on 429/403 errors with exponential backoff
+
 ---
 
 ## Workflow

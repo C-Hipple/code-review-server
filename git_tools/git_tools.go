@@ -4,13 +4,16 @@ import (
 	"context"
 	"crs/config"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-github/v48/github"
@@ -225,19 +228,265 @@ func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
 // to avoid hitting GitHub's secondary rate limits.
 var githubSemaphore = make(chan struct{}, 50)
 
-type loggingRoundTripper struct {
-	next http.RoundTripper
+// RateLimitStatus provides visibility into current rate limit state
+type RateLimitStatus struct {
+	Remaining        int
+	Limit            int
+	ResetAt          time.Time
+	TotalRequests    int64
+	ThrottledCount   int64
+	RateLimitedCount int64
 }
 
-func (l *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+// RateLimitManager tracks GitHub API rate limits and implements throttling/retry logic
+type RateLimitManager struct {
+	mu sync.RWMutex
+
+	// Rate limit state from GitHub response headers
+	remaining int
+	limit     int
+	resetAt   time.Time
+
+	// Backoff state for handling rate limit errors
+	consecutiveFailures int
+	lastFailureTime     time.Time
+
+	// Configuration
+	minRemaining  int // Start throttling when remaining drops below this
+	reserveBuffer int // Block requests when remaining <= this
+	maxRetries    int // Max retries on 429/403 rate limit errors
+
+	// Metrics
+	totalRequests    atomic.Int64
+	throttledCount   atomic.Int64
+	rateLimitedCount atomic.Int64
+}
+
+// NewRateLimitManager creates a new rate limit manager with sensible defaults
+func NewRateLimitManager() *RateLimitManager {
+	return &RateLimitManager{
+		minRemaining:  100, // Start throttling at 100 remaining requests
+		reserveBuffer: 10,  // Block at 10 remaining (emergency reserve)
+		maxRetries:    3,   // Retry up to 3 times on rate limit errors
+		limit:         5000,
+		remaining:     5000,
+	}
+}
+
+// WaitIfNeeded blocks if we're at/near the rate limit
+func (m *RateLimitManager) WaitIfNeeded(ctx context.Context) error {
+	m.mu.RLock()
+	remaining := m.remaining
+	resetAt := m.resetAt
+	m.mu.RUnlock()
+
+	now := time.Now()
+
+	// If we're at/past limit, block until reset
+	if remaining <= m.reserveBuffer {
+		if now.Before(resetAt) {
+			wait := resetAt.Sub(now) + time.Second
+			slog.Warn("Rate limit exhausted, waiting for reset", "remaining", remaining, "wait", wait)
+			select {
+			case <-time.After(wait):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	// If we're below threshold, implement adaptive throttling
+	if remaining <= m.minRemaining && remaining > m.reserveBuffer {
+		m.throttledCount.Add(1)
+		// Distribute remaining requests evenly until reset
+		timeUntilReset := resetAt.Sub(now)
+		if timeUntilReset > 0 {
+			delay := timeUntilReset / time.Duration(remaining-m.reserveBuffer)
+			if delay > 0 && delay < 10*time.Second { // Cap max delay
+				slog.Debug("Throttling request", "remaining", remaining, "delay", delay)
+				select {
+				case <-time.After(delay):
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// UpdateFromHeaders updates rate limit state from GitHub response headers
+func (m *RateLimitManager) UpdateFromHeaders(headers http.Header) {
+	remaining, err := strconv.Atoi(headers.Get("X-RateLimit-Remaining"))
+	if err != nil {
+		return // Header not present or invalid
+	}
+
+	limit, _ := strconv.Atoi(headers.Get("X-RateLimit-Limit"))
+	reset, _ := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if limit > 0 {
+		m.limit = limit
+	}
+	m.remaining = remaining
+	if reset > 0 {
+		m.resetAt = time.Unix(reset, 0)
+	}
+}
+
+// RecordRateLimit records a rate limit error occurrence
+func (m *RateLimitManager) RecordRateLimit() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.rateLimitedCount.Add(1)
+	m.consecutiveFailures++
+	m.lastFailureTime = time.Now()
+}
+
+// RecordSuccess resets consecutive failure count on successful request
+func (m *RateLimitManager) RecordSuccess() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.consecutiveFailures = 0
+}
+
+// CalculateBackoff calculates exponential backoff duration
+func (m *RateLimitManager) CalculateBackoff(attempt int) time.Duration {
+	// Exponential backoff: 1s, 2s, 4s, 8s...
+	base := time.Second
+	backoff := base * (1 << attempt)
+	// Cap at 1 minute
+	if backoff > time.Minute {
+		backoff = time.Minute
+	}
+	return backoff
+}
+
+// GetStatus returns current rate limit status for monitoring
+func (m *RateLimitManager) GetStatus() RateLimitStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return RateLimitStatus{
+		Remaining:        m.remaining,
+		Limit:            m.limit,
+		ResetAt:          m.resetAt,
+		TotalRequests:    m.totalRequests.Load(),
+		ThrottledCount:   m.throttledCount.Load(),
+		RateLimitedCount: m.rateLimitedCount.Load(),
+	}
+}
+
+// Global rate limit manager instance
+var globalRateLimitManager = NewRateLimitManager()
+
+type rateLimitedRoundTripper struct {
+	next    http.RoundTripper
+	manager *RateLimitManager
+}
+
+func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.manager.totalRequests.Add(1)
+
+	// 1. Pre-flight check: block/throttle if needed
+	if err := r.manager.WaitIfNeeded(req.Context()); err != nil {
+		return nil, err
+	}
+
+	// 2. Acquire semaphore slot (burst control)
 	select {
 	case githubSemaphore <- struct{}{}:
 		defer func() { <-githubSemaphore }()
 	case <-req.Context().Done():
 		return nil, req.Context().Err()
 	}
+
+	// 3. Log the API call
 	slog.Info("GitHub API Call", "method", req.Method, "url", req.URL.String())
-	return l.next.RoundTrip(req)
+
+	// 4. Execute request with retry on 429/403 rate limit errors
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt <= r.manager.maxRetries; attempt++ {
+		resp, err = r.next.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+
+		// 5. Update rate limit state from response headers
+		r.manager.UpdateFromHeaders(resp.Header)
+
+		// 6. Handle rate limit errors (429 or 403 with rate limit message)
+		if resp.StatusCode == 429 || (resp.StatusCode == 403 && isRateLimitError(resp)) {
+			r.manager.RecordRateLimit()
+
+			// Parse Retry-After header if present
+			retryAfter := parseRetryAfter(resp.Header)
+			if retryAfter == 0 {
+				retryAfter = r.manager.CalculateBackoff(attempt)
+			}
+
+			// Must close and discard body before retry
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+
+			if attempt < r.manager.maxRetries {
+				slog.Warn("Rate limited, retrying", "attempt", attempt+1, "backoff", retryAfter, "status", resp.StatusCode)
+				select {
+				case <-time.After(retryAfter):
+					continue
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				}
+			}
+
+			return nil, fmt.Errorf("rate limited after %d retries (HTTP %d)", attempt+1, resp.StatusCode)
+		}
+
+		// Success
+		r.manager.RecordSuccess()
+		break
+	}
+
+	return resp, err
+}
+
+// isRateLimitError checks if a 403 response is due to rate limiting
+func isRateLimitError(resp *http.Response) bool {
+	// GitHub returns specific headers for rate limit 403s
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		return true
+	}
+	// Could also check response body for rate limit message, but header check is sufficient
+	return false
+}
+
+// parseRetryAfter parses the Retry-After header (seconds or HTTP-date)
+func parseRetryAfter(headers http.Header) time.Duration {
+	retryAfter := headers.Get("Retry-After")
+	if retryAfter == "" {
+		return 0
+	}
+
+	// Try parsing as seconds
+	if seconds, err := strconv.Atoi(retryAfter); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+
+	// Try parsing as HTTP-date
+	if t, err := time.Parse(time.RFC1123, retryAfter); err == nil {
+		return time.Until(t)
+	}
+
+	return 0
 }
 
 func GetGithubClient() *github.Client {
@@ -256,8 +505,16 @@ func GetGithubClient() *github.Client {
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	tc.Transport = &loggingRoundTripper{next: next}
+	tc.Transport = &rateLimitedRoundTripper{
+		next:    next,
+		manager: globalRateLimitManager,
+	}
 	return github.NewClient(tc)
+}
+
+// GetRateLimitStatus returns current rate limit status for monitoring
+func GetRateLimitStatus() RateLimitStatus {
+	return globalRateLimitManager.GetStatus()
 }
 
 func GetLeankitCardTitle(pr PullRequest) string {

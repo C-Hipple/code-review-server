@@ -493,6 +493,26 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 	return nil
 }
 
+type GetRateLimitStatusArgs struct{}
+type GetRateLimitStatusReply struct {
+	Remaining        int    `json:"remaining"`
+	Limit            int    `json:"limit"`
+	ResetAt          string `json:"reset_at"`
+	TotalRequests    int64  `json:"total_requests"`
+	ThrottledCount   int64  `json:"throttled_count"`
+	RateLimitedCount int64  `json:"rate_limited_count"`
+}
+
+func (h *RPCHandler) GetRateLimitStatus(args *GetRateLimitStatusArgs, reply *GetRateLimitStatusReply) error {
+	status := git_tools.GetRateLimitStatus()
+	reply.Remaining = status.Remaining
+	reply.Limit = status.Limit
+	reply.ResetAt = status.ResetAt.Format("2006-01-02 15:04:05 MST")
+	reply.TotalRequests = status.TotalRequests
+	reply.ThrottledCount = status.ThrottledCount
+	reply.RateLimitedCount = status.RateLimitedCount
+	return nil
+}
 
 // GetLocalRepoPath returns the expected location of a local repository.
 // It does NOT check if the directory actually exists.

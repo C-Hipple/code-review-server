@@ -1,5 +1,5 @@
-import { readdir, stat } from 'fs/promises';
-import { join, relative } from 'path';
+import { readdir, stat } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 
 async function walk(dir: string, fileList: string[] = []) {
     const files = await readdir(dir);
@@ -26,18 +26,18 @@ try {
 
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const relPath = '/' + relative(distDir, file);
+        const relPath = `/${relative(distDir, file)}`;
         const varName = `asset_${i}`;
         content += `import ${varName} from "./${relative(join(import.meta.dir, '..'), file)}" with { type: "file" };\n`;
         assetMapEntries.push(`  ${JSON.stringify(relPath)}: ${varName}`);
     }
 
-    content += `\nexport const assets: Record<string, any> = {\n${assetMapEntries.join(',\n')}\n};\n`;
+    content += `\nexport const assets: Record<string, unknown> = {\n${assetMapEntries.join(',\n')}\n};\n`;
 
     await Bun.write(outputFilePath, content);
     console.log('Generated:', outputFilePath);
 } catch (e) {
     console.error('Failed to generate embedded assets:', e);
     // Write an empty assets map if dist doesn't exist yet
-    await Bun.write(outputFilePath, 'export const assets: Record<string, any> = {};\n');
+    await Bun.write(outputFilePath, 'export const assets: Record<string, unknown> = {};\n');
 }

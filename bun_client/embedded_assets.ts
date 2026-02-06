@@ -9,7 +9,7 @@ import asset_0 from "./frontend/dist/assets/index-km2EF1Jk.css" with {
 import asset_3 from "./frontend/dist/index.html" with { type: "file" };
 import asset_2 from "./frontend/dist/vite.svg" with { type: "file" };
 
-export const assets: Record<string, any> = {
+export const assets: Record<string, unknown> = {
 	"/assets/index-km2EF1Jk.css": asset_0,
 	"/assets/index-CuzRMoec.js": asset_1,
 	"/vite.svg": asset_2,

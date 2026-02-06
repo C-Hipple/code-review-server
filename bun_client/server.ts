@@ -1,6 +1,6 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
-import { dirname, join, relative, resolve } from 'path';
 import { assets } from './embedded_assets';
 
 const SERVER_PATH = Bun.which('crs') || 'crs';
@@ -23,21 +23,21 @@ const PROJECT_ROOT = getProjectRoot();
 
 interface JsonRpcRequest {
     method: string;
-    params: any[];
+    params: unknown[];
     id: number | string;
 }
 
 interface JsonRpcResponse {
-    result?: any;
-    error?: any;
+    result?: unknown;
+    error?: unknown;
     id: number | string;
 }
 
 class RpcBridge {
-    private proc: any;
+    private proc: ReturnType<typeof spawn>;
     private pending = new Map<
         string | number,
-        { resolve: (val: any) => void; reject: (err: any) => void }
+        { resolve: (val: unknown) => void; reject: (err: unknown) => void }
     >();
     private buffer = '';
 
@@ -75,18 +75,18 @@ class RpcBridge {
         let depth = 0;
         let start = 0;
         let inString = false;
-        let escape = false;
+        let isEscaped = false;
 
         for (let i = 0; i < this.buffer.length; i++) {
             const char = this.buffer[i];
 
-            if (escape) {
-                escape = false;
+            if (isEscaped) {
+                isEscaped = false;
                 continue;
             }
 
             if (char === '\\') {
-                escape = true;
+                isEscaped = true;
                 continue;
             }
 
@@ -120,18 +120,21 @@ class RpcBridge {
     }
 
     private handleResponse(res: JsonRpcResponse) {
-        if (res.id !== undefined && this.pending.has(res.id)) {
-            const { resolve, reject } = this.pending.get(res.id)!;
-            this.pending.delete(res.id);
-            if (res.error) {
-                reject(res.error);
-            } else {
-                resolve(res.result);
+        if (res.id !== undefined) {
+            const pending = this.pending.get(res.id);
+            if (pending) {
+                const { resolve, reject } = pending;
+                this.pending.delete(res.id);
+                if (res.error) {
+                    reject(res.error);
+                } else {
+                    resolve(res.result);
+                }
             }
         }
     }
 
-    public call(method: string, params: any[]): Promise<any> {
+    public call(method: string, params: unknown[]): Promise<unknown> {
         const id = Date.now() + Math.random();
         const req: JsonRpcRequest = { method, params, id };
 
@@ -139,7 +142,7 @@ class RpcBridge {
             this.pending.set(id, { resolve, reject });
             const data = JSON.stringify(req);
             // Go's jsonrpc (JSON-RPC 1.0) expects newline-delimited JSON.
-            this.proc.stdin.write(data + '\n');
+            this.proc.stdin.write(`${data}\n`);
         });
     }
 }
@@ -157,7 +160,7 @@ Bun.serve<{
     envs: Record<string, string>;
     proc?: Subprocess;
 }>({
-    port: parseInt(process.env.PORT || '5172'),
+    port: parseInt(process.env.PORT || '5172', 10),
     async fetch(req, server) {
         const url = new URL(req.url);
 
@@ -182,7 +185,7 @@ Bun.serve<{
         }
 
         // Helper to handle RPC calls
-        const handleRpc = async (method: string, params: any[]) => {
+        const handleRpc = async (method: string, params: unknown[]) => {
             try {
                 const result = await bridge.call(method, params);
                 return new Response(JSON.stringify({ result }), {
@@ -259,7 +262,7 @@ Bun.serve<{
             url.pathname === '/api/get-plugin-output' &&
             (req.method === 'POST' || req.method === 'GET')
         ) {
-            let body;
+            let body: unknown;
             if (req.method === 'GET') {
                 body = {
                     Owner: url.searchParams.get('owner'),
@@ -510,7 +513,7 @@ Type: ${type}
         },
         message(ws, message) {
             const proc = ws.data.proc;
-            if (proc && proc.stdin && typeof proc.stdin !== 'number') {
+            if (proc?.stdin && typeof proc.stdin !== 'number') {
                 const msgStr =
                     typeof message === 'string' ? message : new TextDecoder().decode(message);
                 const length = new TextEncoder().encode(msgStr).length;
@@ -537,4 +540,4 @@ Type: ${type}
     },
 });
 
-console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || '5172')}`);
+console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || '5172', 10)}`);

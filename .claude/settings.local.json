@@ -20,7 +20,8 @@
       "Bash(npx tsc:*)",
       "Bash(for file in scripts/build.ts server.test.ts server.ts test_rpc.ts)",
       "Bash(do echo \"Checking $file:\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(npx @biomejs/biome check:*)"
     ]
   }
 }

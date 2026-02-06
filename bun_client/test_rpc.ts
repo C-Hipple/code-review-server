@@ -1,6 +1,5 @@
+import { resolve } from 'node:path';
 import { spawn } from 'bun';
-
-import { resolve } from 'path';
 
 const SERVER_PATH = resolve(process.env.HOME || '/home/chris', 'go/bin/crs');
 

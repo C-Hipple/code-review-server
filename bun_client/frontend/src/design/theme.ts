@@ -16,7 +16,7 @@ export const VALID_THEMES = [
     'catppuccin',
     'everforest',
     'rose-pine',
-    'synthwave-84'
+    'synthwave-84',
 ] as const;
 
 export type Theme = (typeof VALID_THEMES)[number];
@@ -40,7 +40,7 @@ export const THEME_OPTIONS: ThemeOption[] = [
     { value: 'catppuccin', label: '🐱 Catppuccin' },
     { value: 'everforest', label: '🌲 Everforest' },
     { value: 'rose-pine', label: '🌹 Rose Pine' },
-    { value: 'synthwave-84', label: '🕹️ SynthWave \'84' },
+    { value: 'synthwave-84', label: "🕹️ SynthWave '84" },
 ];
 
 /**

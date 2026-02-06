@@ -1,7 +1,7 @@
-import { expect, test, describe } from 'bun:test';
+import { describe, expect, test } from "bun:test";
 
-describe('Server', () => {
-    test('placeholder test - remove when real tests added', () => {
-        expect(1 + 1).toBe(2);
-    });
+describe("Server", () => {
+	test("placeholder test - remove when real tests added", () => {
+		expect(1 + 1).toBe(2);
+	});
 });

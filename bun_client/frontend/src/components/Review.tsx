@@ -1,9 +1,30 @@
 import { useState, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight, gruvboxDark, gruvboxLight, solarizedlight, solarizedDarkAtom, dracula, nord, nightOwl } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import {
+    oneDark,
+    oneLight,
+    gruvboxDark,
+    gruvboxLight,
+    solarizedlight,
+    solarizedDarkAtom,
+    dracula,
+    nord,
+    nightOwl,
+} from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall, API_BASE } from '../api';
-import { Button, Badge, Modal, TextArea, Select, mapStatusToVariant, colors, shadows, Theme, THEME_OPTIONS } from '../design';
+import {
+    Button,
+    Badge,
+    Modal,
+    TextArea,
+    Select,
+    mapStatusToVariant,
+    colors,
+    shadows,
+    Theme,
+    THEME_OPTIONS,
+} from '../design';
 import { LspClient, LspHover, LspLocation } from '../lsp';
 import CodeViewerModal from './CodeViewerModal';
 
@@ -46,11 +67,11 @@ interface PRMetadata {
     milestone: string;
     labels: string[];
     assignees: string[];
-    reviewers: string[];           // Requested individual reviewers
-    requested_teams: string[];     // Requested team reviewers
-    approved_by: string[];         // Users who approved
+    reviewers: string[]; // Requested individual reviewers
+    requested_teams: string[]; // Requested team reviewers
+    approved_by: string[]; // Users who approved
     changes_requested_by: string[]; // Users who requested changes
-    commented_by: string[];         // Users who commented
+    commented_by: string[]; // Users who commented
     draft: boolean;
     ci_status: string;
     ci_failures: string[];
@@ -73,73 +94,73 @@ const getLanguageFromFilename = (filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     const languageMap: Record<string, string> = {
         // JavaScript/TypeScript
-        'js': 'javascript',
-        'jsx': 'jsx',
-        'ts': 'typescript',
-        'tsx': 'tsx',
-        'mjs': 'javascript',
-        'cjs': 'javascript',
+        js: 'javascript',
+        jsx: 'jsx',
+        ts: 'typescript',
+        tsx: 'tsx',
+        mjs: 'javascript',
+        cjs: 'javascript',
         // Web
-        'html': 'html',
-        'htm': 'html',
-        'css': 'css',
-        'scss': 'scss',
-        'sass': 'sass',
-        'less': 'less',
-        'json': 'json',
-        'xml': 'xml',
-        'svg': 'xml',
+        html: 'html',
+        htm: 'html',
+        css: 'css',
+        scss: 'scss',
+        sass: 'sass',
+        less: 'less',
+        json: 'json',
+        xml: 'xml',
+        svg: 'xml',
         // Backend
-        'py': 'python',
-        'rb': 'ruby',
-        'go': 'go',
-        'rs': 'rust',
-        'java': 'java',
-        'kt': 'kotlin',
-        'scala': 'scala',
-        'php': 'php',
-        'c': 'c',
-        'h': 'c',
-        'cpp': 'cpp',
-        'cc': 'cpp',
-        'cxx': 'cpp',
-        'hpp': 'cpp',
-        'cs': 'csharp',
-        'swift': 'swift',
+        py: 'python',
+        rb: 'ruby',
+        go: 'go',
+        rs: 'rust',
+        java: 'java',
+        kt: 'kotlin',
+        scala: 'scala',
+        php: 'php',
+        c: 'c',
+        h: 'c',
+        cpp: 'cpp',
+        cc: 'cpp',
+        cxx: 'cpp',
+        hpp: 'cpp',
+        cs: 'csharp',
+        swift: 'swift',
         // Shell/Config
-        'sh': 'bash',
-        'bash': 'bash',
-        'zsh': 'bash',
-        'fish': 'bash',
-        'ps1': 'powershell',
-        'yaml': 'yaml',
-        'yml': 'yaml',
-        'toml': 'toml',
-        'ini': 'ini',
-        'conf': 'ini',
+        sh: 'bash',
+        bash: 'bash',
+        zsh: 'bash',
+        fish: 'bash',
+        ps1: 'powershell',
+        yaml: 'yaml',
+        yml: 'yaml',
+        toml: 'toml',
+        ini: 'ini',
+        conf: 'ini',
         // Data/Docs
-        'md': 'markdown',
-        'mdx': 'markdown',
-        'sql': 'sql',
-        'graphql': 'graphql',
-        'gql': 'graphql',
+        md: 'markdown',
+        mdx: 'markdown',
+        sql: 'sql',
+        graphql: 'graphql',
+        gql: 'graphql',
         // Other
-        'dockerfile': 'docker',
-        'makefile': 'makefile',
-        'lua': 'lua',
-        'r': 'r',
-        'dart': 'dart',
-        'ex': 'elixir',
-        'exs': 'elixir',
-        'erl': 'erlang',
-        'hrl': 'erlang',
-        'clj': 'clojure',
-        'vim': 'vim',
-        'el': 'lisp',
-        'lisp': 'lisp',
-        'hs': 'haskell',
-        'ml': 'ocaml',
-        'proto': 'protobuf',
+        dockerfile: 'docker',
+        makefile: 'makefile',
+        lua: 'lua',
+        r: 'r',
+        dart: 'dart',
+        ex: 'elixir',
+        exs: 'elixir',
+        erl: 'erlang',
+        hrl: 'erlang',
+        clj: 'clojure',
+        vim: 'vim',
+        el: 'lisp',
+        lisp: 'lisp',
+        hs: 'haskell',
+        ml: 'ocaml',
+        proto: 'protobuf',
     };
 
     // Handle special filenames
@@ -185,17 +206,22 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     // LSP State
     const [lspClient, setLspClient] = useState<LspClient | null>(null);
     const [lspUri, setLspUri] = useState<string | null>(null);
-    const [lspData, setLspData] = useState<{ hover: LspHover | null, refs: LspLocation[] | null } | null>(null);
+    const [lspData, setLspData] = useState<{
+        hover: LspHover | null;
+        refs: LspLocation[] | null;
+    } | null>(null);
     const [repoExists, setRepoExists] = useState<boolean | null>(null);
     const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
 
     // Code Viewer Modal State
-    const [codeViewers, setCodeViewers] = useState<Array<{
-        id: number;
-        filePath: string;
-        line: number;
-        position?: { x: number, y: number };
-    }>>([]);
+    const [codeViewers, setCodeViewers] = useState<
+        Array<{
+            id: number;
+            filePath: string;
+            line: number;
+            position?: { x: number; y: number };
+        }>
+    >([]);
 
     useEffect(() => {
         loadPR();
@@ -216,7 +242,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         return;
                     }
                 } catch (e) {
-                    console.error("Failed to check LSP availability", e);
+                    console.error('Failed to check LSP availability', e);
                     setLspAvailable(false);
                     return;
                 }
@@ -241,7 +267,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     repo,
                     repoPath,
                     `PR #${number}`,
-                    "code-review",
+                    'code-review',
                     diff,
                     metadata.worktree_path
                 );
@@ -249,25 +275,27 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 setLspUri(uri);
 
                 // Initialize standard LSP
-                console.log("LSP Initializing...");
+                console.log('LSP Initializing...');
                 try {
                     await Promise.race([
-                        client.initialize("/"),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("LSP Initialize timeout")), 5000))
+                        client.initialize('/'),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('LSP Initialize timeout')), 5000)
+                        ),
                     ]);
-                    console.log("LSP Initialize success");
+                    console.log('LSP Initialize success');
                 } catch (e) {
-                    console.error("LSP Initialize error/timeout", e);
+                    console.error('LSP Initialize error/timeout', e);
                 }
                 client.initialized();
 
                 // Open the document (the temp file we just created)
-                console.log("Sending didOpen for", uri);
-                await client.didOpen(uri, "diff", 1, diff);
+                console.log('Sending didOpen for', uri);
+                await client.didOpen(uri, 'diff', 1, diff);
 
                 setLspClient(client);
             } catch (e) {
-                console.error("LSP Init failed", e);
+                console.error('LSP Init failed', e);
             }
         };
 
@@ -295,25 +323,32 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
     const loadPluginOutputs = async () => {
         try {
-            const res = await rpcCall<{ output: Record<string, PluginResult> }>('RPCHandler.GetPluginOutput', [{
-                Owner: owner,
-                Repo: repo,
-                Number: number
-            }]);
+            const res = await rpcCall<{ output: Record<string, PluginResult> }>(
+                'RPCHandler.GetPluginOutput',
+                [
+                    {
+                        Owner: owner,
+                        Repo: repo,
+                        Number: number,
+                    },
+                ]
+            );
             setPluginOutputs(res.output || {});
         } catch (e) {
-            console.error("Failed to load plugin outputs:", e);
+            console.error('Failed to load plugin outputs:', e);
         }
     };
 
     const loadPR = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<PRResponse>('RPCHandler.GetPR', [{
-                Owner: owner,
-                Repo: repo,
-                Number: number
-            }]);
+            const res = await rpcCall<PRResponse>('RPCHandler.GetPR', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                },
+            ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
@@ -330,11 +365,13 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const handleSync = async () => {
         setLoading(true);
         try {
-            const res = await rpcCall<PRResponse>('RPCHandler.SyncPR', [{
-                Owner: owner,
-                Repo: repo,
-                Number: number
-            }]);
+            const res = await rpcCall<PRResponse>('RPCHandler.SyncPR', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                },
+            ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
             setComments(res.comments || []);
@@ -368,7 +405,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 Number: number,
                 Filename: filename,
                 Position: parseInt(position, 10) || 0,
-                Body: commentBody
+                Body: commentBody,
             };
             if (replyToId !== null) {
                 params.ReplyToID = replyToId;
@@ -390,13 +427,15 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const handleSubmitReview = async () => {
         setIsSubmittingReview(true);
         try {
-            await rpcCall<PRResponse>('RPCHandler.SubmitReview', [{
-                Owner: owner,
-                Repo: repo,
-                Number: number,
-                Event: reviewEvent,
-                Body: reviewBody
-            }]);
+            await rpcCall<PRResponse>('RPCHandler.SubmitReview', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Event: reviewEvent,
+                    Body: reviewBody,
+                },
+            ]);
             setSubmitting(false);
             setReviewBody('');
             // Refresh everything after submission
@@ -484,7 +523,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             clickable: true,
                             lineType: 'file-header',
                             fileStatus: pendingFileStatus,
-                            originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : index
+                            originalLineIndex:
+                                fallbackFileIndex !== null ? fallbackFileIndex : index,
                         });
                     }
 
@@ -518,14 +558,17 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         }
                     }
                     fallbackFileIndex = index;
-
                 } else if (line.startsWith('new file mode')) {
                     pendingFileStatus = 'new';
                     lineType = 'skip';
                 } else if (line.startsWith('deleted file mode')) {
                     pendingFileStatus = 'deleted';
                     lineType = 'skip';
-                } else if (line.startsWith('rename from') || line.startsWith('rename to') || line.startsWith('similarity index')) {
+                } else if (
+                    line.startsWith('rename from') ||
+                    line.startsWith('rename to') ||
+                    line.startsWith('similarity index')
+                ) {
                     pendingFileStatus = 'renamed';
                     lineType = 'skip';
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
@@ -533,8 +576,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     lineType = 'skip';
                 } else {
                     // Match +++ b/filename as the file header
-                    const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
-                        line.match(/^\+\+\+\s+(.+)$/);
+                    const fileMatch =
+                        line.match(/^\+\+\+\s+b\/(.+)$/) || line.match(/^\+\+\+\s+(.+)$/);
 
                     if (fileMatch) {
                         currentFile = (fileMatch[1] || fileMatch[2]).trim();
@@ -556,7 +599,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             clickable,
                             lineType,
                             fileStatus: pendingFileStatus,
-                            originalLineIndex: index
+                            originalLineIndex: index,
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
                         return; // continue equivalent in forEach
@@ -592,7 +635,14 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 }
 
                 if (lineType !== 'skip') {
-                    parsedLines.push({ text: line, file, pos, clickable, lineType, originalLineIndex: index });
+                    parsedLines.push({
+                        text: line,
+                        file,
+                        pos,
+                        clickable,
+                        lineType,
+                        originalLineIndex: index,
+                    });
                 }
             });
 
@@ -605,7 +655,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     clickable: true,
                     lineType: 'file-header',
                     fileStatus: pendingFileStatus,
-                    originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : lines.length
+                    originalLineIndex:
+                        fallbackFileIndex !== null ? fallbackFileIndex : lines.length,
                 });
             }
         }
@@ -660,18 +711,33 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
         return 0;
     };
 
-    const handleCodeClick = async (idx: number, file: string, pos: number, originalLineIndex: number, col: number) => {
+    const handleCodeClick = async (
+        idx: number,
+        file: string,
+        pos: number,
+        originalLineIndex: number,
+        col: number
+    ) => {
         if (!lspAvailable || !repoExists) return;
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
             setLspData(null);
         } else {
             // Don't open comment box on code click
-            console.log("Code clicked:", idx, file, pos, "OriginalLine:", originalLineIndex, "Col:", col);
+            console.log(
+                'Code clicked:',
+                idx,
+                file,
+                pos,
+                'OriginalLine:',
+                originalLineIndex,
+                'Col:',
+                col
+            );
 
             // Fetch LSP Data
             if (lspClient && lspUri) {
-                console.log("Fetching LSP data for URI:", lspUri);
+                console.log('Fetching LSP data for URI:', lspUri);
                 try {
                     // Header is 5 lines followed by a newline, so diff starts at line 6 (0-indexed)
                     const line = originalLineIndex + 6;
@@ -679,9 +745,9 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     const diffCol = col + 1;
                     const [hover, refs] = await Promise.all([
                         lspClient.hover(lspUri, line, diffCol),
-                        lspClient.references(lspUri, line, diffCol)
+                        lspClient.references(lspUri, line, diffCol),
                     ]);
-                    console.log("LSP Response - Hover:", hover, "Refs:", refs);
+                    console.log('LSP Response - Hover:', hover, 'Refs:', refs);
 
                     let hasHover = false;
                     if (hover && hover.contents) {
@@ -701,22 +767,33 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     } else {
                         // Placeholder for testing when LSP returns no data
                         setLspData({
-                            hover: { contents: `### LSP Placeholder\nNo data found at line ${line}, char ${diffCol}.` },
-                            refs: []
+                            hover: {
+                                contents: `### LSP Placeholder\nNo data found at line ${line}, char ${diffCol}.`,
+                            },
+                            refs: [],
                         });
                         setActiveLspIndex(idx);
                     }
                 } catch (e) {
-                    console.error("Failed to fetch LSP data", e);
+                    console.error('Failed to fetch LSP data', e);
                 }
             } else {
-                console.warn("LSP Client or URI not ready", !!lspClient, lspUri);
+                console.warn('LSP Client or URI not ready', !!lspClient, lspUri);
                 // Placeholder for testing when LSP is not connected
                 setLspData({
-                    hover: { contents: "### LSP Placeholder (Disconnected)\nThe LSP server is not yet connected or ready. This is a fallback test message." },
+                    hover: {
+                        contents:
+                            '### LSP Placeholder (Disconnected)\nThe LSP server is not yet connected or ready. This is a fallback test message.',
+                    },
                     refs: [
-                        { uri: `file://${file}`, range: { start: { line: originalLineIndex, character: 0 }, end: { line: originalLineIndex, character: 10 } } }
-                    ]
+                        {
+                            uri: `file://${file}`,
+                            range: {
+                                start: { line: originalLineIndex, character: 0 },
+                                end: { line: originalLineIndex, character: 10 },
+                            },
+                        },
+                    ],
                 });
                 setActiveLspIndex(idx);
             }
@@ -738,15 +815,24 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const customDiffTheme = useMemo(() => {
         const getBaseTheme = () => {
             switch (theme) {
-                case 'light': return oneLight;
-                case 'gruvbox-dark': return gruvboxDark;
-                case 'gruvbox-light': return gruvboxLight;
-                case 'solarized-light': return solarizedlight;
-                case 'solarized-dark': return solarizedDarkAtom;
-                case 'dracula': return dracula;
-                case 'nord': return nord;
-                case 'night-owl': return nightOwl;
-                default: return oneDark;
+                case 'light':
+                    return oneLight;
+                case 'gruvbox-dark':
+                    return gruvboxDark;
+                case 'gruvbox-light':
+                    return gruvboxLight;
+                case 'solarized-light':
+                    return solarizedlight;
+                case 'solarized-dark':
+                    return solarizedDarkAtom;
+                case 'dracula':
+                    return dracula;
+                case 'nord':
+                    return nord;
+                case 'night-owl':
+                    return nightOwl;
+                default:
+                    return oneDark;
             }
         };
         const baseTheme = getBaseTheme();
@@ -781,9 +867,10 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
             const language = getLanguageFromFilename(file);
 
             // We'll use SyntaxHighlighter's output directly for each line
-            linesData.forEach((lineData) => {
+            linesData.forEach(lineData => {
                 const lineCode = lineData.code || ' '; // Use space for empty lines
-                result.set(lineData.idx, (
+                result.set(
+                    lineData.idx,
                     <SyntaxHighlighter
                         language={language}
                         style={customDiffTheme}
@@ -799,14 +886,14 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             style: {
                                 background: 'transparent',
                                 fontFamily: 'inherit',
-                            }
+                            },
                         }}
                         PreTag="span"
                         CodeTag="span"
                     >
                         {lineCode}
                     </SyntaxHighlighter>
-                ));
+                );
             });
         };
 
@@ -818,7 +905,12 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 }
                 currentFile = item.text;
                 fileLines = [];
-            } else if (currentFile && (item.lineType === 'addition' || item.lineType === 'deletion' || item.lineType === 'code')) {
+            } else if (
+                currentFile &&
+                (item.lineType === 'addition' ||
+                    item.lineType === 'deletion' ||
+                    item.lineType === 'code')
+            ) {
                 // Extract the code without the +/- prefix
                 const code = item.text.slice(1);
                 fileLines.push({ idx, code, prefix: item.text[0] });
@@ -837,13 +929,33 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
     const getFileStatusInfo = (status?: 'modified' | 'new' | 'deleted' | 'renamed') => {
         switch (status) {
             case 'new':
-                return { icon: '+', label: 'new file', color: colors.success, bg: colors.bgSuccessDim };
+                return {
+                    icon: '+',
+                    label: 'new file',
+                    color: colors.success,
+                    bg: colors.bgSuccessDim,
+                };
             case 'deleted':
-                return { icon: '−', label: 'deleted', color: colors.danger, bg: colors.bgDangerDim };
+                return {
+                    icon: '−',
+                    label: 'deleted',
+                    color: colors.danger,
+                    bg: colors.bgDangerDim,
+                };
             case 'renamed':
-                return { icon: '→', label: 'renamed', color: colors.warning, bg: colors.bgWarningDim };
+                return {
+                    icon: '→',
+                    label: 'renamed',
+                    color: colors.warning,
+                    bg: colors.bgWarningDim,
+                };
             default:
-                return { icon: '●', label: 'modified', color: colors.accent, bg: colors.bgInfoDimStrong };
+                return {
+                    icon: '●',
+                    label: 'modified',
+                    color: colors.accent,
+                    bg: colors.bgInfoDimStrong,
+                };
         }
     };
 
@@ -875,10 +987,19 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
             if (isFileHeader) {
                 const statusInfo = getFileStatusInfo(item.fileStatus);
                 const isInlineActive = activeLineIndex === idx;
-                const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
+                const lineComments = item.file
+                    ? comments.filter(
+                          c =>
+                              c.path === item.file &&
+                              (c.position === item.pos?.toString() ||
+                                  (c.position === '' && item.pos === 0))
+                      )
+                    : [];
                 const rootComments = lineComments.filter(c => !c.in_reply_to);
                 const isCollapsed = item.file ? collapsedFiles.has(item.file) : false;
-                const fileOutdatedComments = item.file ? outdatedComments.filter(c => c.path === item.file) : [];
+                const fileOutdatedComments = item.file
+                    ? outdatedComments.filter(c => c.path === item.file)
+                    : [];
                 const hasOutdated = fileOutdatedComments.length > 0;
 
                 return (
@@ -889,20 +1010,27 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                 alignItems: 'center',
                                 gap: '10px',
                                 padding: '10px 12px',
-                                background: 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
+                                background:
+                                    'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
                                 borderTop: idx > 0 ? '2px solid var(--border)' : 'none',
                                 borderBottom: '1px solid var(--border)',
                                 marginTop: idx > 0 ? '8px' : '0',
                                 cursor: 'pointer',
-                                borderLeft: isInlineActive ? '3px solid var(--accent)' : '3px solid transparent',
+                                borderLeft: isInlineActive
+                                    ? '3px solid var(--accent)'
+                                    : '3px solid transparent',
                                 position: 'relative',
                             }}
-                            onClick={() => item.file && item.pos !== null && handleCommentClick(idx, item.file, item.pos)}
+                            onClick={() =>
+                                item.file &&
+                                item.pos !== null &&
+                                handleCommentClick(idx, item.file, item.pos)
+                            }
                             className="hover-line"
                             title={`Add comment to ${item.file}`}
                         >
                             <button
-                                onClick={(e) => {
+                                onClick={e => {
                                     e.stopPropagation();
                                     if (item.file) toggleFileCollapse(item.file);
                                 }}
@@ -924,41 +1052,47 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             >
                                 ▼
                             </button>
-                            <span style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: '22px',
-                                height: '22px',
-                                borderRadius: '4px',
-                                background: statusInfo.bg,
-                                color: statusInfo.color,
-                                fontSize: '14px',
-                                fontWeight: 600,
-                            }}>
+                            <span
+                                style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: '22px',
+                                    height: '22px',
+                                    borderRadius: '4px',
+                                    background: statusInfo.bg,
+                                    color: statusInfo.color,
+                                    fontSize: '14px',
+                                    fontWeight: 600,
+                                }}
+                            >
                                 {statusInfo.icon}
                             </span>
-                            <span style={{
-                                fontSize: '11px',
-                                fontWeight: 500,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.5px',
-                                color: statusInfo.color,
-                                minWidth: '60px',
-                            }}>
+                            <span
+                                style={{
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                    color: statusInfo.color,
+                                    minWidth: '60px',
+                                }}
+                            >
                                 {statusInfo.label}
                             </span>
-                            <span style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '13px',
-                                fontWeight: 500,
-                                color: 'var(--text-primary)',
-                            }}>
+                            <span
+                                style={{
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '13px',
+                                    fontWeight: 500,
+                                    color: 'var(--text-primary)',
+                                }}
+                            >
                                 {item.text}
                             </span>
                             {hasOutdated && (
                                 <button
-                                    onClick={(e) => {
+                                    onClick={e => {
                                         e.stopPropagation();
                                         if (item.file) setActiveOutdatedFile(item.file);
                                     }}
@@ -974,28 +1108,38 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: '6px',
-                                        fontWeight: 500
+                                        fontWeight: 500,
                                     }}
-                                >                                    <span>⚠️</span> Outdated Comments ({fileOutdatedComments.length})
+                                >
+                                    {' '}
+                                    <span>⚠️</span> Outdated Comments ({fileOutdatedComments.length}
+                                    )
                                 </button>
                             )}
                         </div>
                         {rootComments.map(rc => {
-                            const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
-                            const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
+                            const thread = [
+                                rc,
+                                ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
+                            ];
+                            const isReplyingToThread =
+                                replyToId !== null &&
+                                thread.some(c => parseInt(c.id, 10) === replyToId);
                             return (
                                 <div
                                     key={rc.id}
                                     style={{
                                         margin: '10px 20px',
-                                        border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                        border: isReplyingToThread
+                                            ? '2px solid var(--accent)'
+                                            : '1px solid var(--border)',
                                         borderRadius: '6px',
                                         background: 'var(--bg-primary)',
                                         overflow: 'hidden',
                                         cursor: 'pointer',
                                         transition: 'border-color 0.15s ease',
                                     }}
-                                    onClick={(e) => {
+                                    onClick={e => {
                                         e.stopPropagation();
                                         if (item.file && item.pos !== null) {
                                             handleThreadClick(thread, item.file, item.pos, idx);
@@ -1004,25 +1148,63 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     className="hover-thread"
                                     title="Click to reply to this thread"
                                 >
-                                    <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div
+                                        style={{
+                                            background: 'var(--bg-secondary)',
+                                            padding: '5px 10px',
+                                            fontSize: '11px',
+                                            borderBottom: '1px solid var(--border)',
+                                            color: 'var(--text-secondary)',
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                        }}
+                                    >
                                         <span>{rc.author} commented</span>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{
-                                                fontSize: '10px',
-                                                color: colors.accent,
-                                                opacity: 0.7,
-                                                background: colors.bgInfoDim,
-                                                padding: '2px 6px',
-                                                borderRadius: '4px'
-                                            }}>
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px',
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    fontSize: '10px',
+                                                    color: colors.accent,
+                                                    opacity: 0.7,
+                                                    background: colors.bgInfoDim,
+                                                    padding: '2px 6px',
+                                                    borderRadius: '4px',
+                                                }}
+                                            >
                                                 ↩ click to reply
                                             </span>
                                             <span>ID: {rc.id}</span>
                                         </div>
                                     </div>
                                     {thread.map(c => (
-                                        <div key={c.id} style={{ padding: '10px', borderBottom: c.id !== thread[thread.length - 1].id ? '1px solid var(--border)' : 'none' }}>
-                                            {c !== rc && <div style={{ fontSize: '11px', color: 'var(--accent)', marginBottom: '5px' }}>Reply by {c.author}:</div>}
+                                        <div
+                                            key={c.id}
+                                            style={{
+                                                padding: '10px',
+                                                borderBottom:
+                                                    c.id !== thread[thread.length - 1].id
+                                                        ? '1px solid var(--border)'
+                                                        : 'none',
+                                            }}
+                                        >
+                                            {c !== rc && (
+                                                <div
+                                                    style={{
+                                                        fontSize: '11px',
+                                                        color: 'var(--accent)',
+                                                        marginBottom: '5px',
+                                                    }}
+                                                >
+                                                    Reply by {c.author}:
+                                                </div>
+                                            )}
                                             <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
                                         </div>
                                     ))}
@@ -1030,55 +1212,116 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             );
                         })}
                         {isInlineActive && (
-                            <div style={{
-                                padding: '10px 20px',
-                                background: 'var(--bg-primary)',
-                                borderBottom: '1px solid var(--border)',
-                                borderTop: '1px solid var(--border)',
-                                marginBottom: '10px'
-                            }}>
-                                <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            <div
+                                style={{
+                                    padding: '10px 20px',
+                                    background: 'var(--bg-primary)',
+                                    borderBottom: '1px solid var(--border)',
+                                    borderTop: '1px solid var(--border)',
+                                    marginBottom: '10px',
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        marginBottom: '5px',
+                                        fontSize: '12px',
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                >
                                     {replyToId !== null
                                         ? `Replying to comment #${replyToId}`
-                                        : `Commenting on ${item.file}:${item.pos}`
-                                    }
+                                        : `Commenting on ${item.file}:${item.pos}`}
                                 </div>
                                 {lspData && (
-                                    <div style={{ marginBottom: '10px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
-                                        <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>LSP Info</div>
-                                        <div style={{ padding: '10px', background: 'var(--bg-primary)' }}>
+                                    <div
+                                        style={{
+                                            marginBottom: '10px',
+                                            fontSize: '13px',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '4px',
+                                            overflow: 'hidden',
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                background: 'var(--bg-secondary)',
+                                                padding: '5px 10px',
+                                                fontWeight: 600,
+                                                borderBottom: '1px solid var(--border)',
+                                            }}
+                                        >
+                                            LSP Info
+                                        </div>
+                                        <div
+                                            style={{
+                                                padding: '10px',
+                                                background: 'var(--bg-primary)',
+                                            }}
+                                        >
                                             {lspData.hover && (
                                                 <div style={{ marginBottom: '10px' }}>
                                                     <strong>Hover:</strong>
-                                                    <pre style={{ whiteSpace: 'pre-wrap', marginTop: '5px' }}>
+                                                    <pre
+                                                        style={{
+                                                            whiteSpace: 'pre-wrap',
+                                                            marginTop: '5px',
+                                                        }}
+                                                    >
                                                         {typeof lspData.hover.contents === 'string'
                                                             ? lspData.hover.contents
                                                             : Array.isArray(lspData.hover.contents)
-                                                                ? lspData.hover.contents.map(c => typeof c === 'string' ? c : c.value).join('\n')
-                                                                : (lspData.hover.contents as any).value
-                                                        }
+                                                              ? lspData.hover.contents
+                                                                    .map(c =>
+                                                                        typeof c === 'string'
+                                                                            ? c
+                                                                            : c.value
+                                                                    )
+                                                                    .join('\n')
+                                                              : (lspData.hover.contents as any)
+                                                                    .value}
                                                     </pre>
                                                 </div>
                                             )}
                                             {lspData.refs && lspData.refs.length > 0 && (
                                                 <div>
-                                                    <strong>References ({lspData.refs.length}):</strong>
-                                                    <ul style={{ margin: '5px 0 0 20px', padding: 0 }}>
+                                                    <strong>
+                                                        References ({lspData.refs.length}):
+                                                    </strong>
+                                                    <ul
+                                                        style={{
+                                                            margin: '5px 0 0 20px',
+                                                            padding: 0,
+                                                        }}
+                                                    >
                                                         {lspData.refs.map((r, i) => (
-                                                            <li key={i}>{r.uri} : {r.range.start.line + 1}</li>
+                                                            <li key={i}>
+                                                                {r.uri} : {r.range.start.line + 1}
+                                                            </li>
                                                         ))}
                                                     </ul>
                                                 </div>
                                             )}
-                                            {!lspData.hover && (!lspData.refs || lspData.refs.length === 0) && (
-                                                <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>No information found.</div>
-                                            )}
+                                            {!lspData.hover &&
+                                                (!lspData.refs || lspData.refs.length === 0) && (
+                                                    <div
+                                                        style={{
+                                                            fontStyle: 'italic',
+                                                            color: 'var(--text-secondary)',
+                                                        }}
+                                                    >
+                                                        No information found.
+                                                    </div>
+                                                )}
                                         </div>
                                     </div>
                                 )}
                                 <textarea
                                     autoFocus
-                                    placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
+                                    placeholder={
+                                        replyToId !== null
+                                            ? 'Write a reply...'
+                                            : 'Write a comment...'
+                                    }
                                     value={commentBody}
                                     onChange={e => setCommentBody(e.target.value)}
                                     disabled={isAddingComment}
@@ -1095,9 +1338,31 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                         resize: 'vertical',
                                     }}
                                 />
-                                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                    <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm" disabled={isAddingComment}>Cancel</Button>
-                                    <Button onClick={handleAddComment} size="sm" loading={isAddingComment}>{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        gap: '12px',
+                                        justifyContent: 'flex-end',
+                                    }}
+                                >
+                                    <Button
+                                        onClick={() => {
+                                            setActiveLineIndex(null);
+                                            setReplyToId(null);
+                                        }}
+                                        variant="secondary"
+                                        size="sm"
+                                        disabled={isAddingComment}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        onClick={handleAddComment}
+                                        size="sm"
+                                        loading={isAddingComment}
+                                    >
+                                        {replyToId !== null ? 'Reply' : 'Add Comment'}
+                                    </Button>
                                 </div>
                             </div>
                         )}
@@ -1135,13 +1400,26 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
             if (isAddition) {
                 containerStyle = { ...containerStyle, background: colors.diffAddBg };
-                prefixStyle = { ...prefixStyle, color: colors.success, background: colors.diffAddGutterBg };
+                prefixStyle = {
+                    ...prefixStyle,
+                    color: colors.success,
+                    background: colors.diffAddGutterBg,
+                };
             } else if (isDeletion) {
                 containerStyle = { ...containerStyle, background: colors.diffDelBg };
-                prefixStyle = { ...prefixStyle, color: colors.danger, background: colors.diffDelGutterBg };
+                prefixStyle = {
+                    ...prefixStyle,
+                    color: colors.danger,
+                    background: colors.diffDelGutterBg,
+                };
             } else if (isHunkHeader) {
                 containerStyle = { ...containerStyle, background: colors.diffHunkBg };
-                lineStyle = { ...lineStyle, color: colors.accent, fontStyle: 'italic', fontSize: '12px' };
+                lineStyle = {
+                    ...lineStyle,
+                    color: colors.accent,
+                    fontStyle: 'italic',
+                    fontSize: '12px',
+                };
             }
 
             if (item.clickable) {
@@ -1151,7 +1429,14 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
             const isInlineActive = activeLineIndex === idx;
             const isLspActive = activeLspIndex === idx;
-            const lineComments = item.file ? comments.filter(c => c.path === item.file && (c.position === item.pos?.toString() || (c.position === "" && item.pos === 0))) : [];
+            const lineComments = item.file
+                ? comments.filter(
+                      c =>
+                          c.path === item.file &&
+                          (c.position === item.pos?.toString() ||
+                              (c.position === '' && item.pos === 0))
+                  )
+                : [];
             const rootComments = lineComments.filter(c => !c.in_reply_to);
 
             // Determine what to render for the line content
@@ -1170,7 +1455,9 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 if (!hover || !hover.contents) return '';
                 if (typeof hover.contents === 'string') return hover.contents;
                 if (Array.isArray(hover.contents)) {
-                    return hover.contents.map((c: any) => typeof c === 'string' ? c : c.value).join('\n');
+                    return hover.contents
+                        .map((c: any) => (typeof c === 'string' ? c : c.value))
+                        .join('\n');
                 }
                 return (hover.contents as any).value || '';
             };
@@ -1180,7 +1467,10 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     <div
                         style={{
                             ...containerStyle,
-                            borderLeft: isInlineActive || isLspActive ? '3px solid var(--accent)' : '3px solid transparent',
+                            borderLeft:
+                                isInlineActive || isLspActive
+                                    ? '3px solid var(--accent)'
+                                    : '3px solid transparent',
                             marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
                         }}
                         className={item.clickable ? 'hover-line' : ''}
@@ -1189,13 +1479,17 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         {isCodeLine && !isHunkHeader && (
                             <span
                                 style={prefixStyle}
-                                onClick={(e) => {
+                                onClick={e => {
                                     if (item.clickable && item.file && item.pos !== null) {
                                         e.stopPropagation();
                                         handleCommentClick(idx, item.file, item.pos);
                                     }
                                 }}
-                                title={item.clickable ? `Add comment to ${item.file}:${item.pos}` : undefined}
+                                title={
+                                    item.clickable
+                                        ? `Add comment to ${item.file}:${item.pos}`
+                                        : undefined
+                                }
                             >
                                 {isAddition ? '+' : isDeletion ? '-' : ''}
                             </span>
@@ -1203,56 +1497,93 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         <span
                             style={{
                                 ...lineStyle,
-                                cursor: item.clickable ? 'pointer' : 'default'
+                                cursor: item.clickable ? 'pointer' : 'default',
                             }}
-                            onClick={(e) => {
+                            onClick={e => {
                                 if (item.clickable && item.file && item.pos !== null) {
                                     const col = getClickColumn(e, e.currentTarget);
-                                    handleCodeClick(idx, item.file, item.pos, item.originalLineIndex, col);
+                                    handleCodeClick(
+                                        idx,
+                                        item.file,
+                                        item.pos,
+                                        item.originalLineIndex,
+                                        col
+                                    );
                                 }
                             }}
                         >
                             {lineContent}
                         </span>
                         {isLspActive && lspData && (
-                            <div style={{
-                                position: 'absolute',
-                                top: '100%',
-                                left: '40px',
-                                zIndex: 100,
-                                background: 'var(--bg-secondary)',
-                                border: '1px solid var(--border)',
-                                borderRadius: '6px',
-                                boxShadow: shadows.md,
-                                padding: '12px',
-                                maxWidth: '600px',
-                                overflow: 'auto',
-                                maxHeight: '300px'
-                            }} onClick={e => e.stopPropagation()}>
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    top: '100%',
+                                    left: '40px',
+                                    zIndex: 100,
+                                    background: 'var(--bg-secondary)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '6px',
+                                    boxShadow: shadows.md,
+                                    padding: '12px',
+                                    maxWidth: '600px',
+                                    overflow: 'auto',
+                                    maxHeight: '300px',
+                                }}
+                                onClick={e => e.stopPropagation()}
+                            >
                                 {lspData.hover && (
-                                    <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--text-primary)' }}>
-                                        <Markdown>
-                                            {getHoverContent(lspData.hover)}
-                                        </Markdown>
+                                    <div
+                                        style={{
+                                            fontSize: '13px',
+                                            lineHeight: '1.5',
+                                            color: 'var(--text-primary)',
+                                        }}
+                                    >
+                                        <Markdown>{getHoverContent(lspData.hover)}</Markdown>
                                     </div>
                                 )}
                                 {lspData.refs && lspData.refs.length > 0 && (
-                                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', fontSize: '12px' }}>
-                                        <div style={{ fontWeight: 600, marginBottom: '5px', color: 'var(--text-secondary)' }}>References ({lspData.refs.length}):</div>
+                                    <div
+                                        style={{
+                                            marginTop: '10px',
+                                            paddingTop: '10px',
+                                            borderTop: '1px solid var(--border)',
+                                            fontSize: '12px',
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                fontWeight: 600,
+                                                marginBottom: '5px',
+                                                color: 'var(--text-secondary)',
+                                            }}
+                                        >
+                                            References ({lspData.refs.length}):
+                                        </div>
                                         <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
                                             {lspData.refs.map((r, i) => (
                                                 <li
                                                     key={i}
-                                                    onClick={(e) => {
+                                                    onClick={e => {
                                                         e.stopPropagation();
-                                                        const filePath = r.uri.replace('file://', '');
+                                                        const filePath = r.uri.replace(
+                                                            'file://',
+                                                            ''
+                                                        );
                                                         // Open a new modal offset from the click position
-                                                        setCodeViewers(prev => [...prev, {
-                                                            id: Date.now(),
-                                                            filePath,
-                                                            line: r.range.start.line + 1,
-                                                            position: { x: e.clientX + 20, y: e.clientY - 50 }
-                                                        }]);
+                                                        setCodeViewers(prev => [
+                                                            ...prev,
+                                                            {
+                                                                id: Date.now(),
+                                                                filePath,
+                                                                line: r.range.start.line + 1,
+                                                                position: {
+                                                                    x: e.clientX + 20,
+                                                                    y: e.clientY - 50,
+                                                                },
+                                                            },
+                                                        ]);
                                                     }}
                                                     style={{
                                                         cursor: 'pointer',
@@ -1262,7 +1593,8 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                                     }}
                                                     className="hover-link"
                                                 >
-                                                    {r.uri.split('/').pop()} : {r.range.start.line + 1}
+                                                    {r.uri.split('/').pop()} :{' '}
+                                                    {r.range.start.line + 1}
                                                 </li>
                                             ))}
                                         </ul>
@@ -1272,21 +1604,28 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         )}
                     </div>
                     {rootComments.map(rc => {
-                        const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
-                        const isReplyingToThread = replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId);
+                        const thread = [
+                            rc,
+                            ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
+                        ];
+                        const isReplyingToThread =
+                            replyToId !== null &&
+                            thread.some(c => parseInt(c.id, 10) === replyToId);
                         return (
                             <div
                                 key={rc.id}
                                 style={{
                                     margin: '10px 20px',
-                                    border: isReplyingToThread ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                    border: isReplyingToThread
+                                        ? '2px solid var(--accent)'
+                                        : '1px solid var(--border)',
                                     borderRadius: '6px',
                                     background: 'var(--bg-primary)',
                                     overflow: 'hidden',
                                     cursor: 'pointer',
                                     transition: 'border-color 0.15s ease',
                                 }}
-                                onClick={(e) => {
+                                onClick={e => {
                                     e.stopPropagation();
                                     if (item.file && item.pos !== null) {
                                         handleThreadClick(thread, item.file, item.pos, idx);
@@ -1295,25 +1634,63 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                 className="hover-thread"
                                 title="Click to reply to this thread"
                             >
-                                <div style={{ background: 'var(--bg-secondary)', padding: '5px 10px', fontSize: '11px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div
+                                    style={{
+                                        background: 'var(--bg-secondary)',
+                                        padding: '5px 10px',
+                                        fontSize: '11px',
+                                        borderBottom: '1px solid var(--border)',
+                                        color: 'var(--text-secondary)',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                    }}
+                                >
                                     <span>{rc.author} commented</span>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <span style={{
-                                            fontSize: '10px',
-                                            color: colors.accent,
-                                            opacity: 0.7,
-                                            background: colors.bgInfoDim,
-                                            padding: '2px 6px',
-                                            borderRadius: '4px'
-                                        }}>
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                fontSize: '10px',
+                                                color: colors.accent,
+                                                opacity: 0.7,
+                                                background: colors.bgInfoDim,
+                                                padding: '2px 6px',
+                                                borderRadius: '4px',
+                                            }}
+                                        >
                                             ↩ click to reply
                                         </span>
                                         <span>ID: {rc.id}</span>
                                     </div>
                                 </div>
                                 {thread.map(c => (
-                                    <div key={c.id} style={{ padding: '10px', borderBottom: c.id !== thread[thread.length - 1].id ? '1px solid var(--border)' : 'none' }}>
-                                        {c !== rc && <div style={{ fontSize: '11px', color: 'var(--accent)', marginBottom: '5px' }}>Reply by {c.author}:</div>}
+                                    <div
+                                        key={c.id}
+                                        style={{
+                                            padding: '10px',
+                                            borderBottom:
+                                                c.id !== thread[thread.length - 1].id
+                                                    ? '1px solid var(--border)'
+                                                    : 'none',
+                                        }}
+                                    >
+                                        {c !== rc && (
+                                            <div
+                                                style={{
+                                                    fontSize: '11px',
+                                                    color: 'var(--accent)',
+                                                    marginBottom: '5px',
+                                                }}
+                                            >
+                                                Reply by {c.author}:
+                                            </div>
+                                        )}
                                         <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
                                     </div>
                                 ))}
@@ -1321,22 +1698,31 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         );
                     })}
                     {isInlineActive && (
-                        <div style={{
-                            padding: '10px 20px',
-                            background: 'var(--bg-primary)',
-                            borderBottom: '1px solid var(--border)',
-                            borderTop: '1px solid var(--border)',
-                            marginBottom: '10px'
-                        }}>
-                            <div style={{ marginBottom: '5px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        <div
+                            style={{
+                                padding: '10px 20px',
+                                background: 'var(--bg-primary)',
+                                borderBottom: '1px solid var(--border)',
+                                borderTop: '1px solid var(--border)',
+                                marginBottom: '10px',
+                            }}
+                        >
+                            <div
+                                style={{
+                                    marginBottom: '5px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-secondary)',
+                                }}
+                            >
                                 {replyToId !== null
                                     ? `Replying to comment #${replyToId}`
-                                    : `Commenting on ${item.file}:${item.pos}`
-                                }
+                                    : `Commenting on ${item.file}:${item.pos}`}
                             </div>
                             <textarea
                                 autoFocus
-                                placeholder={replyToId !== null ? "Write a reply..." : "Write a comment..."}
+                                placeholder={
+                                    replyToId !== null ? 'Write a reply...' : 'Write a comment...'
+                                }
                                 value={commentBody}
                                 onChange={e => setCommentBody(e.target.value)}
                                 disabled={isAddingComment}
@@ -1353,9 +1739,27 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     resize: 'vertical',
                                 }}
                             />
-                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                                <Button onClick={() => { setActiveLineIndex(null); setReplyToId(null); }} variant="secondary" size="sm" disabled={isAddingComment}>Cancel</Button>
-                                <Button onClick={handleAddComment} size="sm" loading={isAddingComment}>{replyToId !== null ? 'Reply' : 'Add Comment'}</Button>
+                            <div
+                                style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}
+                            >
+                                <Button
+                                    onClick={() => {
+                                        setActiveLineIndex(null);
+                                        setReplyToId(null);
+                                    }}
+                                    variant="secondary"
+                                    size="sm"
+                                    disabled={isAddingComment}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    onClick={handleAddComment}
+                                    size="sm"
+                                    loading={isAddingComment}
+                                >
+                                    {replyToId !== null ? 'Reply' : 'Add Comment'}
+                                </Button>
                             </div>
                         </div>
                     )}
@@ -1370,13 +1774,29 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
         if (!metadata?.ci_status) return {};
         const status = metadata.ci_status.toLowerCase();
         if (status === 'success' || status === 'passed') {
-            return { background: colors.bgSuccessDim, color: colors.textSuccess, borderColor: colors.borderSuccessDim };
+            return {
+                background: colors.bgSuccessDim,
+                color: colors.textSuccess,
+                borderColor: colors.borderSuccessDim,
+            };
         } else if (status === 'pending' || status === 'running') {
-            return { background: colors.bgWarningDim, color: colors.textWarning, borderColor: colors.borderWarningDim };
+            return {
+                background: colors.bgWarningDim,
+                color: colors.textWarning,
+                borderColor: colors.borderWarningDim,
+            };
         } else if (status === 'failure' || status === 'failed') {
-            return { background: colors.bgDangerDim, color: colors.textDanger, borderColor: colors.borderDangerDim };
+            return {
+                background: colors.bgDangerDim,
+                color: colors.textDanger,
+                borderColor: colors.borderDangerDim,
+            };
         }
-        return { background: colors.bgTertiary, color: colors.textSecondary, borderColor: colors.border };
+        return {
+            background: colors.bgTertiary,
+            color: colors.textSecondary,
+            borderColor: colors.border,
+        };
     };
 
     const getStateStyle = () => {
@@ -1396,44 +1816,64 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
         <div className="review-container">
             {/* PR Header Section */}
             {metadata && (
-                <div className="pr-header" style={{
-                    background: 'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)',
-                    borderRadius: '12px',
-                    border: '1px solid var(--border)',
-                    marginBottom: '16px',
-                    overflow: 'hidden'
-                }}>
+                <div
+                    className="pr-header"
+                    style={{
+                        background:
+                            'linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)',
+                        borderRadius: '12px',
+                        border: '1px solid var(--border)',
+                        marginBottom: '16px',
+                        overflow: 'hidden',
+                    }}
+                >
                     {/* Title Bar */}
-                    <div style={{
-                        padding: '20px 24px',
-                        borderBottom: '1px solid var(--border)',
-                        background: 'var(--bg-secondary)'
-                    }}>
+                    <div
+                        style={{
+                            padding: '20px 24px',
+                            borderBottom: '1px solid var(--border)',
+                            background: 'var(--bg-secondary)',
+                        }}
+                    >
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px' }}>
                             <div style={{ flex: 1 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
-                                    <span style={{
-                                        ...getStateStyle(),
-                                        padding: '4px 12px',
-                                        borderRadius: '16px',
-                                        fontSize: '12px',
-                                        fontWeight: 600,
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.5px'
-                                    }}>
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '12px',
+                                        marginBottom: '8px',
+                                        flexWrap: 'wrap',
+                                    }}
+                                >
+                                    <span
+                                        style={{
+                                            ...getStateStyle(),
+                                            padding: '4px 12px',
+                                            borderRadius: '16px',
+                                            fontSize: '12px',
+                                            fontWeight: 600,
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.5px',
+                                        }}
+                                    >
                                         {metadata.draft ? '📝 Draft' : metadata.state}
                                     </span>
-                                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+                                    <span
+                                        style={{ color: 'var(--text-secondary)', fontSize: '14px' }}
+                                    >
                                         #{metadata.number}
                                     </span>
                                 </div>
-                                <h1 style={{
-                                    margin: 0,
-                                    fontSize: '22px',
-                                    fontWeight: 600,
-                                    color: 'var(--text-primary)',
-                                    lineHeight: 1.3
-                                }}>
+                                <h1
+                                    style={{
+                                        margin: 0,
+                                        fontSize: '22px',
+                                        fontWeight: 600,
+                                        color: 'var(--text-primary)',
+                                        lineHeight: 1.3,
+                                    }}
+                                >
                                     {metadata.title}
                                 </h1>
                             </div>
@@ -1452,7 +1892,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     alignItems: 'center',
                                     gap: '6px',
                                     textDecoration: 'none',
-                                    fontSize: '13px'
+                                    fontSize: '13px',
                                 }}
                             >
                                 <span>↗</span> GitHub
@@ -1461,30 +1901,64 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     </div>
 
                     {/* Info Grid */}
-                    <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                        gap: '1px',
-                        background: 'var(--border)'
-                    }}>
+                    <div
+                        style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                            gap: '1px',
+                            background: 'var(--border)',
+                        }}
+                    >
                         {/* Branch Info */}
                         <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            <div
+                                style={{
+                                    fontSize: '11px',
+                                    color: 'var(--text-secondary)',
+                                    marginBottom: '6px',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
                                 Branch
                             </div>
-                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--accent)' }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>{metadata.base_ref}</span>
-                                <span style={{ margin: '0 8px', color: 'var(--text-tertiary)' }}>←</span>
+                            <div
+                                style={{
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '13px',
+                                    color: 'var(--accent)',
+                                }}
+                            >
+                                <span style={{ color: 'var(--text-secondary)' }}>
+                                    {metadata.base_ref}
+                                </span>
+                                <span style={{ margin: '0 8px', color: 'var(--text-tertiary)' }}>
+                                    ←
+                                </span>
                                 <span>{metadata.head_ref}</span>
                             </div>
                         </div>
 
                         {/* Author */}
                         <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            <div
+                                style={{
+                                    fontSize: '11px',
+                                    color: 'var(--text-secondary)',
+                                    marginBottom: '6px',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
                                 Author
                             </div>
-                            <div style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                            <div
+                                style={{
+                                    fontSize: '14px',
+                                    fontWeight: 500,
+                                    color: 'var(--text-primary)',
+                                }}
+                            >
                                 @{metadata.author}
                             </div>
                         </div>
@@ -1492,20 +1966,30 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         {/* CI Status */}
                         {metadata.ci_status && (
                             <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '6px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
                                     CI Status
                                 </div>
-                                <div style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    padding: '4px 10px',
-                                    borderRadius: '6px',
-                                    fontSize: '13px',
-                                    fontWeight: 500,
-                                    border: '1px solid',
-                                    ...getCIStatusStyle()
-                                }}>
+                                <div
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        padding: '4px 10px',
+                                        borderRadius: '6px',
+                                        fontSize: '13px',
+                                        fontWeight: 500,
+                                        border: '1px solid',
+                                        ...getCIStatusStyle(),
+                                    }}
+                                >
                                     {metadata.ci_status.toLowerCase() === 'success' && '✓'}
                                     {metadata.ci_status.toLowerCase() === 'pending' && '○'}
                                     {metadata.ci_status.toLowerCase() === 'failure' && '✗'}
@@ -1515,32 +1999,47 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         )}
 
                         {/* Reviewers/Teams */}
-                        {((metadata.reviewers && metadata.reviewers.length > 0) || (metadata.requested_teams && metadata.requested_teams.length > 0)) && (
+                        {((metadata.reviewers && metadata.reviewers.length > 0) ||
+                            (metadata.requested_teams && metadata.requested_teams.length > 0)) && (
                             <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '6px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
                                     Requested Reviewers
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {metadata.reviewers?.map((r, i) => (
-                                        <span key={`rev-${i}`} style={{
-                                            background: 'var(--bg-tertiary)',
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            fontSize: '12px',
-                                            color: 'var(--text-primary)'
-                                        }}>
+                                        <span
+                                            key={`rev-${i}`}
+                                            style={{
+                                                background: 'var(--bg-tertiary)',
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '12px',
+                                                color: 'var(--text-primary)',
+                                            }}
+                                        >
                                             @{r}
                                         </span>
                                     ))}
                                     {metadata.requested_teams?.map((t, i) => (
-                                        <span key={`team-${i}`} style={{
-                                            background: colors.bgInfoDim,
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            fontSize: '12px',
-                                            color: colors.accent,
-                                            border: `1px solid ${colors.borderInfoDim}`
-                                        }}>
+                                        <span
+                                            key={`team-${i}`}
+                                            style={{
+                                                background: colors.bgInfoDim,
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '12px',
+                                                color: colors.accent,
+                                                border: `1px solid ${colors.borderInfoDim}`,
+                                            }}
+                                        >
                                             team:{t}
                                         </span>
                                     ))}
@@ -1551,19 +2050,30 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         {/* Approved By */}
                         {metadata.approved_by && metadata.approved_by.length > 0 && (
                             <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--success)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        color: 'var(--success)',
+                                        marginBottom: '6px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
                                     ✓ Approved By
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {metadata.approved_by.map((r, i) => (
-                                        <span key={i} style={{
-                                            background: colors.bgSuccessDim,
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            fontSize: '12px',
-                                            color: colors.success,
-                                            border: `1px solid ${colors.borderSuccessDim}`
-                                        }}>
+                                        <span
+                                            key={i}
+                                            style={{
+                                                background: colors.bgSuccessDim,
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '12px',
+                                                color: colors.success,
+                                                border: `1px solid ${colors.borderSuccessDim}`,
+                                            }}
+                                        >
                                             @{r}
                                         </span>
                                     ))}
@@ -1572,43 +2082,71 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         )}
 
                         {/* Changes Requested By */}
-                        {metadata.changes_requested_by && metadata.changes_requested_by.length > 0 && (
-                            <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--danger)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                    ✗ Changes Requested By
+                        {metadata.changes_requested_by &&
+                            metadata.changes_requested_by.length > 0 && (
+                                <div
+                                    style={{
+                                        padding: '16px 20px',
+                                        background: 'var(--bg-primary)',
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--danger)',
+                                            marginBottom: '6px',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.5px',
+                                        }}
+                                    >
+                                        ✗ Changes Requested By
+                                    </div>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                        {metadata.changes_requested_by.map((r, i) => (
+                                            <span
+                                                key={i}
+                                                style={{
+                                                    background: colors.bgDangerDim,
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    fontSize: '12px',
+                                                    color: colors.danger,
+                                                    border: `1px solid ${colors.borderDangerDim}`,
+                                                }}
+                                            >
+                                                @{r}
+                                            </span>
+                                        ))}
+                                    </div>
                                 </div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                    {metadata.changes_requested_by.map((r, i) => (
-                                        <span key={i} style={{
-                                            background: colors.bgDangerDim,
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            fontSize: '12px',
-                                            color: colors.danger,
-                                            border: `1px solid ${colors.borderDangerDim}`
-                                        }}>
-                                            @{r}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+                            )}
 
                         {/* Commented By */}
                         {metadata.commented_by && metadata.commented_by.length > 0 && (
                             <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <div
+                                    style={{
+                                        fontSize: '11px',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '6px',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.5px',
+                                    }}
+                                >
                                     💬 Commented By
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {metadata.commented_by.map((r, i) => (
-                                        <span key={i} style={{
-                                            background: 'var(--bg-tertiary)',
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            fontSize: '12px',
-                                            color: 'var(--text-primary)'
-                                        }}>
+                                        <span
+                                            key={i}
+                                            style={{
+                                                background: 'var(--bg-tertiary)',
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '12px',
+                                                color: 'var(--text-primary)',
+                                            }}
+                                        >
                                             @{r}
                                         </span>
                                     ))}
@@ -1618,29 +2156,44 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                     </div>
 
                     {/* Labels, Assignees, Milestone Row */}
-                    {(metadata.labels?.length > 0 || metadata.assignees?.length > 0 || metadata.milestone) && (
-                        <div style={{
-                            padding: '14px 20px',
-                            display: 'flex',
-                            flexWrap: 'wrap',
-                            gap: '20px',
-                            borderTop: '1px solid var(--border)',
-                            background: 'var(--bg-primary)'
-                        }}>
+                    {(metadata.labels?.length > 0 ||
+                        metadata.assignees?.length > 0 ||
+                        metadata.milestone) && (
+                        <div
+                            style={{
+                                padding: '14px 20px',
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: '20px',
+                                borderTop: '1px solid var(--border)',
+                                background: 'var(--bg-primary)',
+                            }}
+                        >
                             {metadata.labels && metadata.labels.length > 0 && (
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Labels:</span>
+                                    <span
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--text-secondary)',
+                                            textTransform: 'uppercase',
+                                        }}
+                                    >
+                                        Labels:
+                                    </span>
                                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                         {metadata.labels.map((label, i) => (
-                                            <span key={i} style={{
-                                                background: colors.bgMergedDim,
-                                                color: colors.textMerged,
-                                                padding: '2px 10px',
-                                                borderRadius: '12px',
-                                                fontSize: '11px',
-                                                fontWeight: 500,
-                                                border: `1px solid ${colors.borderMergedDim}`
-                                            }}>
+                                            <span
+                                                key={i}
+                                                style={{
+                                                    background: colors.bgMergedDim,
+                                                    color: colors.textMerged,
+                                                    padding: '2px 10px',
+                                                    borderRadius: '12px',
+                                                    fontSize: '11px',
+                                                    fontWeight: 500,
+                                                    border: `1px solid ${colors.borderMergedDim}`,
+                                                }}
+                                            >
                                                 {label}
                                             </span>
                                         ))}
@@ -1649,16 +2202,36 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                             )}
                             {metadata.assignees && metadata.assignees.length > 0 && (
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Assignees:</span>
-                                    <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+                                    <span
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--text-secondary)',
+                                            textTransform: 'uppercase',
+                                        }}
+                                    >
+                                        Assignees:
+                                    </span>
+                                    <span
+                                        style={{ fontSize: '13px', color: 'var(--text-primary)' }}
+                                    >
                                         {metadata.assignees.map(a => `@${a}`).join(', ')}
                                     </span>
                                 </div>
                             )}
                             {metadata.milestone && (
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Milestone:</span>
-                                    <span style={{ fontSize: '13px', color: 'var(--accent)' }}>{metadata.milestone}</span>
+                                    <span
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--text-secondary)',
+                                            textTransform: 'uppercase',
+                                        }}
+                                    >
+                                        Milestone:
+                                    </span>
+                                    <span style={{ fontSize: '13px', color: 'var(--accent)' }}>
+                                        {metadata.milestone}
+                                    </span>
                                 </div>
                             )}
                         </div>
@@ -1666,12 +2239,22 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
                     {/* Description */}
                     {metadata.body && (
-                        <div style={{
-                            padding: '16px 20px',
-                            borderTop: '1px solid var(--border)',
-                            background: 'var(--bg-primary)'
-                        }}>
-                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        <div
+                            style={{
+                                padding: '16px 20px',
+                                borderTop: '1px solid var(--border)',
+                                background: 'var(--bg-primary)',
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: '11px',
+                                    color: 'var(--text-secondary)',
+                                    marginBottom: '10px',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
                                 Description
                             </div>
                             <div
@@ -1681,7 +2264,7 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                                     lineHeight: 1.6,
                                     color: 'var(--text-primary)',
                                     maxHeight: '300px',
-                                    overflow: 'auto'
+                                    overflow: 'auto',
                                 }}
                             >
                                 <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
@@ -1691,21 +2274,34 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
 
                     {/* CI Failures */}
                     {metadata.ci_failures && metadata.ci_failures.length > 0 && (
-                        <div style={{
-                            padding: '14px 20px',
-                            borderTop: `1px solid ${colors.border}`,
-                            background: colors.bgDangerDim
-                        }}>
-                            <div style={{ fontSize: '11px', color: colors.textDanger, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        <div
+                            style={{
+                                padding: '14px 20px',
+                                borderTop: `1px solid ${colors.border}`,
+                                background: colors.bgDangerDim,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: '11px',
+                                    color: colors.textDanger,
+                                    marginBottom: '8px',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
                                 ✗ CI Failures
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                 {metadata.ci_failures.map((failure, i) => (
-                                    <span key={i} style={{
-                                        fontFamily: 'var(--font-mono)',
-                                        fontSize: '12px',
-                                        color: colors.textDanger
-                                    }}>
+                                    <span
+                                        key={i}
+                                        style={{
+                                            fontFamily: 'var(--font-mono)',
+                                            fontSize: '12px',
+                                            color: colors.textDanger,
+                                        }}
+                                    >
                                         • {failure}
                                     </span>
                                 ))}
@@ -1716,87 +2312,145 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
             )}
 
             {/* Toolbar */}
-            <div className="toolbar" style={{
-                display: 'flex',
-                gap: '10px',
-                marginBottom: '16px',
-                padding: '12px 16px',
-                background: 'var(--bg-secondary)',
-                borderRadius: '8px',
-                border: '1px solid var(--border)',
-                position: 'sticky',
-                top: '10px',
-                zIndex: 10
-            }}>
+            <div
+                className="toolbar"
+                style={{
+                    display: 'flex',
+                    gap: '10px',
+                    marginBottom: '16px',
+                    padding: '12px 16px',
+                    background: 'var(--bg-secondary)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    position: 'sticky',
+                    top: '10px',
+                    zIndex: 10,
+                }}
+            >
                 <Button onClick={handleSync} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>
-                <Button onClick={() => {
-                    if (collapsedFiles.size > 0) {
-                        expandAllFiles();
-                    } else {
-                        collapseAllFiles();
-                    }
-                }} variant="secondary" size="sm" disabled={loading}>
+                <Button
+                    onClick={() => {
+                        if (collapsedFiles.size > 0) {
+                            expandAllFiles();
+                        } else {
+                            collapseAllFiles();
+                        }
+                    }}
+                    variant="secondary"
+                    size="sm"
+                    disabled={loading}
+                >
                     {collapsedFiles.size > 0 ? '▼ Expand All' : '◀ Collapse All'}
                 </Button>
-                <Button onClick={() => {
-                    setFilename('');
-                    setPosition('');
-                    setShowCommentModal(true);
-                }} disabled={loading}>+ Comment</Button>
-                <Button onClick={() => setSubmitting(true)} style={{ background: 'var(--success)' }} disabled={loading}>Submit Review</Button>
+                <Button
+                    onClick={() => {
+                        setFilename('');
+                        setPosition('');
+                        setShowCommentModal(true);
+                    }}
+                    disabled={loading}
+                >
+                    + Comment
+                </Button>
+                <Button
+                    onClick={() => setSubmitting(true)}
+                    style={{ background: 'var(--success)' }}
+                    disabled={loading}
+                >
+                    Submit Review
+                </Button>
                 <Button
                     onClick={() => setShowPlugins(!showPlugins)}
                     variant={showPlugins ? 'primary' : 'secondary'}
                 >
-                    Plugins {Object.keys(pluginOutputs).length > 0 ? `(${Object.keys(pluginOutputs).length})` : ''}
+                    Plugins{' '}
+                    {Object.keys(pluginOutputs).length > 0
+                        ? `(${Object.keys(pluginOutputs).length})`
+                        : ''}
                 </Button>
 
-                <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                <span
+                    style={{
+                        marginLeft: 'auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        color: 'var(--text-secondary)',
+                        fontSize: '13px',
+                    }}
+                >
                     💡 Click on any line of code to add a comment
                 </span>
             </div>
 
             {/* Diff Section */}
-            <div className="diff-section" style={{
-                background: 'var(--bg-secondary)',
-                borderRadius: '8px',
-                border: '1px solid var(--border)',
-                overflow: 'hidden'
-            }}>
-                <div style={{
-                    padding: '12px 16px',
-                    borderBottom: '1px solid var(--border)',
-                    background: 'var(--bg-primary)',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    color: 'var(--text-secondary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                }}>
+            <div
+                className="diff-section"
+                style={{
+                    background: 'var(--bg-secondary)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    overflow: 'hidden',
+                }}
+            >
+                <div
+                    style={{
+                        padding: '12px 16px',
+                        borderBottom: '1px solid var(--border)',
+                        background: 'var(--bg-primary)',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                        color: 'var(--text-secondary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                    }}
+                >
                     <span style={{ color: 'var(--accent)' }}>◈</span>
                     Changes
                     {repoExists === false && (
-                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }}>
+                        <div
+                            style={{
+                                marginLeft: '12px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                color: 'var(--warning)',
+                                fontSize: '12px',
+                                fontWeight: 400,
+                            }}
+                        >
                             <span style={{ fontSize: '14px' }}>⚠️</span>
                             Repo not found locally. LSP disabled.
                         </div>
                     )}
                     {lspAvailable === false && (
-                        <div style={{ marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--warning)', fontSize: '12px', fontWeight: 400 }} title="diff-lsp binary not found on server path">
+                        <div
+                            style={{
+                                marginLeft: '12px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                color: 'var(--warning)',
+                                fontSize: '12px',
+                                fontWeight: 400,
+                            }}
+                            title="diff-lsp binary not found on server path"
+                        >
                             <span style={{ fontSize: '14px' }}>⚠️</span>
                             LSP not active
                         </div>
                     )}
                 </div>
-                <div style={{
-                    padding: '16px',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '13px',
-                    overflowX: 'auto'
-                }}>
+                <div
+                    style={{
+                        padding: '16px',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '13px',
+                        overflowX: 'auto',
+                    }}
+                >
                     {renderDiff()}
                 </div>
             </div>
@@ -1843,8 +2497,16 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         disabled={isAddingComment}
                     />
                     <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                        <Button onClick={resetCommentForm} variant="secondary" disabled={isAddingComment}>Cancel</Button>
-                        <Button onClick={handleAddComment} loading={isAddingComment}>Add</Button>
+                        <Button
+                            onClick={resetCommentForm}
+                            variant="secondary"
+                            disabled={isAddingComment}
+                        >
+                            Cancel
+                        </Button>
+                        <Button onClick={handleAddComment} loading={isAddingComment}>
+                            Add
+                        </Button>
                     </div>
                 </div>
             </Modal>
@@ -1880,85 +2542,162 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                         disabled={isSubmittingReview}
                     />
                     <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                        <Button onClick={() => setSubmitting(false)} variant="secondary" disabled={isSubmittingReview}>Cancel</Button>
-                        <Button onClick={handleSubmitReview} style={{ background: 'var(--success)' }} loading={isSubmittingReview}>Submit</Button>
+                        <Button
+                            onClick={() => setSubmitting(false)}
+                            variant="secondary"
+                            disabled={isSubmittingReview}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleSubmitReview}
+                            style={{ background: 'var(--success)' }}
+                            loading={isSubmittingReview}
+                        >
+                            Submit
+                        </Button>
                     </div>
                 </div>
             </Modal>
             {showPlugins && (
-                <div style={{
-                    position: 'fixed' as const,
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: colors.overlayBg,
-                    display: 'flex',
-                    justifyContent: 'flex-end',
-                    zIndex: 100,
-                }} onClick={() => setShowPlugins(false)}>
-                    <div style={{
-                        background: 'var(--bg-secondary)',
-                        width: '600px',
-                        maxWidth: '90vw',
-                        height: '100vh',
-                        borderLeft: '1px solid var(--border)',
-                        boxShadow: shadows.lg,
+                <div
+                    style={{
+                        position: 'fixed' as const,
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        background: colors.overlayBg,
                         display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden',
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            padding: '20px 24px',
+                        justifyContent: 'flex-end',
+                        zIndex: 100,
+                    }}
+                    onClick={() => setShowPlugins(false)}
+                >
+                    <div
+                        style={{
                             background: 'var(--bg-secondary)',
-                            zIndex: 1,
-                            borderBottom: '1px solid var(--border)'
-                        }}>
-                            <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>Plugin Analysis</h2>
-                            <Button onClick={() => setShowPlugins(false)} variant="secondary" size="sm">Close (Esc)</Button>
+                            width: '600px',
+                            maxWidth: '90vw',
+                            height: '100vh',
+                            borderLeft: '1px solid var(--border)',
+                            boxShadow: shadows.lg,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '20px 24px',
+                                background: 'var(--bg-secondary)',
+                                zIndex: 1,
+                                borderBottom: '1px solid var(--border)',
+                            }}
+                        >
+                            <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>
+                                Plugin Analysis
+                            </h2>
+                            <Button
+                                onClick={() => setShowPlugins(false)}
+                                variant="secondary"
+                                size="sm"
+                            >
+                                Close (Esc)
+                            </Button>
                         </div>
                         <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
                             {Object.keys(pluginOutputs).length === 0 ? (
-                                <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic', padding: '20px', textAlign: 'center' }}>No plugin output found.</div>
+                                <div
+                                    style={{
+                                        color: 'var(--text-secondary)',
+                                        fontStyle: 'italic',
+                                        padding: '20px',
+                                        textAlign: 'center',
+                                    }}
+                                >
+                                    No plugin output found.
+                                </div>
                             ) : (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '20px',
+                                    }}
+                                >
                                     {Object.entries(pluginOutputs).map(([name, data]) => (
-                                        <div key={name} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
-                                            <div style={{
-                                                padding: '10px 15px',
-                                                background: 'var(--bg-secondary)',
-                                                borderBottom: '1px solid var(--border)',
-                                                display: 'flex',
-                                                justifyContent: 'space-between',
-                                                alignItems: 'center'
-                                            }}>
-                                                <span style={{ fontWeight: 600, fontSize: '14px' }}>{name}</span>
-                                                <span style={{
-                                                    fontSize: '11px',
-                                                    padding: '2px 10px',
-                                                    borderRadius: '12px',
-                                                    fontWeight: 600,
-                                                    background: data.status === 'success' ? colors.bgSuccessDim : data.status === 'pending' ? colors.bgWarningDim : colors.bgDangerDim,
-                                                    color: data.status === 'success' ? colors.textSuccess : data.status === 'pending' ? colors.textWarning : colors.textDanger,
-                                                    border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`
-                                                }}>
+                                        <div
+                                            key={name}
+                                            style={{
+                                                background: 'var(--bg-primary)',
+                                                border: '1px solid var(--border)',
+                                                borderRadius: '8px',
+                                                overflow: 'hidden',
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    padding: '10px 15px',
+                                                    background: 'var(--bg-secondary)',
+                                                    borderBottom: '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                }}
+                                            >
+                                                <span style={{ fontWeight: 600, fontSize: '14px' }}>
+                                                    {name}
+                                                </span>
+                                                <span
+                                                    style={{
+                                                        fontSize: '11px',
+                                                        padding: '2px 10px',
+                                                        borderRadius: '12px',
+                                                        fontWeight: 600,
+                                                        background:
+                                                            data.status === 'success'
+                                                                ? colors.bgSuccessDim
+                                                                : data.status === 'pending'
+                                                                  ? colors.bgWarningDim
+                                                                  : colors.bgDangerDim,
+                                                        color:
+                                                            data.status === 'success'
+                                                                ? colors.textSuccess
+                                                                : data.status === 'pending'
+                                                                  ? colors.textWarning
+                                                                  : colors.textDanger,
+                                                        border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                    }}
+                                                >
                                                     {data.status.toUpperCase()}
                                                 </span>
                                             </div>
-                                            <div className="plugin-output markdown-content" style={{
-                                                padding: '15px',
-                                                fontSize: '14px',
-                                                lineHeight: '1.6',
-                                                color: 'var(--text-primary)',
-                                                background: 'var(--bg-primary)',
-                                            }}>
+                                            <div
+                                                className="plugin-output markdown-content"
+                                                style={{
+                                                    padding: '15px',
+                                                    fontSize: '14px',
+                                                    lineHeight: '1.6',
+                                                    color: 'var(--text-primary)',
+                                                    background: 'var(--bg-primary)',
+                                                }}
+                                            >
                                                 {data.result ? (
                                                     <Markdown>{data.result}</Markdown>
                                                 ) : (
-                                                    <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>No output produced.</span>
+                                                    <span
+                                                        style={{
+                                                            color: 'var(--text-secondary)',
+                                                            fontStyle: 'italic',
+                                                        }}
+                                                    >
+                                                        No output produced.
+                                                    </span>
                                                 )}
                                             </div>
                                         </div>
@@ -1970,75 +2709,124 @@ export default function Review({ owner, repo, number, theme, onThemeChange }: Re
                 </div>
             )}
             {activeOutdatedFile && (
-                <div style={{
-                    position: 'fixed' as const,
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: colors.overlayBg,
-                    display: 'flex',
-                    justifyContent: 'flex-end',
-                    zIndex: 100,
-                }} onClick={() => setActiveOutdatedFile(null)}>
-                    <div style={{
-                        background: 'var(--bg-secondary)',
-                        width: '600px',
-                        maxWidth: '90vw',
-                        height: '100vh',
-                        borderLeft: '1px solid var(--border)',
-                        boxShadow: shadows.lg,
+                <div
+                    style={{
+                        position: 'fixed' as const,
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        background: colors.overlayBg,
                         display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden',
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            padding: '20px 24px',
+                        justifyContent: 'flex-end',
+                        zIndex: 100,
+                    }}
+                    onClick={() => setActiveOutdatedFile(null)}
+                >
+                    <div
+                        style={{
                             background: 'var(--bg-secondary)',
-                            zIndex: 1,
-                            borderBottom: '1px solid var(--border)'
-                        }}>
+                            width: '600px',
+                            maxWidth: '90vw',
+                            height: '100vh',
+                            borderLeft: '1px solid var(--border)',
+                            boxShadow: shadows.lg,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '20px 24px',
+                                background: 'var(--bg-secondary)',
+                                zIndex: 1,
+                                borderBottom: '1px solid var(--border)',
+                            }}
+                        >
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--warning)' }}>Outdated Comments</h2>
-                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{activeOutdatedFile}</span>
+                                <h2
+                                    style={{ fontSize: '18px', margin: 0, color: 'var(--warning)' }}
+                                >
+                                    Outdated Comments
+                                </h2>
+                                <span
+                                    style={{
+                                        fontSize: '12px',
+                                        color: 'var(--text-secondary)',
+                                        marginTop: '4px',
+                                    }}
+                                >
+                                    {activeOutdatedFile}
+                                </span>
                             </div>
-                            <Button onClick={() => setActiveOutdatedFile(null)} variant="secondary" size="sm">Close (Esc)</Button>
+                            <Button
+                                onClick={() => setActiveOutdatedFile(null)}
+                                variant="secondary"
+                                size="sm"
+                            >
+                                Close (Esc)
+                            </Button>
                         </div>
                         <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                                {outdatedComments.filter(c => c.path === activeOutdatedFile).map(c => (
-                                    <div key={c.id} style={{
-                                        background: 'var(--bg-primary)',
-                                        border: '1px solid var(--border)',
-                                        borderRadius: '8px',
-                                        overflow: 'hidden'
-                                    }}>
-                                        <div style={{
-                                            padding: '10px 15px',
-                                            background: 'var(--bg-secondary)',
-                                            borderBottom: '1px solid var(--border)',
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            alignItems: 'center'
-                                        }}>
-                                            <span style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{c.author}</span>
-                                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                                                {new Date(c.created_at).toLocaleString()}
-                                            </span>
+                                {outdatedComments
+                                    .filter(c => c.path === activeOutdatedFile)
+                                    .map(c => (
+                                        <div
+                                            key={c.id}
+                                            style={{
+                                                background: 'var(--bg-primary)',
+                                                border: '1px solid var(--border)',
+                                                borderRadius: '8px',
+                                                overflow: 'hidden',
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    padding: '10px 15px',
+                                                    background: 'var(--bg-secondary)',
+                                                    borderBottom: '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                }}
+                                            >
+                                                <span
+                                                    style={{
+                                                        fontWeight: 600,
+                                                        fontSize: '14px',
+                                                        color: 'var(--text-primary)',
+                                                    }}
+                                                >
+                                                    {c.author}
+                                                </span>
+                                                <span
+                                                    style={{
+                                                        fontSize: '11px',
+                                                        color: 'var(--text-secondary)',
+                                                    }}
+                                                >
+                                                    {new Date(c.created_at).toLocaleString()}
+                                                </span>
+                                            </div>
+                                            <div
+                                                className="markdown-content"
+                                                style={{
+                                                    padding: '15px',
+                                                    fontSize: '14px',
+                                                    lineHeight: '1.6',
+                                                    color: 'var(--text-primary)',
+                                                }}
+                                            >
+                                                <Markdown>{c.body}</Markdown>
+                                            </div>
                                         </div>
-                                        <div className="markdown-content" style={{
-                                            padding: '15px',
-                                            fontSize: '14px',
-                                            lineHeight: '1.6',
-                                            color: 'var(--text-primary)',
-                                        }}>
-                                            <Markdown>{c.body}</Markdown>
-                                        </div>
-                                    </div>
-                                ))}
+                                    ))}
                             </div>
                         </div>
                     </div>

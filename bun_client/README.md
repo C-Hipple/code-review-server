@@ -3,27 +3,29 @@
 ## Setup
 
 1. Install all dependencies (Backend + Frontend) from the root:
-   ```bash
-   cd bun_client
-   bun install
-   ```
+    ```bash
+    cd bun_client
+    bun install
+    ```
 
 ## Running
 
 1. Start the Bun Backend (API Server):
-   ```bash
-   # Make sure CRS_GITHUB_TOKEN is set
-   cd bun_client
-   ./start_server.sh
-   ```
-   This runs on `http://localhost:5172`.
+
+    ```bash
+    # Make sure CRS_GITHUB_TOKEN is set
+    cd bun_client
+    ./start_server.sh
+    ```
+
+    This runs on `http://localhost:5172`.
 
 2. Start the Frontend (Development Mode):
-   ```bash
-   cd bun_client
-   bun run dev
-   ```
-   This runs on `http://localhost:5173`.
+    ```bash
+    cd bun_client
+    bun run dev
+    ```
+    This runs on `http://localhost:5173`.
 
 ## Architecture
 

@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+coverage
+*.log
+.vite
+frontend/dist
+crs-gui
+embedded_assets.ts

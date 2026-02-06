@@ -1,0 +1,64 @@
+# This workflow will check, build, and test the Bun client project
+name: Bun Client
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'bun_client/**'
+      - '.github/workflows/bun-client.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'bun_client/**'
+      - '.github/workflows/bun-client.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bun_client
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - name: Install dependencies
+      run: bun install
+
+    - name: Log tool versions
+      run: |
+        echo "=== Bun Version ==="
+        bun --version
+        echo ""
+        echo "=== Node Version ==="
+        node --version
+        echo ""
+        echo "=== Prettier Version ==="
+        bunx prettier --version
+        echo ""
+        echo "=== ESLint Version ==="
+        bunx eslint --version
+        echo ""
+        echo "=== TypeScript Version ==="
+        bunx tsc --version
+
+    - name: Run ESLint
+      run: bun run lint
+
+    - name: Check formatting
+      run: bun run format:check
+
+    - name: Type check
+      run: bun run type-check
+
+    - name: Build
+      run: bun run build
+
+    - name: Run tests
+      run: bun run test

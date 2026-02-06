@@ -20,7 +20,7 @@ export const parseDiff = (diff: string): ParsedLine[] => {
         let currentPos = 0;
         let foundFirstHunkInFile = false;
         let pendingFileStatus: 'modified' | 'new' | 'deleted' | 'renamed' = 'modified';
-        
+
         // New state tracking for empty new files
         let fallbackFilename: string | null = null;
         let fallbackFileIndex: number | null = null;
@@ -44,7 +44,7 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                         clickable: true,
                         lineType: 'file-header',
                         fileStatus: pendingFileStatus,
-                        originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : index
+                        originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : index,
                     });
                 }
 
@@ -60,22 +60,25 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                     fallbackFilename = sameNameMatch[1];
                 } else {
                     // Fallback: try to grab the b/ part
-                        const parts = line.split(' b/');
-                        if (parts.length >= 2) {
-                            fallbackFilename = parts.slice(1).join(' b/');
-                        } else {
-                            fallbackFilename = null;
-                        }
+                    const parts = line.split(' b/');
+                    if (parts.length >= 2) {
+                        fallbackFilename = parts.slice(1).join(' b/');
+                    } else {
+                        fallbackFilename = null;
+                    }
                 }
                 fallbackFileIndex = index;
-
             } else if (line.startsWith('new file mode')) {
                 pendingFileStatus = 'new';
                 lineType = 'skip';
             } else if (line.startsWith('deleted file mode')) {
                 pendingFileStatus = 'deleted';
                 lineType = 'skip';
-            } else if (line.startsWith('rename from') || line.startsWith('rename to') || line.startsWith('similarity index')) {
+            } else if (
+                line.startsWith('rename from') ||
+                line.startsWith('rename to') ||
+                line.startsWith('similarity index')
+            ) {
                 pendingFileStatus = 'renamed';
                 lineType = 'skip';
             } else if (line.startsWith('index ') || line.startsWith('---')) {
@@ -83,7 +86,8 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                 lineType = 'skip';
             } else {
                 // Match +++ b/filename as the file header
-                const fileMatch = line.match(/^\+\+\+\s+b\/(.+)$/) ||
+                const fileMatch =
+                    line.match(/^\+\+\+\s+b\/(.+)$/) ||
                     line.match(/^\+\+\+\s+(.+)$/) ||
                     line.match(/^\s*(modified|deleted|new file|renamed)\s+(.+)$/);
 
@@ -97,7 +101,7 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                     file = currentFile;
                     clickable = true;
                     lineType = 'file-header';
-                    
+
                     hasEmittedHeader = true;
 
                     parsedLines.push({
@@ -107,7 +111,7 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                         clickable,
                         lineType,
                         fileStatus: pendingFileStatus,
-                        originalLineIndex: index
+                        originalLineIndex: index,
                     });
                     pendingFileStatus = 'modified'; // Reset for next file
                     return; // continue equivalent in forEach
@@ -143,20 +147,27 @@ export const parseDiff = (diff: string): ParsedLine[] => {
             }
 
             if (lineType !== 'skip') {
-                parsedLines.push({ text: line, file, pos, clickable, lineType, originalLineIndex: index });
+                parsedLines.push({
+                    text: line,
+                    file,
+                    pos,
+                    clickable,
+                    lineType,
+                    originalLineIndex: index,
+                });
             }
         });
 
         // Check if last file needs header
         if (fallbackFilename && !hasEmittedHeader) {
-                parsedLines.push({
+            parsedLines.push({
                 text: fallbackFilename,
                 file: fallbackFilename,
                 pos: 0,
                 clickable: true,
                 lineType: 'file-header',
                 fileStatus: pendingFileStatus,
-                originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : lines.length
+                originalLineIndex: fallbackFileIndex !== null ? fallbackFileIndex : lines.length,
             });
         }
     }

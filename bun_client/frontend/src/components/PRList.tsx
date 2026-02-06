@@ -1,6 +1,15 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
-import { Button, Badge, Card, Input, Select, mapStatusToVariant, Theme, THEME_OPTIONS, ReviewLocation } from '../design';
+import {
+    Button,
+    Badge,
+    Card,
+    Input,
+    Select,
+    mapStatusToVariant,
+    Theme,
+    ReviewLocation,
+} from '../design';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
@@ -45,9 +54,9 @@ const STATUS_OPTIONS = [
 // Configuration for dynamic dropdown filters
 // Each filter extracts unique values from the items based on a field
 interface DynamicFilterConfig {
-    key: keyof ReviewItem;  // Field to filter on
-    label: string;          // Display label
-    allLabel: string;       // "All X" label
+    key: keyof ReviewItem; // Field to filter on
+    label: string; // Display label
+    allLabel: string; // "All X" label
 }
 
 const DYNAMIC_FILTERS: DynamicFilterConfig[] = [
@@ -59,15 +68,17 @@ const DYNAMIC_FILTERS: DynamicFilterConfig[] = [
 // Helper to extract unique sorted values for a field from items
 function getUniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[] {
     return Array.from(
-        new Set(
-            items
-                .map(item => String(item[field] || ''))
-                .filter(val => val.trim() !== '')
-        )
+        new Set(items.map(item => String(item[field] || '')).filter(val => val.trim() !== ''))
     ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
-export default function PRList({ onOpenReview, onOpenPluginOutput, theme, reviewLocation, onThemeChange }: PRListProps) {
+export default function PRList({
+    onOpenReview,
+    onOpenPluginOutput,
+    theme: _theme,
+    reviewLocation,
+    onThemeChange: _onThemeChange,
+}: PRListProps) {
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterText, setFilterText] = useState('');
@@ -77,7 +88,9 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
     // Dynamic filters state - one value per filter key
     const [dynamicFilters, setDynamicFilters] = useState<Record<string, string>>(() => {
         const initial: Record<string, string> = {};
-        DYNAMIC_FILTERS.forEach(f => { initial[f.key] = ''; });
+        DYNAMIC_FILTERS.forEach(f => {
+            initial[f.key] = '';
+        });
         return initial;
     });
 
@@ -90,7 +103,8 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
     const allItems = sections.flatMap(s => s.items);
 
     // Check if any filters are active
-    const hasActiveFilters = filterText.trim() !== '' ||
+    const hasActiveFilters =
+        filterText.trim() !== '' ||
         statusFilter !== '' ||
         Object.values(dynamicFilters).some(v => v !== '');
 
@@ -131,7 +145,9 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
         setStatusFilter('');
         setDynamicFilters(() => {
             const cleared: Record<string, string> = {};
-            DYNAMIC_FILTERS.forEach(f => { cleared[f.key] = ''; });
+            DYNAMIC_FILTERS.forEach(f => {
+                cleared[f.key] = '';
+            });
             return cleared;
         });
     };
@@ -140,7 +156,7 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
     const filteredSections = sections
         .map(section => ({
             ...section,
-            items: section.items.filter(filterItem)
+            items: section.items.filter(filterItem),
         }))
         .filter(section => section.items.length > 0);
 
@@ -210,7 +226,14 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
     return (
         <div className="pr-list">
             <Card padding="lg" style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <div
+                    style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '15px',
+                    }}
+                >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <h2 style={{ margin: 0, fontSize: '18px' }}>Your Reviews</h2>
                         {!loading && sections.length > 0 && (
@@ -218,15 +241,23 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
                                 <Button
                                     variant="secondary"
                                     size="sm"
-                                    onClick={collapsedSections.size === sections.length ? expandAll : collapseAll}
+                                    onClick={
+                                        collapsedSections.size === sections.length
+                                            ? expandAll
+                                            : collapseAll
+                                    }
                                 >
-                                    {collapsedSections.size === sections.length ? 'Expand All' : 'Collapse All'}
+                                    {collapsedSections.size === sections.length
+                                        ? 'Expand All'
+                                        : 'Collapse All'}
                                 </Button>
                             </div>
                         )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <Button onClick={loadList} variant="secondary" loading={loading}>Refresh</Button>
+                        <Button onClick={loadList} variant="secondary" loading={loading}>
+                            Refresh
+                        </Button>
                     </div>
                 </div>
 
@@ -244,13 +275,15 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
                     />
 
                     {/* Filter Dropdowns Row */}
-                    <div style={{
-                        display: 'flex',
-                        gap: '12px',
-                        marginTop: '12px',
-                        flexWrap: 'wrap',
-                        alignItems: 'flex-end'
-                    }}>
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '12px',
+                            marginTop: '12px',
+                            flexWrap: 'wrap',
+                            alignItems: 'flex-end',
+                        }}
+                    >
                         {/* Status Filter (static options) */}
                         <Select
                             label="Status"
@@ -271,7 +304,9 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
                                 >
                                     <option value="">{config.allLabel}</option>
                                     {options.map(val => (
-                                        <option key={val} value={val}>{val}</option>
+                                        <option key={val} value={val}>
+                                            {val}
+                                        </option>
                                     ))}
                                 </Select>
                             );
@@ -292,12 +327,15 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
 
                     {/* Results count */}
                     {hasActiveFilters && (
-                        <div style={{
-                            fontSize: '12px',
-                            color: 'var(--text-secondary)',
-                            marginTop: '12px'
-                        }}>
-                            Showing {filteredSections.reduce((acc, s) => acc + s.items.length, 0)} of {sections.reduce((acc, s) => acc + s.items.length, 0)} items
+                        <div
+                            style={{
+                                fontSize: '12px',
+                                color: 'var(--text-secondary)',
+                                marginTop: '12px',
+                            }}
+                        >
+                            Showing {filteredSections.reduce((acc, s) => acc + s.items.length, 0)}{' '}
+                            of {sections.reduce((acc, s) => acc + s.items.length, 0)} items
                         </div>
                     )}
                 </div>
@@ -307,140 +345,252 @@ export default function PRList({ onOpenReview, onOpenPluginOutput, theme, review
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                         {filteredSections.length === 0 && hasActiveFilters ? (
-                            <div style={{
-                                fontSize: '14px',
-                                color: 'var(--text-secondary)',
-                                fontStyle: 'italic',
-                                textAlign: 'center',
-                                padding: '40px 20px'
-                            }}>
+                            <div
+                                style={{
+                                    fontSize: '14px',
+                                    color: 'var(--text-secondary)',
+                                    fontStyle: 'italic',
+                                    textAlign: 'center',
+                                    padding: '40px 20px',
+                                }}
+                            >
                                 No items match the current filters
                             </div>
-                        ) : filteredSections.map((section, sIdx) => {
-                            const isCollapsed = collapsedSections.has(section.name);
-                            return (
-                                <div key={sIdx}>
-                                    <h3
-                                        onClick={() => toggleSection(section.name)}
-                                        style={{
-                                            fontSize: '13px',
-                                            textTransform: 'uppercase',
-                                            letterSpacing: '0.05em',
-                                            color: 'var(--text-secondary)',
-                                            marginBottom: isCollapsed ? '0' : '12px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '8px',
-                                            borderBottom: '1px solid var(--border)',
-                                            paddingBottom: '8px',
-                                            cursor: 'pointer',
-                                            userSelect: 'none'
-                                        }}
-                                        className="hover-line"
-                                    >
-                                        <span style={{
-                                            display: 'inline-block',
-                                            transition: 'transform 0.2s ease',
-                                            transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                                            fontSize: '10px'
-                                        }}>
-                                            ▼
-                                        </span>
-                                        {section.name}
-                                        <Badge size="sm" variant="neutral" style={{ marginLeft: 'auto', opacity: 0.7 }}>
-                                            {section.items.length}
-                                        </Badge>
-                                    </h3>
-                                    {!isCollapsed && (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                            {section.items.length === 0 ? (
-                                                <div style={{ fontSize: '14px', color: 'var(--text-secondary)', fontStyle: 'italic', paddingLeft: '10px' }}>
-                                                    No items in this section
-                                                </div>
-                                            ) : (
-                                                section.items.map((item, iIdx) => (
-                                                    <Card
-                                                        key={iIdx}
-                                                        variant="outlined"
-                                                        padding="md"
-                                                        hover
-                                                        className="pr-item-card"
+                        ) : (
+                            filteredSections.map((section, sIdx) => {
+                                const isCollapsed = collapsedSections.has(section.name);
+                                return (
+                                    <div key={sIdx}>
+                                        <h3
+                                            onClick={() => toggleSection(section.name)}
+                                            style={{
+                                                fontSize: '13px',
+                                                textTransform: 'uppercase',
+                                                letterSpacing: '0.05em',
+                                                color: 'var(--text-secondary)',
+                                                marginBottom: isCollapsed ? '0' : '12px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px',
+                                                borderBottom: '1px solid var(--border)',
+                                                paddingBottom: '8px',
+                                                cursor: 'pointer',
+                                                userSelect: 'none',
+                                            }}
+                                            className="hover-line"
+                                        >
+                                            <span
+                                                style={{
+                                                    display: 'inline-block',
+                                                    transition: 'transform 0.2s ease',
+                                                    transform: isCollapsed
+                                                        ? 'rotate(-90deg)'
+                                                        : 'rotate(0deg)',
+                                                    fontSize: '10px',
+                                                }}
+                                            >
+                                                ▼
+                                            </span>
+                                            {section.name}
+                                            <Badge
+                                                size="sm"
+                                                variant="neutral"
+                                                style={{ marginLeft: 'auto', opacity: 0.7 }}
+                                            >
+                                                {section.items.length}
+                                            </Badge>
+                                        </h3>
+                                        {!isCollapsed && (
+                                            <div
+                                                style={{
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    gap: '8px',
+                                                }}
+                                            >
+                                                {section.items.length === 0 ? (
+                                                    <div
                                                         style={{
-                                                            display: 'flex',
-                                                            justifyContent: 'space-between',
-                                                            alignItems: 'center',
-                                                        }}
-                                                        onClick={() => {
-                                                            if (item.number <= 0) return;
-                                                            if (reviewLocation === 'github') {
-                                                                window.open(item.url, '_blank');
-                                                            } else {
-                                                                onOpenReview(item.owner, item.repo, item.number);
-                                                            }
+                                                            fontSize: '14px',
+                                                            color: 'var(--text-secondary)',
+                                                            fontStyle: 'italic',
+                                                            paddingLeft: '10px',
                                                         }}
                                                     >
-                                                        <div style={{ flex: 1 }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                                                                <Badge variant={mapStatusToVariant(item.status)} size="sm">
-                                                                    {item.status}
-                                                                </Badge>
-                                                                <span
-                                                                    className={item.number > 0 ? "pr-title" : ""}
-                                                                    style={{ fontWeight: 500, fontSize: '15px' }}
+                                                        No items in this section
+                                                    </div>
+                                                ) : (
+                                                    section.items.map((item, iIdx) => (
+                                                        <Card
+                                                            key={iIdx}
+                                                            variant="outlined"
+                                                            padding="md"
+                                                            hover
+                                                            className="pr-item-card"
+                                                            style={{
+                                                                display: 'flex',
+                                                                justifyContent: 'space-between',
+                                                                alignItems: 'center',
+                                                            }}
+                                                            onClick={() => {
+                                                                if (item.number <= 0) return;
+                                                                if (reviewLocation === 'github') {
+                                                                    window.open(item.url, '_blank');
+                                                                } else {
+                                                                    onOpenReview(
+                                                                        item.owner,
+                                                                        item.repo,
+                                                                        item.number
+                                                                    );
+                                                                }
+                                                            }}
+                                                        >
+                                                            <div style={{ flex: 1 }}>
+                                                                <div
+                                                                    style={{
+                                                                        display: 'flex',
+                                                                        alignItems: 'center',
+                                                                        gap: '10px',
+                                                                        marginBottom: '4px',
+                                                                    }}
                                                                 >
-                                                                    {item.title}
-                                                                </span>
-                                                            </div>
-                                                            {item.number ? (
-                                                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                                                                    {item.owner}/{item.repo} <span style={{ color: 'var(--accent)' }}>#{item.number}</span>
-                                                                    {item.author && <span style={{ marginLeft: '8px', color: 'var(--text-secondary)' }}>by {item.author}</span>}
+                                                                    <Badge
+                                                                        variant={mapStatusToVariant(
+                                                                            item.status
+                                                                        )}
+                                                                        size="sm"
+                                                                    >
+                                                                        {item.status}
+                                                                    </Badge>
+                                                                    <span
+                                                                        className={
+                                                                            item.number > 0
+                                                                                ? 'pr-title'
+                                                                                : ''
+                                                                        }
+                                                                        style={{
+                                                                            fontWeight: 500,
+                                                                            fontSize: '15px',
+                                                                        }}
+                                                                    >
+                                                                        {item.title}
+                                                                    </span>
                                                                 </div>
-                                                            ) : (
-                                                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                                                                    Non-PR item
+                                                                {item.number ? (
+                                                                    <div
+                                                                        style={{
+                                                                            fontSize: '13px',
+                                                                            color: 'var(--text-secondary)',
+                                                                            fontFamily:
+                                                                                'var(--font-mono)',
+                                                                        }}
+                                                                    >
+                                                                        {item.owner}/{item.repo}{' '}
+                                                                        <span
+                                                                            style={{
+                                                                                color: 'var(--accent)',
+                                                                            }}
+                                                                        >
+                                                                            #{item.number}
+                                                                        </span>
+                                                                        {item.author && (
+                                                                            <span
+                                                                                style={{
+                                                                                    marginLeft:
+                                                                                        '8px',
+                                                                                    color: 'var(--text-secondary)',
+                                                                                }}
+                                                                            >
+                                                                                by {item.author}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                ) : (
+                                                                    <div
+                                                                        style={{
+                                                                            fontSize: '12px',
+                                                                            color: 'var(--text-secondary)',
+                                                                            fontStyle: 'italic',
+                                                                        }}
+                                                                    >
+                                                                        Non-PR item
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            {item.number > 0 && (
+                                                                <div
+                                                                    style={{
+                                                                        display: 'flex',
+                                                                        gap: '12px',
+                                                                        marginLeft: '15px',
+                                                                    }}
+                                                                >
+                                                                    <Button
+                                                                        onClick={e => {
+                                                                            e.stopPropagation();
+                                                                            onOpenPluginOutput(
+                                                                                item.owner,
+                                                                                item.repo,
+                                                                                item.number
+                                                                            );
+                                                                        }}
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                    >
+                                                                        Plugins
+                                                                    </Button>
+                                                                    <Button
+                                                                        onClick={e => {
+                                                                            e.stopPropagation();
+                                                                            window.open(
+                                                                                item.url,
+                                                                                '_blank'
+                                                                            );
+                                                                        }}
+                                                                        variant="secondary"
+                                                                        size="sm"
+                                                                    >
+                                                                        GitHub
+                                                                    </Button>
+                                                                    <Button
+                                                                        onClick={e => {
+                                                                            e.stopPropagation();
+                                                                            onOpenReview(
+                                                                                item.owner,
+                                                                                item.repo,
+                                                                                item.number
+                                                                            );
+                                                                        }}
+                                                                        size="sm"
+                                                                    >
+                                                                        Review
+                                                                    </Button>
                                                                 </div>
                                                             )}
-                                                        </div>
-                                                        {item.number > 0 && (
-                                                            <div style={{ display: 'flex', gap: '12px', marginLeft: '15px' }}>
-                                                                <Button
-                                                                    onClick={(e) => { e.stopPropagation(); onOpenPluginOutput(item.owner, item.repo, item.number); }}
-                                                                    variant="ghost"
-                                                                    size="sm"
-                                                                >
-                                                                    Plugins
-                                                                </Button>
-                                                                <Button
-                                                                    onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank'); }}
-                                                                    variant="secondary"
-                                                                    size="sm"
-                                                                >
-                                                                    GitHub
-                                                                </Button>
-                                                                <Button
-                                                                    onClick={(e) => { e.stopPropagation(); onOpenReview(item.owner, item.repo, item.number); }}
-                                                                    size="sm"
-                                                                >
-                                                                    Review
-                                                                </Button>
-                                                            </div>
-                                                        )}
-                                                    </Card>
-                                                ))
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
+                                                        </Card>
+                                                    ))
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })
+                        )}
                     </div>
                 )}
             </Card>
 
             <Card padding="lg">
                 <h2 style={{ marginTop: 0, fontSize: '18px' }}>Open Review Manually</h2>
-                <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                <form
+                    onSubmit={handleSubmit}
+                    style={{
+                        display: 'flex',
+                        gap: '12px',
+                        alignItems: 'flex-end',
+                        flexWrap: 'wrap',
+                    }}
+                >
                     <Input
                         label="Owner"
                         type="text"

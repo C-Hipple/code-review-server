@@ -914,9 +914,62 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
     (setq sb (concat sb "\n"))
     sb))
 
-(defun crs--render-and-update (buffer content &optional target-line)
+(defun crs--find-position-in-diff (filename position)
+  "Find the line number in the current buffer for FILENAME at POSITION.
+POSITION is the diff position (count of content lines from first hunk).
+Returns the line number, or nil if not found."
+  (when (and filename position)
+    (save-excursion
+      (goto-char (point-min))
+      (let ((target-file nil)
+            (current-position 0)
+            (first-hunk-seen nil)
+            (found-line nil))
+        ;; Find the file header
+        (while (and (not found-line) (not (eobp)))
+          (let* ((line-start (line-beginning-position))
+                 (line-end (line-end-position))
+                 (line (buffer-substring-no-properties line-start line-end)))
+            (cond
+             ;; File header - simplified format
+             ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+              (setq target-file (match-string 2 line))
+              (setq first-hunk-seen nil)
+              (setq current-position 0))
+
+             ;; Standard diff header
+             ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+              (setq target-file (match-string 1 line))
+              (setq first-hunk-seen nil)
+              (setq current-position 0))
+
+             ;; Hunk header
+             ((string-prefix-p "@@ " line)
+              (when (not first-hunk-seen)
+                (setq first-hunk-seen t)
+                (setq current-position 0)))
+
+             ;; Skip comment blocks
+             ((string-match-p "^[[:space:]]*[│┌└]" line)
+              nil)
+
+             ;; Content line
+             ((and first-hunk-seen
+                   (string= target-file filename)
+                   (or (string-prefix-p "+" line)
+                       (string-prefix-p "-" line)
+                       (string-prefix-p " " line)))
+              (setq current-position (1+ current-position))
+              (when (= current-position position)
+                (setq found-line (line-number-at-pos))))))
+          (forward-line 1))
+        found-line))))
+
+(defun crs--render-and-update (buffer content &optional target-line target-context)
   "Render CONTENT (which can be a string, JSON-RPC result alist, or nil) into BUFFER.
-If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
+If CONTENT is nil, re-renders from stored data (useful for toggle operations).
+TARGET-LINE is a fallback line number. TARGET-CONTEXT is (filename position file-line)
+for more robust position restoration."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
           (old-pos (point))
@@ -961,6 +1014,9 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
           (setq new-comments (seq-filter (lambda (c)
                                            (not (eq (cdr (assq 'outdated c)) t)))
                                          comments))
+          ;; seq-filter returns nil for empty results, convert to empty vector
+          (when (null new-comments)
+            (setq new-comments []))
           (setq new-outdated-comments outdated-comments)
           (setq new-metadata metadata)
           (setq new-reviews reviews)
@@ -1038,14 +1094,35 @@ If CONTENT is nil, re-renders from stored data (useful for toggle operations)."
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
 
-      (let ((final-pos (if target-line
-                           (progn
-                             (goto-char (point-min))
-                             (forward-line (1- target-line))
-                             (if (> (point) (point-max))
-                                 (point-max)
-                               (point)))
-                         (min old-pos (point-max)))))
+      (let ((final-pos
+             (cond
+              ;; First try using context (filename + position) for accurate restoration
+              ((and target-context (nth 0 target-context) (nth 1 target-context))
+               (let* ((ctx-filename (nth 0 target-context))
+                      (ctx-position (nth 1 target-context))
+                      (found-line (crs--find-position-in-diff ctx-filename ctx-position)))
+                 (if found-line
+                     (progn
+                       (goto-char (point-min))
+                       (forward-line (1- found-line))
+                       (point))
+                   ;; Fallback to target-line if context-based search fails
+                   (when target-line
+                     (goto-char (point-min))
+                     (forward-line (1- target-line))
+                     (if (> (point) (point-max))
+                         (point-max)
+                       (point))))))
+              ;; Fallback to absolute line number
+              (target-line
+               (progn
+                 (goto-char (point-min))
+                 (forward-line (1- target-line))
+                 (if (> (point) (point-max))
+                     (point-max)
+                   (point))))
+              ;; Default: restore old position
+              (t (min old-pos (point-max))))))
         (goto-char final-pos)
         ;; Also update point in any windows showing this buffer
         (dolist (win (get-buffer-window-list buffer nil t))
@@ -1196,6 +1273,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "When non-nil, we're editing an existing local comment with this ID.")
 (defvar-local crs--comment-original-line nil
   "The line number in the review buffer where the comment was started.")
+(defvar-local crs--comment-original-context nil
+  "Context for restoring position: (filename position file-line).")
 
 ;; Buffer-local variables for storing PR data separately
 (defvar-local crs--buffer-diff nil
@@ -1226,6 +1305,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
         (reply-to-id crs--comment-reply-to-id)
         (editing-id crs--comment-editing-id)
         (original-line crs--comment-original-line)
+        (original-context crs--comment-original-context)
         (position (if crs--comment-reply-to-id
                       nil
                     crs--comment-position)))
@@ -1246,7 +1326,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
                    (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
                  (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
                    (when review-buffer
-                     (crs--render-and-update review-buffer result original-line))
+                     (crs--render-and-update review-buffer result original-line original-context))
                    (message "Comment updated successfully")
                    (kill-buffer-and-window))))))
         ;; Adding a new comment
@@ -1265,7 +1345,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
                  (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
                (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
                  (when review-buffer
-                   (crs--render-and-update review-buffer result original-line))
+                   (crs--render-and-update review-buffer result original-line original-context))
                  (message "Comment added successfully")
                  (kill-buffer-and-window))))))))))
 
@@ -1514,7 +1594,10 @@ If called interactively, attempts to guess parameters from context."
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number)))
         (editing (not (null local-comment-id)))
-        (original-line (line-number-at-pos)))
+        (original-line (line-number-at-pos))
+        ;; Store context for position restoration: filename, position, and file-line
+        (original-context (when filename
+                            (list filename position line))))
     (with-current-buffer buffer
       (comment-edit-mode)
       (erase-buffer)
@@ -1526,6 +1609,7 @@ If called interactively, attempts to guess parameters from context."
       (setq crs--comment-reply-to-id reply-to-id)
       (setq crs--comment-editing-id local-comment-id)
       (setq crs--comment-original-line original-line)
+      (setq crs--comment-original-context original-context)
       ;; If editing, pre-populate with existing body
       (when (and editing local-comment-body)
         (insert local-comment-body)))
@@ -1680,6 +1764,7 @@ If the body is empty, prompts the user."
   "Comment on the review."
   (interactive)
   (crs-submit-review "COMMENT"))
+
 
 (defun crs-request-changes-review ()
   "Request changes on the review."
@@ -1877,5 +1962,6 @@ BRANCH-NAME is the name of the branch to checkout."
     (message "Warning: Could not find branch name in Refs line")))
 
 (provide 'crs-client)
+
 
 ;;; crs-client.el ends here

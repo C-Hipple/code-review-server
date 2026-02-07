@@ -1,11 +1,11 @@
 # Plugins
 
-![Plugin Web Interface](img/plugin_web.png)
-
 Plugins are external projects which are expected to be discoverable on your `$PATH`, and are called per PR.
 You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
 
-For full plugin development, check the plugin example_plugin contained in this repo to understand the interface of building your own plugin. You can do it in any language you'd like.
+![Plugin Web Interface](img/plugin_web.png)
+
+This image shows the plugin output in the bun_client when reviewing a PR in this repository.
 
 ## Configuration
 

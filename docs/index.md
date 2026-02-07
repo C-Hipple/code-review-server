@@ -12,6 +12,7 @@ code-review-server is a service which runs highly configurable workflows to load
 - [Configuration](configuration.md): Detailed guide on `codereviewserver.toml` configuration, including workflows and general settings.
 - [Filters](filters.md): Learn how to filter PRs in your workflows with powerful query options.
 - [Plugins](plugins.md): Extend the server's functionality with custom plugins or use the included AI-powered ones.
+- [Reviewing Code](reviewing.md): Learn about the fast, cached, and LSP-integrated review process.
 - [JSON-RPC Protocol](protocol.md): The full specification of the JSON-RPC API used by clients.
 - [Building Clients](building_clients.md): Guide for developers wishing to create new clients for Code Review Server.
 

@@ -6,8 +6,10 @@ It also supports doing local code reviews via your preferred client, allowing yo
 
 It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react) and an emacs client.
 
+web client review list
 ![Bun Client](docs/img/bun-client-list.png)
 
+Emacs client review list
 ![Emacs Client](docs/img/emacs-client.png)
 
 ## Documentation

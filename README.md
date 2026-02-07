@@ -6,13 +6,13 @@ It is designed to be client-agnostic, communicating via JSON-RPC. It ships with 
 
 ## Documentation
 
-Full documentation is available in the [docs/](docs/) directory.
+Full documentation is available at [https://code-review-server.readthedocs.io/en/latest/](https://code-review-server.readthedocs.io/en/latest/)
 
-- [Configuration](docs/configuration.md)
-- [Clients](docs/clients.md)
-- [Filters](docs/filters.md)
-- [Plugins](docs/plugins.md)
-- [Protocol](docs/protocol.md)
+- [Configuration](https://code-review-server.readthedocs.io/en/latest/configuration.html)
+- [Clients](https://code-review-server.readthedocs.io/en/latest/clients.html)
+- [Filters](https://code-review-server.readthedocs.io/en/latest/filters.html)
+- [Plugins](https://code-review-server.readthedocs.io/en/latest/plugins.html)
+- [Protocol](https://code-review-server.readthedocs.io/en/latest/protocol.html)
 
 ## Quickstart
 
@@ -25,6 +25,32 @@ Full documentation is available in the [docs/](docs/) directory.
     ```bash
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
     export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
+    ```
+
+    Minimal `~/.config/codereviewserver.toml`:
+    ```toml
+    Repos = ["owner/repo"]
+    GithubUsername = "your-username"
+    AutoWorktree = true
+
+    [[Workflows]]
+    WorkflowType = "SyncReviewRequestsWorkflow"
+    Name = "My PRs"
+    Filters = ["FilterMyPRs"]
+    SectionTitle = "PRs to Review"
+
+    [[Workflows]]
+    WorkflowType = "SyncReviewRequestsWorkflow"
+    Name = "PRs to Review"
+    Filters = ["FilterNotDraft", "FilterMyReviewRequested"]
+    SectionTitle = "PRs to Review"
+
+    [[Plugins]]
+    Name = "Summarize Diff"
+    Command = "summarize_diff"
+    IncludeDiff = true
+    IncludeHeaders = true
+    IncludeComments = true
     ```
 
 3.  **Install Server**
@@ -43,7 +69,7 @@ Full documentation is available in the [docs/](docs/) directory.
     ```bash
     cd bun_client
     bun install && bun run build
-    ./start-server
+    bun start
     ```
 
     **Emacs Client (Brief):**

@@ -10,7 +10,7 @@ The web client is packaged with bun, and has a bun backend with a react frontend
 
 1. `cd` to `bun_client`
 2. `bun install && bun run build`
-3. `./start-server`
+3. `bun start`
 
 ## Emacs Client
 

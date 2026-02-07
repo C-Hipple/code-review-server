@@ -9,7 +9,7 @@
         "bun": "latest"
     },
     "scripts": {
-        "start": "./start_server.sh",
+        "start": "bun run server.ts",
         "dev": "bun run dev:server & bun run dev:frontend",
         "dev:server": "bun --watch server.ts",
         "dev:frontend": "bun --filter frontend dev",

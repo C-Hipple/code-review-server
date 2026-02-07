@@ -1,302 +1,50 @@
 # code-review-server
 
-code-review-server is a service which runs highly configurable workflows to load code reviews which your are interested into easily managed customizable interfaces.
+code-review-server is a service which runs highly configurable workflows to load code reviews which you are interested into easily managed customizable interfaces.
 
-As the name implies, this repo is for a backend server service, which you'll need a client to attach to.
+It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react) and an emacs client.
 
-It ships with a web client and an emacs client, but you can easily build your own using the docs from review_protocol.md
+## Documentation
 
-The web client can be found in `bun_client`
-the emacs client is in client.el
+Full documentation is available in the [docs/](docs/) directory.
+
+- [Configuration](docs/configuration.md)
+- [Clients](docs/clients.md)
+- [Filters](docs/filters.md)
+- [Plugins](docs/plugins.md)
+- [Protocol](docs/protocol.md)
 
 ## Quickstart
 
-1. Clone the repository
+1.  **Clone the repository**
 
-2. Configure your toml config per guidelines below && setup your environment variables
-```bash
-export CRS_GITHUB_TOKEN="Github Token"  # Required.
-export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
-```
+2.  **Configure environment**
 
-3. compile the go server with `go install ./...`
+    Create your config at `~/.config/codereviewserver.toml` (see [Configuration](docs/configuration.md)).
 
-You need to do `go install` so that the server is installed in system PATH and that clients can find it.  Clients are responsibile for starting the server process (mirroring the implementation of LSPs)
+    ```bash
+    export CRS_GITHUB_TOKEN="Github Token"  # Required.
+    export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
+    ```
 
-Doing `./...` ensures that the server binary and the included plugins are installed.
+3.  **Install Server**
 
-### For the web client (using bun)
+    ```bash
+    go install ./...
+    ```
 
-The web client is packaged with bun, and has a bun backend with a react frontend.  If you build and run the bun backend, you'll get a working webserver on localhost:3000 which lists all of your PRs.  From there you can
+    This installs the server binary and included plugins to your `$GOPATH/bin`.
 
-4. `cd` to `bun_client`
-5. `bun install && bun run build`
-6. `./start-server`
+4.  **Run a Client**
 
-### For emacs client
+    See [Clients](docs/clients.md) for detailed instructions on running the Web or Emacs clients.
 
-4. open `client.el`  && evaluate the buffer
-5. run commands
+    **Web Client (Brief):**
+    ```bash
+    cd bun_client
+    bun install && bun run build
+    ./start-server
+    ```
 
-```elisp
-(crs-start-server) ;; to start the processing
-(crs-get-reviews)  ;; Load your required reviews into an ephermeral org-mode buffer
-
-;; To start a review
-(crs-start-review-at-point)  ;; when your cursor is on a github URL
-
-
-(crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
-```
-
-Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
-
-## Installation
-
-```bash
-git clone git@github.com/C-Hipple/gtdbot
-cd code-review-server
-go install
-```
-
-
-## Configuration
-
-code-review-server works from a toml config expected at the path `~/.config/codereviewserver.toml`.  Storage files like the database and lock files are kept in `~/.crs/`. A valid github api token is also expected.  If you are using fine-grained tokens, ensure you have access to pull requests, discussions, and commit status, and actions data.
-
-
-```bash
-export CRS_GITHUB_TOKEN="Github Token"
-```
-
-the basic format is root level config for general fields
-
-and then a list of tables called [[Workflows]] configuring each workflow.
-
-The general fields are:
--
-```
-Repos: list[str] # List of "owner/repo" strings.
-SleepDuration: int (in minutes, optional, default=1 minute)
-GithubUsername: str [optional]
-RepoLocation: str [optional, default="~/"]
-SectionPriority: map[string]int [optional]
-```
-
-`SectionPriority` allows you to define the order of sections in your client.  Lower numbers come first. This map keys the section title to an integer.
-
-`Repos` is a list of repositories in the format "owner/repo".  Workflows can also define their own `Repos` list which overrides this global list.
-
-Github username is used for determining when using the NotMyPRs or FilterMyPRs filters, as well as for smart filters like FilterWaitingOnMe and FilterWaitingOnAuthor to correctly determine your review status.
-
-RepoLocation is the directory where you keep your git repositories. It defaults to "~/" if not defined.  This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
-
-
-Each workflow entry can take the fields:
-```
-WorkflowType: str
-Name: str
-Owner: str
-Filters: list[str]
-SectionTitle: str
-ReleaseCommandCheck: str
-Prune: string
-IncludeDiff: bool
-Teams: list[str]
-```
-
-The `GithubUsername` can be set at the top level of the config file. If a workflow does not have a `GithubUsername` set, it will inherit the top-level setting. This is useful for setting a default user for all workflows.
-
-The WorkflowType is one of the following strings:
-SyncReviewRequestsWorkflow
-SingleRepoSyncReviewRequestsWorkflow
-ListMyPRsWorkflow
-ProjectListWorkflow
-
-Prune tells the workflow runner whether or not to remove PRs from the section if they're no longer relevant.  The default behavior is to do nothing, and the options are:
-Delete: Removes the item from the section.
-Archive: Tags the items with :ARCHIVE: so that org functions can clean them up
-Keep: Leave existing items in the section untouched.
-
-IncludeDiff will add a subsection which includes the entire diff for the pull request.  Warning: This will make the file get very long very quickly.  I recommend only using this for specific workflows which target your non-main reviews org file.
-
-### Workflow specific configurations
-Single Repo Sync workflow takes an additional parameter, Repo.
-```
-Repo: str # "owner/repo" format
-```
-
-ListMyPRsWorkflow takes the additional parameter PRState, which is passed through to the github API when filtering for PRs.
-```
-PRState: str [open/closed/nil]
-```
-
-
-
-An Example complete config file is below
-
-```toml
-
-Repos = [
-    "C-Hipple/gtdbot",
-    "C-Hipple/diff-lsp",
-    "C-Hipple/diff-lsp.el",
-]
-SleepDuration = 5
-
-[[Workflows]]
-WorkflowType = "SyncReviewRequestsWorkflow"
-Name = "List Open PRs"
-Owner = "C-Hipple"
-Filters = ["FilterNotDraft"]
-SectionTitle = "Open PRs"
-Prune = "Archive"
-
-[[Workflows]]
-WorkflowType = "ListMyPRsWorkflow"
-Name = "List Closed PRs"
-Owner = "C-Hipple"
-SectionTitle = "Closed PRs"
-Prune = "Delete"
-```
-
-## Filters
-
-Each workflow can use the available filters:
-
-*   `FilterMyReviewRequested` - PRs where you are personally requested as a reviewer
-*   `FilterNotDraft` - Exclude draft PRs
-*   `FilterIsDraft` - Only include draft PRs
-*   `FilterNotMyPRs` - Exclude PRs authored by you
-*   `FilterMyPRs` - Only include PRs authored by you
-*   `FilterCIPassing` - Only include PRs with passing CI/Actions
-*   `FilterCIFailing` - Only include PRs with failing CI/Actions
-*   `FilterStale` - PRs with no activity for more than 3 days
-*   `FilterNotStale` - PRs with activity within the last 3 days
-*   `FilterWaitingOnMe` - PRs where you are a requested reviewer and need to act
-*   `FilterWaitingOnAuthor` - PRs where you were the last to act and are waiting on the author
-*   `FilterByLabel:<label_name>` - Only include PRs with the specified label (e.g., `FilterByLabel:bug`)
-*   `FilterByAuthor:<username>` - Only include PRs authored by the specified user
-*   `FilterExcludeAuthor:<username>` - Exclude PRs authored by the specified user
-
-### Team-Based Filtering
-
-You can filter PRs by team reviewers by adding a `Teams` field to your workflow configuration. When `Teams` is specified, only PRs where one of those teams is requested as a reviewer will be included. Each workflow can specify its own list of teams, allowing different workflows to target different teams.
-
-```toml
-[[Workflows]]
-WorkflowType = "SyncReviewRequestsWorkflow"
-Name = "Growth Team Reviews"
-Owner = "your-org"
-Filters = ["FilterNotDraft"]
-Teams = ["growth-pod-review", "growth-and-purchase-pod"]
-SectionTitle = "Growth Team Reviews"
-Prune = "Archive"
-
-[[Workflows]]
-WorkflowType = "SyncReviewRequestsWorkflow"
-Name = "Backend Team Reviews"
-Owner = "your-org"
-Filters = ["FilterNotDraft"]
-Teams = ["backend-team", "api-reviewers"]
-SectionTitle = "Backend Reviews"
-Prune = "Archive"
-```
-
-Note: The `Teams` field uses team **slugs** (the URL-safe identifier), not display names. You can find a team's slug in the GitHub URL when viewing the team page.
-
-
-## JIRA Integration
-
-The `ProjectListWorkflow` pulls information from Jira to build a realtime list of all PRs which are linked to children cards of the Jira epic given in the config.
-
-Each workflow is tied to a single github repository, if you want multiple repos per project, create two workflows and have them use the same SectionTitle.
-
-```bash
-export JIRA_API_TOKEN="Jira API Token"
-export JIRA_API_EMAIL="your email with your jira account"
-```
-
-```toml
-JiraDomain="https://your-company.atlassain.net"
-
-[[Workflows]]
-WorkflowType = "ProjectListWorkflow"
-Name = "Project - Example"
-Owner = "C-Hipple"
-Repo = "diff-lsp"
-SectionTitle = "Diff LSP Upgrade Project"
-JiraEpic = "BOARD-123" # the epic key
-```
-
-
-## Release Checking (untested)
-
-Often for work-workflows, it's very important to know when your particular PR is not just merged, but released to production, or in a release client.
-
-You can configure a release check command which is run when PRs are added to the org file or updated.  CodeReviewServer will call-out to that program and expected a single string in response for
-
-example. If we have a program on our PATH variable named release-check, you should call it like this:
-
-```
-$ release-check C-Hipple code-review-server abcdef
-released
-
-$ release-check C-Hipple code-review-server hijklm
-release-client
-
-$ release-check C-Hipple code-review-server nopqrs
-merged
-```
-
-That string will then be put into the title line of the PR via the org-serializer.
-
-## Plugins
-
-Plugins are external projects which are expected to be discoverable on your `$PATH`, and are called per PR.
-You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
-
-For full plugin development, checkout the the full [docs](https://code-review-server.readthedocs.io/en/latest/)
-You can also check the plugin example_plugin contained in this repo to understand the interface of building your own plugin.  You can do it in any language you'd like.
-
-Add plugins to your `codereviewserver.toml` using `[[Plugins]]` tables:
-
-
-```toml
-[[Plugins]]
-Name = "Summarize Diff"
-Command = "summarize_diff"
-IncludeDiff = true     # Passes --diff flag
-IncludeHeaders = true  # Passes --headers flag (metadata)
-IncludeComments = true # Passes --comments flag
-
-[[Plugins]]
-Name = "Security Check"
-Command = "security_check"
-IncludeDiff = true
-IncludeHeaders = true
-IncludeComments = false
-```
-
-### Included Plugins
-
-- **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR.
-- **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
-
-Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
-
-
-## Emacs integration
-
-This project ships with `client.el` for running and configuring this in emacs seamlessly.
-
-### Installation
-
-#### Spacemacs
-```elisp
-   ;; in dotspacemacs-additional-packages
-   (code-review-server :location (recipe
-                      :fetcher github
-                      :repo "C-Hipple/gtdbot"
-                      :files ("*.el")))
-```
+    **Emacs Client (Brief):**
+    Evaluate `client.el` and run `(crs-start-server)`.

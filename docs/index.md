@@ -20,6 +20,8 @@ code-review-server is a service which runs highly configurable workflows to load
 
 1.  **Clone the repository**
 
+[Repo](https://www.github.com/C-Hipple/code-review-server)
+
 2.  **Configure environment**
 
     Create your config at `~/.config/codereviewserver.toml` (see [Configuration](configuration.md)).

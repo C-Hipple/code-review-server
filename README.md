@@ -2,7 +2,13 @@
 
 code-review-server is a service which runs highly configurable workflows to load code reviews which you are interested into easily managed customizable interfaces.
 
+It also supports doing local code reviews via your preferred client, allowing you to customize your experience such as doing them in your editor, using plugins, defining hotkeys, whatever you'd like.
+
 It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react) and an emacs client.
+
+![Bun Client](docs/img/bun-client-list.png)
+
+![Emacs Client](docs/img/emacs-client.png)
 
 ## Documentation
 

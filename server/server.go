@@ -274,9 +274,24 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+
+	// Ensure empty slices are returned as [] not null in JSON
+	if details.Comments == nil {
+		reply.Comments = []CommentJSON{}
+	} else {
+		reply.Comments = details.Comments
+	}
+	if details.OutdatedComments == nil {
+		reply.OutdatedComments = []CommentJSON{}
+	} else {
+		reply.OutdatedComments = details.OutdatedComments
+	}
+	if details.Reviews == nil {
+		reply.Reviews = []ReviewJSON{}
+	} else {
+		reply.Reviews = details.Reviews
+	}
+
 	return nil
 }
 

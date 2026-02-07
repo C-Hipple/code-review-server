@@ -1,5 +1,7 @@
 # Plugins
 
+![Plugin Web Interface](img/plugin_web.png)
+
 Plugins are external projects which are expected to be discoverable on your `$PATH`, and are called per PR.
 You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
 
@@ -31,3 +33,11 @@ IncludeComments = false
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
+
+## Writing a Plugin
+
+You can write a plugin in any language you like. The only requirement is that the binary must be discoverable on your `$PATH`.
+
+The `example_plugin` included in this repository demonstrates the interface and potential options.
+
+When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.

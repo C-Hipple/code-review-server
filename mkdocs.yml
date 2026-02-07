@@ -17,7 +17,13 @@ theme:
 
 nav:
   - Home: index.md
+  - Clients: clients.md
+  - Configuration: configuration.md
+  - Filters: filters.md
+  - Plugins: plugins.md
+  - Reviewing Code: reviewing.md
   - Protocol: protocol.md
+  - Building Clients: building_clients.md
   - GitHub API Notes: github_api_notes.md
 
 markdown_extensions:

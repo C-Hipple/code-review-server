@@ -26,6 +26,8 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
 1.  **Clone the repository**
 
+[Repo](https://www.github.com/C-Hipple/code-review-server)
+
 2.  **Configure environment**
 
     Create your config at `~/.config/codereviewserver.toml` (see [Configuration](docs/configuration.md)).

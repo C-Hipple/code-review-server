@@ -497,12 +497,12 @@ export default function CodeViewerModal({
                             fontSize: '12px',
                             background:
                                 currentFilePath === node.path ||
-                                currentFilePath.endsWith('/' + node.path)
+                                    currentFilePath.endsWith('/' + node.path)
                                     ? 'var(--bg-tertiary)'
                                     : 'transparent',
                             color:
                                 currentFilePath === node.path ||
-                                currentFilePath.endsWith('/' + node.path)
+                                    currentFilePath.endsWith('/' + node.path)
                                     ? 'var(--accent)'
                                     : 'var(--text-primary)',
                             userSelect: 'none',
@@ -519,11 +519,11 @@ export default function CodeViewerModal({
                             (e.currentTarget.style.background = 'var(--bg-tertiary)')
                         }
                         onMouseLeave={e =>
-                            (e.currentTarget.style.background =
-                                currentFilePath === node.path ||
+                        (e.currentTarget.style.background =
+                            currentFilePath === node.path ||
                                 currentFilePath.endsWith('/' + node.path)
-                                    ? 'var(--bg-tertiary)'
-                                    : 'transparent')
+                                ? 'var(--bg-tertiary)'
+                                : 'transparent')
                         }
                     >
                         <span style={{ fontSize: '14px', width: '16px', textAlign: 'center' }}>
@@ -787,13 +787,13 @@ export default function CodeViewerModal({
                                                 background: isLspActive
                                                     ? colors.bgInfoDim
                                                     : isTargetLine
-                                                      ? colors.bgWarningDim
-                                                      : 'transparent',
+                                                        ? colors.bgWarningDim
+                                                        : 'transparent',
                                                 borderLeft: isLspActive
                                                     ? `3px solid var(--accent)`
                                                     : isTargetLine
-                                                      ? `3px solid ${colors.warning}`
-                                                      : '3px solid transparent',
+                                                        ? `3px solid ${colors.warning}`
+                                                        : '3px solid transparent',
                                                 paddingLeft: '8px',
                                                 cursor: lsp.available ? 'pointer' : 'default',
                                             },
@@ -848,6 +848,7 @@ export default function CodeViewerModal({
                                         <LspPopover
                                             hover={lsp.lspData.hover}
                                             refs={lsp.lspData.refs}
+                                            definitions={lsp.lspData.definitions}
                                             variant="floating"
                                             onRefClick={(r) => {
                                                 const refPath = r.uri.replace('file://', '');

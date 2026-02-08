@@ -809,11 +809,11 @@ export default function Review({
                 const isInlineActive = activeLineIndex === idx;
                 const lineComments = item.file
                     ? comments.filter(
-                          c =>
-                              c.path === item.file &&
-                              (c.position === item.pos?.toString() ||
-                                  (c.position === '' && item.pos === 0))
-                      )
+                        c =>
+                            c.path === item.file &&
+                            (c.position === item.pos?.toString() ||
+                                (c.position === '' && item.pos === 0))
+                    )
                     : [];
                 const rootComments = lineComments.filter(c => !c.in_reply_to);
                 const isCollapsed = item.file ? collapsedFiles.has(item.file) : false;
@@ -1056,6 +1056,7 @@ export default function Review({
                                     <LspPopover
                                         hover={lsp.lspData.hover}
                                         refs={lsp.lspData.refs}
+                                        definitions={lsp.lspData.definitions}
                                         variant="inline"
                                         onRefClick={(r, e) => {
                                             const filePath = r.uri.replace('file://', '');
@@ -1190,11 +1191,11 @@ export default function Review({
             const isLspActive = activeLspIndex === idx;
             const lineComments = item.file
                 ? comments.filter(
-                      c =>
-                          c.path === item.file &&
-                          (c.position === item.pos?.toString() ||
-                              (c.position === '' && item.pos === 0))
-                  )
+                    c =>
+                        c.path === item.file &&
+                        (c.position === item.pos?.toString() ||
+                            (c.position === '' && item.pos === 0))
+                )
                 : [];
             const rootComments = lineComments.filter(c => !c.in_reply_to);
 
@@ -1266,6 +1267,7 @@ export default function Review({
                             <LspPopover
                                 hover={lsp.lspData.hover}
                                 refs={lsp.lspData.refs}
+                                definitions={lsp.lspData.definitions}
                                 variant="floating"
                                 onRefClick={(r, e) => {
                                     const filePath = r.uri.replace('file://', '');
@@ -1683,51 +1685,51 @@ export default function Review({
                         {/* Reviewers/Teams */}
                         {((metadata.reviewers && metadata.reviewers.length > 0) ||
                             (metadata.requested_teams && metadata.requested_teams.length > 0)) && (
-                            <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
-                                <div
-                                    style={{
-                                        fontSize: '11px',
-                                        color: 'var(--text-secondary)',
-                                        marginBottom: '6px',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.5px',
-                                    }}
-                                >
-                                    Requested Reviewers
+                                <div style={{ padding: '16px 20px', background: 'var(--bg-primary)' }}>
+                                    <div
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--text-secondary)',
+                                            marginBottom: '6px',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.5px',
+                                        }}
+                                    >
+                                        Requested Reviewers
+                                    </div>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                        {metadata.reviewers?.map((r, i) => (
+                                            <span
+                                                key={`rev-${i}`}
+                                                style={{
+                                                    background: 'var(--bg-tertiary)',
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    fontSize: '12px',
+                                                    color: 'var(--text-primary)',
+                                                }}
+                                            >
+                                                @{r}
+                                            </span>
+                                        ))}
+                                        {metadata.requested_teams?.map((t, i) => (
+                                            <span
+                                                key={`team-${i}`}
+                                                style={{
+                                                    background: colors.bgInfoDim,
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    fontSize: '12px',
+                                                    color: colors.accent,
+                                                    border: `1px solid ${colors.borderInfoDim}`,
+                                                }}
+                                            >
+                                                team:{t}
+                                            </span>
+                                        ))}
+                                    </div>
                                 </div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                    {metadata.reviewers?.map((r, i) => (
-                                        <span
-                                            key={`rev-${i}`}
-                                            style={{
-                                                background: 'var(--bg-tertiary)',
-                                                padding: '2px 8px',
-                                                borderRadius: '4px',
-                                                fontSize: '12px',
-                                                color: 'var(--text-primary)',
-                                            }}
-                                        >
-                                            @{r}
-                                        </span>
-                                    ))}
-                                    {metadata.requested_teams?.map((t, i) => (
-                                        <span
-                                            key={`team-${i}`}
-                                            style={{
-                                                background: colors.bgInfoDim,
-                                                padding: '2px 8px',
-                                                borderRadius: '4px',
-                                                fontSize: '12px',
-                                                color: colors.accent,
-                                                border: `1px solid ${colors.borderInfoDim}`,
-                                            }}
-                                        >
-                                            team:{t}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+                            )}
 
                         {/* Approved By */}
                         {metadata.approved_by && metadata.approved_by.length > 0 && (
@@ -1841,83 +1843,83 @@ export default function Review({
                     {(metadata.labels?.length > 0 ||
                         metadata.assignees?.length > 0 ||
                         metadata.milestone) && (
-                        <div
-                            style={{
-                                padding: '14px 20px',
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: '20px',
-                                borderTop: '1px solid var(--border)',
-                                background: 'var(--bg-primary)',
-                            }}
-                        >
-                            {metadata.labels && metadata.labels.length > 0 && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span
-                                        style={{
-                                            fontSize: '11px',
-                                            color: 'var(--text-secondary)',
-                                            textTransform: 'uppercase',
-                                        }}
-                                    >
-                                        Labels:
-                                    </span>
-                                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                        {metadata.labels.map((label, i) => (
-                                            <span
-                                                key={i}
-                                                style={{
-                                                    background: colors.bgMergedDim,
-                                                    color: colors.textMerged,
-                                                    padding: '2px 10px',
-                                                    borderRadius: '12px',
-                                                    fontSize: '11px',
-                                                    fontWeight: 500,
-                                                    border: `1px solid ${colors.borderMergedDim}`,
-                                                }}
-                                            >
-                                                {label}
-                                            </span>
-                                        ))}
+                            <div
+                                style={{
+                                    padding: '14px 20px',
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    gap: '20px',
+                                    borderTop: '1px solid var(--border)',
+                                    background: 'var(--bg-primary)',
+                                }}
+                            >
+                                {metadata.labels && metadata.labels.length > 0 && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span
+                                            style={{
+                                                fontSize: '11px',
+                                                color: 'var(--text-secondary)',
+                                                textTransform: 'uppercase',
+                                            }}
+                                        >
+                                            Labels:
+                                        </span>
+                                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                            {metadata.labels.map((label, i) => (
+                                                <span
+                                                    key={i}
+                                                    style={{
+                                                        background: colors.bgMergedDim,
+                                                        color: colors.textMerged,
+                                                        padding: '2px 10px',
+                                                        borderRadius: '12px',
+                                                        fontSize: '11px',
+                                                        fontWeight: 500,
+                                                        border: `1px solid ${colors.borderMergedDim}`,
+                                                    }}
+                                                >
+                                                    {label}
+                                                </span>
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
-                            {metadata.assignees && metadata.assignees.length > 0 && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span
-                                        style={{
-                                            fontSize: '11px',
-                                            color: 'var(--text-secondary)',
-                                            textTransform: 'uppercase',
-                                        }}
-                                    >
-                                        Assignees:
-                                    </span>
-                                    <span
-                                        style={{ fontSize: '13px', color: 'var(--text-primary)' }}
-                                    >
-                                        {metadata.assignees.map(a => `@${a}`).join(', ')}
-                                    </span>
-                                </div>
-                            )}
-                            {metadata.milestone && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span
-                                        style={{
-                                            fontSize: '11px',
-                                            color: 'var(--text-secondary)',
-                                            textTransform: 'uppercase',
-                                        }}
-                                    >
-                                        Milestone:
-                                    </span>
-                                    <span style={{ fontSize: '13px', color: 'var(--accent)' }}>
-                                        {metadata.milestone}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                    )}
+                                )}
+                                {metadata.assignees && metadata.assignees.length > 0 && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span
+                                            style={{
+                                                fontSize: '11px',
+                                                color: 'var(--text-secondary)',
+                                                textTransform: 'uppercase',
+                                            }}
+                                        >
+                                            Assignees:
+                                        </span>
+                                        <span
+                                            style={{ fontSize: '13px', color: 'var(--text-primary)' }}
+                                        >
+                                            {metadata.assignees.map(a => `@${a}`).join(', ')}
+                                        </span>
+                                    </div>
+                                )}
+                                {metadata.milestone && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span
+                                            style={{
+                                                fontSize: '11px',
+                                                color: 'var(--text-secondary)',
+                                                textTransform: 'uppercase',
+                                            }}
+                                        >
+                                            Milestone:
+                                        </span>
+                                        <span style={{ fontSize: '13px', color: 'var(--accent)' }}>
+                                            {metadata.milestone}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                     {/* Description */}
                     {metadata.body && (
@@ -2345,14 +2347,14 @@ export default function Review({
                                                             data.status === 'success'
                                                                 ? colors.bgSuccessDim
                                                                 : data.status === 'pending'
-                                                                  ? colors.bgWarningDim
-                                                                  : colors.bgDangerDim,
+                                                                    ? colors.bgWarningDim
+                                                                    : colors.bgDangerDim,
                                                         color:
                                                             data.status === 'success'
                                                                 ? colors.textSuccess
                                                                 : data.status === 'pending'
-                                                                  ? colors.textWarning
-                                                                  : colors.textDanger,
+                                                                    ? colors.textWarning
+                                                                    : colors.textDanger,
                                                         border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
                                                     }}
                                                 >

@@ -1,7 +1,14 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
-import { assets } from './embedded_assets';
+let assets: Record<string, any> = {};
+try {
+    // @ts-ignore
+    const assetsModule = await import('./embedded_assets');
+    assets = assetsModule.assets;
+} catch (e) {
+    console.log('[Server] Embedded assets not found or broken, skipping...');
+}
 
 const SERVER_PATH = Bun.which('crs') || 'crs';
 const DIFF_LSP_PATH = Bun.which('diff-lsp');
@@ -466,6 +473,23 @@ Type: ${type}
         // Serve static files
         let path = url.pathname;
         if (path === '/') path = '/index.html';
+
+        // 0. Development proxy to Vite
+        if (process.env.NODE_ENV === 'development') {
+            try {
+                const viteUrl = new URL(path, 'http://localhost:5173');
+                const response = await fetch(viteUrl.toString());
+                if (response.ok) {
+                    // Forward the response with corrected headers if needed
+                    return new Response(response.body, {
+                        status: response.status,
+                        headers: response.headers,
+                    });
+                }
+            } catch (e) {
+                // Vite might not be up yet, continue to other fallback routes
+            }
+        }
 
         // 1. Try embedded assets (for single-binary distribution)
         if (assets[path]) {

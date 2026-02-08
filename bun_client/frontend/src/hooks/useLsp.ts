@@ -5,6 +5,7 @@ import { API_BASE } from '../api';
 export interface LspData {
     hover: LspHover | null;
     refs: LspLocation[] | null;
+    definitions: LspLocation[] | null;
 }
 
 interface UseLspDiffOptions {
@@ -266,9 +267,10 @@ export function useLsp(options: UseLspOptions): UseLspResult {
             }
 
             try {
-                const [hover, refs] = await Promise.all([
+                const [hover, refs, defs] = await Promise.all([
                     client.hover(uri, queryLine, queryCol),
                     client.references(uri, queryLine, queryCol),
+                    client.definition(uri, queryLine, queryCol),
                 ]);
 
                 let hasHover = false;
@@ -283,8 +285,18 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 }
                 const hasRefs = refs && refs.length > 0;
 
-                if (hasHover || hasRefs) {
-                    const data = { hover, refs };
+                // Normalize definitions to array
+                let definitions: LspLocation[] | null = null;
+                if (defs) {
+                    if (Array.isArray(defs)) {
+                        definitions = defs.length > 0 ? defs : null;
+                    } else {
+                        definitions = [defs];
+                    }
+                }
+
+                if (hasHover || hasRefs || definitions) {
+                    const data = { hover, refs, definitions };
                     setLspData(data);
                     return data;
                 }

@@ -141,6 +141,7 @@ export class LspClient {
                     hover: { contentFormat: ['markdown', 'plaintext'] },
                     references: {},
                     definition: {},
+                    typeDefinition: {},
                 },
             },
         });
@@ -177,6 +178,13 @@ export class LspClient {
 
     async definition(uri: string, line: number, character: number): Promise<LspLocation | LspLocation[] | null> {
         return this.request('textDocument/definition', {
+            textDocument: { uri },
+            position: { line, character },
+        });
+    }
+
+    async typeDefinition(uri: string, line: number, character: number): Promise<LspLocation | LspLocation[] | null> {
+        return this.request('textDocument/typeDefinition', {
             textDocument: { uri },
             position: { line, character },
         });

@@ -1057,6 +1057,7 @@ export default function Review({
                                         hover={lsp.lspData.hover}
                                         refs={lsp.lspData.refs}
                                         definitions={lsp.lspData.definitions}
+                                        typeDefinitions={lsp.lspData.typeDefinitions}
                                         variant="inline"
                                         onRefClick={(r, e) => {
                                             const filePath = r.uri.replace('file://', '');
@@ -1268,6 +1269,7 @@ export default function Review({
                                 hover={lsp.lspData.hover}
                                 refs={lsp.lspData.refs}
                                 definitions={lsp.lspData.definitions}
+                                typeDefinitions={lsp.lspData.typeDefinitions}
                                 variant="floating"
                                 onRefClick={(r, e) => {
                                     const filePath = r.uri.replace('file://', '');

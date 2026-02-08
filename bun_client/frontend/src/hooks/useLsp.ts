@@ -6,6 +6,7 @@ export interface LspData {
     hover: LspHover | null;
     refs: LspLocation[] | null;
     definitions: LspLocation[] | null;
+    typeDefinitions: LspLocation[] | null;
 }
 
 interface UseLspDiffOptions {
@@ -267,10 +268,11 @@ export function useLsp(options: UseLspOptions): UseLspResult {
             }
 
             try {
-                const [hover, refs, defs] = await Promise.all([
+                const [hover, refs, defs, typeDefs] = await Promise.all([
                     client.hover(uri, queryLine, queryCol),
                     client.references(uri, queryLine, queryCol),
                     client.definition(uri, queryLine, queryCol),
+                    client.typeDefinition(uri, queryLine, queryCol),
                 ]);
 
                 let hasHover = false;
@@ -295,8 +297,18 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                     }
                 }
 
-                if (hasHover || hasRefs || definitions) {
-                    const data = { hover, refs, definitions };
+                // Normalize type definitions to array
+                let typeDefinitions: LspLocation[] | null = null;
+                if (typeDefs) {
+                    if (Array.isArray(typeDefs)) {
+                        typeDefinitions = typeDefs.length > 0 ? typeDefs : null;
+                    } else {
+                        typeDefinitions = [typeDefs];
+                    }
+                }
+
+                if (hasHover || hasRefs || definitions || typeDefinitions) {
+                    const data = { hover, refs, definitions, typeDefinitions };
                     setLspData(data);
                     return data;
                 }

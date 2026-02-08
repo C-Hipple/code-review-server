@@ -12,9 +12,11 @@ import {
     nord,
     nightOwl,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { rpcCall, API_BASE } from '../api';
+import { rpcCall } from '../api';
 import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
-import { LspClient, LspHover, LspLocation } from '../lsp';
+import { useLsp } from '../hooks/useLsp';
+import { getClickColumn } from '../utils/dom';
+import LspPopover from './LspPopover';
 import CodeViewerModal from './CodeViewerModal';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
@@ -198,15 +200,16 @@ export default function Review({
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
 
-    // LSP State
-    const [lspClient, setLspClient] = useState<LspClient | null>(null);
-    const [lspUri, setLspUri] = useState<string | null>(null);
-    const [lspData, setLspData] = useState<{
-        hover: LspHover | null;
-        refs: LspLocation[] | null;
-    } | null>(null);
-    const [repoExists, setRepoExists] = useState<boolean | null>(null);
-    const [lspAvailable, setLspAvailable] = useState<boolean | null>(null);
+    // LSP Hook
+    const lsp = useLsp({
+        mode: 'diff',
+        repoPath: metadata?.repo_path || null,
+        worktreePath: metadata?.worktree_path || '',
+        repoName: repo,
+        prNumber: number,
+        diffContent: diff,
+        enabled: !!diff && !!metadata,
+    });
 
     // Code Viewer Modal State
     const [codeViewers, setCodeViewers] = useState<
@@ -224,84 +227,6 @@ export default function Review({
     }, [owner, repo, number]);
 
     useEffect(() => {
-        if (!diff || !metadata) return;
-
-        const initLsp = async () => {
-            try {
-                // Check LSP availability
-                try {
-                    const lspRes = await fetch(`${API_BASE}/api/check-lsp`);
-                    const lspData = await lspRes.json();
-                    setLspAvailable(lspData.available);
-                    if (!lspData.available) {
-                        return;
-                    }
-                } catch (e) {
-                    console.error('Failed to check LSP availability', e);
-                    setLspAvailable(false);
-                    return;
-                }
-
-                const repoPath = metadata.repo_path;
-                setRepoExists(!!repoPath);
-
-                if (!repoPath) {
-                    console.log(`Repo ${repo} not found locally, skipping LSP initialization.`);
-                    return;
-                }
-
-                if (lspClient) {
-                    // Simple cleanup if needed, though we make a new one
-                }
-                const client = new LspClient();
-                client.connect();
-
-                // Prepare context for diff-lsp
-                // We use "code-review" as type to match server configuration
-                const path = await client.prepareContext(
-                    repo,
-                    repoPath,
-                    `PR #${number}`,
-                    'code-review',
-                    diff,
-                    metadata.worktree_path
-                );
-                const uri = `file://${path}`;
-                setLspUri(uri);
-
-                // Initialize standard LSP
-                console.log('LSP Initializing...');
-                try {
-                    await Promise.race([
-                        client.initialize('/'),
-                        new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('LSP Initialize timeout')), 5000)
-                        ),
-                    ]);
-                    console.log('LSP Initialize success');
-                } catch (e) {
-                    console.error('LSP Initialize error/timeout', e);
-                }
-                client.initialized();
-
-                // Open the document (the temp file we just created)
-                console.log('Sending didOpen for', uri);
-                await client.didOpen(uri, 'diff', 1, diff);
-
-                setLspClient(client);
-            } catch (e) {
-                console.error('LSP Init failed', e);
-            }
-        };
-
-        initLsp();
-
-        return () => {
-            // connection clean up handled by browser closing ws or GC
-        };
-    }, [diff, owner, repo, number]); // Re-init if diff changes
-
-    useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 setShowPlugins(false);
@@ -309,6 +234,7 @@ export default function Review({
                 setSubmitting(false);
                 setActiveLineIndex(null);
                 setActiveLspIndex(null);
+                lsp.clearData();
                 setActiveOutdatedFile(null);
             }
         };
@@ -675,121 +601,20 @@ export default function Review({
         }
     };
 
-    const getClickColumn = (e: React.MouseEvent, container: HTMLElement): number => {
-        let range: Range | null = null;
-        let offset = 0;
-
-        // Standard
-        if (document.caretRangeFromPoint) {
-            range = document.caretRangeFromPoint(e.clientX, e.clientY);
-        } else if ((document as any).caretPositionFromPoint) {
-            // Firefox
-            const pos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
-            if (pos) {
-                range = document.createRange();
-                range.setStart(pos.offsetNode, pos.offset);
-                range.collapse(true);
-            }
-        }
-
-        if (!range) return 0;
-
-        // Traverse text nodes to calculate offset relative to container
-        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-            const node = walker.currentNode;
-            if (node === range.startContainer) {
-                return offset + range.startOffset;
-            }
-            offset += node.textContent?.length || 0;
-        }
-        return 0;
-    };
-
     const handleCodeClick = async (
         idx: number,
-        file: string,
-        pos: number,
+        _file: string,
+        _pos: number,
         originalLineIndex: number,
         col: number
     ) => {
-        if (!lspAvailable || !repoExists) return;
+        if (!lsp.available || !metadata?.repo_path) return;
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
-            setLspData(null);
+            lsp.clearData();
         } else {
-            // Don't open comment box on code click
-            console.log(
-                'Code clicked:',
-                idx,
-                file,
-                pos,
-                'OriginalLine:',
-                originalLineIndex,
-                'Col:',
-                col
-            );
-
-            // Fetch LSP Data
-            if (lspClient && lspUri) {
-                console.log('Fetching LSP data for URI:', lspUri);
-                try {
-                    // Header is 5 lines followed by a newline, so diff starts at line 6 (0-indexed)
-                    const line = originalLineIndex + 6;
-                    // Add 1 to col to account for the diff prefix (+/- / space)
-                    const diffCol = col + 1;
-                    const [hover, refs] = await Promise.all([
-                        lspClient.hover(lspUri, line, diffCol),
-                        lspClient.references(lspUri, line, diffCol),
-                    ]);
-                    console.log('LSP Response - Hover:', hover, 'Refs:', refs);
-
-                    let hasHover = false;
-                    if (hover && hover.contents) {
-                        if (typeof hover.contents === 'string') {
-                            hasHover = hover.contents.length > 0;
-                        } else if (Array.isArray(hover.contents)) {
-                            hasHover = hover.contents.length > 0;
-                        } else if (typeof hover.contents === 'object') {
-                            hasHover = !!(hover.contents as any).value;
-                        }
-                    }
-                    const hasRefs = refs && refs.length > 0;
-
-                    if (hasHover || hasRefs) {
-                        setLspData({ hover, refs });
-                        setActiveLspIndex(idx);
-                    } else {
-                        // Placeholder for testing when LSP returns no data
-                        setLspData({
-                            hover: {
-                                contents: `### LSP Placeholder\nNo data found at line ${line}, char ${diffCol}.`,
-                            },
-                            refs: [],
-                        });
-                        setActiveLspIndex(idx);
-                    }
-                } catch (e) {
-                    console.error('Failed to fetch LSP data', e);
-                }
-            } else {
-                console.warn('LSP Client or URI not ready', !!lspClient, lspUri);
-                // Placeholder for testing when LSP is not connected
-                setLspData({
-                    hover: {
-                        contents:
-                            '### LSP Placeholder (Disconnected)\nThe LSP server is not yet connected or ready. This is a fallback test message.',
-                    },
-                    refs: [
-                        {
-                            uri: `file://${file}`,
-                            range: {
-                                start: { line: originalLineIndex, character: 0 },
-                                end: { line: originalLineIndex, character: 10 },
-                            },
-                        },
-                    ],
-                });
+            const result = await lsp.query(originalLineIndex, col);
+            if (result) {
                 setActiveLspIndex(idx);
             }
         }
@@ -1227,88 +1052,27 @@ export default function Review({
                                         ? `Replying to comment #${replyToId}`
                                         : `Commenting on ${item.file}:${item.pos}`}
                                 </div>
-                                {lspData && (
-                                    <div
-                                        style={{
-                                            marginBottom: '10px',
-                                            fontSize: '13px',
-                                            border: '1px solid var(--border)',
-                                            borderRadius: '4px',
-                                            overflow: 'hidden',
+                                {lsp.lspData && (
+                                    <LspPopover
+                                        hover={lsp.lspData.hover}
+                                        refs={lsp.lspData.refs}
+                                        variant="inline"
+                                        onRefClick={(r, e) => {
+                                            const filePath = r.uri.replace('file://', '');
+                                            setCodeViewers(prev => [
+                                                ...prev,
+                                                {
+                                                    id: Date.now(),
+                                                    filePath,
+                                                    line: r.range.start.line + 1,
+                                                    position: {
+                                                        x: e.clientX + 20,
+                                                        y: e.clientY - 50,
+                                                    },
+                                                },
+                                            ]);
                                         }}
-                                    >
-                                        <div
-                                            style={{
-                                                background: 'var(--bg-secondary)',
-                                                padding: '5px 10px',
-                                                fontWeight: 600,
-                                                borderBottom: '1px solid var(--border)',
-                                            }}
-                                        >
-                                            LSP Info
-                                        </div>
-                                        <div
-                                            style={{
-                                                padding: '10px',
-                                                background: 'var(--bg-primary)',
-                                            }}
-                                        >
-                                            {lspData.hover && (
-                                                <div style={{ marginBottom: '10px' }}>
-                                                    <strong>Hover:</strong>
-                                                    <pre
-                                                        style={{
-                                                            whiteSpace: 'pre-wrap',
-                                                            marginTop: '5px',
-                                                        }}
-                                                    >
-                                                        {typeof lspData.hover.contents === 'string'
-                                                            ? lspData.hover.contents
-                                                            : Array.isArray(lspData.hover.contents)
-                                                              ? lspData.hover.contents
-                                                                    .map(c =>
-                                                                        typeof c === 'string'
-                                                                            ? c
-                                                                            : c.value
-                                                                    )
-                                                                    .join('\n')
-                                                              : (lspData.hover.contents as any)
-                                                                    .value}
-                                                    </pre>
-                                                </div>
-                                            )}
-                                            {lspData.refs && lspData.refs.length > 0 && (
-                                                <div>
-                                                    <strong>
-                                                        References ({lspData.refs.length}):
-                                                    </strong>
-                                                    <ul
-                                                        style={{
-                                                            margin: '5px 0 0 20px',
-                                                            padding: 0,
-                                                        }}
-                                                    >
-                                                        {lspData.refs.map((r, i) => (
-                                                            <li key={i}>
-                                                                {r.uri} : {r.range.start.line + 1}
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                </div>
-                                            )}
-                                            {!lspData.hover &&
-                                                (!lspData.refs || lspData.refs.length === 0) && (
-                                                    <div
-                                                        style={{
-                                                            fontStyle: 'italic',
-                                                            color: 'var(--text-secondary)',
-                                                        }}
-                                                    >
-                                                        No information found.
-                                                    </div>
-                                                )}
-                                        </div>
-                                    </div>
+                                    />
                                 )}
                                 <textarea
                                     autoFocus
@@ -1446,17 +1210,6 @@ export default function Review({
                 lineContent = isCodeLine ? line.slice(1) : line;
             }
 
-            const getHoverContent = (hover: any) => {
-                if (!hover || !hover.contents) return '';
-                if (typeof hover.contents === 'string') return hover.contents;
-                if (Array.isArray(hover.contents)) {
-                    return hover.contents
-                        .map((c: any) => (typeof c === 'string' ? c : c.value))
-                        .join('\n');
-                }
-                return (hover.contents as any).value || '';
-            };
-
             return (
                 <div key={idx}>
                     <div
@@ -1509,93 +1262,27 @@ export default function Review({
                         >
                             {lineContent}
                         </span>
-                        {isLspActive && lspData && (
-                            <div
-                                style={{
-                                    position: 'absolute',
-                                    top: '100%',
-                                    left: '40px',
-                                    zIndex: 100,
-                                    background: 'var(--bg-secondary)',
-                                    border: '1px solid var(--border)',
-                                    borderRadius: '6px',
-                                    boxShadow: shadows.md,
-                                    padding: '12px',
-                                    maxWidth: '600px',
-                                    overflow: 'auto',
-                                    maxHeight: '300px',
+                        {isLspActive && lsp.lspData && (
+                            <LspPopover
+                                hover={lsp.lspData.hover}
+                                refs={lsp.lspData.refs}
+                                variant="floating"
+                                onRefClick={(r, e) => {
+                                    const filePath = r.uri.replace('file://', '');
+                                    setCodeViewers(prev => [
+                                        ...prev,
+                                        {
+                                            id: Date.now(),
+                                            filePath,
+                                            line: r.range.start.line + 1,
+                                            position: {
+                                                x: e.clientX + 20,
+                                                y: e.clientY - 50,
+                                            },
+                                        },
+                                    ]);
                                 }}
-                                onClick={e => e.stopPropagation()}
-                            >
-                                {lspData.hover && (
-                                    <div
-                                        style={{
-                                            fontSize: '13px',
-                                            lineHeight: '1.5',
-                                            color: 'var(--text-primary)',
-                                        }}
-                                    >
-                                        <Markdown>{getHoverContent(lspData.hover)}</Markdown>
-                                    </div>
-                                )}
-                                {lspData.refs && lspData.refs.length > 0 && (
-                                    <div
-                                        style={{
-                                            marginTop: '10px',
-                                            paddingTop: '10px',
-                                            borderTop: '1px solid var(--border)',
-                                            fontSize: '12px',
-                                        }}
-                                    >
-                                        <div
-                                            style={{
-                                                fontWeight: 600,
-                                                marginBottom: '5px',
-                                                color: 'var(--text-secondary)',
-                                            }}
-                                        >
-                                            References ({lspData.refs.length}):
-                                        </div>
-                                        <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
-                                            {lspData.refs.map((r, i) => (
-                                                <li
-                                                    key={i}
-                                                    onClick={e => {
-                                                        e.stopPropagation();
-                                                        const filePath = r.uri.replace(
-                                                            'file://',
-                                                            ''
-                                                        );
-                                                        // Open a new modal offset from the click position
-                                                        setCodeViewers(prev => [
-                                                            ...prev,
-                                                            {
-                                                                id: Date.now(),
-                                                                filePath,
-                                                                line: r.range.start.line + 1,
-                                                                position: {
-                                                                    x: e.clientX + 20,
-                                                                    y: e.clientY - 50,
-                                                                },
-                                                            },
-                                                        ]);
-                                                    }}
-                                                    style={{
-                                                        cursor: 'pointer',
-                                                        color: 'var(--accent)',
-                                                        textDecoration: 'underline',
-                                                        marginBottom: '2px',
-                                                    }}
-                                                    className="hover-link"
-                                                >
-                                                    {r.uri.split('/').pop()} :{' '}
-                                                    {r.range.start.line + 1}
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div>
-                                )}
-                            </div>
+                            />
                         )}
                     </div>
                     {rootComments.map(rc => {
@@ -2404,7 +2091,7 @@ export default function Review({
                 >
                     <span style={{ color: 'var(--accent)' }}>◈</span>
                     Changes
-                    {repoExists === false && (
+                    {metadata && !metadata.repo_path && (
                         <div
                             style={{
                                 marginLeft: '12px',
@@ -2420,7 +2107,7 @@ export default function Review({
                             Repo not found locally. LSP disabled.
                         </div>
                     )}
-                    {lspAvailable === false && (
+                    {lsp.available === false && (
                         <div
                             style={{
                                 marginLeft: '12px',

@@ -22,7 +22,8 @@
       "Bash(do echo \"Checking $file:\")",
       "Bash(done)",
       "Bash(npx @biomejs/biome check:*)",
-      "Bash(emacs:*)"
+      "Bash(emacs:*)",
+      "Bash(/home/chris/.bun/bin/bun run:*)"
     ]
   }
 }

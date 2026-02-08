@@ -49,9 +49,9 @@ export class LspClient {
         return data.path;
     }
 
-    connect() {
+    connect(wsPath: string = '/api/lsp') {
         // Assume ws relative to current origin or fixed port if dev
-        const wsUrl = (API_BASE || window.location.origin).replace(/^http/, 'ws') + '/api/lsp';
+        const wsUrl = (API_BASE || window.location.origin).replace(/^http/, 'ws') + wsPath;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
@@ -77,6 +77,21 @@ export class LspClient {
         this.ws.onclose = () => {
             console.log('LSP WebSocket closed');
         };
+    }
+
+    disconnect() {
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.onerror = null;
+            this.ws.onmessage = null;
+            this.ws.close();
+            this.ws = null;
+        }
+        for (const { reject } of this.pendingRequests.values()) {
+            reject(new Error('LSP disconnected'));
+        }
+        this.pendingRequests.clear();
+        this.messageQueue = [];
     }
 
     private flushQueue() {

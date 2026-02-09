@@ -10,9 +10,9 @@
     },
     "scripts": {
         "start": "bun run server.ts",
-        "dev": "bun run dev:server & bun run dev:frontend",
-        "dev:server": "bun --watch server.ts",
-        "dev:frontend": "bun --filter frontend dev",
+        "dev": "NODE_ENV=development bun run dev:server & NODE_ENV=development bun run dev:frontend",
+        "dev:server": "NODE_ENV=development bun --watch server.ts",
+        "dev:frontend": "NODE_ENV=development bun --filter frontend dev",
         "server": "bun server.ts",
         "stop-dev": "pkill -f 'bun run dev' || true; pkill -f 'bun run server.ts' || true; pkill -f 'vite' || true",
         "build": "bun --filter frontend build && bun scripts/build.ts && bun build server.ts --compile --outfile crs-gui",

@@ -1,10 +1,40 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
-import { assets } from './embedded_assets';
+let assets: Record<string, any> = {};
+try {
+    // @ts-ignore
+    const assetsModule = await import('./embedded_assets');
+    assets = assetsModule.assets;
+} catch (e) {
+    console.log('[Server] Embedded assets not found or broken, skipping...');
+}
 
 const SERVER_PATH = Bun.which('crs') || 'crs';
 const DIFF_LSP_PATH = Bun.which('diff-lsp');
+
+// Language server configurations for file-mode LSP
+const LANGUAGE_SERVER_CONFIG: Record<string, { cmd: string; args: string[] }> = {
+    typescript: { cmd: 'typescript-language-server', args: ['--stdio'] },
+    javascript: { cmd: 'typescript-language-server', args: ['--stdio'] },
+    tsx: { cmd: 'typescript-language-server', args: ['--stdio'] },
+    jsx: { cmd: 'typescript-language-server', args: ['--stdio'] },
+    go: { cmd: 'gopls', args: ['serve'] },
+    rust: { cmd: 'rust-analyzer', args: [] },
+    python: { cmd: 'pyright-langserver', args: ['--stdio'] },
+};
+
+// Resolve which language servers are available at startup
+const AVAILABLE_LANGUAGE_SERVERS: Record<string, { cmd: string; args: string[] }> = {};
+for (const [lang, config] of Object.entries(LANGUAGE_SERVER_CONFIG)) {
+    const resolved = Bun.which(config.cmd);
+    if (resolved) {
+        AVAILABLE_LANGUAGE_SERVERS[lang] = { cmd: resolved, args: config.args };
+    }
+}
+console.log(
+    `[LSP] Available language servers: ${Object.keys(AVAILABLE_LANGUAGE_SERVERS).join(', ') || 'none'}`
+);
 
 // Resolve the project root.
 // When compiled, import.meta.dir is a virtual path (/$bunfs/root).
@@ -157,6 +187,7 @@ const CORS_HEADERS = {
 
 Bun.serve<{
     cmd: string | null;
+    args?: string[];
     envs: Record<string, string>;
     proc?: Subprocess;
 }>({
@@ -170,6 +201,26 @@ Bun.serve<{
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
+                    envs: process.env as Record<string, string>,
+                },
+            });
+            if (success) return undefined;
+            return new Response('Upgrade failed', { status: 500 });
+        }
+
+        if (url.pathname === '/api/lsp-file') {
+            const lang = url.searchParams.get('lang');
+            if (!lang || !AVAILABLE_LANGUAGE_SERVERS[lang]) {
+                return new Response('Language server not available', { status: 404 });
+            }
+
+            const serverConfig = AVAILABLE_LANGUAGE_SERVERS[lang];
+            console.log(`[LSP-File] Upgrading WebSocket for language: ${lang}`);
+
+            const success = server.upgrade(req, {
+                data: {
+                    cmd: serverConfig.cmd,
+                    args: serverConfig.args,
                     envs: process.env as Record<string, string>,
                 },
             });
@@ -279,6 +330,16 @@ Bun.serve<{
             return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
                 headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
             });
+        }
+
+        if (url.pathname === '/api/check-lsp-file' && req.method === 'GET') {
+            const lang = url.searchParams.get('lang');
+            return new Response(
+                JSON.stringify({ available: !!lang && !!AVAILABLE_LANGUAGE_SERVERS[lang] }),
+                {
+                    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+                }
+            );
         }
 
         // Read file contents from repository
@@ -413,6 +474,23 @@ Type: ${type}
         let path = url.pathname;
         if (path === '/') path = '/index.html';
 
+        // 0. Development proxy to Vite
+        if (process.env.NODE_ENV === 'development') {
+            try {
+                const viteUrl = new URL(path, 'http://localhost:5173');
+                const response = await fetch(viteUrl.toString());
+                if (response.ok) {
+                    // Forward the response with corrected headers if needed
+                    return new Response(response.body, {
+                        status: response.status,
+                        headers: response.headers,
+                    });
+                }
+            } catch (e) {
+                // Vite might not be up yet, continue to other fallback routes
+            }
+        }
+
         // 1. Try embedded assets (for single-binary distribution)
         if (assets[path]) {
             return new Response(Bun.file(assets[path]));
@@ -445,15 +523,15 @@ Type: ${type}
     websocket: {
         open(ws) {
             console.log('LSP WebSocket connected');
-            const { cmd, envs } = ws.data;
+            const { cmd, args, envs } = ws.data;
             if (!cmd) {
-                console.warn('diff-lsp not found, closing websocket');
+                console.warn('LSP binary not found, closing websocket');
                 ws.close();
                 return;
             }
 
             try {
-                const proc = spawn([cmd], {
+                const proc = spawn(args && args.length > 0 ? [cmd, ...args] : [cmd], {
                     stdin: 'pipe',
                     stdout: 'pipe',
                     stderr: 'inherit',

@@ -849,6 +849,7 @@ export default function CodeViewerModal({
                                             hover={lsp.lspData.hover}
                                             refs={lsp.lspData.refs}
                                             definitions={lsp.lspData.definitions}
+                                            typeDefinitions={lsp.lspData.typeDefinitions}
                                             variant="floating"
                                             onRefClick={r => {
                                                 const refPath = r.uri.replace('file://', '');

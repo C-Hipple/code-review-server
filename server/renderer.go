@@ -339,6 +339,7 @@ type PRComment interface {
 	GetCreatedAt() time.Time
 	IsOutdated() bool
 	GetCommitID() string
+	GetDiffHunk() string
 }
 
 type CommentJSON struct {
@@ -350,6 +351,7 @@ type CommentJSON struct {
 	InReplyTo int64     `json:"in_reply_to"`
 	CreatedAt time.Time `json:"created_at"`
 	Outdated  bool      `json:"outdated"`
+	DiffHunk  string    `json:"diff_hunk"`
 }
 
 type ReviewJSON struct {
@@ -469,6 +471,13 @@ func (c *GitHubPRComment) GetCommitID() string {
 	return ""
 }
 
+func (c *GitHubPRComment) GetDiffHunk() string {
+	if c.DiffHunk != nil {
+		return *c.DiffHunk
+	}
+	return ""
+}
+
 // LocalPRComment wraps database.LocalComment to implement PRComment interface
 type LocalPRComment struct {
 	*database.LocalComment
@@ -520,6 +529,10 @@ func (c *LocalPRComment) IsOutdated() bool {
 }
 
 func (c *LocalPRComment) GetCommitID() string {
+	return ""
+}
+
+func (c *LocalPRComment) GetDiffHunk() string {
 	return ""
 }
 
@@ -1215,6 +1228,7 @@ func (c *JSONPRComment) GetPath() string { return c.Path }
 func (c *JSONPRComment) GetCreatedAt() time.Time { return c.CreatedAt }
 func (c *JSONPRComment) IsOutdated() bool { return c.Outdated }
 func (c *JSONPRComment) GetCommitID() string { return "" } // Not in JSON currently
+func (c *JSONPRComment) GetDiffHunk() string { return c.DiffHunk }
 
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
@@ -1620,6 +1634,7 @@ func splitComments(comments []PRComment) ([]CommentJSON, []CommentJSON) {
 			InReplyTo: c.GetInReplyTo(),
 			CreatedAt: c.GetCreatedAt(),
 			Outdated:  isOutdated,
+			DiffHunk:  c.GetDiffHunk(),
 		}
 		if isOutdated {
 			outdated = append(outdated, item)

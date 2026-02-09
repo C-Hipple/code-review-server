@@ -44,6 +44,16 @@ function App() {
         localStorage.setItem('reviewLocation', reviewLocation);
     }, [reviewLocation]);
 
+    // Dynamic Title
+    useEffect(() => {
+        if (view === 'LIST') {
+            document.title = 'Code Review';
+        } else if (currentPR) {
+            const prefix = view === 'REVIEW' ? 'Review' : 'Plugins';
+            document.title = `${prefix} ${currentPR.owner}/${currentPR.repo}::${currentPR.number}`;
+        }
+    }, [view, currentPR]);
+
     // Initial load from URL
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -127,12 +137,34 @@ function App() {
                 }}
             >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <h1
-                        onClick={handleBack}
-                        style={{ margin: 0, fontSize: '24px', fontWeight: 600, cursor: 'pointer' }}
+                    <a
+                        href="/"
+                        onClick={e => {
+                            // Only handle standard left-click without modifiers for SPA navigation
+                            if (
+                                e.button === 0 &&
+                                !e.ctrlKey &&
+                                !e.metaKey &&
+                                !e.shiftKey &&
+                                !e.altKey
+                            ) {
+                                e.preventDefault();
+                                handleBack();
+                            }
+                        }}
+                        style={{ textDecoration: 'none', color: 'inherit' }}
                     >
-                        <span style={{ color: 'var(--accent)' }}>Code</span>Review
-                    </h1>
+                        <h1
+                            style={{
+                                margin: 0,
+                                fontSize: '24px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            <span style={{ color: 'var(--accent)' }}>Code</span>Review
+                        </h1>
+                    </a>
                     <button
                         onClick={() => setShowPrefs(true)}
                         style={{

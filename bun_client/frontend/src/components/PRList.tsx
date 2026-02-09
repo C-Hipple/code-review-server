@@ -431,98 +431,136 @@ export default function PRList({
                                                                 display: 'flex',
                                                                 justifyContent: 'space-between',
                                                                 alignItems: 'center',
-                                                            }}
-                                                            onClick={() => {
-                                                                if (item.number <= 0) return;
-                                                                if (reviewLocation === 'github') {
-                                                                    window.open(item.url, '_blank');
-                                                                } else {
-                                                                    onOpenReview(
-                                                                        item.owner,
-                                                                        item.repo,
-                                                                        item.number
-                                                                    );
-                                                                }
+                                                                padding: 0, // Remove padding from card to allow <a> to fill area
+                                                                overflow: 'hidden',
                                                             }}
                                                         >
-                                                            <div style={{ flex: 1 }}>
-                                                                <div
-                                                                    style={{
-                                                                        display: 'flex',
-                                                                        alignItems: 'center',
-                                                                        gap: '10px',
-                                                                        marginBottom: '4px',
-                                                                    }}
-                                                                >
-                                                                    <Badge
-                                                                        variant={mapStatusToVariant(
-                                                                            item.status
-                                                                        )}
-                                                                        size="sm"
-                                                                    >
-                                                                        {item.status}
-                                                                    </Badge>
-                                                                    <span
-                                                                        className={
-                                                                            item.number > 0
-                                                                                ? 'pr-title'
-                                                                                : ''
+                                                            <a
+                                                                href={
+                                                                    reviewLocation === 'github'
+                                                                        ? item.url
+                                                                        : `/?owner=${item.owner}&repo=${item.repo}&number=${item.number}`
+                                                                }
+                                                                onClick={e => {
+                                                                    if (item.number <= 0) {
+                                                                        e.preventDefault();
+                                                                        return;
+                                                                    }
+                                                                    // Only handle standard left-click without modifiers for SPA navigation
+                                                                    if (
+                                                                        e.button === 0 &&
+                                                                        !e.ctrlKey &&
+                                                                        !e.metaKey &&
+                                                                        !e.shiftKey &&
+                                                                        !e.altKey
+                                                                    ) {
+                                                                        e.preventDefault();
+                                                                        if (
+                                                                            reviewLocation ===
+                                                                            'github'
+                                                                        ) {
+                                                                            window.open(
+                                                                                item.url,
+                                                                                '_blank'
+                                                                            );
+                                                                        } else {
+                                                                            onOpenReview(
+                                                                                item.owner,
+                                                                                item.repo,
+                                                                                item.number
+                                                                            );
                                                                         }
-                                                                        style={{
-                                                                            fontWeight: 500,
-                                                                            fontSize: '15px',
-                                                                        }}
-                                                                    >
-                                                                        {item.title}
-                                                                    </span>
-                                                                </div>
-                                                                {item.number ? (
+                                                                    }
+                                                                }}
+                                                                style={{
+                                                                    flex: 1,
+                                                                    textDecoration: 'none',
+                                                                    color: 'inherit',
+                                                                    padding: '16px',
+                                                                    display: 'block',
+                                                                }}
+                                                            >
+                                                                <div style={{ flex: 1 }}>
                                                                     <div
                                                                         style={{
-                                                                            fontSize: '13px',
-                                                                            color: 'var(--text-secondary)',
-                                                                            fontFamily:
-                                                                                'var(--font-mono)',
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            gap: '10px',
+                                                                            marginBottom: '4px',
                                                                         }}
                                                                     >
-                                                                        {item.owner}/{item.repo}{' '}
+                                                                        <Badge
+                                                                            variant={mapStatusToVariant(
+                                                                                item.status
+                                                                            )}
+                                                                            size="sm"
+                                                                        >
+                                                                            {item.status}
+                                                                        </Badge>
                                                                         <span
+                                                                            className={
+                                                                                item.number > 0
+                                                                                    ? 'pr-title'
+                                                                                    : ''
+                                                                            }
                                                                             style={{
-                                                                                color: 'var(--accent)',
+                                                                                fontWeight: 500,
+                                                                                fontSize: '15px',
                                                                             }}
                                                                         >
-                                                                            #{item.number}
+                                                                            {item.title}
                                                                         </span>
-                                                                        {item.author && (
+                                                                    </div>
+                                                                    {item.number ? (
+                                                                        <div
+                                                                            style={{
+                                                                                fontSize: '13px',
+                                                                                color: 'var(--text-secondary)',
+                                                                                fontFamily:
+                                                                                    'var(--font-mono)',
+                                                                            }}
+                                                                        >
+                                                                            {item.owner}/{item.repo}{' '}
                                                                             <span
                                                                                 style={{
-                                                                                    marginLeft:
-                                                                                        '8px',
-                                                                                    color: 'var(--text-secondary)',
+                                                                                    color: 'var(--accent)',
                                                                                 }}
                                                                             >
-                                                                                by {item.author}
+                                                                                #{item.number}
                                                                             </span>
-                                                                        )}
-                                                                    </div>
-                                                                ) : (
-                                                                    <div
-                                                                        style={{
-                                                                            fontSize: '12px',
-                                                                            color: 'var(--text-secondary)',
-                                                                            fontStyle: 'italic',
-                                                                        }}
-                                                                    >
-                                                                        Non-PR item
-                                                                    </div>
-                                                                )}
-                                                            </div>
+                                                                            {item.author && (
+                                                                                <span
+                                                                                    style={{
+                                                                                        marginLeft:
+                                                                                            '8px',
+                                                                                        color: 'var(--text-secondary)',
+                                                                                    }}
+                                                                                >
+                                                                                    by {item.author}
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div
+                                                                            style={{
+                                                                                fontSize: '12px',
+                                                                                color: 'var(--text-secondary)',
+                                                                                fontStyle: 'italic',
+                                                                            }}
+                                                                        >
+                                                                            Non-PR item
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </a>
                                                             {item.number > 0 && (
                                                                 <div
                                                                     style={{
                                                                         display: 'flex',
                                                                         gap: '12px',
-                                                                        marginLeft: '15px',
+                                                                        marginLeft: 'auto',
+                                                                        padding: '16px',
+                                                                        paddingLeft: 0,
                                                                     }}
                                                                 >
                                                                     <Button

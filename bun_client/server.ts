@@ -1,9 +1,10 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
+
 let assets: Record<string, any> = {};
 try {
-    // @ts-ignore
+    // @ts-expect-error
     const assetsModule = await import('./embedded_assets');
     assets = assetsModule.assets;
 } catch (e) {

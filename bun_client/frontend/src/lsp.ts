@@ -13,9 +13,9 @@ export interface LspLocation {
 
 export interface LspHover {
     contents:
-    | string
-    | { language: string; value: string }
-    | Array<string | { language: string; value: string }>;
+        | string
+        | { language: string; value: string }
+        | Array<string | { language: string; value: string }>;
     range?: any;
 }
 
@@ -29,7 +29,7 @@ export class LspClient {
     private nextId = 1;
     private onNotification: ((method: string, params: any) => void) | null = null;
 
-    constructor(private onReady?: () => void) { }
+    constructor(private onReady?: () => void) {}
 
     async prepareContext(
         project: string,
@@ -176,14 +176,22 @@ export class LspClient {
         });
     }
 
-    async definition(uri: string, line: number, character: number): Promise<LspLocation | LspLocation[] | null> {
+    async definition(
+        uri: string,
+        line: number,
+        character: number
+    ): Promise<LspLocation | LspLocation[] | null> {
         return this.request('textDocument/definition', {
             textDocument: { uri },
             position: { line, character },
         });
     }
 
-    async typeDefinition(uri: string, line: number, character: number): Promise<LspLocation | LspLocation[] | null> {
+    async typeDefinition(
+        uri: string,
+        line: number,
+        character: number
+    ): Promise<LspLocation | LspLocation[] | null> {
         return this.request('textDocument/typeDefinition', {
             textDocument: { uri },
             position: { line, character },

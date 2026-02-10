@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"strings"
 )
 
 // RunPlugins executes all configured plugins for a given PR.
@@ -37,7 +38,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 		slog.Error("Failed to get stored SHA for plugin", "plugin", plugin.Name, "error", err)
 		// Continue anyway - we'll run the plugin
 	}
-	
+
 	// Skip execution if SHA hasn't changed
 	if storedSHA != "" && storedSHA == sha {
 		slog.Info("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha)
@@ -73,7 +74,8 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	resultStr := string(output)
 	if err != nil {
 		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "output", resultStr)
-		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nOutput: %s", err, resultStr), "error", sha)
+			strCommand := plugin.Command + " " + strings.Join(args, " ")
+		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\n%s\nOutput: %s", err, strCommand, resultStr), "error", sha)
 		return
 	}
 

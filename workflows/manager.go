@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -536,33 +537,69 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 }
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
+// and persists it to the DB cache so that GetPRDetails can find it.
 func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
 
 	auxData := &PRAuxData{}
 
-	// Store the head SHA from the PR object (avoids extra API call later)
+	headSHA := ""
 	if pr != nil && pr.Head != nil && pr.Head.SHA != nil {
 		auxData.HeadSHA = *pr.Head.SHA
+		headSHA = *pr.Head.SHA
 	}
 
-	// Use separate goroutines for parallel fetching within this PR
 	var wg sync.WaitGroup
 
+	// Data collected by goroutines for DB caching
+	var (
+		allCommentsForDB []*github.PullRequestComment // PR + Issue comments for DB
+		ghReviews        []*github.PullRequestReview
+		ghCommits        []*github.RepositoryCommit
+		combinedStatus   *github.CombinedStatus
+		checkRunsResult  *github.ListCheckRunsResults
+	)
+
+	// 1. Comments (PR review comments + Issue comments)
 	if req.Comments {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			comments, err := git_tools.GetPRComments(client, key.Owner, key.Repo, key.Number)
+			prComments, err := git_tools.GetPRComments(client, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				log.Warn("Failed to fetch comments for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
 			}
-			auxData.Comments = comments
-			auxData.CommentsCount = len(comments)
+
+			// Store PR review comments only for workflow display (issue comments
+			// would cause nil panics in formatComments due to nil DiffHunk)
+			auxData.Comments = prComments
+			auxData.CommentsCount = len(prComments)
+
+			// Also fetch issue comments for DB cache (GetPRDetails expects both)
+			combined := make([]*github.PullRequestComment, len(prComments))
+			copy(combined, prComments)
+			issueComments, _, err := client.Issues.ListComments(
+				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			if err == nil {
+				for _, ic := range issueComments {
+					combined = append(combined, convertIssueToPRComment(ic))
+				}
+			}
+			sort.Slice(combined, func(i, j int) bool {
+				if combined[i].CreatedAt == nil {
+					return true
+				}
+				if combined[j].CreatedAt == nil {
+					return false
+				}
+				return combined[i].CreatedAt.Before(*combined[j].CreatedAt)
+			})
+			allCommentsForDB = combined
 		}()
 	}
 
+	// 2. CI Status for workflow display (uses Actions API)
 	if req.CIStatus && pr != nil && pr.Head != nil && pr.Head.Label != nil {
 		wg.Add(1)
 		go func() {
@@ -572,6 +609,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 		}()
 	}
 
+	// 3. Diff
 	if req.Diff {
 		wg.Add(1)
 		go func() {
@@ -587,6 +625,319 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 		}()
 	}
 
+	// 4. Reviews (for metadata: approved_by, changes_requested_by, etc.)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reviews, _, err := client.PullRequests.ListReviews(
+			context.Background(), key.Owner, key.Repo, key.Number, nil)
+		if err != nil {
+			log.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
+			return
+		}
+		ghReviews = reviews
+	}()
+
+	// 5. Commit Status + Check Runs (for metadata CI status)
+	if headSHA != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			status, err := git_tools.GetCombinedStatus(client, key.Owner, key.Repo, headSHA)
+			if err == nil {
+				combinedStatus = status
+			}
+			cr, err := git_tools.GetCheckRuns(client, key.Owner, key.Repo, headSHA)
+			if err == nil {
+				checkRunsResult = cr
+			}
+		}()
+	}
+
+	// 6. Commits
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		commits, _, err := client.PullRequests.ListCommits(
+			context.Background(), key.Owner, key.Repo, key.Number, nil)
+		if err != nil {
+			log.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
+			return
+		}
+		ghCommits = commits
+	}()
+
 	wg.Wait()
+
+	// Persist all fetched data to DB so GetPRDetails finds it cached
+	persistPRCacheData(log, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
+
 	return auxData
+}
+
+// convertIssueToPRComment converts a github.IssueComment to a PullRequestComment
+// for unified storage in the DB cache.
+func convertIssueToPRComment(ic *github.IssueComment) *github.PullRequestComment {
+	return &github.PullRequestComment{
+		ID:        ic.ID,
+		Body:      ic.Body,
+		User:      ic.User,
+		CreatedAt: ic.CreatedAt,
+		UpdatedAt: ic.UpdatedAt,
+		URL:       ic.URL,
+		HTMLURL:   ic.HTMLURL,
+	}
+}
+
+// persistPRCacheData stores all pre-fetched PR data to the DB cache
+// so that server.GetPRDetails can use it without making API calls.
+func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
+	auxData *PRAuxData,
+	allComments []*github.PullRequestComment,
+	reviews []*github.PullRequestReview,
+	commits []*github.RepositoryCommit,
+	combinedStatus *github.CombinedStatus,
+	checkRuns *github.ListCheckRunsResults) {
+
+	db := config.C().DB
+
+	// 1. Comments
+	if allComments != nil {
+		if j, err := json.Marshal(allComments); err == nil {
+			db.UpsertPRComments(key.Number, key.Repo, string(j))
+		}
+	}
+
+	// 2. Diff + SHA
+	if auxData.Diff != "" {
+		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.Diff)
+	} else if auxData.HeadSHA != "" {
+		// Store SHA even without diff so GetPRDetails can look up CI status
+		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, "")
+	}
+
+	// 3. Reviews (stored in same JSON format as server.ReviewJSON)
+	if reviews != nil {
+		type reviewJSON struct {
+			ID          int64     `json:"id"`
+			User        string    `json:"user"`
+			Body        string    `json:"body"`
+			State       string    `json:"state"`
+			SubmittedAt time.Time `json:"submitted_at"`
+			HTMLURL     string    `json:"html_url"`
+		}
+		var rvs []reviewJSON
+		for _, r := range reviews {
+			var submittedAt time.Time
+			if r.SubmittedAt != nil {
+				submittedAt = *r.SubmittedAt
+			}
+			rvs = append(rvs, reviewJSON{
+				ID:          r.GetID(),
+				User:        r.User.GetLogin(),
+				Body:        r.GetBody(),
+				State:       r.GetState(),
+				SubmittedAt: submittedAt,
+				HTMLURL:     r.GetHTMLURL(),
+			})
+		}
+		if j, err := json.Marshal(rvs); err == nil {
+			db.UpsertPRReviews(key.Number, key.Repo, string(j))
+		}
+	}
+
+	// 4. CI Status (commit status + check runs, same format as server.CombinedPRStatus)
+	if combinedStatus != nil || checkRuns != nil {
+		combined := struct {
+			Status    *github.CombinedStatus      `json:"status"`
+			CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
+		}{Status: combinedStatus, CheckRuns: checkRuns}
+		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {
+			db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j))
+		}
+	}
+
+	// 5. Requested Reviewers (from PR object, no extra API call needed)
+	if pr != nil {
+		reviewers := &github.Reviewers{
+			Users: pr.RequestedReviewers,
+			Teams: pr.RequestedTeams,
+		}
+		if j, err := json.Marshal(reviewers); err == nil {
+			db.UpsertRequestedReviewers(key.Number, key.Repo, string(j))
+		}
+	}
+
+	// 6. Commits (stored in same JSON format as server.CommitJSON)
+	if commits != nil {
+		type commitJSON struct {
+			SHA     string `json:"sha"`
+			Message string `json:"message"`
+			Author  string `json:"author"`
+			Date    string `json:"date"`
+			URL     string `json:"url"`
+		}
+		var cms []commitJSON
+		for _, c := range commits {
+			cms = append(cms, commitJSON{
+				SHA:     c.GetSHA(),
+				Message: c.Commit.GetMessage(),
+				Author:  c.Commit.Author.GetName(),
+				Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
+				URL:     c.GetHTMLURL(),
+			})
+		}
+		if j, err := json.Marshal(cms); err == nil {
+			db.UpsertPRCommits(key.Number, key.Repo, string(j))
+		}
+	}
+
+	// 7. PR Metadata (constructed from PR object + fetched data)
+	if pr != nil {
+		buildAndCacheMetadata(log, db, key, pr, reviews, combinedStatus, checkRuns)
+	}
+}
+
+// buildAndCacheMetadata constructs a PRMetadata-compatible JSON from the PR object
+// and fetched review/CI data, then stores it in the metadata cache.
+func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
+	pr *github.PullRequest,
+	reviews []*github.PullRequestReview,
+	combinedStatus *github.CombinedStatus,
+	checkRuns *github.ListCheckRunsResults) {
+
+	// Labels
+	labels := []string{}
+	for _, l := range pr.Labels {
+		labels = append(labels, l.GetName())
+	}
+
+	// Assignees
+	assignees := []string{}
+	for _, u := range pr.Assignees {
+		assignees = append(assignees, u.GetLogin())
+	}
+
+	// Requested Reviewers
+	reviewerLogins := []string{}
+	for _, r := range pr.RequestedReviewers {
+		reviewerLogins = append(reviewerLogins, r.GetLogin())
+	}
+	teamLogins := []string{}
+	for _, t := range pr.RequestedTeams {
+		teamLogins = append(teamLogins, t.GetName())
+	}
+
+	// Process reviews for approval state
+	approvedBy := []string{}
+	changesRequestedBy := []string{}
+	commentedBy := []string{}
+	latestReviewState := make(map[string]string)
+	for _, r := range reviews {
+		latestReviewState[r.User.GetLogin()] = r.GetState()
+	}
+	for user, state := range latestReviewState {
+		switch state {
+		case "APPROVED":
+			approvedBy = append(approvedBy, user)
+		case "CHANGES_REQUESTED":
+			changesRequestedBy = append(changesRequestedBy, user)
+		case "COMMENTED":
+			commentedBy = append(commentedBy, user)
+		}
+	}
+
+	// CI Status string (matches GetPRDetails format)
+	var ciStatus string
+	var ciFailures []string
+	if combinedStatus != nil || checkRuns != nil {
+		total := 0
+		success := 0
+		overallState := "success"
+		if combinedStatus != nil {
+			if combinedStatus.GetState() != "success" && combinedStatus.GetState() != "" {
+				overallState = combinedStatus.GetState()
+			}
+			total += combinedStatus.GetTotalCount()
+			for _, s := range combinedStatus.Statuses {
+				if s.GetState() == "success" {
+					success++
+				} else if s.GetState() == "failure" {
+					ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
+				}
+			}
+		}
+		if checkRuns != nil {
+			total += checkRuns.GetTotal()
+			for _, cr := range checkRuns.CheckRuns {
+				if cr.GetConclusion() == "success" {
+					success++
+				} else if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
+					overallState = "failure"
+					ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
+				}
+			}
+		}
+		if total == 0 && overallState == "success" {
+			overallState = "pending"
+		}
+		ciStatus = fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
+	}
+
+	milestone := ""
+	if pr.Milestone != nil {
+		milestone = pr.Milestone.GetTitle()
+	}
+
+	// WorktreePath from DB if it exists
+	worktreePath, _ := db.GetWorktree(key.Number, key.Repo, key.Owner)
+
+	// Construct metadata matching server.PRMetadata JSON field names
+	metadata := struct {
+		Number             int      `json:"number"`
+		Title              string   `json:"title"`
+		Author             string   `json:"author"`
+		BaseRef            string   `json:"base_ref"`
+		HeadRef            string   `json:"head_ref"`
+		State              string   `json:"state"`
+		Milestone          string   `json:"milestone"`
+		Labels             []string `json:"labels"`
+		Assignees          []string `json:"assignees"`
+		Reviewers          []string `json:"reviewers"`
+		RequestedTeams     []string `json:"requested_teams"`
+		ApprovedBy         []string `json:"approved_by"`
+		ChangesRequestedBy []string `json:"changes_requested_by"`
+		CommentedBy        []string `json:"commented_by"`
+		Draft              bool     `json:"draft"`
+		CIStatus           string   `json:"ci_status"`
+		CIFailures         []string `json:"ci_failures"`
+		Body               string   `json:"body"`
+		URL                string   `json:"url"`
+		WorktreePath       string   `json:"worktree_path"`
+	}{
+		Number:             pr.GetNumber(),
+		Title:              pr.GetTitle(),
+		Author:             pr.User.GetLogin(),
+		BaseRef:            pr.Base.GetRef(),
+		HeadRef:            pr.Head.GetRef(),
+		State:              pr.GetState(),
+		Milestone:          milestone,
+		Labels:             labels,
+		Assignees:          assignees,
+		Reviewers:          reviewerLogins,
+		RequestedTeams:     teamLogins,
+		ApprovedBy:         approvedBy,
+		ChangesRequestedBy: changesRequestedBy,
+		CommentedBy:        commentedBy,
+		Draft:              pr.GetDraft(),
+		CIStatus:           ciStatus,
+		CIFailures:         ciFailures,
+		Body:               pr.GetBody(),
+		URL:                pr.GetHTMLURL(),
+		WorktreePath:       worktreePath,
+	}
+
+	if j, err := json.Marshal(metadata); err == nil {
+		db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, string(j))
+	}
 }

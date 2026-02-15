@@ -245,7 +245,7 @@ func (prb PRToOrgBridge) Details() []string {
 				if sha == "" {
 					sha = headSHA
 				}
-				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetFullName(), sha, auxData.Diff); err != nil {
+				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetName(), sha, auxData.Diff); err != nil {
 					slog.Error("Error storing pre-fetched PR diff in database", "pr", prb.PR.GetNumber(), "error", err)
 				}
 			}

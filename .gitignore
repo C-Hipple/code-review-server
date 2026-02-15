@@ -61,3 +61,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+
+crs
+example_plugin
+summarize_diff

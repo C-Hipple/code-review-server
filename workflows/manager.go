@@ -395,24 +395,26 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 func (ms *ManagerService) Run(log *slog.Logger) {
 	log.Info("Starting Service")
 
-	// Advisory lock to prevent multiple concurrent syncs
-	crsHome, err := os.UserHomeDir() // Fallback to home if getCRSHome fails but we use config.UserHomeDir elsewhere
-	if err == nil {
-		crsHome = filepath.Join(crsHome, ".crs")
-		if err := os.MkdirAll(crsHome, 0755); err != nil {
-			log.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
-		}
-		lockPath := filepath.Join(crsHome, "codereviewserver_sync.lock")
-		lockFile, err := os.Create(lockPath)
+	// Advisory lock to prevent multiple concurrent syncs (skip for oneoff mode)
+	if !ms.oneoff {
+		crsHome, err := os.UserHomeDir() // Fallback to home if getCRSHome fails but we use config.UserHomeDir elsewhere
 		if err == nil {
-			err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-			if err != nil {
-				log.Warn("Another instance is already running background sync, skipping sync in this process.")
-				lockFile.Close()
-				return
+			crsHome = filepath.Join(crsHome, ".crs")
+			if err := os.MkdirAll(crsHome, 0755); err != nil {
+				log.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
 			}
-			defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-			defer lockFile.Close()
+			lockPath := filepath.Join(crsHome, "codereviewserver_sync.lock")
+			lockFile, err := os.Create(lockPath)
+			if err == nil {
+				err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+				if err != nil {
+					log.Warn("Another instance is already running background sync, skipping sync in this process.")
+					lockFile.Close()
+					return
+				}
+				defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				defer lockFile.Close()
+			}
 		}
 	}
 

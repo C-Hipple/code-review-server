@@ -1458,10 +1458,10 @@ Temporarily disables read-only mode (required when called from
   (setq buffer-read-only t))
 
 (when (fboundp 'evil-define-key)
-  (evil-define-key 'normal crs-plugin-output-mode-map
-    "r" #'crs-refresh-plugin-output
-    "q" #'crs-quit-plugin-output
-    "w" #'crs-wash-plugin-output))
+  (map-keymap
+   (lambda (key def)
+     (evil-define-key 'normal crs-plugin-output-mode-map (vector key) def))
+   crs-plugin-output-mode-map))
 
 (defun crs--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."

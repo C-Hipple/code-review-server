@@ -49,7 +49,6 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
 	return wf, nil
@@ -72,7 +71,6 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
 	return wf, nil
@@ -96,7 +94,6 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 		PRState:             raw.PRState,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
 	return wf, nil
@@ -116,7 +113,6 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workf
 		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		Prune:               raw.Prune,
 		IncludeDiff:         raw.IncludeDiff,
 	}
 	return wf, nil

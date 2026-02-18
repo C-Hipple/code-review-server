@@ -391,7 +391,7 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, prune_command string, includeDiff bool) RunResult {
+func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool) RunResult {
 	result := RunResult{}
 
 	pr_identifiers := []string{}
@@ -406,7 +406,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 		changes = append(changes, fc)
 	}
 
-	if prune_command == "Delete" || prune_command == "Archive" {
+	{
 		items, err := db.GetItemsBySection(section.ID)
 		if err != nil {
 			log.Error("Error getting items from section", "error", err)
@@ -421,7 +421,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 					json.Unmarshal([]byte(item.Tags), &tags)
 
 					fileChange := FileChanges{
-						ChangeType:  prune_command,
+						ChangeType:  "Delete",
 						Identifier:  item.Identifier,
 						Status:      item.Status,
 						Title:       item.Title,

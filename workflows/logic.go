@@ -406,7 +406,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 		changes = append(changes, fc)
 	}
 
-	if prune_command == "Delete" || prune_command == "Archive" {
+	if prune_command == "Delete" {
 		items, err := db.GetItemsBySection(section.ID)
 		if err != nil {
 			log.Error("Error getting items from section", "error", err)

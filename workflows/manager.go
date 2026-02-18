@@ -61,7 +61,7 @@ func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []Seri
 			switch change.FileChange.ChangeType {
 			case "Addition":
 				addChange = &itemChanges[i]
-			case "Update", "Archive":
+			case "Update":
 				updateChange = &itemChanges[i]
 			case "Delete":
 				deleteChange = &itemChanges[i]
@@ -132,8 +132,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 		}
 
 		switch deserializedChange.FileChange.ChangeType {
-		case "Addition", "Update", "Archive":
-			archived := deserializedChange.FileChange.ChangeType == "Archive"
+		case "Addition", "Update":
 			_, err := db.UpsertItem(
 				deserializedChange.FileChange.SectionID,
 				deserializedChange.FileChange.Identifier,
@@ -141,7 +140,6 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 				deserializedChange.FileChange.Title,
 				deserializedChange.FileChange.Details,
 				deserializedChange.FileChange.Tags,
-				archived,
 				deserializedChange.FileChange.TTL,
 			)
 			if err != nil {

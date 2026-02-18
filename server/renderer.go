@@ -295,15 +295,6 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 		titleLine += "\t\t" + tagStr
 	}
 
-	// Add archived tag if needed
-	if item.Archived {
-		if !strings.Contains(titleLine, ":") {
-			titleLine += "\t\t:ARCHIVE:"
-		} else {
-			titleLine += ":ARCHIVE:"
-		}
-	}
-
 	lines := []string{titleLine + "\n"}
 	lines = append(lines, details...)
 

@@ -1432,9 +1432,24 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   (interactive)
   (quit-window t))
 
+(defun crs-wash-plugin-output ()
+  "Run the selected washer on the plugin output buffer.
+Temporarily disables read-only mode (required when called from
+`crs-plugin-output-mode'), calls `delta-wash', then restores read-only."
+  (interactive)
+  (let ((was-read-only (and (eq major-mode 'crs-plugin-output-mode)
+                            buffer-read-only)))
+    (when was-read-only
+      (setq buffer-read-only nil))
+    (unwind-protect
+        (delta-wash)
+      (when was-read-only
+        (setq buffer-read-only t)))))
+
 (defvar-keymap crs-plugin-output-mode-map
   "r" #'crs-refresh-plugin-output
-  "q" #'crs-quit-plugin-output)
+  "q" #'crs-quit-plugin-output
+  "w" #'crs-wash-plugin-output)
 
 (define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
   "Major mode for viewing plugin output.
@@ -1445,7 +1460,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
 (when (fboundp 'evil-define-key)
   (evil-define-key 'normal crs-plugin-output-mode-map
     "r" #'crs-refresh-plugin-output
-    "q" #'crs-quit-plugin-output))
+    "q" #'crs-quit-plugin-output
+    "w" #'crs-wash-plugin-output))
 
 (defun crs--find-first-hunk-line ()
   "Find the line number of the first hunk header after point, bounded by the next file header."

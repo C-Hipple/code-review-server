@@ -323,6 +323,9 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		}
 	}
 
+	// Track which fetches failed so we can skip dependent workflows
+	fetchErrors := make(map[string]bool) // key: "repoKey/state" or "repoKey/specific"
+
 	// Fetching phase
 	for repoKey, states := range repoStatePRs {
 		owner, repo, _ := git_tools.ParseRepoName(repoKey)
@@ -331,6 +334,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			prs, err := git_tools.GetPRs(client, state, owner, repo)
 			if err != nil {
 				log.Error("Failed to fetch PRs", "repo", repoKey, "state", state, "error", err)
+				fetchErrors[repoKey+"/"+state] = true
 				continue
 			}
 			repoStatePRs[repoKey][state] = prs
@@ -348,6 +352,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
 			if err != nil {
 				log.Error("Failed to fetch specific PRs", "repo", repoKey, "error", err)
+				fetchErrors[repoKey+"/specific"] = true
 				continue
 			}
 			for _, pr := range prs {
@@ -363,6 +368,27 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 
 	var wg sync.WaitGroup
 	for _, workflow := range ms.Workflows {
+		// Check if any of this workflow's PR requirements had a fetch error
+		hasFetchError := false
+		for _, req := range workflow.GetPRRequirements() {
+			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			if len(req.PRNumbers) > 0 {
+				if fetchErrors[repoKey+"/specific"] {
+					hasFetchError = true
+					break
+				}
+			} else {
+				if fetchErrors[repoKey+"/"+req.State] {
+					hasFetchError = true
+					break
+				}
+			}
+		}
+		if hasFetchError {
+			log.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
+			continue
+		}
+
 		// Collect PRs for THIS workflow
 		var workflowPRs []*github.PullRequest
 		reqs := workflow.GetPRRequirements()

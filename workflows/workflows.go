@@ -47,7 +47,6 @@ type SingleRepoSyncReviewRequestsWorkflow struct {
 	Filters             []git_tools.PRFilter
 	SectionTitle        string
 	ReleaseCheckCommand string
-	Prune               string
 	IncludeDiff         bool
 }
 
@@ -93,7 +92,7 @@ func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*githu
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -105,7 +104,6 @@ type SyncReviewRequestsWorkflow struct {
 	Owner       string
 	Repos       []string
 	Filters     []git_tools.PRFilter
-	Prune       string
 	IncludeDiff bool
 
 	// org output info
@@ -145,7 +143,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequ
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -167,7 +165,6 @@ type ListMyPRsWorkflow struct {
 	SectionTitle        string
 	PRState             string
 	ReleaseCheckCommand string
-	Prune               string
 	IncludeDiff         bool
 }
 
@@ -212,7 +209,7 @@ func (w ListMyPRsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c ch
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -227,7 +224,6 @@ type ProjectListWorkflow struct {
 	JiraDomain          string
 	JiraEpic            string
 	ReleaseCheckCommand string
-	Prune               string
 	IncludeDiff         bool
 }
 
@@ -265,7 +261,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 	
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.Prune, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil

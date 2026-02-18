@@ -31,7 +31,6 @@ Owner = "your-org"
 Filters = ["FilterNotDraft"]
 Teams = ["growth-pod-review", "growth-and-purchase-pod"]
 SectionTitle = "Growth Team Reviews"
-Prune = "Delete"
 
 [[Workflows]]
 WorkflowType = "SyncReviewRequestsWorkflow"
@@ -40,7 +39,6 @@ Owner = "your-org"
 Filters = ["FilterNotDraft"]
 Teams = ["backend-team", "api-reviewers"]
 SectionTitle = "Backend Reviews"
-Prune = "Delete"
 ```
 
 Note: The `Teams` field uses team **slugs** (the URL-safe identifier), not display names. You can find a team's slug in the GitHub URL when viewing the team page.

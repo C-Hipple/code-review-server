@@ -24,7 +24,6 @@ type RawWorkflow struct {
 	SectionTitle        string
 	PRState             string
 	ReleaseCheckCommand string
-	Prune               string
 	GithubUsername      string
 	IncludeDiff         bool
 	Teams               []string // Teams to filter PRs by when using FilterTeamRequested

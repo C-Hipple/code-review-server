@@ -35,7 +35,6 @@ Owner: str
 Filters: list[str]
 SectionTitle: str
 ReleaseCommandCheck: str
-Prune: string
 IncludeDiff: bool
 Teams: list[str]
 ```
@@ -49,13 +48,6 @@ The WorkflowType is one of the following strings:
 - `SingleRepoSyncReviewRequestsWorkflow`
 - `ListMyPRsWorkflow`
 - `ProjectListWorkflow`
-
-### Pruning
-
-`Prune` tells the workflow runner whether or not to remove PRs from the section if they're no longer relevant. The default behavior is to do nothing, and the options are:
-- `Delete`: Removes the item from the section.
-- `Archive`: Tags the items with :ARCHIVE: so that org functions can clean them up
-- `Keep`: Leave existing items in the section untouched.
 
 ### IncludeDiff
 
@@ -141,12 +133,10 @@ Name = "List Open PRs"
 Owner = "C-Hipple"
 Filters = ["FilterNotDraft"]
 SectionTitle = "Open PRs"
-Prune = "Archive"
 
 [[Workflows]]
 WorkflowType = "ListMyPRsWorkflow"
 Name = "List Closed PRs"
 Owner = "C-Hipple"
 SectionTitle = "Closed PRs"
-Prune = "Delete"
 ```

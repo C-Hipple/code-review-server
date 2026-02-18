@@ -29,7 +29,6 @@ type Item struct {
 	Title       string
 	DetailsJSON string // JSON array of detail lines
 	Tags        string // Comma-separated tags
-	Archived    bool
 	TTL         int64
 }
 
@@ -99,7 +98,6 @@ func (db *DB) initSchema() error {
 		title TEXT NOT NULL,
 		details_json TEXT NOT NULL,
 		tags TEXT DEFAULT '',
-		archived INTEGER DEFAULT 0,
 		ttl INTEGER DEFAULT 0,
 		UNIQUE(section_id, identifier),
 		FOREIGN KEY(section_id) REFERENCES sections(id) ON DELETE CASCADE
@@ -474,7 +472,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	return sections, rows.Err()
 }
 
-func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, details []string, tags []string, archived bool, ttl int64) (*Item, error) {
+func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, details []string, tags []string, ttl int64) (*Item, error) {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return nil, err
@@ -489,22 +487,16 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		tagsStr = string(tagsBytes)
 	}
 
-	archivedInt := 0
-	if archived {
-		archivedInt = 1
-	}
-
 	result, err := db.conn.Exec(
-		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, archived, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(section_id, identifier) DO UPDATE SET
 			status = excluded.status,
 			title = excluded.title,
 			details_json = excluded.details_json,
 			tags = excluded.tags,
-			archived = excluded.archived,
 			ttl = excluded.ttl`,
-		sectionID, identifier, status, title, string(detailsJSON), tagsStr, archivedInt, ttl,
+		sectionID, identifier, status, title, string(detailsJSON), tagsStr, ttl,
 	)
 	if err != nil {
 		return nil, err
@@ -534,7 +526,6 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		Title:       title,
 		DetailsJSON: string(detailsJSON),
 		Tags:        tagsStr,
-		Archived:    archived,
 		TTL:         ttl,
 	}
 
@@ -544,9 +535,9 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 	var item Item
 	err := db.conn.QueryRow(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? AND identifier = ?",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? AND identifier = ?",
 		sectionID, identifier,
-	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.Archived, &item.TTL)
+	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL)
 
 	if err != nil {
 		return nil, err
@@ -556,7 +547,7 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? ORDER BY id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
 	if err != nil {
@@ -567,11 +558,9 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		var archivedInt int
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
 			return nil, err
 		}
-		item.Archived = archivedInt == 1
 		items = append(items, &item)
 	}
 	return items, rows.Err()
@@ -579,7 +568,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 
 func (db *DB) GetAllItems() ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items ORDER BY section_id, id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -589,11 +578,9 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		var archivedInt int
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
 			return nil, err
 		}
-		item.Archived = archivedInt == 1
 		items = append(items, &item)
 	}
 	return items, rows.Err()
@@ -602,7 +589,7 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 func (db *DB) GetExpiredItems(sectionID int64) ([]*Item, error) {
 	now := time.Now().Unix()
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, archived, ttl FROM items WHERE section_id = ? AND ttl > 0 AND ttl < ?",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? AND ttl > 0 AND ttl < ?",
 		sectionID, now,
 	)
 	if err != nil {
@@ -613,11 +600,9 @@ func (db *DB) GetExpiredItems(sectionID int64) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		var archivedInt int
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &archivedInt, &item.TTL); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
 			return nil, err
 		}
-		item.Archived = archivedInt == 1
 		items = append(items, &item)
 	}
 	return items, rows.Err()

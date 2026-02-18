@@ -54,7 +54,6 @@ The WorkflowType is one of the following strings:
 
 `Prune` tells the workflow runner whether or not to remove PRs from the section if they're no longer relevant. The default behavior is to do nothing, and the options are:
 - `Delete`: Removes the item from the section.
-- `Archive`: Tags the items with :ARCHIVE: so that org functions can clean them up
 - `Keep`: Leave existing items in the section untouched.
 
 ### IncludeDiff
@@ -141,7 +140,7 @@ Name = "List Open PRs"
 Owner = "C-Hipple"
 Filters = ["FilterNotDraft"]
 SectionTitle = "Open PRs"
-Prune = "Archive"
+Prune = "Delete"
 
 [[Workflows]]
 WorkflowType = "ListMyPRsWorkflow"

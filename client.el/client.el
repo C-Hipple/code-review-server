@@ -43,6 +43,20 @@
   "<CRS-HTML\\(?: prefix=\"\\(.*?\\)\"\\)?>\\(.*?\\)</CRS-HTML>"
   "Regexp to match HTML placeholders for deferred rendering.")
 
+(defun crs--ensure-html (text)
+  "Return TEXT as HTML suitable for shr rendering.
+If TEXT already looks like HTML (starts with a tag), return it unchanged.
+Otherwise convert plain text/Markdown line breaks to HTML paragraphs and
+br elements so that shr preserves the visual line structure."
+  (if (string-match-p "\\`[[:space:]]*<" text)
+      text
+    (let* ((escaped (replace-regexp-in-string "&" "&amp;" text))
+           (escaped (replace-regexp-in-string "<" "&lt;" escaped))
+           (escaped (replace-regexp-in-string ">" "&gt;" escaped))
+           (with-paras (replace-regexp-in-string "\n\n+" "</p><p>" escaped))
+           (with-brs (replace-regexp-in-string "\n" "<br>" with-paras)))
+      (concat "<p>" with-brs "</p>"))))
+
 (defun crs--insert-html (html-string &optional prefix)
   "Insert HTML-STRING at point, rendering it with shr.
 If PREFIX is provided, it is prepended to each line of the rendered content.
@@ -50,7 +64,7 @@ Images will be displayed inline if running in graphical Emacs.
 Requires Emacs to be compiled with libxml support."
   (if (and html-string (not (string-empty-p html-string)))
       (let ((start (point)))
-        (insert html-string)
+        (insert (crs--ensure-html html-string))
         (when (fboundp 'libxml-parse-html-region)
           (let ((dom (libxml-parse-html-region start (point))))
             (delete-region start (point))

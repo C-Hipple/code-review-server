@@ -11,7 +11,7 @@ services:
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     volumes:
       # Mount your config file (see sample.config.toml)
-      - ./codereviewserver.toml:/home/crs/.config/codereviewserver.toml:ro
+      - $HOME/.config/codereviewserver.toml:/home/crs/.config/codereviewserver.toml:ro
       # Persist the SQLite database across restarts
       - crs-data:/home/crs/data
     restart: unless-stopped

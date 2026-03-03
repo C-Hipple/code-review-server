@@ -8,8 +8,6 @@ bun_client/embedded_assets.ts
 # Go build cache
 *.test
 
-# Config and data (never bake secrets into the image)
-codereviewserver.toml
 *.db
 *.db-shm
 *.db-wal

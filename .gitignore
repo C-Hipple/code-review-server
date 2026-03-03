@@ -65,3 +65,6 @@ lerna-debug.log*
 crs
 example_plugin
 summarize_diff
+
+# Local Docker config (copy from sample.config.toml and fill in your values)
+codereviewserver.toml

@@ -1,0 +1,20 @@
+services:
+  crs:
+    build: .
+    container_name: crs
+    ports:
+      - "80:5172"
+    environment:
+      # Required: your GitHub personal access token
+      CRS_GITHUB_TOKEN: "${CRS_GITHUB_TOKEN}"
+      # Optional: for summarize_diff and security_check plugins
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    volumes:
+      # Mount your config file (see sample.config.toml)
+      - ./codereviewserver.toml:/home/crs/.config/codereviewserver.toml:ro
+      # Persist the SQLite database across restarts
+      - crs-data:/home/crs/data
+    restart: unless-stopped
+
+volumes:
+  crs-data:

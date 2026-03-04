@@ -11,9 +11,9 @@ func TestGetPRRequirements(t *testing.T) {
 		expected []PRRequirement
 	}{
 		{
-			name: "SingleRepoSyncReviewRequestsWorkflow",
-			workflow: SingleRepoSyncReviewRequestsWorkflow{
-				Repo:        "owner/repo",
+			name: "SyncReviewRequestsWorkflow single repo with diff",
+			workflow: SyncReviewRequestsWorkflow{
+				Repos:       []string{"owner/repo"},
 				IncludeDiff: true,
 			},
 			expected: []PRRequirement{
@@ -21,9 +21,9 @@ func TestGetPRRequirements(t *testing.T) {
 			},
 		},
 		{
-			name: "SingleRepoSyncReviewRequestsWorkflow_NoDiff",
-			workflow: SingleRepoSyncReviewRequestsWorkflow{
-				Repo:        "owner/repo",
+			name: "SyncReviewRequestsWorkflow single repo no diff",
+			workflow: SyncReviewRequestsWorkflow{
+				Repos:       []string{"owner/repo"},
 				IncludeDiff: false,
 			},
 			expected: []PRRequirement{
@@ -42,8 +42,8 @@ func TestGetPRRequirements(t *testing.T) {
 			},
 		},
 		{
-			name: "ListMyPRsWorkflow",
-			workflow: ListMyPRsWorkflow{
+			name: "SyncReviewRequestsWorkflow with PRState closed",
+			workflow: SyncReviewRequestsWorkflow{
 				Repos:       []string{"owner/repo1"},
 				PRState:     "closed",
 				IncludeDiff: false,

@@ -79,12 +79,12 @@ func TestBuildListMyPRsWorkflow_RepoOverride(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			listWf, ok := wf.(ListMyPRsWorkflow)
+			syncWf, ok := wf.(SyncReviewRequestsWorkflow)
 			if !ok {
-				t.Fatalf("Expected ListMyPRsWorkflow, got %T", wf)
+				t.Fatalf("Expected SyncReviewRequestsWorkflow, got %T", wf)
 			}
-			if !reflect.DeepEqual(listWf.Repos, tt.expectedRepos) {
-				t.Errorf("expected repos %v, got %v", tt.expectedRepos, listWf.Repos)
+			if !reflect.DeepEqual(syncWf.Repos, tt.expectedRepos) {
+				t.Errorf("expected repos %v, got %v", tt.expectedRepos, syncWf.Repos)
 			}
 		})
 	}

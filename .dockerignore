@@ -1,0 +1,19 @@
+# Build artifacts
+crs-gui
+bun_client/node_modules
+bun_client/frontend/node_modules
+bun_client/frontend/dist
+bun_client/embedded_assets.ts
+
+# Go build cache
+*.test
+
+*.db
+*.db-shm
+*.db-wal
+
+# Dev files
+.git
+.gitignore
+*.md
+client.el

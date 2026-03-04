@@ -65,6 +65,8 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
 3.  **Install Server**
 
+    >  Alternatively, use Docker Compose to run steps 3 and 4 containerized with `docker compose up`.
+
     ```bash
     go install ./...
     ```

@@ -59,6 +59,8 @@ code-review-server is a service which runs highly configurable workflows to load
 
 3.  **Install Server**
 
+    >  Alternatively, use Docker Compose to run steps 3 and 4 containerized with `docker compose up`.
+
     ```bash
     go install ./...
     ```

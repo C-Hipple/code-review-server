@@ -112,6 +112,7 @@ type GetPRReply struct {
 	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
@@ -127,6 +128,9 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
+	reply.Feedback = feedback
 	return nil
 }
 
@@ -480,6 +484,7 @@ type SyncPRReply struct {
 	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
@@ -495,6 +500,9 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
+	reply.Feedback = feedback
 	return nil
 }
 

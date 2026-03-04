@@ -741,6 +741,21 @@ func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error
 	return nil
 }
 
+func (db *DB) GetFeedback(owner, repo string, number int) (string, error) {
+	var body string
+	err := db.conn.QueryRow(
+		`SELECT body FROM Feedback WHERE owner = ? AND repo = ? AND number = ?`,
+		owner, repo, number,
+	).Scan(&body)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return body, nil
+}
+
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
 	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment")
 	if err != nil {

@@ -38,6 +38,7 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 }
 
 func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("SingleRepoSyncReviewRequestsWorkflow is deprecated; use SyncReviewRequestsWorkflow with a single-element Repos list instead", "workflow", raw.Name)
 	filters, err := BuildFiltersList(raw)
 	if err != nil {
 		return nil, err
@@ -78,6 +79,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 }
 
 func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("ListMyPRsWorkflow is deprecated; use SyncReviewRequestsWorkflow with FilterMyPRs in the filters list instead", "workflow", raw.Name)
 	workflowRepos := *repos
 	if len(raw.Repos) > 0 {
 		workflowRepos = raw.Repos

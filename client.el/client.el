@@ -959,9 +959,12 @@ Returns the line number, or nil if not found."
 
              ;; Hunk header
              ((string-prefix-p "@@ " line)
-              (when (not first-hunk-seen)
-                (setq first-hunk-seen t)
-                (setq current-position 0)))
+              (if (not first-hunk-seen)
+                  (progn
+                    (setq first-hunk-seen t)
+                    (setq current-position 0))
+                ;; Count subsequent hunk headers to match GitHub's position convention
+                (setq current-position (1+ current-position))))
 
              ;; Skip comment blocks
              ((string-match-p "^[[:space:]]*[│┌└]" line)
@@ -1586,11 +1589,16 @@ If on a local comment, local-comment-id and local-comment-body will be set."
         (goto-char (point-min))
         (forward-line (1- first-hunk-line-num))
         (let ((count 0)
-              (file-line nil))
+              (file-line nil)
+              (first-hunk-counted nil))
           (while (<= (line-number-at-pos) target-line)
             (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
               (cond
                ((string-match "^@@ -[0-9]+,[0-9]+ \\+\\([0-9]+\\),[0-9]+ @@" line-content)
+                (if (not first-hunk-counted)
+                    (setq first-hunk-counted t)
+                  ;; Count subsequent hunk headers to match GitHub's position convention
+                  (setq count (1+ count)))
                 (setq file-line (string-to-number (match-string 1 line-content)))
                 (setq target-file-line file-line))
                ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)

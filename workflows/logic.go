@@ -33,6 +33,8 @@ type AuxDataRequirement struct {
 	Comments bool // PR review comments
 	CIStatus bool // CI/workflow status
 	Diff     bool // PR diff content
+	Reviews  bool // PR reviews (approved_by, changes_requested_by, commented_by)
+	Commits  bool // PR commits
 }
 
 // PRAuxData holds pre-fetched auxiliary data for a PR

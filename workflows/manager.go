@@ -562,7 +562,7 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 	var wg sync.WaitGroup
 	for key, auxReq := range prRequirements {
 		// Skip if no aux data is needed
-		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff {
+		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews && !auxReq.Commits {
 			continue
 		}
 
@@ -669,17 +669,19 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 	}
 
 	// 4. Reviews (for metadata: approved_by, changes_requested_by, etc.)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		reviews, _, err := client.PullRequests.ListReviews(
-			context.Background(), key.Owner, key.Repo, key.Number, nil)
-		if err != nil {
-			log.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
-			return
-		}
-		ghReviews = reviews
-	}()
+	if req.Reviews {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reviews, _, err := client.PullRequests.ListReviews(
+				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			if err != nil {
+				log.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
+				return
+			}
+			ghReviews = reviews
+		}()
+	}
 
 	// 5. Commit Status + Check Runs (for metadata CI status)
 	if headSHA != "" {
@@ -698,17 +700,19 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 	}
 
 	// 6. Commits
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		commits, _, err := client.PullRequests.ListCommits(
-			context.Background(), key.Owner, key.Repo, key.Number, nil)
-		if err != nil {
-			log.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
-			return
-		}
-		ghCommits = commits
-	}()
+	if req.Commits {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			commits, _, err := client.PullRequests.ListCommits(
+				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			if err != nil {
+				log.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
+				return
+			}
+			ghCommits = commits
+		}()
+	}
 
 	wg.Wait()
 

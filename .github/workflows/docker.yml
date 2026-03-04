@@ -1,0 +1,52 @@
+# This workflow will build the Docker image to ensure the Dockerfile is valid
+name: Docker Build
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'server/**'
+      - 'workflows/**'
+      - 'database/**'
+      - 'config/**'
+      - 'git_tools/**'
+      - 'org/**'
+      - 'utils/**'
+      - 'bun_client/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'server/**'
+      - 'workflows/**'
+      - 'database/**'
+      - 'config/**'
+      - 'git_tools/**'
+      - 'org/**'
+      - 'utils/**'
+      - 'bun_client/**'
+      - '.github/workflows/docker.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: crs:latest

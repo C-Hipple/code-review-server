@@ -536,6 +536,8 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 				existing.Comments = existing.Comments || req.AuxData.Comments
 				existing.CIStatus = existing.CIStatus || req.AuxData.CIStatus
 				existing.Diff = existing.Diff || req.AuxData.Diff
+				existing.Reviews = existing.Reviews || req.AuxData.Reviews
+				existing.Commits = existing.Commits || req.AuxData.Commits
 				prRequirements[key] = existing
 			}
 		}
@@ -695,8 +697,9 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 
 	wg.Wait()
 
-	// Persist all fetched data to DB so GetPRDetails finds it cached
-	persistPRCacheData(log, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
+	// Persist all fetched data to DB so GetPRDetails finds it cached.
+	// Pass req.Reviews so persistPRCacheData knows whether review state is complete.
+	persistPRCacheData(log, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult, req.Reviews)
 
 	return auxData
 }
@@ -717,13 +720,17 @@ func convertIssueToPRComment(ic *github.IssueComment) *github.PullRequestComment
 
 // persistPRCacheData stores all pre-fetched PR data to the DB cache
 // so that server.GetPRDetails can use it without making API calls.
+// reviewsFetched indicates whether reviews were actually requested; if false,
+// the metadata cache is not written to avoid overwriting previously-cached
+// review state (approved_by, changes_requested_by, etc.) with empty values.
 func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 	auxData *PRAuxData,
 	allComments []*github.PullRequestComment,
 	reviews []*github.PullRequestReview,
 	commits []*github.RepositoryCommit,
 	combinedStatus *github.CombinedStatus,
-	checkRuns *github.ListCheckRunsResults) {
+	checkRuns *github.ListCheckRunsResults,
+	reviewsFetched bool) {
 
 	db := config.C().DB
 
@@ -818,8 +825,11 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 		}
 	}
 
-	// 7. PR Metadata (constructed from PR object + fetched data)
-	if pr != nil {
+	// 7. PR Metadata (constructed from PR object + fetched data).
+	// Only write metadata when reviews were fetched, so we don't overwrite a
+	// previously-cached entry that had correct approved_by / changes_requested_by
+	// state with empty slices when the current workflow didn't need reviews.
+	if pr != nil && reviewsFetched {
 		buildAndCacheMetadata(log, db, key, pr, reviews, combinedStatus, checkRuns)
 	}
 }

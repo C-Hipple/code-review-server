@@ -407,6 +407,7 @@ export default function Review({
         clickable: boolean;
         lineType: LineType;
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
+        origName?: string;
         originalLineIndex: number;
     }
 
@@ -424,6 +425,7 @@ export default function Review({
 
             // New state tracking for empty new files
             let fallbackFilename: string | null = null;
+            let fallbackOrigName: string | null = null;
             let fallbackFileIndex: number | null = null;
             let hasEmittedHeader = false;
 
@@ -445,6 +447,7 @@ export default function Review({
                             clickable: true,
                             lineType: 'file-header',
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex:
                                 fallbackFileIndex !== null ? fallbackFileIndex : index,
                         });
@@ -453,6 +456,7 @@ export default function Review({
                     // Reset for new file
                     hasEmittedHeader = false;
                     pendingFileStatus = 'modified';
+                    fallbackOrigName = null;
                     lineType = 'skip';
 
                     // Parse filename from diff --git a/path b/path
@@ -486,15 +490,22 @@ export default function Review({
                 } else if (line.startsWith('deleted file mode')) {
                     pendingFileStatus = 'deleted';
                     lineType = 'skip';
-                } else if (
-                    line.startsWith('rename from') ||
-                    line.startsWith('rename to') ||
-                    line.startsWith('similarity index')
-                ) {
+                } else if (line.startsWith('rename from ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackOrigName = line.slice('rename from '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('rename to ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackFilename = line.slice('rename to '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('similarity index')) {
                     pendingFileStatus = 'renamed';
                     lineType = 'skip';
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
-                    // Skip these git metadata lines
+                    // Detect --- /dev/null: indicates a new file
+                    if (line === '--- /dev/null') {
+                        pendingFileStatus = 'new';
+                    }
                     lineType = 'skip';
                 } else {
                     // Match +++ b/filename as the file header
@@ -502,7 +513,35 @@ export default function Review({
                         line.match(/^\+\+\+\s+b\/(.+)$/) || line.match(/^\+\+\+\s+(.+)$/);
 
                     if (fileMatch) {
-                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                        const matchedFile = (fileMatch[1] || fileMatch[2]).trim();
+
+                        if (matchedFile === '/dev/null') {
+                            // +++ /dev/null means this is a deleted file.
+                            // Use fallbackFilename (from diff --git) as the displayed name.
+                            if (fallbackFilename) {
+                                currentFile = fallbackFilename;
+                                currentPos = 0;
+                                foundFirstHunkInFile = false;
+                                pos = 0;
+                                file = currentFile;
+                                clickable = true;
+                                lineType = 'file-header';
+                                hasEmittedHeader = true;
+                                parsedLines.push({
+                                    text: currentFile,
+                                    file,
+                                    pos,
+                                    clickable,
+                                    lineType,
+                                    fileStatus: 'deleted',
+                                    originalLineIndex: index,
+                                });
+                                pendingFileStatus = 'modified';
+                            }
+                            return;
+                        }
+
+                        currentFile = matchedFile;
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 
@@ -521,9 +560,11 @@ export default function Review({
                             clickable,
                             lineType,
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex: index,
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
+                        fallbackOrigName = null;
                         return; // continue equivalent in forEach
                     } else if (currentFile) {
                         const isHunkHeader = line.startsWith('@@');
@@ -577,6 +618,7 @@ export default function Review({
                     clickable: true,
                     lineType: 'file-header',
                     fileStatus: pendingFileStatus,
+                    origName: fallbackOrigName || undefined,
                     originalLineIndex:
                         fallbackFileIndex !== null ? fallbackFileIndex : lines.length,
                 });
@@ -909,7 +951,9 @@ export default function Review({
                                     color: 'var(--text-primary)',
                                 }}
                             >
-                                {item.text}
+                                {item.fileStatus === 'renamed' && item.origName
+                                    ? `${item.origName} → ${item.text}`
+                                    : item.text}
                             </span>
                             {hasOutdated && (
                                 <button

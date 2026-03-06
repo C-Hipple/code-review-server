@@ -1441,17 +1441,40 @@ func buildCommentTree(tree []PRComment, filePath string, forceOutdated bool) str
 func formatDiff(diff *utils.Diff) string {
 	var builder strings.Builder
 	for _, file := range diff.Files {
-		// status := "modified"
-		// filename := file.NewName
-		// if file.Mode == utils.DELETED {
-		// 	status = "deleted"
-		// 	filename = file.OrigName
-		// } else if file.Mode == utils.NEW {
-		// 	status = "new file"
-		// }
-		// builder.WriteString(fmt.Sprintf("%-12s %s\n", status, filename))
-
 		builder.WriteString(file.DiffHeader + "\n")
+
+		// The diff parser's lookahead misses ---/+++ lines for new/deleted files
+		// (because "new file mode" / "deleted file mode" displaces the index line).
+		// Emit them explicitly so the frontend can identify the filename.
+		switch file.Mode {
+		case utils.NEW:
+			builder.WriteString("--- /dev/null\n")
+			builder.WriteString("+++ b/" + file.NewName + "\n")
+		case utils.DELETED:
+			builder.WriteString("--- a/" + file.OrigName + "\n")
+			builder.WriteString("+++ /dev/null\n")
+		case utils.MODIFIED:
+			// Detect renames: OrigName and NewName differ (rename with content changes).
+			if file.OrigName != "" && file.NewName != "" && file.OrigName != file.NewName {
+				builder.WriteString("rename from " + file.OrigName + "\n")
+				builder.WriteString("rename to " + file.NewName + "\n")
+				// DiffHeader for renames doesn't include ---/+++ lines; add them.
+				if !strings.Contains(file.DiffHeader, "\n--- ") {
+					builder.WriteString("--- a/" + file.OrigName + "\n")
+					builder.WriteString("+++ b/" + file.NewName + "\n")
+				}
+			} else if file.OrigName == "" && file.NewName == "" {
+				// Rename-only (no content changes): no ---/+++ parsed, detect from DiffHeader.
+				firstLine := strings.SplitN(file.DiffHeader, "\n", 2)[0]
+				oldName, newName := extractGitDiffNames(firstLine)
+				if oldName != "" && newName != "" && oldName != newName {
+					builder.WriteString("rename from " + oldName + "\n")
+					builder.WriteString("rename to " + newName + "\n")
+					builder.WriteString("--- a/" + oldName + "\n")
+					builder.WriteString("+++ b/" + newName + "\n")
+				}
+			}
+		}
 
 		for _, hunk := range file.Hunks {
 			builder.WriteString("\n")
@@ -1462,6 +1485,20 @@ func formatDiff(diff *utils.Diff) string {
 		}
 	}
 	return builder.String()
+}
+
+// extractGitDiffNames parses the old and new filenames from a "diff --git a/X b/Y" line.
+func extractGitDiffNames(line string) (oldName, newName string) {
+	const prefix = "diff --git a/"
+	if !strings.HasPrefix(line, prefix) {
+		return "", ""
+	}
+	rest := strings.TrimPrefix(line, prefix)
+	idx := strings.Index(rest, " b/")
+	if idx < 0 {
+		return "", ""
+	}
+	return rest[:idx], rest[idx+3:]
 }
 
 func buildCommentTreesFromList(comments []PRComment) [][]PRComment {

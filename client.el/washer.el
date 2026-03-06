@@ -57,7 +57,7 @@
                             ("\\[OUTDATED\\]" 0 'washer-outdated-face t)
                             ("\\[OUTDATED\\]\\([─ ]*\\)$" 1 'washer-review-comment-seperator-face t)
                             ("^    │ .*" 0 'washer-review-comment-face t)
-                            ("^\\(modified\\|deleted\\|new file\\).*" 0 'washer-file-header-face t)
+                            ("^\\(modified\\|deleted\\|new file\\|renamed\\).*" 0 'washer-file-header-face t)
                             ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|URL\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\):.*" 0 'washer-summary-face t)
                             ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)
                             ("^PR contains [0-9]+ \\(outdated comments\\)$" 1 'washer-outdated-face t)

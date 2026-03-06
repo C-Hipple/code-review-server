@@ -36,7 +36,7 @@
   "List of plugins configured on the server.")
 
 (defvar crs--section-header-regexp
-  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
+  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
 
 (defconst crs--html-placeholder-regexp
@@ -559,7 +559,7 @@ SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact
             (with-current-buffer result-buffer (insert line "\n")))
 
            ;; New Format File Header
-           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+           ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
             (setq current-file (match-string 2 line))
             (setq first-hunk-seen nil)
             (with-current-buffer result-buffer (insert line "\n")))
@@ -669,8 +669,10 @@ This must be called after delta-wash."
               (if (re-search-forward "^deleted file mode" limit t)
                   (setq type "deleted")
                 (goto-char start)
-                (when (re-search-forward "^@@ -0,0" limit t)
-                  (setq type "new file")))))))
+                (if (re-search-forward "^@@ -0,0" limit t)
+                    (setq type "new file")
+                  (when (not (string= file-a file-b))
+                    (setq type "renamed"))))))))
 
         (let ((end-marker-pos
                (save-excursion
@@ -682,7 +684,8 @@ This must be called after delta-wash."
                   (t nil)))))
 
           (when (and (not end-marker-pos)
-                     (or (string= type "new file") (string= type "deleted")))
+                     (or (string= type "new file") (string= type "deleted")
+                         (string= type "renamed")))
             (setq end-marker-pos limit))
 
           (if end-marker-pos
@@ -691,6 +694,7 @@ This must be called after delta-wash."
                 (let ((pad (cond ((string= type "modified") "     ")
                                  ((string= type "new file") "     ")
                                  ((string= type "deleted")  "      ")
+                                 ((string= type "renamed")  "      ")
                                  (t "     "))))
                   (insert (format "%s%s%s\n" type pad filename))))
             (message "Could not find end of header for %s" filename)))))))
@@ -733,7 +737,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                (line (buffer-substring-no-properties line-start line-end)))
           (cond
            ;; File Header - match simplified first as it's more specific if simplification happened
-           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+           ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
             (setq current-file (match-string 2 line))
             (setq first-hunk-seen nil))
 
@@ -946,7 +950,7 @@ Returns the line number, or nil if not found."
                  (line (buffer-substring-no-properties line-start line-end)))
             (cond
              ;; File header - simplified format
-             ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+             ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
               (setq target-file (match-string 2 line))
               (setq first-hunk-seen nil)
               (setq current-position 0))
@@ -1483,7 +1487,7 @@ Temporarily disables read-only mode (required when called from
     (let* ((start-pos (point))
            (search-bound (save-excursion
                            (forward-line 1)
-                           (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+" nil t)
+                           (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+" nil t)
                                (match-beginning 0)
                              (point-max)))))
       (message "Searching for hunk between line %d and %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound))
@@ -1574,7 +1578,7 @@ If on a local comment, local-comment-id and local-comment-body will be set."
     (save-excursion
       (end-of-line)
       ;; Search backward for file header, requiring that it doesn't start with space (to skip comment blocks)
-      (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
+      (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
           (progn
             (setq filename (match-string 2))
             (setq first-hunk-line-num (crs--find-first-hunk-line))

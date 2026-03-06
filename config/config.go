@@ -23,10 +23,14 @@ type RawWorkflow struct {
 	Filters             []string
 	SectionTitle        string
 	PRState             string
-	ReleaseCheckCommand string
 	GithubUsername      string
 	IncludeDiff         bool
 	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
+}
+
+// RepoConfig holds per-repository configuration settings.
+type RepoConfig struct {
+	ReleaseCheckCommand string
 }
 
 // Plugin defines the configuration for an installed plugin
@@ -49,6 +53,7 @@ type Config struct {
 	AutoWorktree   bool
 	SectionPriority map[string]int // Map of section title to priority (lower is better)
 	Plugins         []Plugin
+	RepoConfigs     map[string]RepoConfig // Keyed by "owner/repo"
 	DB              *database.DB
 }
 
@@ -69,6 +74,14 @@ func SetC(newCfg Config) {
 	mu.Lock()
 	defer mu.Unlock()
 	c = newCfg
+}
+
+// GetReleaseCheckCommand returns the release check command for a given repo (owner/repo format).
+func (c Config) GetReleaseCheckCommand(ownerRepo string) string {
+	if rc, ok := c.RepoConfigs[ownerRepo]; ok {
+		return rc.ReleaseCheckCommand
+	}
+	return ""
 }
 
 var UserHomeDir = os.UserHomeDir
@@ -113,6 +126,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AutoWorktree    bool
 		SectionPriority map[string]int
 		Plugins         []Plugin
+		RepoConfigs     map[string]RepoConfig
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -144,6 +158,11 @@ func parseConfig(data []byte) (*Config, error) {
 		parsed_sleep_duration = time.Duration(intermediate_config.SleepDuration) * time.Minute
 	}
 
+	repoConfigs := intermediate_config.RepoConfigs
+	if repoConfigs == nil {
+		repoConfigs = make(map[string]RepoConfig)
+	}
+
 	return &Config{
 		Repos:           intermediate_config.Repos,
 		RawWorkflows:    intermediate_config.Workflows,
@@ -154,6 +173,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AutoWorktree:    intermediate_config.AutoWorktree,
 		SectionPriority: intermediate_config.SectionPriority,
 		Plugins:         intermediate_config.Plugins,
+		RepoConfigs:     repoConfigs,
 	}, nil
 }
 

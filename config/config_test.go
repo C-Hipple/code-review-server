@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+func TestGetReleaseCheckCommand(t *testing.T) {
+	cfg := Config{
+		RepoConfigs: map[string]RepoConfig{
+			"owner/repo1": {ReleaseCheckCommand: "release-check"},
+		},
+	}
+
+	if cmd := cfg.GetReleaseCheckCommand("owner/repo1"); cmd != "release-check" {
+		t.Errorf("expected 'release-check', got %q", cmd)
+	}
+	if cmd := cfg.GetReleaseCheckCommand("owner/repo2"); cmd != "" {
+		t.Errorf("expected empty string for unconfigured repo, got %q", cmd)
+	}
+}
+
 func TestInitialize_DuplicatePlugins(t *testing.T) {
 	// Use a temporary directory for XDG_CONFIG_HOME to avoid touching real config
 	tempDir := t.TempDir()
@@ -134,6 +149,28 @@ SleepDuration = 5
 			wantErr: false,
 		},
 		{
+			name: "RepoConfigs with release check",
+			content: `
+Repos = ["owner/repo1", "owner/repo2"]
+
+[RepoConfigs."owner/repo1"]
+ReleaseCheckCommand = "release-check"
+
+[RepoConfigs."owner/repo2"]
+ReleaseCheckCommand = "/usr/bin/my-release-checker"
+`,
+			want: &Config{
+				Repos:         []string{"owner/repo1", "owner/repo2"},
+				RepoLocation:  "~/",
+				SleepDuration: 10 * time.Minute,
+				RepoConfigs: map[string]RepoConfig{
+					"owner/repo1": {ReleaseCheckCommand: "release-check"},
+					"owner/repo2": {ReleaseCheckCommand: "/usr/bin/my-release-checker"},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "Duplicate Plugins",
 			content: `
 [[Plugins]]
@@ -175,6 +212,14 @@ Command = "echo 2"
 				for k, v := range tt.want.SectionPriority {
 					if got.SectionPriority[k] != v {
 						t.Errorf("SectionPriority[%s] = %v, want %v", k, got.SectionPriority[k], v)
+					}
+				}
+				if len(got.RepoConfigs) != len(tt.want.RepoConfigs) {
+					t.Errorf("RepoConfigs length = %v, want %v", len(got.RepoConfigs), len(tt.want.RepoConfigs))
+				}
+				for k, v := range tt.want.RepoConfigs {
+					if got.RepoConfigs[k].ReleaseCheckCommand != v.ReleaseCheckCommand {
+						t.Errorf("RepoConfigs[%s].ReleaseCheckCommand = %v, want %v", k, got.RepoConfigs[k].ReleaseCheckCommand, v.ReleaseCheckCommand)
 					}
 				}
 			}

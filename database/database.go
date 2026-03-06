@@ -273,6 +273,16 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add release_status column to PRMetadataCache if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PRMetadataCache') WHERE name='release_status'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PRMetadataCache ADD COLUMN release_status TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding release_status column to PRMetadataCache", "error", err)
+		}
+	}
+
+
 	pluginResultsSchema := `
 	CREATE TABLE IF NOT EXISTS PluginResults (
 		id INTEGER PRIMARY KEY,
@@ -912,6 +922,30 @@ func (db *DB) UpsertPRMetadataCache(owner string, repo string, prNumber int, met
 			metadata_json = excluded.metadata_json,
 			cached_at = CURRENT_TIMESTAMP`,
 		owner, repo, prNumber, metadataJSON,
+	)
+	return err
+}
+
+func (db *DB) GetReleaseStatus(owner string, repo string, prNumber int) (string, error) {
+	var status string
+	err := db.conn.QueryRow(
+		"SELECT release_status FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
+	).Scan(&status)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
+func (db *DB) UpsertReleaseStatus(owner string, repo string, prNumber int, releaseStatus string) error {
+	_, err := db.conn.Exec(
+		`UPDATE PRMetadataCache SET release_status = ? WHERE owner = ? AND repo = ? AND pr_number = ?`,
+		releaseStatus, owner, repo, prNumber,
 	)
 	return err
 }

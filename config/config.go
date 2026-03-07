@@ -74,6 +74,11 @@ func SetC(newCfg Config) {
 var UserHomeDir = os.UserHomeDir
 
 func getCRSHome() (string, error) {
+	return GetCRSHome()
+}
+
+// GetCRSHome returns the CRS home directory (respects CRS_HOME env override).
+func GetCRSHome() (string, error) {
 	if crsHome := os.Getenv("CRS_HOME"); crsHome != "" {
 		return crsHome, nil
 	}

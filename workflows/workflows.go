@@ -50,8 +50,7 @@ type SyncReviewRequestsWorkflow struct {
 	PRState     string // defaults to "open"
 
 	// org output info
-	SectionTitle        string
-	ReleaseCheckCommand string
+	SectionTitle string
 }
 
 func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
@@ -106,15 +105,14 @@ func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 
 
 type ProjectListWorkflow struct {
-	Name                string
-	Owner               string
-	Repo                string
-	Filters             []git_tools.PRFilter
-	SectionTitle        string
-	JiraDomain          string
-	JiraEpic            string
-	ReleaseCheckCommand string
-	IncludeDiff         bool
+	Name         string
+	Owner        string
+	Repo         string
+	Filters      []git_tools.PRFilter
+	SectionTitle string
+	JiraDomain   string
+	JiraEpic     string
+	IncludeDiff  bool
 }
 
 func (w ProjectListWorkflow) GetName() string {

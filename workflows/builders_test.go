@@ -456,8 +456,9 @@ func TestMatchWorkflows_SkipsInvalid(t *testing.T) {
 			rawWorkflows: []config.RawWorkflow{
 				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "wf1", Owner: "owner"},
 				{WorkflowType: "SingleRepoSyncReviewRequestsWorkflow", Name: "wf2", Owner: "owner", Repo: "repo"},
+				{WorkflowType: "ListMyPRsWorkflow", Name: "wf3", Owner: "owner"},
 			},
-			expectedCount: 2,
+			expectedCount: 3,
 		},
 	}
 

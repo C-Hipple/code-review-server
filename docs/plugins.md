@@ -41,3 +41,41 @@ You can write a plugin in any language you like. The only requirement is that th
 The `example_plugin` included in this repository demonstrates the interface and potential options.
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
+
+## Rerunning Plugins
+
+By default, plugins only run once per PR commit (SHA). To force plugins to rerun for a PR, use the `RerunPlugins` RPC method.
+
+### RerunPlugins RPC Method
+
+**Arguments:**
+- `Owner` (string): GitHub repository owner
+- `Repo` (string): GitHub repository name
+- `Number` (int): Pull request number
+- `Plugins` (array of strings, optional): Specific plugin names to rerun. If empty or omitted, all plugins rerun.
+
+**Returns:**
+- `Okay` (bool): Success status
+- `Message` (string): Description of what was rerun
+- `Output` (object): Empty object (plugins run asynchronously)
+
+**Example:**
+```json
+{
+  "Owner": "myorg",
+  "Repo": "myrepo",
+  "Number": 123,
+  "Plugins": ["Summarize Diff", "Security Check"]
+}
+```
+
+To rerun all plugins for a PR, omit the `Plugins` array:
+```json
+{
+  "Owner": "myorg",
+  "Repo": "myrepo",
+  "Number": 123
+}
+```
+
+The rerun bypasses the SHA cache check, allowing you to reprocess the same PR commit with potentially updated plugin logic or external dependencies.

@@ -38,14 +38,15 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 }
 
 func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("SingleRepoSyncReviewRequestsWorkflow is deprecated; use SyncReviewRequestsWorkflow with a single-element Repos list instead", "workflow", raw.Name)
 	filters, err := BuildFiltersList(raw)
 	if err != nil {
 		return nil, err
 	}
-	wf := SingleRepoSyncReviewRequestsWorkflow{
+	wf := SyncReviewRequestsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
-		Repo:                raw.Repo,
+		Repos:               []string{raw.Repo},
 		Filters:             filters,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
@@ -69,6 +70,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		Owner:               raw.Owner,
 		Repos:               workflowRepos,
 		Filters:             filters,
+		PRState:             raw.PRState,
 		SectionTitle:        raw.SectionTitle,
 		ReleaseCheckCommand: raw.ReleaseCheckCommand,
 		IncludeDiff:         raw.IncludeDiff,
@@ -77,6 +79,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 }
 
 func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("ListMyPRsWorkflow is deprecated; use SyncReviewRequestsWorkflow with FilterMyPRs in the filters list instead", "workflow", raw.Name)
 	workflowRepos := *repos
 	if len(raw.Repos) > 0 {
 		workflowRepos = raw.Repos
@@ -86,7 +89,10 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	if err != nil {
 		return nil, err
 	}
-	wf := ListMyPRsWorkflow{
+	// ListMyPRsWorkflow always filters to the authenticated user's PRs.
+	// Prepend it so user-supplied filters further narrow the result.
+	filters = append([]git_tools.PRFilter{git_tools.FilterMyPRs}, filters...)
+	wf := SyncReviewRequestsWorkflow{
 		Name:                raw.Name,
 		Owner:               raw.Owner,
 		Repos:               workflowRepos,

@@ -559,9 +559,134 @@ func convertIssueCommentToPRComment(ic *github.IssueComment) *github.PullRequest
 	}
 }
 
+// cacheMissState records what was and wasn't in the DB at the time of a GetPRDetails call.
+type cacheMissState struct {
+	owner       string
+	repo        string
+	number      int
+	skipCache   bool
+	missedFields []string
+	// per-field: true = data was present in DB, false = cache miss
+	metadataHit bool
+	diffHit     bool
+	commentsHit bool
+	reviewsHit  bool
+	commitsHit  bool
+}
+
+func writeCacheMissLog(state cacheMissState) {
+	if len(state.missedFields) == 0 {
+		return
+	}
+
+	crsHome, err := config.GetCRSHome()
+	if err != nil {
+		slog.Warn("cache miss log: cannot determine CRS home", "error", err)
+		return
+	}
+
+	logPath := filepath.Join(crsHome, "cache_miss.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Warn("cache miss log: cannot open log file", "path", logPath, "error", err)
+		return
+	}
+	defer f.Close()
+
+	db := config.C().DB
+
+	// Gather local comment count
+	localComments, _ := db.GetLocalCommentsForPR(state.owner, state.repo, state.number)
+	localCommentCount := len(localComments)
+
+	// Gather workflow info: when was this PR first added by the workflow?
+	identifier := fmt.Sprintf("%s-%d", state.repo, state.number)
+	workflowAddedAt, sectionName, _ := db.GetItemWorkflowInfo(identifier)
+
+	now := time.Now().UTC()
+
+	var sb strings.Builder
+	sb.WriteString("=== Cache Miss Report ===\n")
+	sb.WriteString(fmt.Sprintf("Time:     %s\n", now.Format("2006-01-02 15:04:05 UTC")))
+	sb.WriteString(fmt.Sprintf("PR:       #%d  (owner: %s, repo: %s)\n", state.number, state.owner, state.repo))
+	sb.WriteString(fmt.Sprintf("Missed:   %s\n", strings.Join(state.missedFields, ", ")))
+	if state.skipCache {
+		sb.WriteString("Forced:   yes (skipCache=true — all caches bypassed)\n")
+	}
+
+	sb.WriteString("\nCache State (at time of request):\n")
+	hitStr := func(hit bool) string {
+		if hit {
+			return "HIT"
+		}
+		return "MISS"
+	}
+	sb.WriteString(fmt.Sprintf("  metadata  (PRMetadataCache):  %s\n", hitStr(state.metadataHit)))
+	sb.WriteString(fmt.Sprintf("  diff      (PullRequests):     %s\n", hitStr(state.diffHit)))
+	sb.WriteString(fmt.Sprintf("  comments  (PRComments):       %s\n", hitStr(state.commentsHit)))
+	sb.WriteString(fmt.Sprintf("  reviews   (PRReviews):        %s\n", hitStr(state.reviewsHit)))
+	sb.WriteString(fmt.Sprintf("  commits   (PRCommits):        %s\n", hitStr(state.commitsHit)))
+
+	sb.WriteString("\nLocal Data:\n")
+	sb.WriteString(fmt.Sprintf("  Local comments:  %d\n", localCommentCount))
+
+	sb.WriteString("\nWorkflow:\n")
+	sb.WriteString(fmt.Sprintf("  Item identifier: %s\n", identifier))
+	if sectionName != "" {
+		sb.WriteString(fmt.Sprintf("  Section:         %s\n", sectionName))
+	} else {
+		sb.WriteString("  Section:         (not found in workflow items — PR may not have been fetched by a workflow yet)\n")
+	}
+	if !workflowAddedAt.IsZero() {
+		ago := now.Sub(workflowAddedAt)
+		// Format duration as human-readable
+		var agoStr string
+		if ago < time.Minute {
+			agoStr = fmt.Sprintf("%ds", int(ago.Seconds()))
+		} else if ago < time.Hour {
+			agoStr = fmt.Sprintf("%dm %ds", int(ago.Minutes()), int(ago.Seconds())%60)
+		} else if ago < 24*time.Hour {
+			agoStr = fmt.Sprintf("%dh %dm", int(ago.Hours()), int(ago.Minutes())%60)
+		} else {
+			agoStr = fmt.Sprintf("%dd %dh", int(ago.Hours()/24), int(ago.Hours())%24)
+		}
+		sb.WriteString(fmt.Sprintf("  Added:           %s ago  (%s UTC)\n", agoStr, workflowAddedAt.UTC().Format("2006-01-02 15:04:05")))
+	} else {
+		sb.WriteString("  Added:           (unknown — item not found or created_at not set)\n")
+	}
+
+	sb.WriteString("---\n\n")
+
+	if _, err := f.WriteString(sb.String()); err != nil {
+		slog.Warn("cache miss log: write failed", "error", err)
+	}
+}
+
 func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDetails, error) {
 	client := git_tools.GetGithubClient()
 	ctx := context.Background()
+
+	// Probe all caches upfront to record hit/miss state for the log.
+	// This happens before the existing cache logic so we capture the true pre-fetch state.
+	missState := cacheMissState{owner: owner, repo: repo, number: number, skipCache: skipCache}
+	if !skipCache {
+		if v, _ := config.C().DB.GetPRMetadataCache(owner, repo, number); v != "" {
+			missState.metadataHit = true
+		}
+		if v, _, _ := config.C().DB.GetPullRequest(number, repo); v != "" {
+			missState.diffHit = true
+		}
+		if v, _ := config.C().DB.GetPRComments(number, repo); v != "" {
+			missState.commentsHit = true
+		}
+		if v, _ := config.C().DB.GetPRReviews(number, repo); v != "" {
+			missState.reviewsHit = true
+		}
+		if v, _ := config.C().DB.GetPRCommits(number, repo); v != "" {
+			missState.commitsHit = true
+		}
+	}
+	defer func() { writeCacheMissLog(missState) }()
 
 	var metadata PRMetadata
 	var headSHA string
@@ -588,6 +713,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	// 2. Fetch fresh PR details from GitHub if needed
 	if needsFreshFetch {
+		missState.missedFields = append(missState.missedFields, "metadata")
 		pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
 		if err != nil {
 			// If we have cached data, return that instead of failing
@@ -743,6 +869,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 	}
 	if diff == "" {
+		missState.missedFields = append(missState.missedFields, "diff")
 		d, _, err := client.PullRequests.GetRaw(ctx, owner, repo, number, github.RawOptions{Type: github.Diff})
 		if err != nil {
 			slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
@@ -768,6 +895,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 	}
 	if githubComments == nil {
+		missState.missedFields = append(missState.missedFields, "comments")
 		opts := github.PullRequestListCommentsOptions{}
 		githubComments, _, _ = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
 
@@ -797,6 +925,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	// 5. Load Reviews (with caching)
 	if reviews == nil {
+		if !missState.reviewsHit {
+			missState.missedFields = append(missState.missedFields, "reviews")
+		}
 		reviews, _ = GetPRReviews(owner, repo, number, skipCache)
 	}
 
@@ -809,6 +940,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 	}
 	if commits == nil {
+		missState.missedFields = append(missState.missedFields, "commits")
 		ghCommits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
 		if err != nil {
 			slog.Error("Error fetching commits", "error", err)

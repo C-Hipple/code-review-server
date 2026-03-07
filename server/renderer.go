@@ -1612,16 +1612,43 @@ func splitComments(comments []PRComment) ([]CommentJSON, []CommentJSON) {
 		}
 	}
 
+	// Build a map of comment ID -> position/path for parent lookup
+	commentPositionByID := make(map[string]string)
+	commentPathByID := make(map[string]string)
+	for _, c := range comments {
+		commentPositionByID[c.GetID()] = c.GetPosition()
+		commentPathByID[c.GetID()] = c.GetPath()
+	}
+
 	active := []CommentJSON{}
 	outdated := []CommentJSON{}
 	for _, c := range comments {
 		isOutdated := isIDOutdated[c.GetID()]
+		position := c.GetPosition()
+		path := c.GetPath()
+
+		// Reply comments (especially local ones) may have position "0" or empty path.
+		// Inherit the parent's position/path so the client can group them correctly.
+		if c.GetInReplyTo() != 0 {
+			parentID := strconv.FormatInt(c.GetInReplyTo(), 10)
+			if position == "" || position == "0" {
+				if parentPos, ok := commentPositionByID[parentID]; ok && parentPos != "" && parentPos != "0" {
+					position = parentPos
+				}
+			}
+			if path == "" {
+				if parentPath, ok := commentPathByID[parentID]; ok {
+					path = parentPath
+				}
+			}
+		}
+
 		item := CommentJSON{
 			ID:        c.GetID(),
 			Author:    c.GetLogin(),
 			Body:      c.GetBody(),
-			Path:      c.GetPath(),
-			Position:  c.GetPosition(),
+			Path:      path,
+			Position:  position,
 			InReplyTo: c.GetInReplyTo(),
 			CreatedAt: c.GetCreatedAt(),
 			Outdated:  isOutdated,

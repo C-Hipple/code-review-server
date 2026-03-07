@@ -535,9 +535,10 @@ func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 }
 
 
-// If a command was given by the workflow,
-func GetReleaseStatus(command *string, repo *string, sha *string) (string, error) {
-	cmd := exec.Command(*command, *repo, *sha)
+// GetReleaseStatus runs the release check command with args: <owner> <repo> <commit-sha>
+// and returns the output string (e.g. "released", "release-client", "merged").
+func GetReleaseStatus(command, owner, repo, sha string) (string, error) {
+	cmd := exec.Command(command, owner, repo, sha)
 
 	var outb, errb bytes.Buffer
 	cmd.Stdout = &outb
@@ -546,12 +547,11 @@ func GetReleaseStatus(command *string, repo *string, sha *string) (string, error
 	err := cmd.Run()
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("release check command failed: %w (stderr: %s)", err, errb.String())
 	}
 
 	stdout := outb.String()
 	return strings.Replace(stdout, "\n", "", -1), nil
-
 }
 func filterComments(comments []*github.PullRequestComment) []*github.PullRequestComment {
 	output := []*github.PullRequestComment{}

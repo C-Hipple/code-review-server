@@ -34,7 +34,6 @@ Name: str
 Owner: str
 Filters: list[str]
 SectionTitle: str
-ReleaseCommandCheck: str
 IncludeDiff: bool
 Teams: list[str]
 ```
@@ -119,7 +118,14 @@ JiraEpic = "BOARD-123" # the epic key
 
 Often for work-workflows, it's very important to know when your particular PR is not just merged, but released to production, or in a release client.
 
-You can configure a release check command which is run when PRs are added to the org file or updated. CodeReviewServer will call-out to that program and expected a single string in response.
+You can configure a release check command per repository using the `[RepoConfigs]` section. The command is run for all closed PRs each time they are updated during a sync cycle. The result is stored in the database alongside PR metadata and included in `GetPR` and `GetAllReviews` responses as the `release_status` field.
+
+```toml
+[RepoConfigs."owner/repo"]
+ReleaseCheckCommand = "release-check"
+```
+
+The command is invoked as: `<command> <owner> <repo> <merge-commit-sha>`
 
 Example. If we have a program on our PATH variable named release-check, you should call it like this:
 
@@ -134,7 +140,7 @@ $ release-check C-Hipple code-review-server nopqrs
 merged
 ```
 
-That string will then be put into the title line of the PR via the org-serializer.
+The returned string is stored and exposed as the `release_status` field in PR metadata.
 
 ## Example Config
 
@@ -145,6 +151,9 @@ Repos = [
     "C-Hipple/diff-lsp.el",
 ]
 SleepDuration = 5
+
+[RepoConfigs."C-Hipple/diff-lsp"]
+ReleaseCheckCommand = "release-check"
 
 [[Workflows]]
 WorkflowType = "SyncReviewRequestsWorkflow"

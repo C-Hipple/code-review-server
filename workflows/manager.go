@@ -935,6 +935,9 @@ func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
 	// WorktreePath from DB if it exists
 	worktreePath, _ := db.GetWorktree(key.Number, key.Repo, key.Owner)
 
+	// Look up existing release status from DB so it's preserved in the metadata cache
+	existingReleaseStatus, _ := db.GetReleaseStatus(key.Owner, key.Repo, key.Number)
+
 	// Construct metadata matching server.PRMetadata JSON field names
 	metadata := struct {
 		Number             int      `json:"number"`
@@ -957,6 +960,7 @@ func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
 		Body               string   `json:"body"`
 		URL                string   `json:"url"`
 		WorktreePath       string   `json:"worktree_path"`
+		ReleaseStatus      string   `json:"release_status"`
 	}{
 		Number:             pr.GetNumber(),
 		Title:              pr.GetTitle(),
@@ -978,9 +982,28 @@ func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
 		Body:               pr.GetBody(),
 		URL:                pr.GetHTMLURL(),
 		WorktreePath:       worktreePath,
+		ReleaseStatus:      existingReleaseStatus,
 	}
 
 	if j, err := json.Marshal(metadata); err == nil {
 		db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, string(j))
+	}
+
+	// Run release check for closed PRs
+	if pr.GetState() == "closed" {
+		repoFullName := fmt.Sprintf("%s/%s", key.Owner, key.Repo)
+		releaseCheckCmd := config.C().GetReleaseCheckCommand(repoFullName)
+		if releaseCheckCmd != "" {
+			mergeCommitSHA := pr.GetMergeCommitSHA()
+			if mergeCommitSHA != "" {
+				status, err := GetReleaseStatus(releaseCheckCmd, key.Owner, key.Repo, mergeCommitSHA)
+				if err != nil {
+					log.Warn("Release check failed", "pr", key.Number, "repo", repoFullName, "error", err)
+				} else {
+					log.Debug("Release check result", "pr", key.Number, "repo", repoFullName, "status", status)
+					db.UpsertReleaseStatus(key.Owner, key.Repo, key.Number, status)
+				}
+			}
+		}
 	}
 }

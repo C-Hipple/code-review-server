@@ -292,6 +292,37 @@ func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, prs []
 	log.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
 }
 
+// hasUnfetchedRequirements returns true if any PR data required by the workflow was
+// not successfully fetched. A nil slice in repoStatePRs or a nil PR pointer in
+// specificPRs indicates that the fetch either failed (e.g. 429 rate limit) or was
+// never attempted. In either case the workflow must be skipped — running section
+// matching against an empty list would delete all existing database items.
+func hasUnfetchedRequirements(
+	workflow Workflow,
+	repoStatePRs map[string]map[string][]*github.PullRequest,
+	specificPRs map[string]map[int]*github.PullRequest,
+) bool {
+	for _, req := range workflow.GetPRRequirements() {
+		repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+		if len(req.PRNumbers) > 0 {
+			// Specific PRs: each entry starts nil and is set on success.
+			// If any required PR is still nil, the fetch failed.
+			for _, num := range req.PRNumbers {
+				if specificPRs[repoKey][num] == nil {
+					return true
+				}
+			}
+		} else {
+			// State-based PRs: GetPRs returns a non-nil slice on success (even
+			// when there are 0 results). nil means the fetch failed or was skipped.
+			if repoStatePRs[repoKey][req.State] == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGroup) {
 	client := git_tools.GetGithubClient()
 
@@ -321,18 +352,18 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		}
 	}
 
-	// Track which fetches failed so we can skip dependent workflows
-	fetchErrors := make(map[string]bool) // key: "repoKey/state" or "repoKey/specific"
-
-	// Fetching phase
+	// Fetching phase.
+	// On success, repoStatePRs[repoKey][state] is set to a non-nil slice (possibly empty).
+	// On failure it stays nil. This nil sentinel lets hasUnfetchedRequirements detect
+	// errors without a separate error-tracking map.
 	for repoKey, states := range repoStatePRs {
 		owner, repo, _ := git_tools.ParseRepoName(repoKey)
 		for state := range states {
 			log.Debug("Fetching PRs", "repo", repoKey, "state", state)
 			prs, err := git_tools.GetPRs(client, state, owner, repo)
 			if err != nil {
-				log.Error("Failed to fetch PRs", "repo", repoKey, "state", state, "error", err)
-				fetchErrors[repoKey+"/"+state] = true
+				log.Error("Failed to fetch PRs, will skip dependent workflows", "repo", repoKey, "state", state, "error", err)
+				// repoStatePRs[repoKey][state] remains nil — signals failure to hasUnfetchedRequirements
 				continue
 			}
 			repoStatePRs[repoKey][state] = prs
@@ -349,8 +380,8 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			log.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
 			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
 			if err != nil {
-				log.Error("Failed to fetch specific PRs", "repo", repoKey, "error", err)
-				fetchErrors[repoKey+"/specific"] = true
+				log.Error("Failed to fetch specific PRs, will skip dependent workflows", "repo", repoKey, "error", err)
+				// specificPRs[repoKey][num] entries remain nil — signals failure
 				continue
 			}
 			for _, pr := range prs {
@@ -366,23 +397,9 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 
 	var wg sync.WaitGroup
 	for _, workflow := range ms.Workflows {
-		// Check if any of this workflow's PR requirements had a fetch error
-		hasFetchError := false
-		for _, req := range workflow.GetPRRequirements() {
-			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
-			if len(req.PRNumbers) > 0 {
-				if fetchErrors[repoKey+"/specific"] {
-					hasFetchError = true
-					break
-				}
-			} else {
-				if fetchErrors[repoKey+"/"+req.State] {
-					hasFetchError = true
-					break
-				}
-			}
-		}
-		if hasFetchError {
+		// Skip if any required PR data was not successfully fetched (e.g. rate limit).
+		// Running section-matching against an empty list would delete all DB items.
+		if hasUnfetchedRequirements(workflow, repoStatePRs, specificPRs) {
 			log.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
 			continue
 		}

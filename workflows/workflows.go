@@ -40,64 +40,6 @@ func (rr *RunResult) Report() string {
 	return fmt.Sprintf("A: %d; U: %d; R: %d; S: %d", rr.Added, rr.Updated, rr.Deleted, rr.Skipped)
 }
 
-type SingleRepoSyncReviewRequestsWorkflow struct {
-	Name                string
-	Owner               string
-	Repo                string
-	Filters             []git_tools.PRFilter
-	SectionTitle        string
-	ReleaseCheckCommand string
-	IncludeDiff         bool
-}
-
-func (w SingleRepoSyncReviewRequestsWorkflow) GetName() string {
-	return w.Name
-}
-
-func (w SingleRepoSyncReviewRequestsWorkflow) GetOrgSectionName() string {
-	return w.SectionTitle
-}
-
-func (w SingleRepoSyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
-	owner, repo, err := git_tools.ParseRepoName(w.Repo)
-	if err != nil {
-		return nil
-	}
-	return []PRRequirement{{
-		Owner: owner,
-		Repo:  repo,
-		State: "open",
-		AuxData: AuxDataRequirement{
-			Comments: true,
-			CIStatus: true,
-			Diff:     w.IncludeDiff,
-		},
-	}}
-}
-
-func (w SingleRepoSyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-	_, _, err := git_tools.ParseRepoName(w.Repo)
-	if err != nil {
-		log.Error("Error parsing repo name", "repo", w.Repo, "error", err)
-		return RunResult{}, err
-	}
-
-	prs = git_tools.ApplyPRFilters(prs, w.Filters)
-	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
-	if err != nil {
-		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
-		return RunResult{}, errors.New("Section Not Found")
-	}
-
-	beforeCount, _ := db.GetItemCount()
-	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
-	afterCount, _ := db.GetItemCount()
-	log.Info("Finished workflow", "items_after", afterCount)
-	return result, nil
-}
-
 type SyncReviewRequestsWorkflow struct {
 	// Github repo info
 	Name        string
@@ -105,6 +47,7 @@ type SyncReviewRequestsWorkflow struct {
 	Repos       []string
 	Filters     []git_tools.PRFilter
 	IncludeDiff bool
+	PRState     string // defaults to "open"
 
 	// org output info
 	SectionTitle        string
@@ -112,6 +55,10 @@ type SyncReviewRequestsWorkflow struct {
 }
 
 func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
+	state := w.PRState
+	if state == "" {
+		state = "open"
+	}
 	reqs := []PRRequirement{}
 	for _, repoEntry := range w.Repos {
 		owner, repo, err := git_tools.ParseRepoName(repoEntry)
@@ -119,7 +66,7 @@ func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
 			reqs = append(reqs, PRRequirement{
 				Owner: owner,
 				Repo:  repo,
-				State: "open",
+				State: state,
 				AuxData: AuxDataRequirement{
 					Comments: true,
 					CIStatus: true,
@@ -157,63 +104,6 @@ func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
-type ListMyPRsWorkflow struct {
-	Name                string
-	Owner               string
-	Repos               []string
-	Filters             []git_tools.PRFilter
-	SectionTitle        string
-	PRState             string
-	ReleaseCheckCommand string
-	IncludeDiff         bool
-}
-
-func (w ListMyPRsWorkflow) GetName() string {
-	return w.Name
-}
-
-func (w ListMyPRsWorkflow) GetOrgSectionName() string {
-	return w.SectionTitle
-}
-
-func (w ListMyPRsWorkflow) GetPRRequirements() []PRRequirement {
-	reqs := []PRRequirement{}
-	for _, repoEntry := range w.Repos {
-		owner, repo, err := git_tools.ParseRepoName(repoEntry)
-		if err == nil {
-			reqs = append(reqs, PRRequirement{
-				Owner: owner,
-				Repo:  repo,
-				State: w.PRState,
-				AuxData: AuxDataRequirement{
-					Comments: true,
-					CIStatus: true,
-					Diff:     w.IncludeDiff,
-				},
-			})
-		}
-	}
-	return reqs
-}
-
-func (w ListMyPRsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-
-	prs = git_tools.ApplyPRFilters(prs, w.Filters)
-	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
-	if err != nil {
-		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
-		return RunResult{}, errors.New("Section Not Found")
-	}
-	prs = git_tools.ApplyPRFilters(prs, []git_tools.PRFilter{git_tools.FilterMyPRs})
-	
-	beforeCount, _ := db.GetItemCount()
-	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
-	afterCount, _ := db.GetItemCount()
-	log.Info("Finished workflow", "items_after", afterCount)
-	return result, nil
-}
 
 type ProjectListWorkflow struct {
 	Name                string

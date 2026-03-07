@@ -45,8 +45,8 @@ The `GithubUsername` can be set at the top level of the config file. If a workfl
 
 The WorkflowType is one of the following strings:
 - `SyncReviewRequestsWorkflow`
-- `SingleRepoSyncReviewRequestsWorkflow`
-- `ListMyPRsWorkflow`
+- `SingleRepoSyncReviewRequestsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with single-element `Repos`)
+- `ListMyPRsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with `FilterMyPRs` in filters)
 - `ProjectListWorkflow`
 
 ### IncludeDiff
@@ -57,7 +57,10 @@ The WorkflowType is one of the following strings:
 
 ### Workflow Specific Configurations
 
-#### SingleRepoSyncReviewRequestsWorkflow
+#### SingleRepoSyncReviewRequestsWorkflow (Deprecated)
+
+> [!WARNING]
+> This workflow type is deprecated. Use `SyncReviewRequestsWorkflow` with a single-element `Repos` list instead.
 
 Takes an additional parameter, `Repo`.
 
@@ -65,12 +68,28 @@ Takes an additional parameter, `Repo`.
 Repo: str # "owner/repo" format
 ```
 
-#### ListMyPRsWorkflow
+**Migration:** Convert to `SyncReviewRequestsWorkflow`:
+```toml
+WorkflowType = "SyncReviewRequestsWorkflow"
+Repos = ["owner/repo"]  # Instead of Repo = "owner/repo"
+```
+
+#### ListMyPRsWorkflow (Deprecated)
+
+> [!WARNING]
+> This workflow type is deprecated. Use `SyncReviewRequestsWorkflow` with `FilterMyPRs` in the filters list instead.
 
 Takes the additional parameter `PRState`, which is passed through to the github API when filtering for PRs.
 
 ```toml
 PRState: str [open/closed/nil]
+```
+
+**Migration:** Convert to `SyncReviewRequestsWorkflow`:
+```toml
+WorkflowType = "SyncReviewRequestsWorkflow"
+PRState = "closed"  # Keep this as-is
+Filters = ["FilterMyPRs"]  # Explicitly add this filter
 ```
 
 #### ProjectListWorkflow (JIRA Integration)

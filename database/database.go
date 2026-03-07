@@ -264,6 +264,15 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add created_at column to items if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='created_at'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+		if err != nil {
+			slog.Warn("Error adding created_at column to items", "error", err)
+		}
+	}
+
 	pluginResultsSchema := `
 	CREATE TABLE IF NOT EXISTS PluginResults (
 		id INTEGER PRIMARY KEY,
@@ -932,6 +941,37 @@ func (db *DB) DeletePRMetadataCache(owner string, repo string, prNumber int) err
 		owner, repo, prNumber,
 	)
 	return err
+}
+
+// GetItemWorkflowInfo returns the time the item was first added by the workflow and its section name.
+// The identifier should be in the format "{repo}-{prNumber}" (e.g. "chaturbate-1234").
+func (db *DB) GetItemWorkflowInfo(identifier string) (time.Time, string, error) {
+	var createdAtStr string
+	var sectionName string
+	err := db.conn.QueryRow(
+		`SELECT i.created_at, s.section_name
+		 FROM items i
+		 JOIN sections s ON i.section_id = s.id
+		 WHERE i.identifier = ?
+		 LIMIT 1`,
+		identifier,
+	).Scan(&createdAtStr, &sectionName)
+	if err == sql.ErrNoRows {
+		return time.Time{}, "", nil
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	// SQLite stores CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS"
+	t, err := time.Parse("2006-01-02 15:04:05", createdAtStr)
+	if err != nil {
+		// Try RFC3339 fallback
+		t, err = time.Parse(time.RFC3339, createdAtStr)
+		if err != nil {
+			return time.Time{}, sectionName, nil
+		}
+	}
+	return t, sectionName, nil
 }
 
 func (item *Item) GetDetails() ([]string, error) {

@@ -105,13 +105,13 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
@@ -170,13 +170,13 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	ID               int64         `json:"id"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
@@ -210,13 +210,13 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
@@ -249,13 +249,13 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
@@ -303,13 +303,13 @@ type SetFeedbackArgs struct {
 }
 
 type SetFeedbackReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	ID               int64         `json:"id"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
@@ -340,13 +340,13 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
@@ -380,13 +380,13 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -473,13 +473,13 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
@@ -547,7 +547,6 @@ func GetLocalRepoPath(repo string) (string, error) {
 	return filepath.Clean(repoPath), nil
 }
 
-
 type GetPluginOutputArgs struct {
 	Owner  string `json:"Owner"`
 	Repo   string `json:"Repo"`
@@ -574,5 +573,74 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 	}
 
 	reply.Output = results
+	return nil
+}
+
+type RerunPluginsArgs struct {
+	Owner   string   `json:"Owner"`
+	Repo    string   `json:"Repo"`
+	Number  int      `json:"Number"`
+	Plugins []string `json:"Plugins"` // Optional: specific plugins to rerun. If empty, all plugins rerun.
+}
+
+type RerunPluginsReply struct {
+	Okay    bool                             `json:"okay"`
+	Message string                           `json:"message"`
+	Output  map[string]database.PluginResult `json:"output"`
+}
+
+// RerunPlugins forces reexecution of plugins for a given PR, bypassing SHA cache checks.
+// If Plugins array is specified, only those plugins are rerun; otherwise all are rerun.
+func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsReply) error {
+	// Clear plugin results to force rerun
+	if len(args.Plugins) == 0 {
+		// Clear all plugin results for this PR
+		err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, "")
+		if err != nil {
+			h.Log.Error("Error clearing plugin results", "error", err)
+			return err
+		}
+		h.Log.Info("Cleared all plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number)
+	} else {
+		// Clear only specified plugin results
+		for _, pluginName := range args.Plugins {
+			err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, pluginName)
+			if err != nil {
+				h.Log.Error("Error clearing plugin result", "plugin", pluginName, "error", err)
+				return err
+			}
+		}
+		h.Log.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
+	}
+
+	// Fetch PR details and trigger plugins
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details for plugin rerun", "error", err)
+		return err
+	}
+
+	// Get PR metadata and diff
+	commentsJSON := "[]"
+	rawComments, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+	if rawComments != "" {
+		commentsJSON = rawComments
+	}
+
+	_, sha, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+
+	// Run plugins with force flag
+	metadataJSON, _ := json.Marshal(details.Metadata)
+	go RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), true, args.Plugins)
+
+	reply.Okay = true
+	if len(args.Plugins) == 0 {
+		reply.Message = fmt.Sprintf("Rerunning all plugins for PR %d", args.Number)
+	} else {
+		reply.Message = fmt.Sprintf("Rerunning %d plugin(s) for PR %d", len(args.Plugins), args.Number)
+	}
+
+	// Return empty output for now (plugins running async)
+	reply.Output = make(map[string]database.PluginResult)
 	return nil
 }

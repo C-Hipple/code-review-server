@@ -34,13 +34,13 @@ type Item struct {
 
 type LocalComment struct {
 	ID        int64
-	Owner     string    // GitHub owner/org
-	Repo      string    // GitHub repository name
-	Number    int       // PR number
-	Filename  string    // going to be the rel file like src/main.rs
+	Owner     string // GitHub owner/org
+	Repo      string // GitHub repository name
+	Number    int    // PR number
+	Filename  string // going to be the rel file like src/main.rs
 	Position  int64
 	Body      *string
-	ReplyToID *int64    // ID of the comment being replied to, or nil if top-level
+	ReplyToID *int64 // ID of the comment being replied to, or nil if top-level
 }
 
 func NewDB(dbPath string) (*DB, error) {
@@ -57,7 +57,7 @@ func NewDB(dbPath string) (*DB, error) {
 
 	db := &DB{conn: conn}
 	conn.SetMaxOpenConns(1)
-	
+
 	// Enable WAL mode and other optimizations
 	_, err = conn.Exec("PRAGMA journal_mode=WAL;")
 	if err != nil {
@@ -221,7 +221,7 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error updating number defaults", "error", err)
 		}
 	}
-	
+
 	// Migration: Add reply_to_id column
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='reply_to_id'").Scan(&count)
 	if err == nil && count == 0 {
@@ -263,7 +263,6 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding priority column to sections", "error", err)
 		}
 	}
-
 
 	pluginResultsSchema := `
 	CREATE TABLE IF NOT EXISTS PluginResults (
@@ -398,6 +397,25 @@ func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName st
 	return sha, nil
 }
 
+// DeletePluginResultsForPR clears plugin results for a PR to force rerun
+// If pluginName is empty, all plugin results for the PR are deleted
+func (db *DB) DeletePluginResultsForPR(owner, repo string, prNumber int, pluginName string) error {
+	if pluginName == "" {
+		// Delete all plugin results for this PR
+		_, err := db.conn.Exec(
+			"DELETE FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ?",
+			owner, repo, prNumber,
+		)
+		return err
+	}
+	// Delete specific plugin result
+	_, err := db.conn.Exec(
+		"DELETE FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+		owner, repo, prNumber, pluginName,
+	)
+	return err
+}
+
 func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
@@ -502,7 +520,7 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		return nil, err
 	}
 
-	// Try to get the last inserted ID. 
+	// Try to get the last inserted ID.
 	// In SQLite with ON CONFLICT DO UPDATE, LastInsertId() might be 0 if no row was inserted.
 	id, err := result.LastInsertId()
 	if err != nil || id == 0 {

@@ -30,6 +30,7 @@ type Item struct {
 	DetailsJSON string // JSON array of detail lines
 	Tags        string // Comma-separated tags
 	TTL         int64
+	CreatedAt   time.Time
 }
 
 type LocalComment struct {
@@ -584,7 +585,7 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? ORDER BY id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
 	if err != nil {
@@ -595,9 +596,11 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
+		var createdAtStr string
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
 			return nil, err
 		}
+		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
 		items = append(items, &item)
 	}
 	return items, rows.Err()
@@ -605,7 +608,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 
 func (db *DB) GetAllItems() ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items ORDER BY section_id, id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -615,9 +618,11 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
+		var createdAtStr string
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
 			return nil, err
 		}
+		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
 		items = append(items, &item)
 	}
 	return items, rows.Err()

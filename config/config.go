@@ -51,7 +51,8 @@ type Config struct {
 	GithubUsername string
 	RepoLocation   string
 	AutoWorktree   bool
-	SectionPriority map[string]int // Map of section title to priority (lower is better)
+	SectionPriority map[string]int    // Map of section title to priority (lower is better)
+	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins         []Plugin
 	RepoConfigs     map[string]RepoConfig // Keyed by "owner/repo"
 	DB              *database.DB
@@ -125,6 +126,7 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoLocation    string
 		AutoWorktree    bool
 		SectionPriority map[string]int
+		SectionSorting  map[string]string
 		Plugins         []Plugin
 		RepoConfigs     map[string]RepoConfig
 	}
@@ -172,6 +174,7 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoLocation:    repoLocation,
 		AutoWorktree:    intermediate_config.AutoWorktree,
 		SectionPriority: intermediate_config.SectionPriority,
+		SectionSorting:  intermediate_config.SectionSorting,
 		Plugins:         intermediate_config.Plugins,
 		RepoConfigs:     repoConfigs,
 	}, nil

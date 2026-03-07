@@ -16,9 +16,11 @@ SleepDuration: int (in minutes, optional, default=1 minute)
 GithubUsername: str [optional]
 RepoLocation: str [optional, default="~/"]
 SectionPriority: map[string]int [optional]
+SectionSorting: map[string]string [optional]
 ```
 
 - **SectionPriority**: Allows you to define the order of sections in your client. Lower numbers come first. This map keys the section title to an integer.
+- **SectionSorting**: Controls how PRs are sorted within a section. Maps the section title to a sorting method. Supported values are `"newest_first"` and `"oldest_first"`, which sort by PR creation time. If not set for a section, items will roughly appear in the order they were added to the section.
 - **Repos**: A list of repositories in the format "owner/repo". Workflows can also define their own `Repos` list which overrides this global list.
 - **GithubUsername**: Used for determining when using the NotMyPRs or FilterMyPRs filters, as well as for smart filters like FilterWaitingOnMe and FilterWaitingOnAuthor to correctly determine your review status.
 - **RepoLocation**: The directory where you keep your git repositories. It defaults to "~/" if not defined. This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
@@ -151,6 +153,9 @@ Repos = [
     "C-Hipple/diff-lsp.el",
 ]
 SleepDuration = 5
+
+[SectionSorting]
+"Open PRs" = "newest_first"
 
 [RepoConfigs."C-Hipple/diff-lsp"]
 ReleaseCheckCommand = "release-check"

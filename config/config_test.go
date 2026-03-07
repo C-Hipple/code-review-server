@@ -137,6 +137,23 @@ Repos = ["owner/repo"]
 			wantErr: false,
 		},
 		{
+			name: "Section Sorting",
+			content: `
+[SectionSorting]
+"My PRs" = "newest_first"
+"Team PRs" = "oldest_first"
+`,
+			want: &Config{
+				RepoLocation:  "~/",
+				SleepDuration: 10 * time.Minute,
+				SectionSorting: map[string]string{
+					"My PRs":   "newest_first",
+					"Team PRs": "oldest_first",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "Custom Sleep and Repo Location",
 			content: `
 RepoLocation = "/custom/path"
@@ -212,6 +229,14 @@ Command = "echo 2"
 				for k, v := range tt.want.SectionPriority {
 					if got.SectionPriority[k] != v {
 						t.Errorf("SectionPriority[%s] = %v, want %v", k, got.SectionPriority[k], v)
+					}
+				}
+				if len(got.SectionSorting) != len(tt.want.SectionSorting) {
+					t.Errorf("SectionSorting length = %v, want %v", len(got.SectionSorting), len(tt.want.SectionSorting))
+				}
+				for k, v := range tt.want.SectionSorting {
+					if got.SectionSorting[k] != v {
+						t.Errorf("SectionSorting[%s] = %v, want %v", k, got.SectionSorting[k], v)
 					}
 				}
 				if len(got.RepoConfigs) != len(tt.want.RepoConfigs) {

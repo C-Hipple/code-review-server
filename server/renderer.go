@@ -175,15 +175,16 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
-	Section  string `json:"section"`
-	Priority int    `json:"section_priority"`
-	Status   string `json:"status"`
-	Title    string `json:"title"`
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	Number   int    `json:"number"`
-	Author   string `json:"author"`
-	URL      string `json:"url"`
+	Section       string `json:"section"`
+	Priority      int    `json:"section_priority"`
+	Status        string `json:"status"`
+	Title         string `json:"title"`
+	Owner         string `json:"owner"`
+	Repo          string `json:"repo"`
+	Number        int    `json:"number"`
+	Author        string `json:"author"`
+	URL           string `json:"url"`
+	ReleaseStatus string `json:"release_status"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -265,6 +266,13 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		if strings.HasPrefix(line, "https://") {
 			reviewItem.URL = line
 			continue
+		}
+	}
+
+	// Look up release status from DB if we have owner/repo/number
+	if reviewItem.Owner != "" && reviewItem.Repo != "" && reviewItem.Number > 0 {
+		if status, err := r.db.GetReleaseStatus(reviewItem.Owner, reviewItem.Repo, reviewItem.Number); err == nil && status != "" {
+			reviewItem.ReleaseStatus = status
 		}
 	}
 
@@ -422,6 +430,7 @@ type PRMetadata struct {
 	URL                string   `json:"url"`
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
+	ReleaseStatus      string   `json:"release_status"`
 }
 
 type PRDetails struct {
@@ -896,6 +905,11 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			metadata.RepoPath = path
 		}
+	}
+
+	// Load release status from DB
+	if releaseStatus, err := config.C().DB.GetReleaseStatus(owner, repo, number); err == nil && releaseStatus != "" {
+		metadata.ReleaseStatus = releaseStatus
 	}
 
 	// 3. Fetch Diff (with caching)

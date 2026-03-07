@@ -55,6 +55,7 @@ type PRMetadata struct {
 	URL                string   `json:"url"`
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
+	ReleaseStatus      string   `json:"release_status"`
 }
 
 type PRDetails struct {

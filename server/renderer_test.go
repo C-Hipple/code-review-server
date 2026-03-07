@@ -1,8 +1,10 @@
 package server
 
 import (
+	"crs/database"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v48/github"
 )
@@ -645,4 +647,49 @@ func TestSplitComments(t *testing.T) {
 	if !foundActive {
 		t.Errorf("Active root (ID 3) not found in active list")
 	}
+}
+
+func TestSortItems(t *testing.T) {
+	now := time.Now()
+	items := []*database.Item{
+		{ID: 1, Title: "middle", CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: 2, Title: "oldest", CreatedAt: now.Add(-2 * time.Hour)},
+		{ID: 3, Title: "newest", CreatedAt: now},
+	}
+
+	t.Run("newest_first", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, SortNewestFirst)
+		if cp[0].Title != "newest" || cp[1].Title != "middle" || cp[2].Title != "oldest" {
+			t.Errorf("newest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("oldest_first", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, SortOldestFirst)
+		if cp[0].Title != "oldest" || cp[1].Title != "middle" || cp[2].Title != "newest" {
+			t.Errorf("oldest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("unknown sort preserves order", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, "unknown")
+		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
+			t.Errorf("unknown sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("empty sort string preserves order", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, "")
+		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
+			t.Errorf("empty sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
 }

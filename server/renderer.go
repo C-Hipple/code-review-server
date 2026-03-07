@@ -20,6 +20,12 @@ import (
 	"github.com/google/go-github/v48/github"
 )
 
+// SortNewestFirst sorts items so that the most recently created appear first.
+const SortNewestFirst = "newest_first"
+
+// SortOldestFirst sorts items so that the oldest created appear first.
+const SortOldestFirst = "oldest_first"
+
 type OrgRenderer struct {
 	db         *database.DB
 	serializer org.OrgSerializer
@@ -50,12 +56,18 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 
 	// Build the org file content
 	var content strings.Builder
+	sectionSorting := config.C().SectionSorting
 
 	for _, section := range sections {
 		// Get items for this section
 		items, err := r.db.GetItemsBySection(section.ID)
 		if err != nil {
 			return "", err
+		}
+
+		// Apply per-section sorting if configured
+		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
+			sortItems(items, sortMethod)
 		}
 
 		// Build section header
@@ -78,6 +90,20 @@ func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	}
 
 	return content.String(), nil
+}
+
+// sortItems sorts items in-place according to the given sorting method.
+func sortItems(items []*database.Item, sortMethod string) {
+	switch sortMethod {
+	case SortNewestFirst:
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+	case SortOldestFirst:
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		})
+	}
 }
 
 func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
@@ -109,10 +135,16 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 	// Build the org file content and structured items
 	var content strings.Builder
 	var reviewItems []ReviewItem
+	sectionSorting := config.C().SectionSorting
 
 	for _, section := range sections {
 		// Get items for this section
 		items := itemsBySection[section.ID]
+
+		// Apply per-section sorting if configured
+		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
+			sortItems(items, sortMethod)
+		}
 
 		// Build section header
 		sectionHeader := r.buildSectionHeader(section, items)
@@ -162,11 +194,17 @@ func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
 	}
 
 	var reviewItems []ReviewItem
+	sectionSorting := config.C().SectionSorting
 
 	for _, section := range sections {
 		items, err := r.db.GetItemsBySection(section.ID)
 		if err != nil {
 			return nil, err
+		}
+
+		// Apply per-section sorting if configured
+		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
+			sortItems(items, sortMethod)
 		}
 
 		for _, item := range items {

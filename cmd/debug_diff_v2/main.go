@@ -4,6 +4,7 @@ import (
 	"crs/config"
 	"crs/git_tools"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -27,5 +28,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Successfully wrote raw GitHub diff to %s\n", filename)
+	log.Printf("Successfully wrote raw GitHub diff to %s\n", filename)
+	fmt.Println("Diff debug complete")
 }

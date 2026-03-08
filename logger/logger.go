@@ -73,5 +73,6 @@ func New() *slog.Logger {
 	handler := NewCustomHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	return slog.New(handler)
+	logger := slog.New(handler)
+	return logger
 }

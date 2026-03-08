@@ -105,13 +105,14 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
@@ -127,6 +128,7 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -159,6 +161,15 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	return details, content, nil
 }
 
+// fetchFeedback retrieves the saved feedback draft for a PR, logging any error.
+func (h *RPCHandler) fetchFeedback(owner, repo string, number int) string {
+	feedback, err := config.C().DB.GetFeedback(owner, repo, number)
+	if err != nil {
+		h.Log.Warn("Error fetching feedback", "owner", owner, "repo", repo, "number", number, "error", err)
+	}
+	return feedback
+}
+
 type AddCommentArgs struct {
 	Owner     string `json:"Owner"`
 	Repo      string `json:"Repo"`
@@ -170,13 +181,14 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	ID               int64         `json:"id"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
@@ -198,6 +210,7 @@ func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) er
 	reply.Comments = details.Comments
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -210,13 +223,14 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
@@ -238,6 +252,7 @@ func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply)
 	reply.Comments = details.Comments
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -249,13 +264,14 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
@@ -291,6 +307,7 @@ func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteComment
 	} else {
 		reply.Reviews = details.Reviews
 	}
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 
 	return nil
 }
@@ -303,13 +320,7 @@ type SetFeedbackArgs struct {
 }
 
 type SetFeedbackReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Okay bool `json:"okay"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
@@ -318,18 +329,7 @@ func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply)
 		h.Log.Error("Error inserting feedback", "error", err)
 		return err
 	}
-
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
-	if err != nil {
-		return err
-	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.Okay = true
 	return nil
 }
 
@@ -380,13 +380,14 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -436,10 +437,13 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		return err
 	}
 
-	// 4. Clean up Local Comments
+	// 4. Clean up Local Comments and feedback draft
 	err = config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
 		h.Log.Error("Error deleting local comments after submission", "error", err)
+	}
+	if err := config.C().DB.DeleteFeedback(args.Owner, args.Repo, args.Number); err != nil {
+		h.Log.Error("Error deleting feedback after submission", "error", err)
 	}
 
 	// 5. Remove the item from all sections in the database
@@ -463,6 +467,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	reply.Comments = details.Comments
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -473,13 +478,14 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
@@ -495,6 +501,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
 	reply.Okay = true
+	reply.Feedback = h.fetchFeedback(args.Owner, args.Repo, args.Number)
 	return nil
 }
 

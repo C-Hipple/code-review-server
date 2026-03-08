@@ -679,6 +679,29 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 	}, nil
 }
 
+func (db *DB) GetFeedback(owner, repo string, number int) (string, error) {
+	var body string
+	err := db.conn.QueryRow(
+		`SELECT body FROM Feedback WHERE owner = ? AND repo = ? AND number = ?`,
+		owner, repo, number,
+	).Scan(&body)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return body, nil
+}
+
+func (db *DB) DeleteFeedback(owner, repo string, number int) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM Feedback WHERE owner = ? AND repo = ? AND number = ?",
+		owner, repo, number,
+	)
+	return err
+}
+
 func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error {
 	stmt, err := db.conn.Prepare(
 		`INSERT INTO Feedback (owner, repo, number, body) VALUES (?, ?, ?, ?)

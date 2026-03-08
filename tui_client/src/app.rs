@@ -324,7 +324,7 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(ref m) = self.pr_metadata.clone() {
                     let owner = m.author.clone(); // We'll need actual owner
-                    // Unfortunately metadata doesn't have owner, re-derive from sections
+                                                  // Unfortunately metadata doesn't have owner, re-derive from sections
                     if let Some((o, r, n)) = self.find_pr_owner_repo(m.number) {
                         self.status_msg = "Syncing PR...".into();
                         match self.rpc.call(

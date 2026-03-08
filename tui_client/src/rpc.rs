@@ -54,6 +54,7 @@ impl RpcClient {
 
         let payload = serde_json::to_string(&request)?;
         stdin.write_all(payload.as_bytes())?;
+        stdin.write_all(b"\n")?;
         stdin.flush()?;
 
         // Read one line of JSON response

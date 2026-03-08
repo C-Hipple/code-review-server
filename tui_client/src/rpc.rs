@@ -97,3 +97,39 @@ fn which_server() -> Result<String> {
          Please install the server binary first."
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::types::RpcRequest;
+
+    #[test]
+    fn test_rpc_request_serialization() {
+        let request = RpcRequest {
+            method: "RPCHandler.GetAllReviews".to_string(),
+            params: vec![serde_json::json!({})],
+            id: 1,
+        };
+
+        let json = serde_json::to_string(&request).expect("Failed to serialize");
+        assert!(json.contains("GetAllReviews"));
+        assert!(json.contains("\"id\":1"));
+    }
+
+    #[test]
+    fn test_rpc_request_with_params() {
+        let request = RpcRequest {
+            method: "RPCHandler.GetPR".to_string(),
+            params: vec![serde_json::json!({
+                "Owner": "octocat",
+                "Repo": "hello",
+                "Number": 42
+            })],
+            id: 2,
+        };
+
+        let json = serde_json::to_string(&request).expect("Failed to serialize");
+        assert!(json.contains("octocat"));
+        assert!(json.contains("hello"));
+        assert!(json.contains("42"));
+    }
+}

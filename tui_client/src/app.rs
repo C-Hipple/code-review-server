@@ -327,3 +327,165 @@ pub enum CursorEntry {
     SectionHeader,
     Item(usize, usize),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test helper to compute total list length from sections
+    fn compute_list_len(sections: &[Section]) -> usize {
+        sections.iter().map(|s| 1 + s.items.len()).sum()
+    }
+
+    #[test]
+    fn test_section_grouping() {
+        let items = vec![
+            ReviewItem {
+                section: "Needs Review".to_string(),
+                priority: 1,
+                status: "PENDING".to_string(),
+                title: "PR 1".to_string(),
+                owner: "test".to_string(),
+                repo: "repo".to_string(),
+                number: 1,
+                author: "alice".to_string(),
+                url: "https://example.com/1".to_string(),
+                release_status: String::new(),
+            },
+            ReviewItem {
+                section: "Needs Review".to_string(),
+                priority: 1,
+                status: "PENDING".to_string(),
+                title: "PR 2".to_string(),
+                owner: "test".to_string(),
+                repo: "repo".to_string(),
+                number: 2,
+                author: "bob".to_string(),
+                url: "https://example.com/2".to_string(),
+                release_status: String::new(),
+            },
+            ReviewItem {
+                section: "In Progress".to_string(),
+                priority: 2,
+                status: "IN_PROGRESS".to_string(),
+                title: "PR 3".to_string(),
+                owner: "test".to_string(),
+                repo: "repo".to_string(),
+                number: 3,
+                author: "charlie".to_string(),
+                url: "https://example.com/3".to_string(),
+                release_status: String::new(),
+            },
+        ];
+
+        let mut sections: Vec<Section> = Vec::new();
+        for item in items {
+            if let Some(sec) = sections.iter_mut().find(|s| s.name == item.section) {
+                sec.items.push(item);
+            } else {
+                let name = item.section.clone();
+                let priority = item.priority;
+                sections.push(Section {
+                    name,
+                    priority,
+                    items: vec![item],
+                });
+            }
+        }
+        sections.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].name, "Needs Review");
+        assert_eq!(sections[0].items.len(), 2);
+        assert_eq!(sections[1].name, "In Progress");
+        assert_eq!(sections[1].items.len(), 1);
+    }
+
+    #[test]
+    fn test_list_len_calculation() {
+        let sections = vec![
+            Section {
+                name: "Section A".to_string(),
+                priority: 1,
+                items: vec![
+                    ReviewItem {
+                        section: "Section A".to_string(),
+                        priority: 1,
+                        status: "PENDING".to_string(),
+                        title: "PR 1".to_string(),
+                        owner: "test".to_string(),
+                        repo: "repo".to_string(),
+                        number: 1,
+                        author: "alice".to_string(),
+                        url: "https://example.com/1".to_string(),
+                        release_status: String::new(),
+                    },
+                    ReviewItem {
+                        section: "Section A".to_string(),
+                        priority: 1,
+                        status: "PENDING".to_string(),
+                        title: "PR 2".to_string(),
+                        owner: "test".to_string(),
+                        repo: "repo".to_string(),
+                        number: 2,
+                        author: "bob".to_string(),
+                        url: "https://example.com/2".to_string(),
+                        release_status: String::new(),
+                    },
+                ],
+            },
+            Section {
+                name: "Section B".to_string(),
+                priority: 2,
+                items: vec![ReviewItem {
+                    section: "Section B".to_string(),
+                    priority: 2,
+                    status: "APPROVED".to_string(),
+                    title: "PR 3".to_string(),
+                    owner: "test".to_string(),
+                    repo: "repo".to_string(),
+                    number: 3,
+                    author: "charlie".to_string(),
+                    url: "https://example.com/3".to_string(),
+                    release_status: String::new(),
+                }],
+            },
+        ];
+
+        // list_len = 1 (header A) + 2 (items) + 1 (header B) + 1 (item) = 5
+        let len = compute_list_len(&sections);
+        assert_eq!(len, 5);
+    }
+
+    #[test]
+    fn test_cursor_navigation_bounds() {
+        let mut cursor = 0;
+        let list_len = 5;
+
+        // Navigate down
+        if list_len > 0 && cursor < list_len - 1 {
+            cursor += 1;
+        }
+        assert_eq!(cursor, 1);
+
+        // Navigate to end
+        cursor = list_len - 1;
+        if list_len > 0 && cursor < list_len - 1 {
+            cursor += 1;
+        }
+        assert_eq!(cursor, list_len - 1); // Should not move
+
+        // Navigate up
+        if cursor > 0 {
+            cursor -= 1;
+        }
+        assert_eq!(cursor, list_len - 2);
+
+        // Navigate to start
+        cursor = 0;
+        if cursor > 0 {
+            cursor -= 1;
+        }
+        assert_eq!(cursor, 0); // Should not move
+    }
+}

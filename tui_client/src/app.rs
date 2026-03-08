@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::widgets::ListState;
 
 use crate::rpc::RpcClient;
 use crate::types::{GetPRReply, GetReviewsReply, PRMetadata, ReviewItem};
@@ -32,6 +33,8 @@ pub struct App {
     pub list_cursor: usize,
     /// Total number of rows in the flat list
     pub list_len: usize,
+    /// Ratatui list state — tracks scroll offset automatically
+    pub list_state: ListState,
 
     // -- PR detail view --
     pub pr_metadata: Option<PRMetadata>,
@@ -48,12 +51,15 @@ pub struct App {
 impl App {
     pub fn new() -> Result<Self> {
         let rpc = RpcClient::new()?;
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
         Ok(Self {
             rpc,
             view: View::Sections,
             sections: Vec::new(),
             list_cursor: 0,
             list_len: 0,
+            list_state,
             pr_metadata: None,
             pr_diff: String::new(),
             pr_comments: Vec::new(),
@@ -128,6 +134,11 @@ impl App {
         Ok(())
     }
 
+    /// Sync `list_state` selection to `list_cursor` so the List widget scrolls correctly.
+    fn sync_list_state(&mut self) {
+        self.list_state.select(Some(self.list_cursor));
+    }
+
     /// Map the flat cursor position to (section_index, item_index_within_section) or just a section header.
     pub fn cursor_to_entry(&self) -> CursorEntry {
         let mut pos = 0;
@@ -163,30 +174,36 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.list_len > 0 && self.list_cursor < self.list_len - 1 {
                     self.list_cursor += 1;
+                    self.sync_list_state();
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.list_cursor > 0 {
                     self.list_cursor -= 1;
+                    self.sync_list_state();
                 }
             }
             KeyCode::Char('g') => {
                 self.list_cursor = 0;
+                self.sync_list_state();
             }
             KeyCode::Char('G') => {
                 if self.list_len > 0 {
                     self.list_cursor = self.list_len - 1;
+                    self.sync_list_state();
                 }
             }
             KeyCode::Char('d') => {
                 // Half-page down
                 let jump = 10;
                 self.list_cursor = (self.list_cursor + jump).min(self.list_len.saturating_sub(1));
+                self.sync_list_state();
             }
             KeyCode::Char('u') => {
                 // Half-page up
                 let jump = 10;
                 self.list_cursor = self.list_cursor.saturating_sub(jump);
+                self.sync_list_state();
             }
 
             // Open PR detail

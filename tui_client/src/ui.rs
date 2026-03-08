@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{App, View};
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -26,23 +26,24 @@ pub fn draw(f: &mut Frame, app: &App) {
         View::PRDetail => draw_pr_detail(f, chunks[1], app),
     }
 
+
     draw_status_bar(f, chunks[2], app);
     draw_help_bar(f, chunks[3], app);
 }
 
-fn draw_title_bar(f: &mut Frame, area: Rect, _app: &App) {
+fn draw_title_bar(f: &mut Frame, area: Rect, _app: &mut App) {
     let title = Paragraph::new(" Code Review Server — TUI")
         .style(Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD));
     f.render_widget(title, area);
 }
 
-fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
+fn draw_status_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let status = Paragraph::new(format!(" {}", app.status_msg))
         .style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
     f.render_widget(status, area);
 }
 
-fn draw_help_bar(f: &mut Frame, area: Rect, app: &App) {
+fn draw_help_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let help_text = match app.view {
         View::Sections => " j/k: navigate  Enter/l: open PR  o: open in browser  r: refresh  g/G: top/bottom  q: quit",
         View::PRDetail => " j/k: scroll  d/u: page down/up  g/G: top/bottom  o: open in browser  r: sync  q/Esc/h: back",
@@ -52,7 +53,7 @@ fn draw_help_bar(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(help, area);
 }
 
-fn draw_sections(f: &mut Frame, area: Rect, app: &App) {
+fn draw_sections(f: &mut Frame, area: Rect, app: &mut App) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_index = 0;
 
@@ -136,11 +137,12 @@ fn draw_sections(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Reviews "));
-    f.render_widget(list, area);
+        .block(Block::default().borders(Borders::ALL).title(" Reviews "))
+        .highlight_style(ratatui::style::Style::default());
+    f.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn draw_pr_detail(f: &mut Frame, area: Rect, app: &App) {
+fn draw_pr_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // Split into metadata panel and content panel
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -154,11 +156,11 @@ fn draw_pr_detail(f: &mut Frame, area: Rect, app: &App) {
     draw_pr_content(f, chunks[1], app);
 }
 
-fn metadata_height(app: &App) -> u16 {
+fn metadata_height(app: &mut App) -> u16 {
     if app.pr_metadata.is_some() { 10 } else { 3 }
 }
 
-fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &App) {
+fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &mut App) {
     let meta = match &app.pr_metadata {
         Some(m) => m,
         None => {
@@ -249,7 +251,7 @@ fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_pr_content(f: &mut Frame, area: Rect, app: &App) {
+fn draw_pr_content(f: &mut Frame, area: Rect, app: &mut App) {
     let content = &app.pr_content;
     let lines: Vec<Line> = content
         .lines()

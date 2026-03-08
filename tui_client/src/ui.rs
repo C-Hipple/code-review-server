@@ -45,7 +45,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_help_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let help_text = match app.view {
-        View::Sections => " j/k: navigate  Enter/l: open PR  o: open in browser  r: refresh  g/G: top/bottom  q: quit",
+        View::Sections => " j/k: navigate  Tab/Enter: collapse/expand  Enter/l: open PR  o: browser  r: refresh  q: quit",
         View::PRDetail => " j/k: scroll  d/u: page down/up  g/G: top/bottom  o: open in browser  r: sync  q/Esc/h: back",
     };
     let help = Paragraph::new(help_text)
@@ -70,9 +70,14 @@ fn draw_sections(f: &mut Frame, area: Rect, app: &mut App) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         };
-        let header_text = format!("▸ {} ({})", section.name, section.items.len());
+        let arrow = if section.collapsed { "▶" } else { "▼" };
+        let header_text = format!("{} {} ({})", arrow, section.name, section.items.len());
         items.push(ListItem::new(Line::from(Span::styled(header_text, header_style))));
         row_index += 1;
+
+        if section.collapsed {
+            continue;
+        }
 
         // PR items
         for item in &section.items {

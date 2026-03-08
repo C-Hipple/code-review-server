@@ -20,6 +20,7 @@ pub struct Section {
     pub name: String,
     pub priority: i32,
     pub items: Vec<ReviewItem>,
+    pub collapsed: bool,
 }
 
 /// Application state.
@@ -93,6 +94,7 @@ impl App {
                     name,
                     priority,
                     items: vec![item],
+                    collapsed: false,
                 });
             }
         }
@@ -100,13 +102,18 @@ impl App {
         self.sections
             .sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
 
-        // Compute flat list length: each section header + its items
+        self.recompute_list_len();
+        self.list_cursor = 0;
+        self.sync_list_state();
+    }
+
+    /// Recompute `list_len` from sections, respecting collapsed state.
+    fn recompute_list_len(&mut self) {
         self.list_len = self
             .sections
             .iter()
-            .map(|s| 1 + s.items.len())
+            .map(|s| 1 + if s.collapsed { 0 } else { s.items.len() })
             .sum();
-        self.list_cursor = if self.list_len > 0 { 0 } else { 0 };
     }
 
     /// Load a specific PR by owner/repo/number.
@@ -144,17 +151,30 @@ impl App {
         let mut pos = 0;
         for (si, section) in self.sections.iter().enumerate() {
             if pos == self.list_cursor {
-                return CursorEntry::SectionHeader;
+                return CursorEntry::SectionHeader(si);
             }
             pos += 1;
-            for ii in 0..section.items.len() {
-                if pos == self.list_cursor {
-                    return CursorEntry::Item(si, ii);
+            if !section.collapsed {
+                for ii in 0..section.items.len() {
+                    if pos == self.list_cursor {
+                        return CursorEntry::Item(si, ii);
+                    }
+                    pos += 1;
                 }
-                pos += 1;
             }
         }
-        CursorEntry::SectionHeader
+        CursorEntry::SectionHeader(0)
+    }
+
+    /// Toggle collapse on the section at the given index.
+    fn toggle_section(&mut self, si: usize) {
+        self.sections[si].collapsed = !self.sections[si].collapsed;
+        self.recompute_list_len();
+        // Clamp cursor if it's now past the end
+        if self.list_len > 0 && self.list_cursor >= self.list_len {
+            self.list_cursor = self.list_len - 1;
+        }
+        self.sync_list_state();
     }
 
     /// Handle a key event. Returns true if the app should quit.
@@ -206,15 +226,28 @@ impl App {
                 self.sync_list_state();
             }
 
-            // Open PR detail
+            // Toggle section collapse
+            KeyCode::Tab => {
+                if let CursorEntry::SectionHeader(si) = self.cursor_to_entry() {
+                    self.toggle_section(si);
+                }
+            }
+
+            // Open PR detail or expand collapsed section
             KeyCode::Enter | KeyCode::Char('l') => {
-                if let CursorEntry::Item(si, ii) = self.cursor_to_entry() {
-                    let item = &self.sections[si].items[ii];
-                    let owner = item.owner.clone();
-                    let repo = item.repo.clone();
-                    let number = item.number;
-                    if let Err(e) = self.load_pr(&owner, &repo, number) {
-                        self.status_msg = format!("Error: {e}");
+                match self.cursor_to_entry() {
+                    CursorEntry::SectionHeader(si) => {
+                        // Enter on section header toggles collapse
+                        self.toggle_section(si);
+                    }
+                    CursorEntry::Item(si, ii) => {
+                        let item = &self.sections[si].items[ii];
+                        let owner = item.owner.clone();
+                        let repo = item.repo.clone();
+                        let number = item.number;
+                        if let Err(e) = self.load_pr(&owner, &repo, number) {
+                            self.status_msg = format!("Error: {e}");
+                        }
                     }
                 }
             }
@@ -341,7 +374,7 @@ impl App {
 
 /// What the cursor is pointing at in the flat sections list.
 pub enum CursorEntry {
-    SectionHeader,
+    SectionHeader(usize),
     Item(usize, usize),
 }
 
@@ -351,7 +384,10 @@ mod tests {
 
     /// Test helper to compute total list length from sections
     fn compute_list_len(sections: &[Section]) -> usize {
-        sections.iter().map(|s| 1 + s.items.len()).sum()
+        sections
+            .iter()
+            .map(|s| 1 + if s.collapsed { 0 } else { s.items.len() })
+            .sum()
     }
 
     #[test]
@@ -406,6 +442,7 @@ mod tests {
                     name,
                     priority,
                     items: vec![item],
+                    collapsed: false,
                 });
             }
         }
@@ -424,6 +461,7 @@ mod tests {
             Section {
                 name: "Section A".to_string(),
                 priority: 1,
+                collapsed: false,
                 items: vec![
                     ReviewItem {
                         section: "Section A".to_string(),
@@ -454,6 +492,7 @@ mod tests {
             Section {
                 name: "Section B".to_string(),
                 priority: 2,
+                collapsed: false,
                 items: vec![ReviewItem {
                     section: "Section B".to_string(),
                     priority: 2,
@@ -472,6 +511,64 @@ mod tests {
         // list_len = 1 (header A) + 2 (items) + 1 (header B) + 1 (item) = 5
         let len = compute_list_len(&sections);
         assert_eq!(len, 5);
+    }
+
+    #[test]
+    fn test_list_len_with_collapsed_section() {
+        let sections = vec![
+            Section {
+                name: "Section A".to_string(),
+                priority: 1,
+                collapsed: true, // collapsed!
+                items: vec![
+                    ReviewItem {
+                        section: "Section A".to_string(),
+                        priority: 1,
+                        status: "PENDING".to_string(),
+                        title: "PR 1".to_string(),
+                        owner: "test".to_string(),
+                        repo: "repo".to_string(),
+                        number: 1,
+                        author: "alice".to_string(),
+                        url: "https://example.com/1".to_string(),
+                        release_status: String::new(),
+                    },
+                    ReviewItem {
+                        section: "Section A".to_string(),
+                        priority: 1,
+                        status: "PENDING".to_string(),
+                        title: "PR 2".to_string(),
+                        owner: "test".to_string(),
+                        repo: "repo".to_string(),
+                        number: 2,
+                        author: "bob".to_string(),
+                        url: "https://example.com/2".to_string(),
+                        release_status: String::new(),
+                    },
+                ],
+            },
+            Section {
+                name: "Section B".to_string(),
+                priority: 2,
+                collapsed: false,
+                items: vec![ReviewItem {
+                    section: "Section B".to_string(),
+                    priority: 2,
+                    status: "APPROVED".to_string(),
+                    title: "PR 3".to_string(),
+                    owner: "test".to_string(),
+                    repo: "repo".to_string(),
+                    number: 3,
+                    author: "charlie".to_string(),
+                    url: "https://example.com/3".to_string(),
+                    release_status: String::new(),
+                }],
+            },
+        ];
+
+        // list_len = 1 (header A, collapsed) + 1 (header B) + 1 (item) = 3
+        let len = compute_list_len(&sections);
+        assert_eq!(len, 3);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver};
 
 use crate::rpc::RpcClient;
 use crate::types::{GetPRReply, GetReviewsReply, PRMetadata, ReviewItem};
@@ -23,9 +25,14 @@ pub struct Section {
     pub collapsed: bool,
 }
 
+/// Result carried from a background PR load thread.
+pub struct LoadedPR {
+    pub reply: GetPRReply,
+}
+
 /// Application state.
 pub struct App {
-    pub rpc: RpcClient,
+    pub rpc: Arc<Mutex<RpcClient>>,
     pub view: View,
 
     // -- Sections view --
@@ -47,11 +54,15 @@ pub struct App {
 
     // Status / error bar
     pub status_msg: String,
+
+    // Async PR loading
+    pub loading: bool,
+    pub pr_load_rx: Option<Receiver<Result<LoadedPR>>>,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
-        let rpc = RpcClient::new()?;
+        let rpc = Arc::new(Mutex::new(RpcClient::new()?));
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Ok(Self {
@@ -68,13 +79,15 @@ impl App {
             pr_scroll: 0,
             pr_content: String::new(),
             status_msg: String::from("Loading..."),
+            loading: false,
+            pr_load_rx: None,
         })
     }
 
     /// Fetch all review sections from the server.
     pub fn load_reviews(&mut self) -> Result<()> {
         self.status_msg = "Fetching reviews...".into();
-        let result = self.rpc.call("GetAllReviews", serde_json::json!({}))?;
+        let result = self.rpc.lock().unwrap().call("GetAllReviews", serde_json::json!({}))?;
         let reply: GetReviewsReply = serde_json::from_value(result)?;
         self.build_sections(reply.items);
         self.status_msg = format!("{} sections loaded", self.sections.len());
@@ -116,18 +129,60 @@ impl App {
             .sum();
     }
 
-    /// Load a specific PR by owner/repo/number.
-    fn load_pr(&mut self, owner: &str, repo: &str, number: i32) -> Result<()> {
+    /// Start an async load of a PR. Returns immediately; check `check_pr_load` for results.
+    /// View stays as Sections until the load succeeds.
+    fn start_load_pr(&mut self, owner: String, repo: String, number: i32) {
         self.status_msg = format!("Loading PR #{number}...");
-        let result = self.rpc.call(
-            "GetPR",
-            serde_json::json!({
-                "Owner": owner,
-                "Repo": repo,
-                "Number": number,
-            }),
-        )?;
-        let reply: GetPRReply = serde_json::from_value(result)?;
+        self.loading = true;
+
+        let rpc = Arc::clone(&self.rpc);
+        let (tx, rx) = mpsc::channel();
+        self.pr_load_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = (|| -> Result<LoadedPR> {
+                let raw = rpc.lock().unwrap().call(
+                    "GetPR",
+                    serde_json::json!({
+                        "Owner": owner,
+                        "Repo": repo,
+                        "Number": number,
+                    }),
+                )?;
+                let reply: GetPRReply = serde_json::from_value(raw)?;
+                Ok(LoadedPR { reply })
+            })();
+            tx.send(result).ok();
+        });
+    }
+
+    /// Poll for a completed async PR load. Returns true if state changed.
+    pub fn check_pr_load(&mut self) -> bool {
+        let result = match self.pr_load_rx {
+            None => return false,
+            Some(ref rx) => match rx.try_recv() {
+                Ok(r) => r,
+                Err(mpsc::TryRecvError::Empty) => return false,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pr_load_rx = None;
+                    self.loading = false;
+                    return false;
+                }
+            },
+        };
+        self.pr_load_rx = None;
+        self.loading = false;
+        match result {
+            Ok(loaded) => self.apply_loaded_pr(loaded),
+            Err(e) => {
+                self.status_msg = format!("Error loading PR: {e}");
+            }
+        }
+        true
+    }
+
+    fn apply_loaded_pr(&mut self, loaded: LoadedPR) {
+        let reply = loaded.reply;
         self.pr_metadata = reply.metadata;
         self.pr_diff = reply.diff;
         self.pr_comments = reply.comments;
@@ -138,7 +193,6 @@ impl App {
         if let Some(ref m) = self.pr_metadata {
             self.status_msg = format!("PR #{}: {}", m.number, m.title);
         }
-        Ok(())
     }
 
     /// Sync `list_state` selection to `list_cursor` so the List widget scrolls correctly.
@@ -245,9 +299,7 @@ impl App {
                         let owner = item.owner.clone();
                         let repo = item.repo.clone();
                         let number = item.number;
-                        if let Err(e) = self.load_pr(&owner, &repo, number) {
-                            self.status_msg = format!("Error: {e}");
-                        }
+                        self.start_load_pr(owner, repo, number);
                     }
                 }
             }
@@ -323,34 +375,9 @@ impl App {
             // Sync / refresh from GitHub
             KeyCode::Char('r') => {
                 if let Some(ref m) = self.pr_metadata.clone() {
-                    let owner = m.author.clone(); // We'll need actual owner
-                    // Unfortunately metadata doesn't have owner, re-derive from sections
                     if let Some((o, r, n)) = self.find_pr_owner_repo(m.number) {
-                        self.status_msg = "Syncing PR...".into();
-                        match self.rpc.call(
-                            "SyncPR",
-                            serde_json::json!({
-                                "Owner": o,
-                                "Repo": r,
-                                "Number": n,
-                            }),
-                        ) {
-                            Ok(result) => {
-                                if let Ok(reply) = serde_json::from_value::<GetPRReply>(result) {
-                                    self.pr_metadata = reply.metadata;
-                                    self.pr_diff = reply.diff;
-                                    self.pr_comments = reply.comments;
-                                    self.pr_reviews = reply.reviews;
-                                    self.pr_content = reply.content;
-                                    self.status_msg = "PR synced".into();
-                                }
-                            }
-                            Err(e) => {
-                                self.status_msg = format!("Sync error: {e}");
-                            }
-                        }
+                        self.start_load_pr(o, r, n);
                     }
-                    drop(owner);
                 }
             }
 

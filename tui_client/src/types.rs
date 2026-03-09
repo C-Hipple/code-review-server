@@ -2,6 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Deserialize JSON null as the type's default value (e.g. null → empty Vec).
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// JSON-RPC 1.0 request
 #[derive(Serialize)]
 pub struct RpcRequest {
@@ -49,11 +58,11 @@ pub struct GetPRReply {
     pub content: String,
     pub metadata: Option<PRMetadata>,
     pub diff: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub comments: Vec<CommentJSON>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub outdated_comments: Vec<CommentJSON>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub reviews: Vec<ReviewJSON>,
 }
 
@@ -72,25 +81,25 @@ pub struct PRMetadata {
     pub state: String,
     #[serde(default)]
     pub milestone: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub labels: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub assignees: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub reviewers: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub requested_teams: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub approved_by: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub changes_requested_by: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub commented_by: Vec<String>,
     #[serde(default)]
     pub draft: bool,
     #[serde(default)]
     pub ci_status: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub ci_failures: Vec<String>,
     #[serde(default)]
     pub body: String,

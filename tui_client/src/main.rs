@@ -12,6 +12,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::time::Duration;
 
 fn main() -> Result<()> {
     enable_raw_mode()?;
@@ -40,12 +41,20 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                return Ok(());
-            }
-            if app.handle_key(key)? {
-                return Ok(());
+        // Check if a background PR load has completed
+        if app.check_pr_load() {
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+        }
+
+        // Poll with a short timeout so we can keep checking async results
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(());
+                }
+                if app.handle_key(key)? {
+                    return Ok(());
+                }
             }
         }
     }

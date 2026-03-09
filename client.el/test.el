@@ -2,6 +2,8 @@
 (crs-restart-server)
 (crs-kill-reviews-and-restart)
 (crs-shutdown-server)
+
+;; https://github.com/C-Hipple/code-review-server/pull/83
 (crs-get-review "C-Hipple" "gtdbot" 9)
 (crs-get-review "C-Hipple" "gtdbot" 11)
 (crs-get-review "C-Hipple" "diff-lsp" 6)
@@ -9,7 +11,7 @@
 (crs-get-review "C-Hipple" "diff-lsp" 16)
 (crs-get-review "C-Hipple" "diff-lsp" 16)
 (crs-get-review "C-Hipple" "code-review-server" 31)
-
+(crs-get-review "C-Hipple" "code-review-server" 83)  ;; This one is the "renamed, deleted, renamed with changes test one"
 (crs-get-review "IAmTomShaw" "f1-race-replay" 18)
 https://github.com/IAmTomShaw/f1-race-replay/pull/18
 (crs-get-reviews)

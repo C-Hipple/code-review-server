@@ -23,7 +23,9 @@
       "Bash(done)",
       "Bash(npx @biomejs/biome check:*)",
       "Bash(emacs:*)",
-      "Bash(/home/chris/.bun/bin/bun run:*)"
+      "Bash(/home/chris/.bun/bin/bun run:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)"
     ]
   }
 }

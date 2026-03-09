@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 
 use crate::rpc::RpcClient;
 use crate::types::{GetPRReply, GetReviewsReply, PRMetadata, ReviewItem};
@@ -87,7 +87,11 @@ impl App {
     /// Fetch all review sections from the server.
     pub fn load_reviews(&mut self) -> Result<()> {
         self.status_msg = "Fetching reviews...".into();
-        let result = self.rpc.lock().unwrap().call("GetAllReviews", serde_json::json!({}))?;
+        let result = self
+            .rpc
+            .lock()
+            .unwrap()
+            .call("GetAllReviews", serde_json::json!({}))?;
         let reply: GetReviewsReply = serde_json::from_value(result)?;
         self.build_sections(reply.items);
         self.status_msg = format!("{} sections loaded", self.sections.len());
@@ -375,7 +379,6 @@ impl App {
             // Sync / refresh from GitHub
             KeyCode::Char('r') => {
                 if let Some(ref m) = self.pr_metadata.clone() {
-
                     if let Some((o, r, n)) = self.find_pr_owner_repo(m.number) {
                         self.start_load_pr(o, r, n);
                     }

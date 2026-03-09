@@ -13,7 +13,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // title bar
-            Constraint::Min(1),   // main content
+            Constraint::Min(1),    // main content
             Constraint::Length(1), // status bar
             Constraint::Length(1), // help bar
         ])
@@ -26,14 +26,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::PRDetail => draw_pr_detail(f, chunks[1], app),
     }
 
-
     draw_status_bar(f, chunks[2], app);
     draw_help_bar(f, chunks[3], app);
 }
 
 fn draw_title_bar(f: &mut Frame, area: Rect, _app: &mut App) {
-    let title = Paragraph::new(" Code Review Server — TUI")
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+    let title = Paragraph::new(" Code Review Server — TUI").style(
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
     f.render_widget(title, area);
 }
 
@@ -48,8 +51,7 @@ fn draw_help_bar(f: &mut Frame, area: Rect, app: &mut App) {
         View::Sections => " j/k: navigate  Tab/Enter: collapse/expand  Enter/l: open PR  o: browser  r: refresh  q: quit",
         View::PRDetail => " j/k: scroll  d/u: page down/up  g/G: top/bottom  o: open in browser  r: sync  q/Esc/h: back",
     };
-    let help = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::Cyan).bg(Color::Black));
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::Cyan).bg(Color::Black));
     f.render_widget(help, area);
 }
 
@@ -72,7 +74,10 @@ fn draw_sections(f: &mut Frame, area: Rect, app: &mut App) {
         };
         let arrow = if section.collapsed { "▶" } else { "▼" };
         let header_text = format!("{} {} ({})", arrow, section.name, section.items.len());
-        items.push(ListItem::new(Line::from(Span::styled(header_text, header_style))));
+        items.push(ListItem::new(Line::from(Span::styled(
+            header_text,
+            header_style,
+        ))));
         row_index += 1;
 
         if section.collapsed {
@@ -94,7 +99,10 @@ fn draw_sections(f: &mut Frame, area: Rect, app: &mut App) {
                     Span::styled("  ", Style::default().bg(Color::DarkGray)),
                     Span::styled(
                         format!("#{} ", item.number),
-                        Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::White)
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         &item.title,
@@ -114,7 +122,9 @@ fn draw_sections(f: &mut Frame, area: Rect, app: &mut App) {
                     Span::raw("  "),
                     Span::styled(
                         format!("#{} ", item.number),
-                        Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(&item.title, Style::default().fg(Color::White)),
                     Span::styled(
@@ -151,10 +161,7 @@ fn draw_pr_detail(f: &mut Frame, area: Rect, app: &mut App) {
     // Split into metadata panel and content panel
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(metadata_height(app)),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(metadata_height(app)), Constraint::Min(1)])
         .split(area);
 
     draw_pr_metadata(f, chunks[0], app);
@@ -162,7 +169,11 @@ fn draw_pr_detail(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn metadata_height(app: &mut App) -> u16 {
-    if app.pr_metadata.is_some() { 10 } else { 3 }
+    if app.pr_metadata.is_some() {
+        10
+    } else {
+        3
+    }
 }
 
 fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &mut App) {
@@ -187,16 +198,25 @@ fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(vec![
             Span::styled(
                 format!(" #{} ", meta.number),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 &meta.title,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::raw("  State: "),
-            Span::styled(&meta.state, Style::default().fg(state_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &meta.state,
+                Style::default()
+                    .fg(state_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(if meta.draft { " [DRAFT]" } else { "" }),
             Span::raw("  Author: "),
             Span::styled(&meta.author, Style::default().fg(Color::Yellow)),
@@ -226,14 +246,20 @@ fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &mut App) {
     if !meta.approved_by.is_empty() {
         lines.push(Line::from(vec![
             Span::raw("  Approved by: "),
-            Span::styled(meta.approved_by.join(", "), Style::default().fg(Color::Green)),
+            Span::styled(
+                meta.approved_by.join(", "),
+                Style::default().fg(Color::Green),
+            ),
         ]));
     }
 
     if !meta.changes_requested_by.is_empty() {
         lines.push(Line::from(vec![
             Span::raw("  Changes requested by: "),
-            Span::styled(meta.changes_requested_by.join(", "), Style::default().fg(Color::Red)),
+            Span::styled(
+                meta.changes_requested_by.join(", "),
+                Style::default().fg(Color::Red),
+            ),
         ]));
     }
 
@@ -251,8 +277,8 @@ fn draw_pr_metadata(f: &mut Frame, area: Rect, app: &mut App) {
         ]));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" PR Details "));
+    let paragraph =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" PR Details "));
     f.render_widget(paragraph, area);
 }
 
@@ -269,7 +295,8 @@ fn draw_pr_content(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Cyan)
             } else if line.starts_with("diff ") || line.starts_with("index ") {
                 Style::default().fg(Color::Yellow)
-            } else if line.starts_with("┌─") || line.starts_with("│") || line.starts_with("└─") {
+            } else if line.starts_with("┌─") || line.starts_with("│") || line.starts_with("└─")
+            {
                 Style::default().fg(Color::Magenta)
             } else {
                 Style::default()

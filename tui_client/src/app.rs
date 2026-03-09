@@ -375,6 +375,7 @@ impl App {
             // Sync / refresh from GitHub
             KeyCode::Char('r') => {
                 if let Some(ref m) = self.pr_metadata.clone() {
+
                     if let Some((o, r, n)) = self.find_pr_owner_repo(m.number) {
                         self.start_load_pr(o, r, n);
                     }

@@ -1,6 +1,6 @@
+mod app;
 mod rpc;
 mod types;
-mod app;
 mod ui;
 
 use anyhow::Result;

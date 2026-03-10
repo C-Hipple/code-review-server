@@ -1,12 +1,16 @@
 package server
 
 import (
+	"context"
 	"crs/config"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"sync"
+	"time"
 )
+
+const pluginTimeout = 5 * time.Minute
 
 // RunPlugins executes all configured plugins for a given PR.
 // It is intended to run asynchronously.
@@ -92,7 +96,9 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 		args = append(args, "--headers", metadataJSON)
 	}
 
-	cmd := exec.Command(plugin.Command, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), pluginTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, plugin.Command, args...)
 
 	output, err := cmd.CombinedOutput()
 	resultStr := string(output)

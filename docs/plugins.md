@@ -25,12 +25,20 @@ Command = "security_check"
 IncludeDiff = true
 IncludeHeaders = true
 IncludeComments = false
+
+[[Plugins]]
+Name = "Claude Review"
+Command = "claude_review"
+IncludeDiff = false
+IncludeHeaders = false
+IncludeComments = false
 ```
 
 ## Included Plugins
 
 - **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
+- **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
 

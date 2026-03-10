@@ -34,7 +34,7 @@ func GetPRs(client *github.Client, state string, owner string, repo string) ([]*
 
 	// TODO: Consider if I really want deep lookups.
 	// Setting to 0 limits to 1 API call.
-	max_additional_calls := 4
+	max_additional_calls := 1
 	i := 0
 
 	for {
@@ -839,9 +839,9 @@ func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
 }
 
 type InteractionState struct {
-	LastMeTime            time.Time
-	LastOthersTime        time.Time
-	LastCommitTime        time.Time
+	LastMeTime             time.Time
+	LastOthersTime         time.Time
+	LastCommitTime         time.Time
 	HasUnrespondedComments bool
 }
 

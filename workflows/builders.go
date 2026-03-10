@@ -50,6 +50,7 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 		Filters:      filters,
 		SectionTitle: raw.SectionTitle,
 		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
@@ -72,6 +73,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		PRState:      raw.PRState,
 		SectionTitle: raw.SectionTitle,
 		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
@@ -98,6 +100,7 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 		PRState:      raw.PRState,
 		SectionTitle: raw.SectionTitle,
 		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
@@ -118,6 +121,27 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workf
 		IncludeDiff:  raw.IncludeDiff,
 	}
 	return wf, nil
+}
+
+// computeAuxRequirements determines which metadata needs to be pre-fetched by
+// inspecting the filter names configured for a workflow. Only fetch what the
+// filters actually require, letting Details() fall back for anything else.
+func computeAuxRequirements(filterNames []string, includeDiff bool) AuxDataRequirement {
+	req := AuxDataRequirement{Diff: includeDiff}
+	for _, raw := range filterNames {
+		name, _ := ParseFilterString(raw)
+		switch name {
+		case "FilterWaitingOnMe", "FilterWaitingOnAuthor":
+			req.Comments = true
+			req.Reviews = true
+			req.Commits = true
+		case "FilterCIPassing", "FilterCIFailing":
+			req.CIStatus = true
+		case "FilterMyReviewRequested":
+			req.Reviews = true
+		}
+	}
+	return req
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{

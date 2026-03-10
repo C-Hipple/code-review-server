@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sort"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -853,7 +853,7 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 	// 4. CI Status (commit status + check runs, same format as server.CombinedPRStatus)
 	if combinedStatus != nil || checkRuns != nil {
 		combined := struct {
-			Status    *github.CombinedStatus      `json:"status"`
+			Status    *github.CombinedStatus       `json:"status"`
 			CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
 		}{Status: combinedStatus, CheckRuns: checkRuns}
 		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {

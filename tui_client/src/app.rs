@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::rpc::RpcClient;
 use crate::types::{
-    GetPluginOutputReply, GetPRReply, GetReviewsReply, ListPluginsReply, PRMetadata, PluginResult,
+    GetPRReply, GetPluginOutputReply, GetReviewsReply, ListPluginsReply, PRMetadata, PluginResult,
     ReviewItem,
 };
 
@@ -427,21 +427,18 @@ impl App {
             }
 
             // Plugin selector: pick a single plugin to view
-            KeyCode::Char('p') => {
-                match self.ensure_plugins_loaded() {
-                    Ok(()) => {
-                        if self.plugins.is_empty() {
-                            self.status_msg = "No plugins configured".into();
-                        } else {
-                            self.plugin_cursor = 0;
-                            self.view = View::PluginSelector;
-                            self.status_msg =
-                                "Select a plugin (Enter: view, q: back)".into();
-                        }
+            KeyCode::Char('p') => match self.ensure_plugins_loaded() {
+                Ok(()) => {
+                    if self.plugins.is_empty() {
+                        self.status_msg = "No plugins configured".into();
+                    } else {
+                        self.plugin_cursor = 0;
+                        self.view = View::PluginSelector;
+                        self.status_msg = "Select a plugin (Enter: view, q: back)".into();
                     }
-                    Err(e) => self.status_msg = format!("Error loading plugins: {e}"),
                 }
-            }
+                Err(e) => self.status_msg = format!("Error loading plugins: {e}"),
+            },
 
             // All plugin output
             KeyCode::Char('P') => {
@@ -509,8 +506,7 @@ impl App {
         match &self.active_plugin.clone() {
             Some(name) => {
                 if let Some(result) = self.plugin_output.get(name) {
-                    self.plugin_content =
-                        format!("Status: {}\n\n{}", result.status, result.result);
+                    self.plugin_content = format!("Status: {}\n\n{}", result.status, result.result);
                 } else {
                     self.plugin_content = format!("No output found for plugin '{name}'.");
                 }

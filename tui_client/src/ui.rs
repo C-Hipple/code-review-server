@@ -320,7 +320,11 @@ fn draw_plugin_selector(f: &mut Frame, area: Rect, app: &mut App) {
     if app.plugins.is_empty() {
         let empty = Paragraph::new(" No plugins configured.")
             .style(Style::default().fg(Color::Gray))
-            .block(Block::default().borders(Borders::ALL).title(" Select Plugin "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Select Plugin "),
+            );
         f.render_widget(empty, area);
         return;
     }
@@ -345,8 +349,11 @@ fn draw_plugin_selector(f: &mut Frame, area: Rect, app: &mut App) {
     let mut list_state = ListState::default();
     list_state.select(Some(app.plugin_cursor));
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Select Plugin "));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Select Plugin "),
+    );
     f.render_stateful_widget(list, area, &mut list_state);
 }
 

@@ -35,10 +35,8 @@ pub fn main() !void {
         }
     }
 
-    const stderr = std.io.getStdErr().writer();
-
     if (owner.len == 0 or repo.len == 0 or std.mem.eql(u8, number, "0")) {
-        try stderr.writeAll("Error: --owner, --repo, and --number are required\n");
+        std.debug.print("Error: --owner, --repo, and --number are required\n", .{});
         std.process.exit(1);
     }
 
@@ -67,22 +65,21 @@ pub fn main() !void {
     const term = try child.wait();
 
     if (stderr_output.len > 0) {
-        try stderr.writeAll(stderr_output);
+        std.debug.print("{s}", .{stderr_output});
     }
 
     switch (term) {
         .Exited => |code| {
             if (code != 0) {
-                try stderr.print("claude exited with code {d}\n", .{code});
+                std.debug.print("claude exited with code {d}\n", .{code});
                 std.process.exit(code);
             }
         },
         else => {
-            try stderr.writeAll("claude terminated abnormally\n");
+            std.debug.print("claude terminated abnormally\n", .{});
             std.process.exit(1);
         },
     }
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(stdout_output);
+    std.debug.print("{s}", .{stdout_output});
 }

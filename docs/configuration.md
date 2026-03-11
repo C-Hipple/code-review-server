@@ -163,13 +163,11 @@ ReleaseCheckCommand = "release-check"
 [[Workflows]]
 WorkflowType = "SyncReviewRequestsWorkflow"
 Name = "List Open PRs"
-Owner = "C-Hipple"
 Filters = ["FilterNotDraft"]
 SectionTitle = "Open PRs"
 
 [[Workflows]]
 WorkflowType = "ListMyPRsWorkflow"
 Name = "List Closed PRs"
-Owner = "C-Hipple"
 SectionTitle = "Closed PRs"
 ```

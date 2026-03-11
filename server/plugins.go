@@ -32,6 +32,12 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 		if len(pluginMap) > 0 && !pluginMap[plugin.Name] {
 			continue
 		}
+		// Skip on-demand plugins unless explicitly requested by name
+		if plugin.OnlyOnDemand && !pluginMap[plugin.Name] {
+			// Record a "deferred" status so clients know this plugin exists but hasn't been requested yet
+			config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "deferred", sha)
+			continue
+		}
 		wg.Add(1)
 		go func(p config.Plugin) {
 			defer wg.Done()

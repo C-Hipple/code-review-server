@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -24,6 +24,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view {
         View::Sections => draw_sections(f, chunks[1], app),
         View::PRDetail => draw_pr_detail(f, chunks[1], app),
+        View::PluginSelector => draw_plugin_selector(f, chunks[1], app),
+        View::PluginOutput => draw_plugin_output(f, chunks[1], app),
     }
 
     draw_status_bar(f, chunks[2], app);
@@ -49,7 +51,9 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_help_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let help_text = match app.view {
         View::Sections => " j/k: navigate  Tab/Enter: collapse/expand  Enter/l: open PR  o: browser  r: refresh  q: quit",
-        View::PRDetail => " j/k: scroll  d/u: page down/up  g/G: top/bottom  o: open in browser  r: sync  q/Esc/h: back",
+        View::PRDetail => " j/k: scroll  d/u: page  g/G: top/bottom  p: plugin selector  P: all plugins  o: browser  r: sync  q/h: back",
+        View::PluginSelector => " j/k: navigate  g/G: top/bottom  Enter/l: view plugin  q/h: back",
+        View::PluginOutput => " j/k: scroll  d/u: page  g/G: top/bottom  q/h: back",
     };
     let help = Paragraph::new(help_text).style(Style::default().fg(Color::Cyan).bg(Color::Black));
     f.render_widget(help, area);
@@ -309,5 +313,80 @@ fn draw_pr_content(f: &mut Frame, area: Rect, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title(" Content "))
         .wrap(Wrap { trim: false })
         .scroll((app.pr_scroll, 0));
+    f.render_widget(paragraph, area);
+}
+
+fn draw_plugin_selector(f: &mut Frame, area: Rect, app: &mut App) {
+    if app.plugins.is_empty() {
+        let empty = Paragraph::new(" No plugins configured.")
+            .style(Style::default().fg(Color::Gray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Select Plugin "),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .plugins
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == app.plugin_cursor {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            ListItem::new(Line::from(Span::styled(format!("  {}", name), style)))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.plugin_cursor));
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Select Plugin "),
+    );
+    f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn draw_plugin_output(f: &mut Frame, area: Rect, app: &mut App) {
+    let title = match &app.active_plugin {
+        Some(name) => format!(" Plugin: {} ", name),
+        None => " Plugin Output (all) ".to_string(),
+    };
+
+    let lines: Vec<Line> = app
+        .plugin_content
+        .lines()
+        .map(|line| {
+            let style = if line.starts_with("## ") || line.starts_with("# ") {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if line.starts_with("Status: success") {
+                Style::default().fg(Color::Green)
+            } else if line.starts_with("Status: error") {
+                Style::default().fg(Color::Red)
+            } else if line.starts_with("Status: pending") {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(line, style))
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false })
+        .scroll((app.plugin_scroll, 0));
     f.render_widget(paragraph, area);
 }

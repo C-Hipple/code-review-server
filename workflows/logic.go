@@ -491,12 +491,19 @@ func SyncTODOToSectionDB(db *database.DB, pr *github.PullRequest, section *datab
 	found := err == nil && dbItem != nil
 	changeType := "Addition"
 	if found {
-		// After a week we stop updating old ones
-		mergedAt := pr_as_org.PR.GetMergedAt()
-		if !mergedAt.IsZero() && mergedAt.After(time.Now().Add(-7*24*time.Hour)) {
+		newStatus := pr_as_org.GetStatus()
+		newTags := pr_as_org.GetTags()
+		// Always update if status or tags changed (e.g. draft → non-draft)
+		if dbItem.Status != newStatus || dbItem.Tags != strings.Join(newTags, ",") {
 			changeType = "Update"
 		} else {
-			changeType = "No Change"
+			// After a week we stop updating old merged PRs
+			mergedAt := pr_as_org.PR.GetMergedAt()
+			if !mergedAt.IsZero() && mergedAt.After(time.Now().Add(-7*24*time.Hour)) {
+				changeType = "Update"
+			} else {
+				changeType = "No Change"
+			}
 		}
 	}
 	

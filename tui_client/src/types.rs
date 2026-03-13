@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Deserialize JSON null as the type's default value (e.g. null → empty Vec).
@@ -139,6 +141,34 @@ pub struct ReviewJSON {
     pub submitted_at: String,
     #[serde(default)]
     pub html_url: String,
+}
+
+/// A single plugin's result from GetPluginOutput
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginResult {
+    #[serde(default)]
+    pub result: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Reply from GetPluginOutput
+#[derive(Debug, Deserialize)]
+pub struct GetPluginOutputReply {
+    pub output: HashMap<String, PluginResult>,
+}
+
+/// A configured plugin from ListPlugins
+#[derive(Debug, Clone, Deserialize)]
+pub struct Plugin {
+    #[serde(rename = "Name")]
+    pub name: String,
+}
+
+/// Reply from ListPlugins
+#[derive(Debug, Deserialize)]
+pub struct ListPluginsReply {
+    pub plugins: Vec<Plugin>,
 }
 
 #[cfg(test)]

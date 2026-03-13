@@ -1,11 +1,15 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use crate::rpc::RpcClient;
-use crate::types::{GetPRReply, GetReviewsReply, PRMetadata, ReviewItem};
+use crate::types::{
+    GetPRReply, GetPluginOutputReply, GetReviewsReply, ListPluginsReply, PRMetadata, PluginResult,
+    ReviewItem,
+};
 
 /// Which screen the user is viewing.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +18,10 @@ pub enum View {
     Sections,
     /// PR detail view
     PRDetail,
+    /// Plugin selector (pick one plugin to view)
+    PluginSelector,
+    /// Plugin output (single plugin or all)
+    PluginOutput,
 }
 
 /// A section header with its contained items.
@@ -28,6 +36,8 @@ pub struct Section {
 /// Result carried from a background PR load thread.
 pub struct LoadedPR {
     pub reply: GetPRReply,
+    pub owner: String,
+    pub repo: String,
 }
 
 /// Application state.
@@ -45,12 +55,28 @@ pub struct App {
     pub list_state: ListState,
 
     // -- PR detail view --
+    pub pr_owner: String,
+    pub pr_repo: String,
     pub pr_metadata: Option<PRMetadata>,
     pub pr_diff: String,
     pub pr_comments: Vec<crate::types::CommentJSON>,
     pub pr_reviews: Vec<crate::types::ReviewJSON>,
     pub pr_scroll: u16,
     pub pr_content: String,
+
+    // -- Plugin views --
+    /// Cached list of configured plugin names
+    pub plugins: Vec<String>,
+    /// Fetched plugin output keyed by plugin name
+    pub plugin_output: HashMap<String, PluginResult>,
+    /// Pre-built content string for PluginOutput view
+    pub plugin_content: String,
+    /// Scroll position for PluginOutput view
+    pub plugin_scroll: u16,
+    /// Cursor position in PluginSelector view
+    pub plugin_cursor: usize,
+    /// Which plugin is shown in PluginOutput (None = all)
+    pub active_plugin: Option<String>,
 
     // Status / error bar
     pub status_msg: String,
@@ -72,12 +98,20 @@ impl App {
             list_cursor: 0,
             list_len: 0,
             list_state,
+            pr_owner: String::new(),
+            pr_repo: String::new(),
             pr_metadata: None,
             pr_diff: String::new(),
             pr_comments: Vec::new(),
             pr_reviews: Vec::new(),
             pr_scroll: 0,
             pr_content: String::new(),
+            plugins: Vec::new(),
+            plugin_output: HashMap::new(),
+            plugin_content: String::new(),
+            plugin_scroll: 0,
+            plugin_cursor: 0,
+            active_plugin: None,
             status_msg: String::from("Loading..."),
             loading: false,
             pr_load_rx: None,
@@ -148,13 +182,13 @@ impl App {
                 let raw = rpc.lock().unwrap().call(
                     "GetPR",
                     serde_json::json!({
-                        "Owner": owner,
-                        "Repo": repo,
+                        "Owner": &owner,
+                        "Repo": &repo,
                         "Number": number,
                     }),
                 )?;
                 let reply: GetPRReply = serde_json::from_value(raw)?;
-                Ok(LoadedPR { reply })
+                Ok(LoadedPR { reply, owner, repo })
             })();
             tx.send(result).ok();
         });
@@ -187,12 +221,17 @@ impl App {
 
     fn apply_loaded_pr(&mut self, loaded: LoadedPR) {
         let reply = loaded.reply;
+        self.pr_owner = loaded.owner;
+        self.pr_repo = loaded.repo;
         self.pr_metadata = reply.metadata;
         self.pr_diff = reply.diff;
         self.pr_comments = reply.comments;
         self.pr_reviews = reply.reviews;
         self.pr_content = reply.content;
         self.pr_scroll = 0;
+        // Clear stale plugin data for the new PR
+        self.plugin_output.clear();
+        self.plugin_content.clear();
         self.view = View::PRDetail;
         if let Some(ref m) = self.pr_metadata {
             self.status_msg = format!("PR #{}: {}", m.number, m.title);
@@ -240,6 +279,8 @@ impl App {
         match self.view {
             View::Sections => self.handle_sections_key(key),
             View::PRDetail => self.handle_pr_detail_key(key),
+            View::PluginSelector => self.handle_plugin_selector_key(key),
+            View::PluginOutput => self.handle_plugin_output_key(key),
         }
     }
 
@@ -383,6 +424,185 @@ impl App {
                         self.start_load_pr(o, r, n);
                     }
                 }
+            }
+
+            // Plugin selector: pick a single plugin to view
+            KeyCode::Char('p') => match self.ensure_plugins_loaded() {
+                Ok(()) => {
+                    if self.plugins.is_empty() {
+                        self.status_msg = "No plugins configured".into();
+                    } else {
+                        self.plugin_cursor = 0;
+                        self.view = View::PluginSelector;
+                        self.status_msg = "Select a plugin (Enter: view, q: back)".into();
+                    }
+                }
+                Err(e) => self.status_msg = format!("Error loading plugins: {e}"),
+            },
+
+            // All plugin output
+            KeyCode::Char('P') => {
+                self.status_msg = "Fetching plugin output...".into();
+                match self.fetch_plugin_output() {
+                    Ok(()) => {
+                        self.active_plugin = None;
+                        self.build_plugin_content();
+                        self.plugin_scroll = 0;
+                        self.view = View::PluginOutput;
+                        self.status_msg = "All plugin output (q/h: back)".into();
+                    }
+                    Err(e) => self.status_msg = format!("Error fetching plugin output: {e}"),
+                }
+            }
+
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    /// Fetch the list of configured plugins, caching after the first call.
+    fn ensure_plugins_loaded(&mut self) -> Result<()> {
+        if !self.plugins.is_empty() {
+            return Ok(());
+        }
+        let raw = self
+            .rpc
+            .lock()
+            .unwrap()
+            .call("ListPlugins", serde_json::json!({}))?;
+        let reply: ListPluginsReply = serde_json::from_value(raw)?;
+        self.plugins = reply.plugins.into_iter().map(|p| p.name).collect();
+        Ok(())
+    }
+
+    /// Fetch plugin output for the current PR and store it in `plugin_output`.
+    fn fetch_plugin_output(&mut self) -> Result<()> {
+        let number = match &self.pr_metadata {
+            Some(m) => m.number,
+            None => return Ok(()),
+        };
+        let owner = self.pr_owner.clone();
+        let repo = self.pr_repo.clone();
+        let raw = self.rpc.lock().unwrap().call(
+            "GetPluginOutput",
+            serde_json::json!({
+                "Owner": owner,
+                "Repo": repo,
+                "Number": number,
+            }),
+        )?;
+        let reply: GetPluginOutputReply = serde_json::from_value(raw)?;
+        self.plugin_output = reply.output;
+        Ok(())
+    }
+
+    /// Build `plugin_content` from `plugin_output` and `active_plugin`.
+    pub fn build_plugin_content(&mut self) {
+        if self.plugin_output.is_empty() {
+            self.plugin_content =
+                "No plugin output available yet. Plugins may still be running.".into();
+            return;
+        }
+        match &self.active_plugin.clone() {
+            Some(name) => {
+                if let Some(result) = self.plugin_output.get(name) {
+                    self.plugin_content = format!("Status: {}\n\n{}", result.status, result.result);
+                } else {
+                    self.plugin_content = format!("No output found for plugin '{name}'.");
+                }
+            }
+            None => {
+                let mut out = String::new();
+                let mut keys: Vec<String> = self.plugin_output.keys().cloned().collect();
+                keys.sort();
+                for name in &keys {
+                    let result = &self.plugin_output[name];
+                    out.push_str(&format!("## {}\n", name));
+                    out.push_str(&format!("Status: {}\n\n", result.status));
+                    out.push_str(&result.result);
+                    out.push_str("\n\n");
+                }
+                self.plugin_content = out;
+            }
+        }
+    }
+
+    fn handle_plugin_selector_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Backspace => {
+                self.view = View::PRDetail;
+                if let Some(ref m) = self.pr_metadata {
+                    self.status_msg = format!("PR #{}: {}", m.number, m.title);
+                }
+            }
+
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.plugins.is_empty() && self.plugin_cursor < self.plugins.len() - 1 {
+                    self.plugin_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.plugin_cursor > 0 {
+                    self.plugin_cursor -= 1;
+                }
+            }
+            KeyCode::Char('g') => {
+                self.plugin_cursor = 0;
+            }
+            KeyCode::Char('G') => {
+                if !self.plugins.is_empty() {
+                    self.plugin_cursor = self.plugins.len() - 1;
+                }
+            }
+
+            KeyCode::Enter | KeyCode::Char('l') => {
+                if let Some(name) = self.plugins.get(self.plugin_cursor).cloned() {
+                    self.status_msg = format!("Fetching output for '{name}'...");
+                    match self.fetch_plugin_output() {
+                        Ok(()) => {
+                            self.active_plugin = Some(name.clone());
+                            self.build_plugin_content();
+                            self.plugin_scroll = 0;
+                            self.view = View::PluginOutput;
+                            self.status_msg = format!("Plugin: {name} (q/h: back)");
+                        }
+                        Err(e) => self.status_msg = format!("Error: {e}"),
+                    }
+                }
+            }
+
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_plugin_output_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Backspace => {
+                self.view = View::PRDetail;
+                if let Some(ref m) = self.pr_metadata {
+                    self.status_msg = format!("PR #{}: {}", m.number, m.title);
+                }
+            }
+
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.plugin_scroll = self.plugin_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.plugin_scroll = self.plugin_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('d') => {
+                self.plugin_scroll = self.plugin_scroll.saturating_add(20);
+            }
+            KeyCode::Char('u') => {
+                self.plugin_scroll = self.plugin_scroll.saturating_sub(20);
+            }
+            KeyCode::Char('g') => {
+                self.plugin_scroll = 0;
+            }
+            KeyCode::Char('G') => {
+                let total = self.plugin_content.lines().count() as u16;
+                self.plugin_scroll = total.saturating_sub(10);
             }
 
             _ => {}

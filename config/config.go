@@ -40,6 +40,7 @@ type Plugin struct {
 	IncludeDiff     bool
 	IncludeHeaders  bool
 	IncludeComments bool
+	OnlyOnDemand    bool
 }
 
 // Define your classes
@@ -112,6 +113,11 @@ func getXDGConfigHome() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config"), nil
+}
+
+// ParseConfigForTest is an exported wrapper around parseConfig for use in tests.
+func ParseConfigForTest(data []byte) (*Config, error) {
+	return parseConfig(data)
 }
 
 // parseConfig parses the configuration from bytes and returns a Config struct.

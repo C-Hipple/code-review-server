@@ -4,28 +4,17 @@ name: Bun Client
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'bun_client/**'
+      - '.github/workflows/bun-client.yml'
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'bun_client/**'
+      - '.github/workflows/bun-client.yml'
 
 jobs:
-  check-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      typescript: ${{ steps.filter.outputs.typescript }}
-    steps:
-    - uses: actions/checkout@v4
-
-    - uses: dorny/paths-filter@v1
-      id: filter
-      with:
-        filters: |
-          typescript:
-            - 'bun_client/**'
-            - '.github/workflows/bun-client.yml'
-
   check:
-    needs: check-changes
-    if: needs.check-changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

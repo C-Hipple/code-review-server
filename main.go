@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strconv"
 	"strings"
@@ -83,6 +85,12 @@ func main() {
 	ms.Initialize()
 
 	if *serverFlag {
+		go func() {
+			slog.Info("Starting pprof server", "addr", "localhost:6060")
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				slog.Error("pprof server exited", "error", err)
+			}
+		}()
 		go ms.Run(log)
 		server.RunServer(log)
 	} else {

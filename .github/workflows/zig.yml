@@ -3,8 +3,14 @@ name: Zig
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'cmd/claude_review/**'
+      - '.github/workflows/zig.yml'
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'cmd/claude_review/**'
+      - '.github/workflows/zig.yml'
 
 jobs:
 

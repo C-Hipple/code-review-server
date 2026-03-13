@@ -89,6 +89,7 @@ interface PRResponse {
     outdated_comments: Comment[];
     reviews: ReviewData[];
     metadata: PRMetadata;
+    feedback: string;
 }
 
 // Map file extensions to Prism language identifiers
@@ -208,6 +209,10 @@ export default function Review({
     const [commentBody, setCommentBody] = useState('');
     const [replyToId, setReplyToId] = useState<number | null>(null);
 
+    // Review feedback (PR-level comment body, persisted server-side)
+    const [feedbackBody, setFeedbackBody] = useState('');
+    const [isSavingFeedback, setIsSavingFeedback] = useState(false);
+
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
@@ -288,6 +293,7 @@ export default function Review({
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
             setMetadata(res.metadata || null);
+            setFeedbackBody(res.feedback || '');
         } catch (e) {
             console.error(e);
             setContent('Error loading PR.');
@@ -312,6 +318,7 @@ export default function Review({
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
             setMetadata(res.metadata || null);
+            setFeedbackBody(res.feedback || '');
             loadPluginOutputs();
         } catch (e) {
             console.error(e);
@@ -381,6 +388,25 @@ export default function Review({
             alert('Error submitting review');
         } finally {
             setIsSubmittingReview(false);
+        }
+    };
+
+    const handleSaveFeedback = async () => {
+        setIsSavingFeedback(true);
+        try {
+            await rpcCall('RPCHandler.SetFeedback', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Body: feedbackBody,
+                },
+            ]);
+        } catch (e) {
+            console.error(e);
+            alert('Error saving feedback');
+        } finally {
+            setIsSavingFeedback(false);
         }
     };
 
@@ -2183,7 +2209,10 @@ export default function Review({
                     + Comment
                 </Button>
                 <Button
-                    onClick={() => setSubmitting(true)}
+                    onClick={() => {
+                        setReviewBody(feedbackBody);
+                        setSubmitting(true);
+                    }}
                     style={{ background: 'var(--success)' }}
                     disabled={loading}
                 >
@@ -2280,6 +2309,82 @@ export default function Review({
                     }}
                 >
                     {renderDiff()}
+                </div>
+            </div>
+
+            {/* Review Feedback Section */}
+            <div
+                style={{
+                    background: 'var(--bg-secondary)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    overflow: 'hidden',
+                    marginTop: '16px',
+                }}
+            >
+                <div
+                    style={{
+                        padding: '12px 16px',
+                        borderBottom: '1px solid var(--border)',
+                        background: 'var(--bg-primary)',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                        color: 'var(--text-secondary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                    }}
+                >
+                    <span style={{ color: 'var(--accent)' }}>✎</span>
+                    Review Feedback
+                    <span
+                        style={{
+                            marginLeft: '8px',
+                            fontSize: '11px',
+                            color: 'var(--text-tertiary)',
+                            fontWeight: 400,
+                        }}
+                    >
+                        PR-level comment body — used when you submit a review
+                    </span>
+                </div>
+                <div style={{ padding: '16px' }}>
+                    <textarea
+                        placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
+                        value={feedbackBody}
+                        onChange={e => setFeedbackBody(e.target.value)}
+                        disabled={isSavingFeedback}
+                        style={{
+                            width: '100%',
+                            minHeight: '120px',
+                            padding: '10px',
+                            background: 'var(--bg-primary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '6px',
+                            fontFamily: 'inherit',
+                            fontSize: '13px',
+                            resize: 'vertical',
+                            boxSizing: 'border-box',
+                        }}
+                    />
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '10px',
+                            justifyContent: 'flex-end',
+                            marginTop: '10px',
+                        }}
+                    >
+                        <Button
+                            onClick={handleSaveFeedback}
+                            size="sm"
+                            loading={isSavingFeedback}
+                            disabled={isSavingFeedback}
+                        >
+                            Save Feedback
+                        </Button>
+                    </div>
                 </div>
             </div>
 

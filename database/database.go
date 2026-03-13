@@ -257,20 +257,25 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding reply_to_id column to LocalComment", "error", err)
 		}
 	}
-	// Migration: Add status column to PluginResults if it doesn't exist
-	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='status'").Scan(&count)
-	if err == nil && count == 0 {
-		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN status TEXT DEFAULT 'success'") // Default for existing rows
-		if err != nil {
-			slog.Warn("Error adding status column to PluginResults", "error", err)
+	// Migration: Add status/sha columns to PluginResults if they don't exist.
+	// Guard with table existence check: pragma_table_info returns 0 rows for
+	// non-existent tables (no error), which would incorrectly trigger ALTER TABLE.
+	var pluginResultsExists int
+	_ = db.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='PluginResults'").Scan(&pluginResultsExists)
+	if pluginResultsExists > 0 {
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='status'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN status TEXT DEFAULT 'success'")
+			if err != nil {
+				slog.Warn("Error adding status column to PluginResults", "error", err)
+			}
 		}
-	}
-	// Migration: Add sha column to PluginResults if it doesn't exist
-	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='sha'").Scan(&count)
-	if err == nil && count == 0 {
-		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
-		if err != nil {
-			slog.Warn("Error adding sha column to PluginResults", "error", err)
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='sha'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
+			if err != nil {
+				slog.Warn("Error adding sha column to PluginResults", "error", err)
+			}
 		}
 	}
 	// Migration: Add ttl column to items if it doesn't exist
@@ -308,7 +313,6 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding release_status column to PRMetadataCache", "error", err)
 		}
 	}
-
 
 	return nil
 }

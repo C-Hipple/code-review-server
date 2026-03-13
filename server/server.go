@@ -11,9 +11,10 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/google/go-github/v48/github"
-	// "strings"
 )
 
 // testing mutable state
@@ -77,6 +78,24 @@ type GetReviewsReply struct {
 	Items   []ReviewItem `json:"items"`
 }
 
+// prStatusOrder returns the sort order for a ReviewItem's status.
+// Open PRs sort first (0), then draft (1), then merged (2), then closed (3).
+func prStatusOrder(item ReviewItem) int {
+	switch item.Status {
+	case "TODO":
+		return 0 // open
+	case "WAITING":
+		return 1 // draft
+	case "DONE":
+		if strings.Contains(item.Tags, "merged") {
+			return 2 // merged
+		}
+		return 3 // closed
+	default:
+		return 4
+	}
+}
+
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	if err := config.Reload(); err != nil {
 		h.Log.Error("Error reloading config", "error", err)
@@ -92,6 +111,16 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	if items == nil {
 		reply.Items = []ReviewItem{}
 	} else {
+		sort.SliceStable(items, func(i, j int) bool {
+			si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+			if si != sj {
+				return si < sj
+			}
+			if items[i].Repo != items[j].Repo {
+				return items[i].Repo < items[j].Repo
+			}
+			return items[i].Number < items[j].Number
+		})
 		reply.Items = items
 	}
 	return nil

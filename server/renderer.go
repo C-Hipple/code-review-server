@@ -178,6 +178,7 @@ type ReviewItem struct {
 	Section       string `json:"section"`
 	Priority      int    `json:"section_priority"`
 	Status        string `json:"status"`
+	Tags          string `json:"tags"`
 	Title         string `json:"title"`
 	Owner         string `json:"owner"`
 	Repo          string `json:"repo"`
@@ -228,6 +229,7 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		Section:  sectionName,
 		Priority: priority,
 		Status:   item.Status,
+		Tags:     item.Tags,
 		Title:    item.Title,
 	}
 

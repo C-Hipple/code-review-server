@@ -47,6 +47,11 @@
   "Face for compact comment indicators <C: username>."
   :group 'my-custom-highlights)
 
+(defface washer-commit-face
+  '((t (:foreground "#6c71c4" :weight bold)))
+  "Face for commit entries in the conversation timeline."
+  :group 'my-custom-highlights)
+
 (defun highlight-review-comments ()
   "Highlight review comment blocks and file headers."
   (interactive)
@@ -60,6 +65,7 @@
                             ("^\\(modified\\|deleted\\|new file\\|renamed\\).*" 0 'washer-file-header-face t)
                             ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|URL\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\):.*" 0 'washer-summary-face t)
                             ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)
+                            ("^Commit by .*$" 0 'washer-commit-face t)
                             ("^PR contains [0-9]+ \\(outdated comments\\)$" 1 'washer-outdated-face t)
                             ("<C: [^>]+>" 0 'washer-compact-comment-face t)))
   (goto-address-mode 1)

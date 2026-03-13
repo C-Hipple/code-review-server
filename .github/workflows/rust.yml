@@ -4,17 +4,28 @@ name: Rust TUI Client
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - 'tui_client/**'
-      - '.github/workflows/rust.yml'
   pull_request:
     branches: [ "main" ]
-    paths:
-      - 'tui_client/**'
-      - '.github/workflows/rust.yml'
 
 jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v1
+      id: filter
+      with:
+        filters: |
+          rust:
+            - 'tui_client/**'
+            - '.github/workflows/rust.yml'
+
   check:
+    needs: check-changes
+    if: needs.check-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

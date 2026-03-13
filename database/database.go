@@ -268,7 +268,7 @@ func (db *DB) initSchema() error {
 	// Migration: Add created_at column to items if it doesn't exist
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='created_at'").Scan(&count)
 	if err == nil && count == 0 {
-		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN created_at TIMESTAMP DEFAULT NULL")
 		if err != nil {
 			slog.Warn("Error adding created_at column to items", "error", err)
 		}

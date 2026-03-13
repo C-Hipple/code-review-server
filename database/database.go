@@ -177,12 +177,38 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo, owner)
 	);
 
+	CREATE TABLE IF NOT EXISTS PluginResults (
+		id INTEGER PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		plugin_name TEXT NOT NULL,
+		result TEXT NOT NULL,
+		status TEXT DEFAULT 'success',
+		sha TEXT DEFAULT '',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number, plugin_name)
+	);
+
+	CREATE TABLE IF NOT EXISTS Worktrees (
+		id INTEGER PRIMARY KEY,
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		path TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo, owner)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
 	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
 	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_prcommits_lookup ON PRCommits(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
+	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
+	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -283,38 +309,6 @@ func (db *DB) initSchema() error {
 		}
 	}
 
-
-	pluginResultsSchema := `
-	CREATE TABLE IF NOT EXISTS PluginResults (
-		id INTEGER PRIMARY KEY,
-		owner TEXT NOT NULL,
-		repo TEXT NOT NULL,
-		pr_number INTEGER NOT NULL,
-		plugin_name TEXT NOT NULL,
-		result TEXT NOT NULL,
-		status TEXT DEFAULT 'success',
-		sha TEXT DEFAULT '',
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(owner, repo, pr_number, plugin_name)
-	);
-	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
-	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
-
-	CREATE TABLE IF NOT EXISTS Worktrees (
-		id INTEGER PRIMARY KEY,
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		owner TEXT NOT NULL,
-		path TEXT NOT NULL,
-		branch TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(pr_number, repo, owner)
-	);
-	`
-	_, err = db.conn.Exec(pluginResultsSchema)
-	if err != nil {
-		return err
-	}
 
 	return nil
 }

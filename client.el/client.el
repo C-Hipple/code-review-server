@@ -870,8 +870,8 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
       sb)))
 
-(defun crs--render-conversation-from-data (comments reviews &optional outdated-comments)
-  "Render the conversation section from COMMENTS, REVIEWS and optionally OUTDATED-COMMENTS."
+(defun crs--render-conversation-from-data (comments reviews &optional outdated-comments commits)
+  "Render the conversation section from COMMENTS, REVIEWS, OUTDATED-COMMENTS and COMMITS."
   (let ((items nil)
         (sb "\nConversation\n"))
     (when (and outdated-comments (> (length outdated-comments) 0))
@@ -893,7 +893,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
     (seq-do (lambda (r)
               (let ((state (cdr (assq 'state r)))
                     (body (cdr (assq 'body r))))
-                ;; Skip empty COMMENTED reviews?
+                ;; Skip empty COMMENTED reviews
                 (unless (and (string= state "COMMENTED") (string-empty-p (or body "")))
                   (push (list :type 'review
                               :time (cdr (assq 'submitted_at r))
@@ -903,11 +903,23 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                         items))))
             reviews)
 
-    ;; 3. Sort by Time
-    (setq items (sort items (lambda (a b)
-                              (string< (plist-get a :time) (plist-get b :time)))))
+    ;; 3. Collect Commits
+    (seq-do (lambda (c)
+              (push (list :type 'commit
+                          :time (cdr (assq 'date c))
+                          :author (cdr (assq 'author c))
+                          :sha (cdr (assq 'sha c))
+                          :message (cdr (assq 'message c))
+                          :url (cdr (assq 'url c)))
+                    items))
+            (or commits []))
 
-    ;; 4. Render
+    ;; 4. Sort by Time
+    (setq items (sort items (lambda (a b)
+                              (string< (or (plist-get a :time) "")
+                                       (or (plist-get b :time) "")))))
+
+    ;; 5. Render
     (if (null items)
         (setq sb (concat sb "No conversation found.\n"))
       (let ((first t))
@@ -918,14 +930,21 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
           (let ((author (plist-get item :author))
                 (time (plist-get item :time))
-                (type (plist-get item :type))
-                (body (or (plist-get item :body) "(No body)")))
-
-            (if (eq type 'review)
-                (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
-              (setq sb (concat sb (format "From: %s at %s\n" author time))))
-
-            (setq sb (concat sb (crs--make-html-placeholder body) "\n\n"))))))
+                (type (plist-get item :type)))
+            (cond
+             ((eq type 'commit)
+              (let* ((sha (plist-get item :sha))
+                     (short-sha (if (and sha (> (length sha) 7)) (substring sha 0 7) (or sha "")))
+                     (msg (or (plist-get item :message) "(No message)"))
+                     (first-line (car (split-string msg "\n"))))
+                (setq sb (concat sb (format "Commit by %s at %s\n" (or author "") (or time ""))
+                                 (format "  %s  %s\n\n" short-sha first-line)))))
+             ((eq type 'review)
+              (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n")))
+             (t
+              (setq sb (concat sb (format "From: %s at %s\n" author time)))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n"))))))))
 
     ;; Add Files Changed header (placeholder or parsed?)
     ;; For now just a blank line, maybe we can add a separator
@@ -997,6 +1016,7 @@ for more robust position restoration."
           (new-outdated-comments nil)
           (new-metadata nil)
           (new-reviews nil)
+          (new-commits nil)
           (new-preamble nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
@@ -1008,7 +1028,8 @@ for more robust position restoration."
           (existing-metadata crs--buffer-metadata)
           (existing-reviews crs--buffer-reviews)
           (existing-preamble crs--buffer-preamble)
-          (existing-review-feedback crs--buffer-review-feedback))
+          (existing-review-feedback crs--buffer-review-feedback)
+          (existing-commits crs--buffer-commits))
 
       ;; If content is a JSON result (alist), extract the components
       (when (and content (listp content) (not (stringp content)))
@@ -1020,6 +1041,7 @@ for more robust position restoration."
                                       (cdr (assoc "outdated-comments" content))))
                (metadata (cdr (assq 'metadata content)))
                (reviews (cdr (assq 'reviews content)))
+               (commits (cdr (assq 'commits content)))
                (raw-content (cdr (assq 'content content)))
                (preamble (if raw-content
                              (if (string-match "Files changed (.*)\n\n" raw-content)
@@ -1038,6 +1060,7 @@ for more robust position restoration."
           (setq new-outdated-comments outdated-comments)
           (setq new-metadata metadata)
           (setq new-reviews reviews)
+          (setq new-commits commits)
           (setq new-preamble preamble)))
 
       ;; Temporarily set for rendering (before mode change wipes them)
@@ -1046,6 +1069,7 @@ for more robust position restoration."
       (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
+      (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -1079,7 +1103,8 @@ for more robust position restoration."
                (conversation (crs--render-conversation-from-data
                               crs--buffer-comments
                               crs--buffer-reviews
-                              crs--buffer-outdated-comments))
+                              crs--buffer-outdated-comments
+                              crs--buffer-commits))
                (preamble (concat header "\n" conversation))
                (feedback existing-review-feedback))
 
@@ -1108,6 +1133,7 @@ for more robust position restoration."
       (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
+      (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -1311,6 +1337,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
 (defvar-local crs--buffer-review-feedback nil
   "The review feedback for the current PR.")
+(defvar-local crs--buffer-commits nil
+  "The commits list for the current PR.")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."

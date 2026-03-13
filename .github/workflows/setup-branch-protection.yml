@@ -1,0 +1,95 @@
+# Configures branch protection on `main` to require the `all-checks-passed`
+# status check from all-checks.yml before merging.
+#
+# Run this once (manually via Actions → "Setup Branch Protection" → Run workflow)
+# after the all-checks.yml workflow has been pushed to main.
+#
+# Requires the workflow token to have `administration: write` permission, which
+# is granted automatically to GITHUB_TOKEN for repository admins in Gitea and
+# can be granted via Settings → Actions → General on GitHub.
+name: Setup Branch Protection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  administration: write
+
+jobs:
+  protect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure branch protection for main
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API_URL: ${{ github.api_url }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          echo "Configuring branch protection on main for ${OWNER}/${REPO}"
+
+          # Try Gitea-style branch protection API first (POST creates a new rule)
+          GITEA_STATUS=$(curl -s -o /tmp/gitea_resp.json -w "%{http_code}" \
+            -X POST "${API_URL}/repos/${OWNER}/${REPO}/branch_protections" \
+            -H "Authorization: token ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "branch_name": "main",
+              "enable_push": false,
+              "enable_status_check": true,
+              "status_check_contexts": ["all-checks-passed"],
+              "block_on_rejected_reviews": false,
+              "block_on_official_review_requests": false,
+              "block_on_outdated_branch": false,
+              "dismiss_stale_approvals": false,
+              "require_signed_commits": false,
+              "protected_file_patterns": "",
+              "unprotected_file_patterns": ""
+            }')
+
+          echo "Gitea API response (${GITEA_STATUS}):"
+          cat /tmp/gitea_resp.json
+
+          # If Gitea API returned 409 (already exists), update it instead
+          if [ "$GITEA_STATUS" = "409" ]; then
+            echo "Rule exists; patching instead..."
+            GITEA_STATUS=$(curl -s -o /tmp/gitea_resp2.json -w "%{http_code}" \
+              -X PATCH "${API_URL}/repos/${OWNER}/${REPO}/branch_protections/main" \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "enable_status_check": true,
+                "status_check_contexts": ["all-checks-passed"]
+              }')
+            echo "Gitea PATCH response (${GITEA_STATUS}):"
+            cat /tmp/gitea_resp2.json
+          fi
+
+          # If Gitea API didn't work (non-Gitea host), fall back to GitHub API
+          if [ "$GITEA_STATUS" != "200" ] && [ "$GITEA_STATUS" != "201" ]; then
+            echo "Gitea API did not succeed; trying GitHub branch protection API..."
+            GH_STATUS=$(curl -s -o /tmp/gh_resp.json -w "%{http_code}" \
+              -X PUT "https://api.github.com/repos/${OWNER}/${REPO}/branches/main/protection" \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d '{
+                "required_status_checks": {
+                  "strict": true,
+                  "contexts": ["all-checks-passed"]
+                },
+                "enforce_admins": false,
+                "required_pull_request_reviews": null,
+                "restrictions": null
+              }')
+            echo "GitHub API response (${GH_STATUS}):"
+            cat /tmp/gh_resp.json
+
+            if [ "$GH_STATUS" != "200" ]; then
+              echo "Both API attempts failed. Please configure branch protection manually:"
+              echo "  Require status check: all-checks-passed"
+              exit 1
+            fi
+          fi
+
+          echo "Branch protection configured successfully."

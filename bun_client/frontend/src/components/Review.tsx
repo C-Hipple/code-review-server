@@ -2038,7 +2038,11 @@ export default function Review({
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         {reviews
                             .filter(r => r.body && r.body.trim())
-                            .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime())
+                            .sort(
+                                (a, b) =>
+                                    new Date(a.submitted_at).getTime() -
+                                    new Date(b.submitted_at).getTime()
+                            )
                             .map(r => (
                                 <div
                                     key={r.id}

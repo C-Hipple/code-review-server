@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crs/config"
 	"crs/logger"
 	"crs/server"
@@ -8,11 +9,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 )
 
@@ -30,6 +34,7 @@ func main() {
 
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	serverFlag := flag.Bool("server", false, "Run as an RPC server")
+	syncFlag := flag.Bool("sync", false, "Run as a systemd-style background sync daemon with graceful shutdown")
 	testFlag := flag.Bool("test", false, "Run in test mode")
 	listPRs := flag.Bool("list-prs", false, "List all PRs from the database")
 	listSections := flag.Bool("list-sections", false, "List all sections from the database")
@@ -75,6 +80,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *syncFlag && (*oneOff || *serverFlag) {
+		slog.Error("Cannot combine --sync with --oneoff or --server")
+		os.Exit(1)
+	}
+
 	cfg := config.C()
 	workflows_list := workflows.MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
 	ms := workflows.NewManagerService(
@@ -84,17 +94,19 @@ func main() {
 	)
 	ms.Initialize()
 
-	if *serverFlag {
+	if *syncFlag {
+		runSyncDaemon(log, &ms)
+	} else if *serverFlag {
 		go func() {
 			slog.Info("Starting pprof server", "addr", "localhost:6060")
 			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
 				slog.Error("pprof server exited", "error", err)
 			}
 		}()
-		go ms.Run(log)
+		go ms.Run(context.Background(), log)
 		server.RunServer(log)
 	} else {
-		ms.Run(log)
+		ms.Run(context.Background(), log)
 	}
 }
 
@@ -162,4 +174,46 @@ func runGetPR(prArg string) error {
 	}
 	fmt.Println(content)
 	return nil
+}
+
+// runSyncDaemon runs the workflow sync loop as a systemd-style daemon.
+// It notifies systemd via sd_notify when ready and when stopping, and
+// exits cleanly on SIGTERM or SIGINT.
+func runSyncDaemon(log *slog.Logger, ms *workflows.ManagerService) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigCh
+		slog.Info("Received signal, initiating shutdown", "signal", sig)
+		sdNotify("STOPPING=1\n")
+		cancel()
+	}()
+
+	sdNotify("READY=1\n")
+	ms.Run(ctx, log)
+}
+
+// sdNotify sends a state notification to systemd via the NOTIFY_SOCKET.
+// It is a no-op when NOTIFY_SOCKET is not set.
+func sdNotify(state string) {
+	socketPath := os.Getenv("NOTIFY_SOCKET")
+	if socketPath == "" {
+		return
+	}
+	// systemd uses '@' prefix for abstract unix sockets
+	if strings.HasPrefix(socketPath, "@") {
+		socketPath = "\x00" + socketPath[1:]
+	}
+	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socketPath, Net: "unixgram"})
+	if err != nil {
+		slog.Warn("sd_notify: failed to connect", "error", err)
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte(state)); err != nil {
+		slog.Warn("sd_notify: failed to write", "error", err)
+	}
 }

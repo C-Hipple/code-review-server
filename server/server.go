@@ -123,6 +123,7 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 		})
 		reply.Items = items
 	}
+	h.Log.Info("Completed GetAllReviews call.")
 	return nil
 }
 

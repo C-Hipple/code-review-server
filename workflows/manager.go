@@ -475,7 +475,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 	apiCalls.log(log)
 }
 
-func (ms *ManagerService) Run(log *slog.Logger) {
+func (ms *ManagerService) Run(ctx context.Context, log *slog.Logger) {
 	log.Info("Starting Service")
 
 	// Advisory lock to prevent multiple concurrent syncs (skip for oneoff mode)
@@ -541,7 +541,12 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 			// Render org files after each cycle
-			time.Sleep(ms.sleepTime)
+			select {
+			case <-ctx.Done():
+				log.Info("Sync loop shutting down")
+				return
+			case <-time.After(ms.sleepTime):
+			}
 			cycle_count++
 		}
 	}

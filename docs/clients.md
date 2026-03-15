@@ -120,3 +120,21 @@ The emacs client is in `client.el`.
 ```
 
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
+
+### Configuration
+
+The following customizable variables control client behavior. Set them in your Emacs init file or via `M-x customize-group RET crs RET`.
+
+#### `crs-include-comments-tree`
+
+**Default:** `nil`
+
+When set to a non-nil value, `crs-get-reviews` will request that the server embed a `*** Comments` sub-tree under each PR heading in the reviews buffer. Each comment is rendered as a fourth-level org heading showing the author and, for inline comments, the file path.
+
+```elisp
+(setq crs-include-comments-tree t)
+```
+
+This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The comments are read from the server's local DB cache — no extra GitHub API calls are made — but the additional org structure still adds rendering overhead proportional to the total number of comments across all listed PRs.
+
+Enable it if you want a quick overview of comment activity without opening each PR individually.

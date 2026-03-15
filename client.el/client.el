@@ -118,6 +118,28 @@ This should be called after inserting content but before setting the buffer to r
         (goto-char start)
         (crs--insert-html html-string prefix)))))
 
+(defun crs--strip-comments-tree (content)
+  "Remove *** Comments sub-trees from CONTENT org string.
+The server always includes comment sub-trees in the rendered org output.
+This strips them so they are not passed to org-mode for rendering,
+which avoids the performance cost when `crs-include-comments-tree' is nil."
+  (when content
+    (let ((lines (split-string content "\n"))
+          (result '())
+          (in-comments nil))
+      (dolist (line lines)
+        (cond
+         ;; Entering a *** Comments sub-tree — skip it
+         ((string-match-p "^\\*\\*\\* Comments" line)
+          (setq in-comments t))
+         ;; Back to a ** item or * section heading — resume keeping lines
+         ((and in-comments (string-match-p "^\\*\\{1,2\\}[^*]" line))
+          (setq in-comments nil)
+          (push line result))
+         ((not in-comments)
+          (push line result))))
+      (string-join (nreverse result) "\n"))))
+
 ;;;###autoload
 (defun crs-start-server ()
   "Start the crs JSON-RPC server process.
@@ -273,13 +295,16 @@ CALLBACK is a function to call with the result."
 
   (crs--send-request
    "RPCHandler.GetAllReviews"
-   (vector (list (cons 'IncludeCommentsTree (if crs-include-comments-tree t :json-false))))
+   (vector)
    (lambda (result)
-     (let ((content (cdr (assq 'content result)))
-           (buffer (get-buffer-create "* Reviews *")))
+     (let* ((content (cdr (assq 'content result)))
+            (rendered (if crs-include-comments-tree
+                          content
+                        (crs--strip-comments-tree content)))
+            (buffer (get-buffer-create "* Reviews *")))
        (with-current-buffer buffer
          (erase-buffer)
-         (insert (or content ""))
+         (insert (or rendered ""))
          (crs--process-html-placeholders)
          (goto-char (point-min))
          (org-mode))

@@ -106,7 +106,7 @@ func sortItems(items []*database.Item, sortMethod string) {
 	}
 }
 
-func (r *OrgRenderer) RenderAndGetItems(includeCommentsTree bool) (string, []ReviewItem, error) {
+func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
 		return "", nil, err
@@ -162,16 +162,14 @@ func (r *OrgRenderer) RenderAndGetItems(includeCommentsTree bool) (string, []Rev
 				}
 			}
 
-			// Optionally append a comments sub-tree
-			if includeCommentsTree {
-				reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-				if reviewItem.Repo != "" && reviewItem.Number > 0 {
-					content.WriteString(r.buildCommentsTree(reviewItem.Repo, reviewItem.Number))
-				}
+			// Always append comments sub-tree; clients may strip it if not needed.
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
+			if reviewItem.Repo != "" && reviewItem.Number > 0 {
+				content.WriteString(r.buildCommentsTree(reviewItem.Repo, reviewItem.Number))
 			}
 
 			// Structured representation
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
+			reviewItem = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 			reviewItems = append(reviewItems, reviewItem)
 		}
 		// Add blank line between sections

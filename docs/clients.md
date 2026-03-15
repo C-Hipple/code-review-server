@@ -129,12 +129,12 @@ The following customizable variables control client behavior. Set them in your E
 
 **Default:** `nil`
 
-When set to a non-nil value, `crs-get-reviews` will request that the server embed a `*** Comments` sub-tree under each PR heading in the reviews buffer. Each comment is rendered as a fourth-level org heading showing the author and, for inline comments, the file path.
+When set to a non-nil value, a `*** Comments` sub-tree is included under each PR heading in the reviews buffer. Each comment is rendered as a fourth-level org heading showing the author and, for inline comments, the file path.
 
 ```elisp
 (setq crs-include-comments-tree t)
 ```
 
-This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The comments are read from the server's local DB cache — no extra GitHub API calls are made — but the additional org structure still adds rendering overhead proportional to the total number of comments across all listed PRs.
+This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The server always returns comment data from its local DB cache — no extra GitHub API calls are involved — but the additional org structure adds rendering overhead proportional to the total number of comments across all listed PRs. Setting this to `nil` strips the comments before handing the content to org-mode.
 
 Enable it if you want a quick overview of comment activity without opening each PR individually.

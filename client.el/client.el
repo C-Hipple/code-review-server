@@ -445,7 +445,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
     "TAB" #'crs-toggle-section
@@ -465,7 +466,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
     "C-c C-c" #'crs-submit-review))
@@ -2022,6 +2024,27 @@ BRANCH-NAME is the name of the branch to checkout."
         (message "Checking out: %s" ref-name)
         (crs--switch-and-fetch (projectile-project-name) ref-name))
     (message "Warning: Could not find branch name in Refs line")))
+
+;;;###autoload
+(defun crs-get-rate-limit-status ()
+  "Show the GitHub API rate limit status in the minibuffer."
+  (interactive)
+  (crs-start-server)
+  (crs--send-request
+   "RPCHandler.GetRateLimitStatus"
+   (make-hash-table)
+   (lambda (result)
+     (if (cdr (assq 'error result))
+         (message "Error fetching rate limit status: %s"
+                  (cdr (assq 'error result)))
+       (let* ((remaining (cdr (assq 'remaining result)))
+              (limit (cdr (assq 'limit result)))
+              (reset-at (cdr (assq 'reset_at result)))
+              (total (cdr (assq 'total_requests result)))
+              (throttled (cdr (assq 'throttled_count result)))
+              (rate-limited (cdr (assq 'rate_limited_count result))))
+         (message "Rate limit: %d/%d remaining (resets %s) | requests: %d, throttled: %d, rate-limited: %d"
+                  remaining limit reset-at total throttled rate-limited))))))
 
 (provide 'crs-client)
 

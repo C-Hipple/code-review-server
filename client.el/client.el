@@ -35,6 +35,13 @@
 (defvar crs-plugins nil
   "List of plugins configured on the server.")
 
+(defcustom crs-include-comments-tree nil
+  "When non-nil, include a comments sub-tree for each PR in the GetAllReviews org output.
+This causes the server to embed cached PR comments inline under each PR heading.
+Disabled by default because fetching and rendering comments slows down the reviews buffer."
+  :type 'boolean
+  :group 'crs)
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
@@ -266,7 +273,7 @@ CALLBACK is a function to call with the result."
 
   (crs--send-request
    "RPCHandler.GetAllReviews"
-   (vector)
+   (vector (list (cons 'IncludeCommentsTree (if crs-include-comments-tree t :json-false))))
    (lambda (result)
      (let ((content (cdr (assq 'content result)))
            (buffer (get-buffer-create "* Reviews *")))

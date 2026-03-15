@@ -71,7 +71,9 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	return nil
 }
 
-type GetReviewsArgs struct{}
+type GetReviewsArgs struct {
+	IncludeCommentsTree bool `json:"IncludeCommentsTree"`
+}
 
 type GetReviewsReply struct {
 	Content string       `json:"content"` // Kept for simplicity on org-mode clients
@@ -102,7 +104,7 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	}
 
 	renderer := NewOrgRenderer(config.C().DB)
-	content, items, err := renderer.RenderAndGetItems()
+	content, items, err := renderer.RenderAndGetItems(args.IncludeCommentsTree)
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
 		return err

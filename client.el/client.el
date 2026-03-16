@@ -1281,8 +1281,9 @@ If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the n
            (let* ((metadata (cdr (assq 'metadata result)))
                   (url (cdr (assq 'url metadata)))
                   (pr-info (when (and url (string-match
-                                         "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
-                                         url))
+
+                                           "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
+                                           url))
                              (list (match-string 1 url)
                                    (match-string 2 url)
                                    (string-to-number (match-string 3 url)))))
@@ -2112,7 +2113,7 @@ Uses cached data from the general plugin output buffer if available."
                    (setq crs--plugin-number number)
                    (setq crs--plugin-name plugin)))
                (pop-to-buffer buffer)
-               (message "Plugin output loaded."))))))))
+               (message "Plugin output loaded.")))))))))
 
 (defun crs-run-on-demand-plugin ()
   "Run an on-demand plugin for the current PR.
@@ -2155,6 +2156,7 @@ BRANCH-NAME is the name of the branch to checkout."
       (shell-command (concat "git fetch && git checkout " branch-name)))
     (unless (file-directory-p project-dir)
       (error "Project directory %s not found" project-dir))))
+
 
 
 (defun crs--get-ref-name ()

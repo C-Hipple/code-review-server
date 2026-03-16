@@ -2124,7 +2124,7 @@ BRANCH-NAME is the name of the branch to checkout."
   (crs-start-server)
   (crs--send-request
    "RPCHandler.GetRateLimitStatus"
-   (make-hash-table)
+   (vector)
    (lambda (result)
      (if (cdr (assq 'error result))
          (message "Error fetching rate limit status: %s"

@@ -11,9 +11,10 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/google/go-github/v48/github"
-	// "strings"
 )
 
 // testing mutable state
@@ -77,6 +78,24 @@ type GetReviewsReply struct {
 	Items   []ReviewItem `json:"items"`
 }
 
+// prStatusOrder returns the sort order for a ReviewItem's status.
+// Open PRs sort first (0), then draft (1), then merged (2), then closed (3).
+func prStatusOrder(item ReviewItem) int {
+	switch item.Status {
+	case "TODO":
+		return 0 // open
+	case "WAITING":
+		return 1 // draft
+	case "DONE":
+		if strings.Contains(item.Tags, "merged") {
+			return 2 // merged
+		}
+		return 3 // closed
+	default:
+		return 4
+	}
+}
+
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	if err := config.Reload(); err != nil {
 		h.Log.Error("Error reloading config", "error", err)
@@ -92,6 +111,16 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	if items == nil {
 		reply.Items = []ReviewItem{}
 	} else {
+		sort.SliceStable(items, func(i, j int) bool {
+			si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+			if si != sj {
+				return si < sj
+			}
+			if items[i].Repo != items[j].Repo {
+				return items[i].Repo < items[j].Repo
+			}
+			return items[i].Number < items[j].Number
+		})
 		reply.Items = items
 	}
 	return nil
@@ -105,13 +134,15 @@ type GetPRstructArgs struct {
 }
 
 type GetPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Commits          []CommitJSON  `json:"commits"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
@@ -126,7 +157,11 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	reply.Comments = details.Comments
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
 	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
+	reply.Feedback = feedback
 	return nil
 }
 
@@ -159,6 +194,89 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	return details, content, nil
 }
 
+type GetAdjacentPRArgs struct {
+	Repo      string `json:"Repo"`
+	Owner     string `json:"Owner"`
+	Number    int    `json:"Number"`
+	SkipCache bool   `json:"SkipCache"`
+	Previous  bool   `json:"Previous"` // true = previous PR, false = next PR
+}
+
+// GetAdjacentPRReply extends the standard PR reply with the adjacent PR's identity,
+// so clients don't need to parse the GitHub URL to know where to navigate next.
+type GetAdjacentPRReply struct {
+	GetPRReply
+	AdjacentOwner  string `json:"adjacent_owner"`
+	AdjacentRepo   string `json:"adjacent_repo"`
+	AdjacentNumber int    `json:"adjacent_number"`
+}
+
+func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
+	renderer := NewOrgRenderer(config.C().DB)
+	_, items, err := renderer.RenderAndGetItems()
+	if err != nil {
+		return err
+	}
+
+	// Sort the same way as GetAllReviews
+	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+		if si != sj {
+			return si < sj
+		}
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].Number < items[j].Number
+	})
+
+	// Find the current PR in the sorted list
+	currentIdx := -1
+	for i, item := range items {
+		if item.Repo == args.Repo && item.Number == args.Number {
+			currentIdx = i
+			break
+		}
+	}
+
+	if currentIdx == -1 {
+		return fmt.Errorf("PR %s/%s#%d not found in reviews", args.Owner, args.Repo, args.Number)
+	}
+
+	if len(items) == 1 {
+		return fmt.Errorf("only one PR in the review list")
+	}
+
+	// Get adjacent index, wrapping around at both ends
+	adjacentIdx := (currentIdx + 1) % len(items)
+	if args.Previous {
+		adjacentIdx = (currentIdx - 1 + len(items)) % len(items)
+	}
+
+	adjacent := items[adjacentIdx]
+	h.Log.Info("GetAdjacentPR returning", "owner", adjacent.Owner, "repo", adjacent.Repo, "number", adjacent.Number)
+	details, content, err := h.fetchPRAndRunPlugins(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
+	if err != nil {
+		return err
+	}
+
+	reply.AdjacentOwner = adjacent.Owner
+	reply.AdjacentRepo = adjacent.Repo
+	reply.AdjacentNumber = adjacent.Number
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
+	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
+	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(adjacent.Owner, adjacent.Repo, adjacent.Number)
+	reply.Feedback = feedback
+	return nil
+}
+
 type AddCommentArgs struct {
 	Owner     string `json:"Owner"`
 	Repo      string `json:"Repo"`
@@ -170,13 +288,13 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	ID               int64         `json:"id"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
@@ -210,13 +328,13 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
@@ -249,13 +367,13 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
@@ -303,13 +421,13 @@ type SetFeedbackArgs struct {
 }
 
 type SetFeedbackReply struct {
-	ID       int64         `json:"id"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	ID               int64         `json:"id"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
@@ -340,13 +458,13 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
@@ -380,13 +498,13 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -473,13 +591,15 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay     bool          `json:"okay"`
-	Content  string        `json:"content"`
-	Metadata *PRMetadata   `json:"metadata"`
-	Diff     string        `json:"diff"`
-	Comments []CommentJSON `json:"comments"`
+	Okay             bool          `json:"okay"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews  []ReviewJSON  `json:"reviews"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Commits          []CommitJSON  `json:"commits"`
+	Feedback         string        `json:"feedback"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
@@ -494,7 +614,11 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	reply.Comments = details.Comments
 	reply.OutdatedComments = details.OutdatedComments
 	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
 	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
+	reply.Feedback = feedback
 	return nil
 }
 
@@ -547,7 +671,6 @@ func GetLocalRepoPath(repo string) (string, error) {
 	return filepath.Clean(repoPath), nil
 }
 
-
 type GetPluginOutputArgs struct {
 	Owner  string `json:"Owner"`
 	Repo   string `json:"Repo"`
@@ -574,5 +697,74 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 	}
 
 	reply.Output = results
+	return nil
+}
+
+type RerunPluginsArgs struct {
+	Owner   string   `json:"Owner"`
+	Repo    string   `json:"Repo"`
+	Number  int      `json:"Number"`
+	Plugins []string `json:"Plugins"` // Optional: specific plugins to rerun. If empty, all plugins rerun.
+}
+
+type RerunPluginsReply struct {
+	Okay    bool                             `json:"okay"`
+	Message string                           `json:"message"`
+	Output  map[string]database.PluginResult `json:"output"`
+}
+
+// RerunPlugins forces reexecution of plugins for a given PR, bypassing SHA cache checks.
+// If Plugins array is specified, only those plugins are rerun; otherwise all are rerun.
+func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsReply) error {
+	// Clear plugin results to force rerun
+	if len(args.Plugins) == 0 {
+		// Clear all plugin results for this PR
+		err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, "")
+		if err != nil {
+			h.Log.Error("Error clearing plugin results", "error", err)
+			return err
+		}
+		h.Log.Info("Cleared all plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number)
+	} else {
+		// Clear only specified plugin results
+		for _, pluginName := range args.Plugins {
+			err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, pluginName)
+			if err != nil {
+				h.Log.Error("Error clearing plugin result", "plugin", pluginName, "error", err)
+				return err
+			}
+		}
+		h.Log.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
+	}
+
+	// Fetch PR details and trigger plugins
+	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+	if err != nil {
+		h.Log.Error("Error fetching PR details for plugin rerun", "error", err)
+		return err
+	}
+
+	// Get PR metadata and diff
+	commentsJSON := "[]"
+	rawComments, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+	if rawComments != "" {
+		commentsJSON = rawComments
+	}
+
+	_, sha, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+
+	// Run plugins with force flag
+	metadataJSON, _ := json.Marshal(details.Metadata)
+	go RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), true, args.Plugins)
+
+	reply.Okay = true
+	if len(args.Plugins) == 0 {
+		reply.Message = fmt.Sprintf("Rerunning all plugins for PR %d", args.Number)
+	} else {
+		reply.Message = fmt.Sprintf("Rerunning %d plugin(s) for PR %d", len(args.Plugins), args.Number)
+	}
+
+	// Return empty output for now (plugins running async)
+	reply.Output = make(map[string]database.PluginResult)
 	return nil
 }

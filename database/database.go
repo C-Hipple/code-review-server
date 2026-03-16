@@ -30,17 +30,18 @@ type Item struct {
 	DetailsJSON string // JSON array of detail lines
 	Tags        string // Comma-separated tags
 	TTL         int64
+	CreatedAt   time.Time
 }
 
 type LocalComment struct {
 	ID        int64
-	Owner     string    // GitHub owner/org
-	Repo      string    // GitHub repository name
-	Number    int       // PR number
-	Filename  string    // going to be the rel file like src/main.rs
+	Owner     string // GitHub owner/org
+	Repo      string // GitHub repository name
+	Number    int    // PR number
+	Filename  string // going to be the rel file like src/main.rs
 	Position  int64
 	Body      *string
-	ReplyToID *int64    // ID of the comment being replied to, or nil if top-level
+	ReplyToID *int64 // ID of the comment being replied to, or nil if top-level
 }
 
 func NewDB(dbPath string) (*DB, error) {
@@ -57,7 +58,7 @@ func NewDB(dbPath string) (*DB, error) {
 
 	db := &DB{conn: conn}
 	conn.SetMaxOpenConns(1)
-	
+
 	// Enable WAL mode and other optimizations
 	_, err = conn.Exec("PRAGMA journal_mode=WAL;")
 	if err != nil {
@@ -176,12 +177,43 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo, owner)
 	);
 
+	CREATE TABLE IF NOT EXISTS PluginResults (
+		id INTEGER PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		plugin_name TEXT NOT NULL,
+		result TEXT NOT NULL,
+		status TEXT DEFAULT 'success',
+		sha TEXT DEFAULT '',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number, plugin_name)
+	);
+
+	CREATE TABLE IF NOT EXISTS Worktrees (
+		id INTEGER PRIMARY KEY,
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		path TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo, owner)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
 	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
 	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_prcommits_lookup ON PRCommits(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
+	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
+	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
+
+	CREATE TABLE IF NOT EXISTS WorkflowCycleLog (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -221,7 +253,7 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error updating number defaults", "error", err)
 		}
 	}
-	
+
 	// Migration: Add reply_to_id column
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('LocalComment') WHERE name='reply_to_id'").Scan(&count)
 	if err == nil && count == 0 {
@@ -230,20 +262,25 @@ func (db *DB) initSchema() error {
 			slog.Warn("Error adding reply_to_id column to LocalComment", "error", err)
 		}
 	}
-	// Migration: Add status column to PluginResults if it doesn't exist
-	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='status'").Scan(&count)
-	if err == nil && count == 0 {
-		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN status TEXT DEFAULT 'success'") // Default for existing rows
-		if err != nil {
-			slog.Warn("Error adding status column to PluginResults", "error", err)
+	// Migration: Add status/sha columns to PluginResults if they don't exist.
+	// Guard with table existence check: pragma_table_info returns 0 rows for
+	// non-existent tables (no error), which would incorrectly trigger ALTER TABLE.
+	var pluginResultsExists int
+	_ = db.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='PluginResults'").Scan(&pluginResultsExists)
+	if pluginResultsExists > 0 {
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='status'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN status TEXT DEFAULT 'success'")
+			if err != nil {
+				slog.Warn("Error adding status column to PluginResults", "error", err)
+			}
 		}
-	}
-	// Migration: Add sha column to PluginResults if it doesn't exist
-	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='sha'").Scan(&count)
-	if err == nil && count == 0 {
-		_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
-		if err != nil {
-			slog.Warn("Error adding sha column to PluginResults", "error", err)
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='sha'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
+			if err != nil {
+				slog.Warn("Error adding sha column to PluginResults", "error", err)
+			}
 		}
 	}
 	// Migration: Add ttl column to items if it doesn't exist
@@ -264,37 +301,22 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add created_at column to items if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='created_at'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN created_at TIMESTAMP DEFAULT NULL")
+		if err != nil {
+			slog.Warn("Error adding created_at column to items", "error", err)
+		}
+	}
 
-	pluginResultsSchema := `
-	CREATE TABLE IF NOT EXISTS PluginResults (
-		id INTEGER PRIMARY KEY,
-		owner TEXT NOT NULL,
-		repo TEXT NOT NULL,
-		pr_number INTEGER NOT NULL,
-		plugin_name TEXT NOT NULL,
-		result TEXT NOT NULL,
-		status TEXT DEFAULT 'success',
-		sha TEXT DEFAULT '',
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(owner, repo, pr_number, plugin_name)
-	);
-	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
-	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
-
-	CREATE TABLE IF NOT EXISTS Worktrees (
-		id INTEGER PRIMARY KEY,
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		owner TEXT NOT NULL,
-		path TEXT NOT NULL,
-		branch TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(pr_number, repo, owner)
-	);
-	`
-	_, err = db.conn.Exec(pluginResultsSchema)
-	if err != nil {
-		return err
+	// Migration: Add release_status column to PRMetadataCache if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PRMetadataCache') WHERE name='release_status'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PRMetadataCache ADD COLUMN release_status TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding release_status column to PRMetadataCache", "error", err)
+		}
 	}
 
 	return nil
@@ -396,6 +418,25 @@ func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName st
 		return "", err
 	}
 	return sha, nil
+}
+
+// DeletePluginResultsForPR clears plugin results for a PR to force rerun
+// If pluginName is empty, all plugin results for the PR are deleted
+func (db *DB) DeletePluginResultsForPR(owner, repo string, prNumber int, pluginName string) error {
+	if pluginName == "" {
+		// Delete all plugin results for this PR
+		_, err := db.conn.Exec(
+			"DELETE FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ?",
+			owner, repo, prNumber,
+		)
+		return err
+	}
+	// Delete specific plugin result
+	_, err := db.conn.Exec(
+		"DELETE FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+		owner, repo, prNumber, pluginName,
+	)
+	return err
 }
 
 func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, error) {
@@ -502,7 +543,7 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		return nil, err
 	}
 
-	// Try to get the last inserted ID. 
+	// Try to get the last inserted ID.
 	// In SQLite with ON CONFLICT DO UPDATE, LastInsertId() might be 0 if no row was inserted.
 	id, err := result.LastInsertId()
 	if err != nil || id == 0 {
@@ -547,7 +588,7 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? ORDER BY id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
 	if err != nil {
@@ -558,9 +599,11 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
+		var createdAtStr string
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
 			return nil, err
 		}
+		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
 		items = append(items, &item)
 	}
 	return items, rows.Err()
@@ -568,7 +611,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 
 func (db *DB) GetAllItems() ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items ORDER BY section_id, id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -578,9 +621,11 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
+		var createdAtStr string
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
 			return nil, err
 		}
+		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
 		items = append(items, &item)
 	}
 	return items, rows.Err()
@@ -697,6 +742,21 @@ func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error
 		return err
 	}
 	return nil
+}
+
+func (db *DB) GetFeedback(owner, repo string, number int) (string, error) {
+	var body string
+	err := db.conn.QueryRow(
+		`SELECT body FROM Feedback WHERE owner = ? AND repo = ? AND number = ?`,
+		owner, repo, number,
+	).Scan(&body)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return body, nil
 }
 
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
@@ -908,12 +968,67 @@ func (db *DB) UpsertPRMetadataCache(owner string, repo string, prNumber int, met
 	return err
 }
 
+func (db *DB) GetReleaseStatus(owner string, repo string, prNumber int) (string, error) {
+	var status string
+	err := db.conn.QueryRow(
+		"SELECT release_status FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
+	).Scan(&status)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
+func (db *DB) UpsertReleaseStatus(owner string, repo string, prNumber int, releaseStatus string) error {
+	_, err := db.conn.Exec(
+		`UPDATE PRMetadataCache SET release_status = ? WHERE owner = ? AND repo = ? AND pr_number = ?`,
+		releaseStatus, owner, repo, prNumber,
+	)
+	return err
+}
+
 func (db *DB) DeletePRMetadataCache(owner string, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
 	)
 	return err
+}
+
+// GetItemWorkflowInfo returns the time the item was first added by the workflow and its section name.
+// The identifier should be in the format "{repo}-{prNumber}" (e.g. "chaturbate-1234").
+func (db *DB) GetItemWorkflowInfo(identifier string) (time.Time, string, error) {
+	var createdAtStr string
+	var sectionName string
+	err := db.conn.QueryRow(
+		`SELECT i.created_at, s.section_name
+		 FROM items i
+		 JOIN sections s ON i.section_id = s.id
+		 WHERE i.identifier = ?
+		 LIMIT 1`,
+		identifier,
+	).Scan(&createdAtStr, &sectionName)
+	if err == sql.ErrNoRows {
+		return time.Time{}, "", nil
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	// SQLite stores CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS"
+	t, err := time.Parse("2006-01-02 15:04:05", createdAtStr)
+	if err != nil {
+		// Try RFC3339 fallback
+		t, err = time.Parse(time.RFC3339, createdAtStr)
+		if err != nil {
+			return time.Time{}, sectionName, nil
+		}
+	}
+	return t, sectionName, nil
 }
 
 func (item *Item) GetDetails() ([]string, error) {
@@ -1021,4 +1136,33 @@ func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 
 func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	return db.conn.QueryRow(query, args...)
+}
+
+// LogWorkflowCycle records a completed workflow cycle in the DB.
+func (db *DB) LogWorkflowCycle() error {
+	_, err := db.conn.Exec("INSERT INTO WorkflowCycleLog (completed_at) VALUES (CURRENT_TIMESTAMP)")
+	return err
+}
+
+// GetLastWorkflowCycleTime returns the time of the most recently completed cycle,
+// or the zero time if no cycle has been logged.
+func (db *DB) GetLastWorkflowCycleTime() (time.Time, error) {
+	var completedAtStr string
+	err := db.conn.QueryRow(
+		"SELECT completed_at FROM WorkflowCycleLog ORDER BY id DESC LIMIT 1",
+	).Scan(&completedAtStr)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, parseErr := time.Parse("2006-01-02 15:04:05", completedAtStr)
+	if parseErr != nil {
+		t, parseErr = time.Parse(time.RFC3339, completedAtStr)
+		if parseErr != nil {
+			return time.Time{}, parseErr
+		}
+	}
+	return t, nil
 }

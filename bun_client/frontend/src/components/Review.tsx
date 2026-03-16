@@ -30,6 +30,7 @@ interface ReviewProps {
     number: number;
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
+    onNavigate?: (owner: string, repo: string, number: number) => void;
 }
 
 interface Comment {
@@ -42,6 +43,15 @@ interface Comment {
     created_at: string;
     outdated: boolean;
     diff_hunk: string;
+}
+
+interface ReviewData {
+    id: number;
+    user: string;
+    body: string;
+    state: string;
+    submitted_at: string;
+    html_url: string;
 }
 
 interface PluginResult {
@@ -78,7 +88,9 @@ interface PRResponse {
     diff: string;
     comments: Comment[];
     outdated_comments: Comment[];
+    reviews: ReviewData[];
     metadata: PRMetadata;
+    feedback: string;
 }
 
 // Map file extensions to Prism language identifiers
@@ -170,11 +182,13 @@ export default function Review({
     number,
     theme,
     onThemeChange: _onThemeChange,
+    onNavigate,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
     const [comments, setComments] = useState<Comment[]>([]);
     const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
+    const [reviews, setReviews] = useState<ReviewData[]>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
     const [loading, setLoading] = useState(false);
@@ -196,6 +210,10 @@ export default function Review({
     const [position, setPosition] = useState('');
     const [commentBody, setCommentBody] = useState('');
     const [replyToId, setReplyToId] = useState<number | null>(null);
+
+    // Review feedback (PR-level comment body, persisted server-side)
+    const [feedbackBody, setFeedbackBody] = useState('');
+    const [isSavingFeedback, setIsSavingFeedback] = useState(false);
 
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
@@ -275,7 +293,9 @@ export default function Review({
             setDiff(res.diff || '');
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
             setMetadata(res.metadata || null);
+            setFeedbackBody(res.feedback || '');
         } catch (e) {
             console.error(e);
             setContent('Error loading PR.');
@@ -298,10 +318,47 @@ export default function Review({
             setDiff(res.diff || '');
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
             setMetadata(res.metadata || null);
+            setFeedbackBody(res.feedback || '');
             loadPluginOutputs();
         } catch (e) {
             console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleNavigate = async (previous: boolean) => {
+        setLoading(true);
+        try {
+            const res = await rpcCall<
+                PRResponse & {
+                    adjacent_owner: string;
+                    adjacent_repo: string;
+                    adjacent_number: number;
+                }
+            >('RPCHandler.GetAdjacentPR', [
+                { Owner: owner, Repo: repo, Number: number, Previous: previous },
+            ]);
+            if (onNavigate) {
+                onNavigate(
+                    res.adjacent_owner || owner,
+                    res.adjacent_repo || repo,
+                    res.adjacent_number
+                );
+            }
+        } catch (e: any) {
+            console.error(e);
+            const msg = e?.message || String(e);
+            const parsed = (() => {
+                try {
+                    return JSON.parse(msg);
+                } catch {
+                    return null;
+                }
+            })();
+            alert(parsed?.message ?? msg);
         } finally {
             setLoading(false);
         }
@@ -337,6 +394,7 @@ export default function Review({
             setDiff(res.diff || '');
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
             resetCommentForm();
         } catch (e) {
             console.error(e);
@@ -367,6 +425,25 @@ export default function Review({
             alert('Error submitting review');
         } finally {
             setIsSubmittingReview(false);
+        }
+    };
+
+    const handleSaveFeedback = async () => {
+        setIsSavingFeedback(true);
+        try {
+            await rpcCall('RPCHandler.SetFeedback', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Body: feedbackBody,
+                },
+            ]);
+        } catch (e) {
+            console.error(e);
+            alert('Error saving feedback');
+        } finally {
+            setIsSavingFeedback(false);
         }
     };
 
@@ -407,6 +484,7 @@ export default function Review({
         clickable: boolean;
         lineType: LineType;
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
+        origName?: string;
         originalLineIndex: number;
     }
 
@@ -424,6 +502,7 @@ export default function Review({
 
             // New state tracking for empty new files
             let fallbackFilename: string | null = null;
+            let fallbackOrigName: string | null = null;
             let fallbackFileIndex: number | null = null;
             let hasEmittedHeader = false;
 
@@ -445,6 +524,7 @@ export default function Review({
                             clickable: true,
                             lineType: 'file-header',
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex:
                                 fallbackFileIndex !== null ? fallbackFileIndex : index,
                         });
@@ -453,6 +533,7 @@ export default function Review({
                     // Reset for new file
                     hasEmittedHeader = false;
                     pendingFileStatus = 'modified';
+                    fallbackOrigName = null;
                     lineType = 'skip';
 
                     // Parse filename from diff --git a/path b/path
@@ -486,15 +567,22 @@ export default function Review({
                 } else if (line.startsWith('deleted file mode')) {
                     pendingFileStatus = 'deleted';
                     lineType = 'skip';
-                } else if (
-                    line.startsWith('rename from') ||
-                    line.startsWith('rename to') ||
-                    line.startsWith('similarity index')
-                ) {
+                } else if (line.startsWith('rename from ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackOrigName = line.slice('rename from '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('rename to ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackFilename = line.slice('rename to '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('similarity index')) {
                     pendingFileStatus = 'renamed';
                     lineType = 'skip';
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
-                    // Skip these git metadata lines
+                    // Detect --- /dev/null: indicates a new file
+                    if (line === '--- /dev/null') {
+                        pendingFileStatus = 'new';
+                    }
                     lineType = 'skip';
                 } else {
                     // Match +++ b/filename as the file header
@@ -502,7 +590,35 @@ export default function Review({
                         line.match(/^\+\+\+\s+b\/(.+)$/) || line.match(/^\+\+\+\s+(.+)$/);
 
                     if (fileMatch) {
-                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                        const matchedFile = (fileMatch[1] || fileMatch[2]).trim();
+
+                        if (matchedFile === '/dev/null') {
+                            // +++ /dev/null means this is a deleted file.
+                            // Use fallbackFilename (from diff --git) as the displayed name.
+                            if (fallbackFilename) {
+                                currentFile = fallbackFilename;
+                                currentPos = 0;
+                                foundFirstHunkInFile = false;
+                                pos = 0;
+                                file = currentFile;
+                                clickable = true;
+                                lineType = 'file-header';
+                                hasEmittedHeader = true;
+                                parsedLines.push({
+                                    text: currentFile,
+                                    file,
+                                    pos,
+                                    clickable,
+                                    lineType,
+                                    fileStatus: 'deleted',
+                                    originalLineIndex: index,
+                                });
+                                pendingFileStatus = 'modified';
+                            }
+                            return;
+                        }
+
+                        currentFile = matchedFile;
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 
@@ -521,9 +637,11 @@ export default function Review({
                             clickable,
                             lineType,
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex: index,
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
+                        fallbackOrigName = null;
                         return; // continue equivalent in forEach
                     } else if (currentFile) {
                         const isHunkHeader = line.startsWith('@@');
@@ -577,6 +695,7 @@ export default function Review({
                     clickable: true,
                     lineType: 'file-header',
                     fileStatus: pendingFileStatus,
+                    origName: fallbackOrigName || undefined,
                     originalLineIndex:
                         fallbackFileIndex !== null ? fallbackFileIndex : lines.length,
                 });
@@ -909,7 +1028,9 @@ export default function Review({
                                     color: 'var(--text-primary)',
                                 }}
                             >
-                                {item.text}
+                                {item.fileStatus === 'renamed' && item.origName
+                                    ? `${item.origName} → ${item.text}`
+                                    : item.text}
                             </span>
                             {hasOutdated && (
                                 <button
@@ -1998,6 +2119,133 @@ export default function Review({
                 </div>
             )}
 
+            {/* Review Discussion */}
+            {reviews.filter(r => r.body && r.body.trim()).length > 0 && (
+                <div
+                    style={{
+                        background: 'var(--bg-secondary)',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border)',
+                        marginBottom: '16px',
+                        overflow: 'hidden',
+                    }}
+                >
+                    <div
+                        style={{
+                            padding: '12px 16px',
+                            borderBottom: '1px solid var(--border)',
+                            background: 'var(--bg-primary)',
+                            fontSize: '13px',
+                            fontWeight: 500,
+                            color: 'var(--text-secondary)',
+                        }}
+                    >
+                        Review Discussion ({reviews.filter(r => r.body && r.body.trim()).length})
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        {reviews
+                            .filter(r => r.body && r.body.trim())
+                            .sort(
+                                (a, b) =>
+                                    new Date(a.submitted_at).getTime() -
+                                    new Date(b.submitted_at).getTime()
+                            )
+                            .map(r => (
+                                <div
+                                    key={r.id}
+                                    style={{
+                                        padding: '14px 16px',
+                                        borderBottom: '1px solid var(--border)',
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            marginBottom: '8px',
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                fontWeight: 600,
+                                                fontSize: '13px',
+                                                color: 'var(--text-primary)',
+                                            }}
+                                        >
+                                            @{r.user}
+                                        </span>
+                                        <span
+                                            style={{
+                                                fontSize: '11px',
+                                                padding: '1px 6px',
+                                                borderRadius: '4px',
+                                                fontWeight: 500,
+                                                ...(r.state === 'APPROVED'
+                                                    ? {
+                                                          background: colors.bgSuccessDim,
+                                                          color: colors.success,
+                                                          border: `1px solid ${colors.borderSuccessDim}`,
+                                                      }
+                                                    : r.state === 'CHANGES_REQUESTED'
+                                                      ? {
+                                                            background: colors.bgDangerDim,
+                                                            color: colors.danger,
+                                                            border: `1px solid ${colors.borderDangerDim}`,
+                                                        }
+                                                      : {
+                                                            background: 'var(--bg-tertiary)',
+                                                            color: 'var(--text-secondary)',
+                                                            border: '1px solid var(--border)',
+                                                        }),
+                                            }}
+                                        >
+                                            {r.state === 'APPROVED'
+                                                ? 'Approved'
+                                                : r.state === 'CHANGES_REQUESTED'
+                                                  ? 'Changes Requested'
+                                                  : 'Commented'}
+                                        </span>
+                                        <span
+                                            style={{
+                                                fontSize: '11px',
+                                                color: 'var(--text-secondary)',
+                                                marginLeft: 'auto',
+                                            }}
+                                        >
+                                            {new Date(r.submitted_at).toLocaleString()}
+                                        </span>
+                                        {r.html_url && (
+                                            <a
+                                                href={r.html_url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                style={{
+                                                    fontSize: '11px',
+                                                    color: 'var(--accent)',
+                                                    textDecoration: 'none',
+                                                }}
+                                            >
+                                                View
+                                            </a>
+                                        )}
+                                    </div>
+                                    <div
+                                        className="pr-description"
+                                        style={{
+                                            fontSize: '14px',
+                                            lineHeight: 1.6,
+                                            color: 'var(--text-primary)',
+                                        }}
+                                    >
+                                        <Markdown>{stripHtmlComments(r.body)}</Markdown>
+                                    </div>
+                                </div>
+                            ))}
+                    </div>
+                </div>
+            )}
+
             {/* Toolbar */}
             <div
                 className="toolbar"
@@ -2014,6 +2262,22 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
+                <Button
+                    onClick={() => handleNavigate(true)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Previous PR"
+                >
+                    ← Prev PR
+                </Button>
+                <Button
+                    onClick={() => handleNavigate(false)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Next PR"
+                >
+                    Next PR →
+                </Button>
                 <Button onClick={handleSync} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>
@@ -2042,7 +2306,10 @@ export default function Review({
                     + Comment
                 </Button>
                 <Button
-                    onClick={() => setSubmitting(true)}
+                    onClick={() => {
+                        setReviewBody(feedbackBody);
+                        setSubmitting(true);
+                    }}
                     style={{ background: 'var(--success)' }}
                     disabled={loading}
                 >
@@ -2139,6 +2406,82 @@ export default function Review({
                     }}
                 >
                     {renderDiff()}
+                </div>
+            </div>
+
+            {/* Review Feedback Section */}
+            <div
+                style={{
+                    background: 'var(--bg-secondary)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    overflow: 'hidden',
+                    marginTop: '16px',
+                }}
+            >
+                <div
+                    style={{
+                        padding: '12px 16px',
+                        borderBottom: '1px solid var(--border)',
+                        background: 'var(--bg-primary)',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                        color: 'var(--text-secondary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                    }}
+                >
+                    <span style={{ color: 'var(--accent)' }}>✎</span>
+                    Review Feedback
+                    <span
+                        style={{
+                            marginLeft: '8px',
+                            fontSize: '11px',
+                            color: 'var(--text-tertiary)',
+                            fontWeight: 400,
+                        }}
+                    >
+                        PR-level comment body — used when you submit a review
+                    </span>
+                </div>
+                <div style={{ padding: '16px' }}>
+                    <textarea
+                        placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
+                        value={feedbackBody}
+                        onChange={e => setFeedbackBody(e.target.value)}
+                        disabled={isSavingFeedback}
+                        style={{
+                            width: '100%',
+                            minHeight: '120px',
+                            padding: '10px',
+                            background: 'var(--bg-primary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text-primary)',
+                            borderRadius: '6px',
+                            fontFamily: 'inherit',
+                            fontSize: '13px',
+                            resize: 'vertical',
+                            boxSizing: 'border-box',
+                        }}
+                    />
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '10px',
+                            justifyContent: 'flex-end',
+                            marginTop: '10px',
+                        }}
+                    >
+                        <Button
+                            onClick={handleSaveFeedback}
+                            size="sm"
+                            loading={isSavingFeedback}
+                            disabled={isSavingFeedback}
+                        >
+                            Save Feedback
+                        </Button>
+                    </div>
                 </div>
             </div>
 

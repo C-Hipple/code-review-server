@@ -11,45 +11,56 @@ func TestGetPRRequirements(t *testing.T) {
 		expected []PRRequirement
 	}{
 		{
-			name: "SingleRepoSyncReviewRequestsWorkflow",
-			workflow: SingleRepoSyncReviewRequestsWorkflow{
-				Repo:        "owner/repo",
+			name: "SyncReviewRequestsWorkflow single repo with diff",
+			workflow: SyncReviewRequestsWorkflow{
+				Repos:       []string{"owner/repo"},
 				IncludeDiff: true,
 			},
 			expected: []PRRequirement{
-				{Owner: "owner", Repo: "repo", State: "open", AuxData: AuxDataRequirement{Comments: true, CIStatus: true, Diff: true}},
+				{Owner: "owner", Repo: "repo", State: "open", AuxData: AuxDataRequirement{Diff: true}},
 			},
 		},
 		{
-			name: "SingleRepoSyncReviewRequestsWorkflow_NoDiff",
-			workflow: SingleRepoSyncReviewRequestsWorkflow{
-				Repo:        "owner/repo",
+			name: "SyncReviewRequestsWorkflow single repo no diff",
+			workflow: SyncReviewRequestsWorkflow{
+				Repos:       []string{"owner/repo"},
 				IncludeDiff: false,
 			},
 			expected: []PRRequirement{
-				{Owner: "owner", Repo: "repo", State: "open", AuxData: AuxDataRequirement{Comments: true, CIStatus: true, Diff: false}},
+				{Owner: "owner", Repo: "repo", State: "open", AuxData: AuxDataRequirement{}},
 			},
 		},
 		{
-			name: "SyncReviewRequestsWorkflow",
+			name: "SyncReviewRequestsWorkflow WaitingOnMe aux data",
+			workflow: SyncReviewRequestsWorkflow{
+				Repos:       []string{"owner/repo"},
+				IncludeDiff: false,
+				AuxDataReq:  AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+			},
+			expected: []PRRequirement{
+				{Owner: "owner", Repo: "repo", State: "open", AuxData: AuxDataRequirement{Comments: true, Reviews: true, Commits: true}},
+			},
+		},
+		{
+			name: "SyncReviewRequestsWorkflow multi-repo with diff",
 			workflow: SyncReviewRequestsWorkflow{
 				Repos:       []string{"owner/repo1", "owner/repo2"},
 				IncludeDiff: true,
 			},
 			expected: []PRRequirement{
-				{Owner: "owner", Repo: "repo1", State: "open", AuxData: AuxDataRequirement{Comments: true, CIStatus: true, Diff: true}},
-				{Owner: "owner", Repo: "repo2", State: "open", AuxData: AuxDataRequirement{Comments: true, CIStatus: true, Diff: true}},
+				{Owner: "owner", Repo: "repo1", State: "open", AuxData: AuxDataRequirement{Diff: true}},
+				{Owner: "owner", Repo: "repo2", State: "open", AuxData: AuxDataRequirement{Diff: true}},
 			},
 		},
 		{
-			name: "ListMyPRsWorkflow",
-			workflow: ListMyPRsWorkflow{
+			name: "SyncReviewRequestsWorkflow with PRState closed",
+			workflow: SyncReviewRequestsWorkflow{
 				Repos:       []string{"owner/repo1"},
 				PRState:     "closed",
 				IncludeDiff: false,
 			},
 			expected: []PRRequirement{
-				{Owner: "owner", Repo: "repo1", State: "closed", AuxData: AuxDataRequirement{Comments: true, CIStatus: true, Diff: false}},
+				{Owner: "owner", Repo: "repo1", State: "closed", AuxData: AuxDataRequirement{}},
 			},
 		},
 		{
@@ -60,7 +71,7 @@ func TestGetPRRequirements(t *testing.T) {
 				JiraEpic:   "EPIC-123",
 				JiraDomain: "domain.atlassian.net",
 			},
-			expected: nil, // Should be nil after revert
+			expected: nil,
 		},
 	}
 
@@ -80,6 +91,79 @@ func TestGetPRRequirements(t *testing.T) {
 				if req.AuxData != tt.expected[i].AuxData {
 					t.Errorf("requirement %d AuxData mismatch: got %+v, want %+v", i, req.AuxData, tt.expected[i].AuxData)
 				}
+			}
+		})
+	}
+}
+
+func TestComputeAuxRequirements(t *testing.T) {
+	tests := []struct {
+		name        string
+		filterNames []string
+		includeDiff bool
+		expected    AuxDataRequirement
+	}{
+		{
+			name:        "NoFilters",
+			filterNames: []string{},
+			includeDiff: false,
+			expected:    AuxDataRequirement{},
+		},
+		{
+			name:        "DiffOnly",
+			filterNames: []string{},
+			includeDiff: true,
+			expected:    AuxDataRequirement{Diff: true},
+		},
+		{
+			name:        "FilterWaitingOnMe",
+			filterNames: []string{"FilterWaitingOnMe"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+		},
+		{
+			name:        "FilterWaitingOnAuthor",
+			filterNames: []string{"FilterWaitingOnAuthor"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+		},
+		{
+			name:        "FilterCIPassing",
+			filterNames: []string{"FilterCIPassing"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{CIStatus: true},
+		},
+		{
+			name:        "FilterCIFailing",
+			filterNames: []string{"FilterCIFailing"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{CIStatus: true},
+		},
+		{
+			name:        "FilterMyReviewRequested",
+			filterNames: []string{"FilterMyReviewRequested"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{Reviews: true},
+		},
+		{
+			name:        "MultipleFilters",
+			filterNames: []string{"FilterNotDraft", "FilterWaitingOnMe", "FilterCIPassing"},
+			includeDiff: true,
+			expected:    AuxDataRequirement{Comments: true, CIStatus: true, Diff: true, Reviews: true, Commits: true},
+		},
+		{
+			name:        "UnrelatedFilters",
+			filterNames: []string{"FilterNotDraft", "FilterNotMyPRs", "FilterStale"},
+			includeDiff: false,
+			expected:    AuxDataRequirement{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeAuxRequirements(tt.filterNames, tt.includeDiff)
+			if got != tt.expected {
+				t.Errorf("computeAuxRequirements(%v, %v) = %+v, want %+v", tt.filterNames, tt.includeDiff, got, tt.expected)
 			}
 		})
 	}

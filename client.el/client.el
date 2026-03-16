@@ -33,10 +33,20 @@
   "Buffer for accumulating partial JSON-RPC responses.")
 
 (defvar crs-plugins nil
-  "List of plugins configured on the server.")
+  "List of plugin names configured on the server.")
+
+(defvar crs-plugins-full nil
+  "List of full plugin objects from the server, including OnlyOnDemand flag.")
+
+(defcustom crs-include-comments-tree nil
+  "When non-nil, include a comments sub-tree for each PR in the GetAllReviews org output.
+This causes the server to embed cached PR comments inline under each PR heading.
+Disabled by default because fetching and rendering comments slows down the reviews buffer."
+  :type 'boolean
+  :group 'crs)
 
 (defvar crs--section-header-regexp
-  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
+  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
 
 (defconst crs--html-placeholder-regexp
@@ -110,6 +120,28 @@ This should be called after inserting content but before setting the buffer to r
         (delete-region (match-beginning 0) (match-end 0))
         (goto-char start)
         (crs--insert-html html-string prefix)))))
+
+(defun crs--strip-comments-tree (content)
+  "Remove *** Comments sub-trees from CONTENT org string.
+The server always includes comment sub-trees in the rendered org output.
+This strips them so they are not passed to org-mode for rendering,
+which avoids the performance cost when `crs-include-comments-tree' is nil."
+  (when content
+    (let ((lines (split-string content "\n"))
+          (result '())
+          (in-comments nil))
+      (dolist (line lines)
+        (cond
+         ;; Entering a *** Comments sub-tree — skip it
+         ((string-match-p "^\\*\\*\\* Comments" line)
+          (setq in-comments t))
+         ;; Back to a ** item or * section heading — resume keeping lines
+         ((and in-comments (string-match-p "^\\*\\{1,2\\}[^*]" line))
+          (setq in-comments nil)
+          (push line result))
+         ((not in-comments)
+          (push line result))))
+      (string-join (nreverse result) "\n"))))
 
 ;;;###autoload
 (defun crs-start-server ()
@@ -251,6 +283,7 @@ CALLBACK is a function to call with the result."
    (vector)
    (lambda (result)
      (let ((plugins-list (append (cdr (assq 'plugins result)) nil)))
+       (setq crs-plugins-full plugins-list)
        (setq crs-plugins (mapcar (lambda (p) (cdr (assq 'Name p))) plugins-list))
        (message "Plugins updated: %d plugins found" (length crs-plugins))))))
 
@@ -268,11 +301,14 @@ CALLBACK is a function to call with the result."
    "RPCHandler.GetAllReviews"
    (vector)
    (lambda (result)
-     (let ((content (cdr (assq 'content result)))
-           (buffer (get-buffer-create "* Reviews *")))
+     (let* ((content (cdr (assq 'content result)))
+            (rendered (if crs-include-comments-tree
+                          content
+                        (crs--strip-comments-tree content)))
+            (buffer (get-buffer-create "* Reviews *")))
        (with-current-buffer buffer
          (erase-buffer)
-         (insert (or content ""))
+         (insert (or rendered ""))
          (crs--process-html-placeholders)
          (goto-char (point-min))
          (org-mode))
@@ -374,12 +410,15 @@ Re-renders the buffer with or without comments based on the toggle state."
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
   "P" #'crs-get-single-plugin-output
+  "D" #'crs-run-on-demand-plugin
   "H" #'crs-toggle-comments
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
   "O" #'crs-show-outdated-comments
   "q" #'quit-window
+  "]" #'crs-next-pr
+  "[" #'crs-prev-pr
   )
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
@@ -441,11 +480,15 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
     "TAB" #'crs-toggle-section
@@ -461,11 +504,15 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
     "C-c C-c" #'crs-submit-review))
@@ -559,7 +606,7 @@ SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact
             (with-current-buffer result-buffer (insert line "\n")))
 
            ;; New Format File Header
-           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+           ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
             (setq current-file (match-string 2 line))
             (setq first-hunk-seen nil)
             (with-current-buffer result-buffer (insert line "\n")))
@@ -669,8 +716,10 @@ This must be called after delta-wash."
               (if (re-search-forward "^deleted file mode" limit t)
                   (setq type "deleted")
                 (goto-char start)
-                (when (re-search-forward "^@@ -0,0" limit t)
-                  (setq type "new file")))))))
+                (if (re-search-forward "^@@ -0,0" limit t)
+                    (setq type "new file")
+                  (when (not (string= file-a file-b))
+                    (setq type "renamed"))))))))
 
         (let ((end-marker-pos
                (save-excursion
@@ -682,7 +731,8 @@ This must be called after delta-wash."
                   (t nil)))))
 
           (when (and (not end-marker-pos)
-                     (or (string= type "new file") (string= type "deleted")))
+                     (or (string= type "new file") (string= type "deleted")
+                         (string= type "renamed")))
             (setq end-marker-pos limit))
 
           (if end-marker-pos
@@ -691,6 +741,7 @@ This must be called after delta-wash."
                 (let ((pad (cond ((string= type "modified") "     ")
                                  ((string= type "new file") "     ")
                                  ((string= type "deleted")  "      ")
+                                 ((string= type "renamed")  "      ")
                                  (t "     "))))
                   (insert (format "%s%s%s\n" type pad filename))))
             (message "Could not find end of header for %s" filename)))))))
@@ -733,7 +784,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                (line (buffer-substring-no-properties line-start line-end)))
           (cond
            ;; File Header - match simplified first as it's more specific if simplification happened
-           ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+           ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
             (setq current-file (match-string 2 line))
             (setq first-hunk-seen nil))
 
@@ -866,8 +917,8 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
       sb)))
 
-(defun crs--render-conversation-from-data (comments reviews &optional outdated-comments)
-  "Render the conversation section from COMMENTS, REVIEWS and optionally OUTDATED-COMMENTS."
+(defun crs--render-conversation-from-data (comments reviews &optional outdated-comments commits)
+  "Render the conversation section from COMMENTS, REVIEWS, OUTDATED-COMMENTS and COMMITS."
   (let ((items nil)
         (sb "\nConversation\n"))
     (when (and outdated-comments (> (length outdated-comments) 0))
@@ -889,7 +940,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
     (seq-do (lambda (r)
               (let ((state (cdr (assq 'state r)))
                     (body (cdr (assq 'body r))))
-                ;; Skip empty COMMENTED reviews?
+                ;; Skip empty COMMENTED reviews
                 (unless (and (string= state "COMMENTED") (string-empty-p (or body "")))
                   (push (list :type 'review
                               :time (cdr (assq 'submitted_at r))
@@ -899,11 +950,23 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                         items))))
             reviews)
 
-    ;; 3. Sort by Time
-    (setq items (sort items (lambda (a b)
-                              (string< (plist-get a :time) (plist-get b :time)))))
+    ;; 3. Collect Commits
+    (seq-do (lambda (c)
+              (push (list :type 'commit
+                          :time (cdr (assq 'date c))
+                          :author (cdr (assq 'author c))
+                          :sha (cdr (assq 'sha c))
+                          :message (cdr (assq 'message c))
+                          :url (cdr (assq 'url c)))
+                    items))
+            (or commits []))
 
-    ;; 4. Render
+    ;; 4. Sort by Time
+    (setq items (sort items (lambda (a b)
+                              (string< (or (plist-get a :time) "")
+                                       (or (plist-get b :time) "")))))
+
+    ;; 5. Render
     (if (null items)
         (setq sb (concat sb "No conversation found.\n"))
       (let ((first t))
@@ -914,14 +977,21 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
           (let ((author (plist-get item :author))
                 (time (plist-get item :time))
-                (type (plist-get item :type))
-                (body (or (plist-get item :body) "(No body)")))
-
-            (if (eq type 'review)
-                (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
-              (setq sb (concat sb (format "From: %s at %s\n" author time))))
-
-            (setq sb (concat sb (crs--make-html-placeholder body) "\n\n"))))))
+                (type (plist-get item :type)))
+            (cond
+             ((eq type 'commit)
+              (let* ((sha (plist-get item :sha))
+                     (short-sha (if (and sha (> (length sha) 7)) (substring sha 0 7) (or sha "")))
+                     (msg (or (plist-get item :message) "(No message)"))
+                     (first-line (car (split-string msg "\n"))))
+                (setq sb (concat sb (format "Commit by %s at %s\n" (or author "") (or time ""))
+                                 (format "  %s  %s\n\n" short-sha first-line)))))
+             ((eq type 'review)
+              (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n")))
+             (t
+              (setq sb (concat sb (format "From: %s at %s\n" author time)))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n"))))))))
 
     ;; Add Files Changed header (placeholder or parsed?)
     ;; For now just a blank line, maybe we can add a separator
@@ -946,7 +1016,7 @@ Returns the line number, or nil if not found."
                  (line (buffer-substring-no-properties line-start line-end)))
             (cond
              ;; File header - simplified format
-             ((string-match "^\\(modified\\|deleted\\|new file\\)[[:space:]]+\\(.*\\)$" line)
+             ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
               (setq target-file (match-string 2 line))
               (setq first-hunk-seen nil)
               (setq current-position 0))
@@ -993,6 +1063,7 @@ for more robust position restoration."
           (new-outdated-comments nil)
           (new-metadata nil)
           (new-reviews nil)
+          (new-commits nil)
           (new-preamble nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
@@ -1004,7 +1075,8 @@ for more robust position restoration."
           (existing-metadata crs--buffer-metadata)
           (existing-reviews crs--buffer-reviews)
           (existing-preamble crs--buffer-preamble)
-          (existing-review-feedback crs--buffer-review-feedback))
+          (existing-review-feedback crs--buffer-review-feedback)
+          (existing-commits crs--buffer-commits))
 
       ;; If content is a JSON result (alist), extract the components
       (when (and content (listp content) (not (stringp content)))
@@ -1016,6 +1088,7 @@ for more robust position restoration."
                                       (cdr (assoc "outdated-comments" content))))
                (metadata (cdr (assq 'metadata content)))
                (reviews (cdr (assq 'reviews content)))
+               (commits (cdr (assq 'commits content)))
                (raw-content (cdr (assq 'content content)))
                (preamble (if raw-content
                              (if (string-match "Files changed (.*)\n\n" raw-content)
@@ -1034,6 +1107,7 @@ for more robust position restoration."
           (setq new-outdated-comments outdated-comments)
           (setq new-metadata metadata)
           (setq new-reviews reviews)
+          (setq new-commits commits)
           (setq new-preamble preamble)))
 
       ;; Temporarily set for rendering (before mode change wipes them)
@@ -1042,6 +1116,7 @@ for more robust position restoration."
       (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
+      (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -1075,7 +1150,8 @@ for more robust position restoration."
                (conversation (crs--render-conversation-from-data
                               crs--buffer-comments
                               crs--buffer-reviews
-                              crs--buffer-outdated-comments))
+                              crs--buffer-outdated-comments
+                              crs--buffer-commits))
                (preamble (concat header "\n" conversation))
                (feedback existing-review-feedback))
 
@@ -1104,6 +1180,7 @@ for more robust position restoration."
       (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
+      (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-review-feedback existing-review-feedback)
@@ -1158,10 +1235,11 @@ for more robust position restoration."
                  (cons 'Number number)))
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
-     (let* ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number)))
+     (let* ((buffer (get-buffer-create (format "* Review %s #%d *" repo number)))
             (project-path (expand-file-name (concat "~/" repo)))
             (error-info (cdr (assq 'error result))))
        (with-current-buffer buffer
+         (setq crs--buffer-owner owner)
          (if (file-directory-p project-path)
              (cd project-path)
            (message "Directory not found: %s" project-path)))
@@ -1176,6 +1254,57 @@ for more robust position restoration."
          (crs--render-and-update buffer result))
        (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
+
+(defun crs--navigate-pr (previous)
+  "Navigate to the adjacent PR relative to the current review buffer.
+If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the next PR."
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (direction (if previous "previous" "next")))
+    (message "Navigating to %s PR from %s/%s #%d..." direction owner repo number)
+    (crs--send-request
+     "RPCHandler.GetAdjacentPR"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)
+                   (cons 'Previous (if previous t :json-false))))
+     (lambda (result)
+       (let ((err (cdr (assq 'error result))))
+         (if err
+             (message "No %s PR: %s" direction
+                      (if (stringp err) err (cdr (assq 'message err))))
+           (let* ((metadata (cdr (assq 'metadata result)))
+                  (url (cdr (assq 'url metadata)))
+                  (pr-info (when (and url (string-match
+                                         "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
+                                         url))
+                             (list (match-string 1 url)
+                                   (match-string 2 url)
+                                   (string-to-number (match-string 3 url)))))
+                  (adj-owner (or (nth 0 pr-info) owner))
+                  (adj-repo (or (nth 1 pr-info) repo))
+                  (adj-number (or (nth 2 pr-info) (cdr (assq 'number metadata))))
+                  (buffer (get-buffer-create (format "* Review %s/%s #%d *"
+                                                     adj-owner adj-repo adj-number)))
+                  (project-path (expand-file-name (concat "~/" adj-repo))))
+             (with-current-buffer buffer
+               (when (file-directory-p project-path)
+                 (cd project-path)))
+             (crs--render-and-update buffer result)
+             (pop-to-buffer buffer)
+             (message "Navigated to %s PR: %s/%s #%d" direction adj-owner adj-repo adj-number))))))))
+
+(defun crs-next-pr ()
+  "Navigate to the next PR in the review list."
+  (interactive)
+  (crs--navigate-pr nil))
+
+(defun crs-prev-pr ()
+  "Navigate to the previous PR in the review list."
+  (interactive)
+  (crs--navigate-pr t))
 
 (defun crs-start-review-at-point ()
   "Parse a GitHub PR URL from the current line and call crs-get-review.
@@ -1225,7 +1354,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
          (owner (nth 0 info))
          (repo (nth 1 info))
          (number (nth 2 info))
-         (buffer-name (format "* Outdated Comments %s/%s #%d *" owner repo number))
+         (buffer-name (format "* Outdated Comments %s #%d *" repo number))
          (buffer (get-buffer-create buffer-name))
          (comments crs--buffer-outdated-comments))
     (with-current-buffer buffer
@@ -1268,13 +1397,21 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
     "q" #'crs-quit-outdated-comments))
 
 (defun crs--get-current-review-info ()
-  "Extract (owner repo number) from the current buffer name.
-Returns a list (owner repo number) or signals an error if not in a review buffer."
+  "Extract (owner repo number) from the current buffer.
+Returns a list (owner repo number) or signals an error if not in a review buffer.
+The owner is extracted from the URL: field in the buffer header."
   (let ((name (buffer-name)))
-    (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (list (match-string 1 name)
-              (match-string 2 name)
-              (string-to-number (match-string 3 name)))
+    (if (string-match "\\* Review \\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+        (let ((repo (match-string 1 name))
+              (number (string-to-number (match-string 2 name)))
+              (owner (save-excursion
+                       (goto-char (point-min))
+                       (when (re-search-forward
+                              "^URL:[ \t]+.*github\\.com/\\([^/]+\\)/" nil t)
+                         (match-string 1)))))
+          (unless owner
+            (error "Could not extract owner from URL in buffer: %s" name))
+          (list owner repo number))
       (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)
@@ -1291,6 +1428,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "Context for restoring position: (filename position file-line).")
 
 ;; Buffer-local variables for storing PR data separately
+(defvar-local crs--buffer-owner nil
+  "The GitHub owner for the current PR buffer.")
 (defvar-local crs--buffer-diff nil
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
@@ -1307,6 +1446,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
 (defvar-local crs--buffer-review-feedback nil
   "The review feedback for the current PR.")
+(defvar-local crs--buffer-commits nil
+  "The commits list for the current PR.")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -1338,7 +1479,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result original-line original-context))
                    (message "Comment updated successfully")
@@ -1357,7 +1498,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
            (let ((err (cdr (assq 'error result))))
              (if err
                  (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-               (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+               (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                  (when review-buffer
                    (crs--render-and-update review-buffer result original-line original-context))
                  (message "Comment added successfully")
@@ -1463,7 +1604,8 @@ Temporarily disables read-only mode (required when called from
 (defvar-keymap crs-plugin-output-mode-map
   "r" #'crs-refresh-plugin-output
   "q" #'crs-quit-plugin-output
-  "w" #'crs-wash-plugin-output)
+  "w" #'crs-wash-plugin-output
+  "D" #'crs-run-on-demand-plugin)
 
 (define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
   "Major mode for viewing plugin output.
@@ -1475,6 +1617,7 @@ Temporarily disables read-only mode (required when called from
   (evil-define-key 'normal crs-plugin-output-mode-map
     "r" #'crs-refresh-plugin-output
     "q" #'crs-quit-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "w" #'crs-wash-plugin-output))
 
 (defun crs--find-first-hunk-line ()
@@ -1483,7 +1626,7 @@ Temporarily disables read-only mode (required when called from
     (let* ((start-pos (point))
            (search-bound (save-excursion
                            (forward-line 1)
-                           (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\)[[:space:]:]+" nil t)
+                           (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+" nil t)
                                (match-beginning 0)
                              (point-max)))))
       (message "Searching for hunk between line %d and %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound))
@@ -1574,7 +1717,7 @@ If on a local comment, local-comment-id and local-comment-body will be set."
     (save-excursion
       (end-of-line)
       ;; Search backward for file header, requiring that it doesn't start with space (to skip comment blocks)
-      (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
+      (if (re-search-backward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$" nil t)
           (progn
             (setq filename (match-string 2))
             (setq first-hunk-line-num (crs--find-first-hunk-line))
@@ -1711,7 +1854,7 @@ If not on a local comment, displays a warning message."
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error deleting comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result))
                    (message "Local comment deleted")))))))))))
@@ -1746,7 +1889,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error submitting review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (with-current-buffer review-buffer
                  (setq crs--buffer-review-feedback nil)
@@ -1822,7 +1965,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (crs--render-and-update review-buffer result))
              (message "Review synced successfully!"))))))))
@@ -1961,7 +2104,38 @@ Uses cached data from the general plugin output buffer if available."
                    (setq crs--plugin-number number)
                    (setq crs--plugin-name plugin)))
                (pop-to-buffer buffer)
-               (message "Plugin output loaded.")))))))))
+               (message "Plugin output loaded."))))))))
+
+(defun crs-run-on-demand-plugin ()
+  "Run an on-demand plugin for the current PR.
+Presents a selection of plugins marked as OnlyOnDemand and triggers
+async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see results."
+  (interactive)
+  (if (null crs-plugins-full)
+      (progn
+        (message "No plugins loaded. Refreshing list... please try again in a moment.")
+        (crs-list-plugins))
+    (let* ((on-demand (seq-filter
+                       (lambda (p) (eq (cdr (assq 'OnlyOnDemand p)) t))
+                       crs-plugins-full))
+           (candidates (mapcar (lambda (p) (cdr (assq 'Name p))) on-demand)))
+      (if (null candidates)
+          (message "No on-demand plugins configured.")
+        (let* ((plugin (completing-read "Run on-demand plugin: " candidates nil t))
+               (info (crs--get-current-review-info))
+               (owner (nth 0 info))
+               (repo (nth 1 info))
+               (number (nth 2 info)))
+          (message "Running on-demand plugin '%s' for %s/%s #%d..." plugin owner repo number)
+          (crs--send-request
+           "RPCHandler.RerunPlugins"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)
+                         (cons 'Plugins (vector plugin))))
+           (lambda (result)
+             (let ((msg (cdr (assq 'message result))))
+               (message "%s" (or msg "On-demand plugin triggered."))))))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)
   "Switch to the project directory, fetch, and checkout the branch.
@@ -1990,6 +2164,27 @@ BRANCH-NAME is the name of the branch to checkout."
         (message "Checking out: %s" ref-name)
         (crs--switch-and-fetch (projectile-project-name) ref-name))
     (message "Warning: Could not find branch name in Refs line")))
+
+;;;###autoload
+(defun crs-get-rate-limit-status ()
+  "Show the GitHub API rate limit status in the minibuffer."
+  (interactive)
+  (crs-start-server)
+  (crs--send-request
+   "RPCHandler.GetRateLimitStatus"
+   (vector)
+   (lambda (result)
+     (if (cdr (assq 'error result))
+         (message "Error fetching rate limit status: %s"
+                  (cdr (assq 'error result)))
+       (let* ((remaining (cdr (assq 'remaining result)))
+              (limit (cdr (assq 'limit result)))
+              (reset-at (cdr (assq 'reset_at result)))
+              (total (cdr (assq 'total_requests result)))
+              (throttled (cdr (assq 'throttled_count result)))
+              (rate-limited (cdr (assq 'rate_limited_count result))))
+         (message "Rate limit: %d/%d remaining (resets %s) | requests: %d, throttled: %d, rate-limited: %d"
+                  remaining limit reset-at total throttled rate-limited))))))
 
 (provide 'crs-client)
 

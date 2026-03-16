@@ -13,6 +13,7 @@ export interface RpcResponse<T> {
 
 const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetPR': '/api/get-pr',
+    'RPCHandler.GetAdjacentPR': '/api/get-adjacent-pr',
     'RPCHandler.AddComment': '/api/add-comment',
     'RPCHandler.EditComment': '/api/edit-comment',
     'RPCHandler.DeleteComment': '/api/delete-comment',

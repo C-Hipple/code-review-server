@@ -28,7 +28,6 @@ IncludeDiff = true
 [[Workflows]]
 WorkflowType = "SingleRepoSyncReviewRequestsWorkflow"
 Name = "Team Reviews"
-Owner = "my-org"
 Repo = "my-org/main-repo"
 Teams = ["my-team", "my-other-team"]
 SectionTitle = "Needs My Team's Review"

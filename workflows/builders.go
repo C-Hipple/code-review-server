@@ -38,18 +38,19 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 }
 
 func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("SingleRepoSyncReviewRequestsWorkflow is deprecated; use SyncReviewRequestsWorkflow with a single-element Repos list instead", "workflow", raw.Name)
 	filters, err := BuildFiltersList(raw)
 	if err != nil {
 		return nil, err
 	}
-	wf := SingleRepoSyncReviewRequestsWorkflow{
-		Name:                raw.Name,
-		Owner:               raw.Owner,
-		Repo:                raw.Repo,
-		Filters:             filters,
-		SectionTitle:        raw.SectionTitle,
-		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		IncludeDiff:         raw.IncludeDiff,
+	wf := SyncReviewRequestsWorkflow{
+		Name:         raw.Name,
+		Owner:        raw.Owner,
+		Repos:        []string{raw.Repo},
+		Filters:      filters,
+		SectionTitle: raw.SectionTitle,
+		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
@@ -65,18 +66,20 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		return nil, err
 	}
 	wf := SyncReviewRequestsWorkflow{
-		Name:                raw.Name,
-		Owner:               raw.Owner,
-		Repos:               workflowRepos,
-		Filters:             filters,
-		SectionTitle:        raw.SectionTitle,
-		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		IncludeDiff:         raw.IncludeDiff,
+		Name:         raw.Name,
+		Owner:        raw.Owner,
+		Repos:        workflowRepos,
+		Filters:      filters,
+		PRState:      raw.PRState,
+		SectionTitle: raw.SectionTitle,
+		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
 
 func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
+	slog.Warn("ListMyPRsWorkflow is deprecated; use SyncReviewRequestsWorkflow with FilterMyPRs in the filters list instead", "workflow", raw.Name)
 	workflowRepos := *repos
 	if len(raw.Repos) > 0 {
 		workflowRepos = raw.Repos
@@ -86,15 +89,18 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	if err != nil {
 		return nil, err
 	}
-	wf := ListMyPRsWorkflow{
-		Name:                raw.Name,
-		Owner:               raw.Owner,
-		Repos:               workflowRepos,
-		Filters:             filters,
-		PRState:             raw.PRState,
-		SectionTitle:        raw.SectionTitle,
-		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		IncludeDiff:         raw.IncludeDiff,
+	// ListMyPRsWorkflow always filters to the authenticated user's PRs.
+	// Prepend it so user-supplied filters further narrow the result.
+	filters = append([]git_tools.PRFilter{git_tools.FilterMyPRs}, filters...)
+	wf := SyncReviewRequestsWorkflow{
+		Name:         raw.Name,
+		Owner:        raw.Owner,
+		Repos:        workflowRepos,
+		Filters:      filters,
+		PRState:      raw.PRState,
+		SectionTitle: raw.SectionTitle,
+		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 	}
 	return wf, nil
 }
@@ -105,17 +111,37 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workf
 		return nil, err
 	}
 	wf := ProjectListWorkflow{
-		Name:                raw.Name,
-		Owner:               raw.Owner,
-		Repo:                raw.Repo,
-		JiraDomain:          jiraDomain,
-		JiraEpic:            raw.JiraEpic,
-		Filters:             filters,
-		SectionTitle:        raw.SectionTitle,
-		ReleaseCheckCommand: raw.ReleaseCheckCommand,
-		IncludeDiff:         raw.IncludeDiff,
+		Name:         raw.Name,
+		Owner:        raw.Owner,
+		Repo:         raw.Repo,
+		JiraDomain:   jiraDomain,
+		JiraEpic:     raw.JiraEpic,
+		Filters:      filters,
+		SectionTitle: raw.SectionTitle,
+		IncludeDiff:  raw.IncludeDiff,
 	}
 	return wf, nil
+}
+
+// computeAuxRequirements determines which metadata needs to be pre-fetched by
+// inspecting the filter names configured for a workflow. Only fetch what the
+// filters actually require, letting Details() fall back for anything else.
+func computeAuxRequirements(filterNames []string, includeDiff bool) AuxDataRequirement {
+	req := AuxDataRequirement{Diff: includeDiff}
+	for _, raw := range filterNames {
+		name, _ := ParseFilterString(raw)
+		switch name {
+		case "FilterWaitingOnMe", "FilterWaitingOnAuthor":
+			req.Comments = true
+			req.Reviews = true
+			req.Commits = true
+		case "FilterCIPassing", "FilterCIFailing":
+			req.CIStatus = true
+		case "FilterMyReviewRequested":
+			req.Reviews = true
+		}
+	}
+	return req
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{

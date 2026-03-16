@@ -25,12 +25,35 @@ Command = "security_check"
 IncludeDiff = true
 IncludeHeaders = true
 IncludeComments = false
+
+[[Plugins]]
+Name = "Claude Review"
+Command = "claude_review"
+IncludeDiff = false
+IncludeHeaders = false
+IncludeComments = false
+
+[[Plugins]]
+Name = "Expensive Analysis"
+Command = "expensive_analysis"
+IncludeDiff = true
+OnlyOnDemand = true    # This plugin only runs when explicitly requested
 ```
+
+### Plugin Configuration Options
+
+- `Name` (string, required): Display name for the plugin
+- `Command` (string, required): Executable name on your `$PATH`
+- `IncludeDiff` (bool, optional): Pass the PR diff via `--diff` flag
+- `IncludeHeaders` (bool, optional): Pass PR metadata via `--headers` flag
+- `IncludeComments` (bool, optional): Pass PR comments via `--comments` flag
+- `OnlyOnDemand` (bool, optional, default: false): If true, plugin only runs when explicitly requested via RerunPlugins
 
 ## Included Plugins
 
 - **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
+- **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
 
@@ -41,3 +64,56 @@ You can write a plugin in any language you like. The only requirement is that th
 The `example_plugin` included in this repository demonstrates the interface and potential options.
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
+
+## On-Demand Plugins
+
+By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini or Claude).
+
+To avoid unnecessary costs, you can mark a plugin as `OnlyOnDemand = true` in the configuration. These plugins will:
+- **Not run automatically** when a PR is fetched or updated
+- Receive a `"deferred"` status in the database
+- **Only execute when explicitly requested** via the RerunPlugins RPC method with their name in the plugin list
+
+This allows cost control while keeping expensive plugins available for on-demand use.
+
+## Rerunning Plugins
+
+By default, plugins only run once per PR commit (SHA). To force plugins to rerun for a PR, use the `RerunPlugins` RPC method.
+
+### RerunPlugins RPC Method
+
+**Arguments:**
+- `Owner` (string): GitHub repository owner
+- `Repo` (string): GitHub repository name
+- `Number` (int): Pull request number
+- `Plugins` (array of strings, optional): Specific plugin names to rerun. If empty, omitted, or null, behavior depends on on-demand configuration (see below).
+
+**Returns:**
+- `Okay` (bool): Success status
+- `Message` (string): Description of what was rerun
+- `Output` (object): Empty object (plugins run asynchronously)
+
+**Plugin Behavior:**
+- **With specific plugin names**: Only those plugins are rerun, regardless of their `OnlyOnDemand` setting. This allows you to explicitly trigger expensive plugins.
+- **With empty/omitted array**: Reruns all normal plugins (those with `OnlyOnDemand = false`). On-demand plugins are skipped unless explicitly named.
+
+**Example: Rerun specific plugins (including an on-demand one):**
+```json
+{
+  "Owner": "myorg",
+  "Repo": "myrepo",
+  "Number": 123,
+  "Plugins": ["Summarize Diff", "Expensive Analysis"]
+}
+```
+
+**Example: Rerun all normal plugins (skips on-demand plugins):**
+```json
+{
+  "Owner": "myorg",
+  "Repo": "myrepo",
+  "Number": 123
+}
+```
+
+The rerun bypasses the SHA cache check, allowing you to reprocess the same PR commit with potentially updated plugin logic or external dependencies.

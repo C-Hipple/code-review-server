@@ -16,9 +16,11 @@ SleepDuration: int (in minutes, optional, default=1 minute)
 GithubUsername: str [optional]
 RepoLocation: str [optional, default="~/"]
 SectionPriority: map[string]int [optional]
+SectionSorting: map[string]string [optional]
 ```
 
 - **SectionPriority**: Allows you to define the order of sections in your client. Lower numbers come first. This map keys the section title to an integer.
+- **SectionSorting**: Controls how PRs are sorted within a section. Maps the section title to a sorting method. Supported values are `"newest_first"` and `"oldest_first"`, which sort by PR creation time. If not set for a section, items will roughly appear in the order they were added to the section.
 - **Repos**: A list of repositories in the format "owner/repo". Workflows can also define their own `Repos` list which overrides this global list.
 - **GithubUsername**: Used for determining when using the NotMyPRs or FilterMyPRs filters, as well as for smart filters like FilterWaitingOnMe and FilterWaitingOnAuthor to correctly determine your review status.
 - **RepoLocation**: The directory where you keep your git repositories. It defaults to "~/" if not defined. This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
@@ -34,7 +36,6 @@ Name: str
 Owner: str
 Filters: list[str]
 SectionTitle: str
-ReleaseCommandCheck: str
 IncludeDiff: bool
 Teams: list[str]
 ```
@@ -45,8 +46,8 @@ The `GithubUsername` can be set at the top level of the config file. If a workfl
 
 The WorkflowType is one of the following strings:
 - `SyncReviewRequestsWorkflow`
-- `SingleRepoSyncReviewRequestsWorkflow`
-- `ListMyPRsWorkflow`
+- `SingleRepoSyncReviewRequestsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with single-element `Repos`)
+- `ListMyPRsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with `FilterMyPRs` in filters)
 - `ProjectListWorkflow`
 
 ### IncludeDiff
@@ -57,7 +58,10 @@ The WorkflowType is one of the following strings:
 
 ### Workflow Specific Configurations
 
-#### SingleRepoSyncReviewRequestsWorkflow
+#### SingleRepoSyncReviewRequestsWorkflow (Deprecated)
+
+> [!WARNING]
+> This workflow type is deprecated. Use `SyncReviewRequestsWorkflow` with a single-element `Repos` list instead.
 
 Takes an additional parameter, `Repo`.
 
@@ -65,12 +69,28 @@ Takes an additional parameter, `Repo`.
 Repo: str # "owner/repo" format
 ```
 
-#### ListMyPRsWorkflow
+**Migration:** Convert to `SyncReviewRequestsWorkflow`:
+```toml
+WorkflowType = "SyncReviewRequestsWorkflow"
+Repos = ["owner/repo"]  # Instead of Repo = "owner/repo"
+```
+
+#### ListMyPRsWorkflow (Deprecated)
+
+> [!WARNING]
+> This workflow type is deprecated. Use `SyncReviewRequestsWorkflow` with `FilterMyPRs` in the filters list instead.
 
 Takes the additional parameter `PRState`, which is passed through to the github API when filtering for PRs.
 
 ```toml
 PRState: str [open/closed/nil]
+```
+
+**Migration:** Convert to `SyncReviewRequestsWorkflow`:
+```toml
+WorkflowType = "SyncReviewRequestsWorkflow"
+PRState = "closed"  # Keep this as-is
+Filters = ["FilterMyPRs"]  # Explicitly add this filter
 ```
 
 #### ProjectListWorkflow (JIRA Integration)
@@ -100,7 +120,14 @@ JiraEpic = "BOARD-123" # the epic key
 
 Often for work-workflows, it's very important to know when your particular PR is not just merged, but released to production, or in a release client.
 
-You can configure a release check command which is run when PRs are added to the org file or updated. CodeReviewServer will call-out to that program and expected a single string in response.
+You can configure a release check command per repository using the `[RepoConfigs]` section. The command is run for all closed PRs each time they are updated during a sync cycle. The result is stored in the database alongside PR metadata and included in `GetPR` and `GetAllReviews` responses as the `release_status` field.
+
+```toml
+[RepoConfigs."owner/repo"]
+ReleaseCheckCommand = "release-check"
+```
+
+The command is invoked as: `<command> <owner> <repo> <merge-commit-sha>`
 
 Example. If we have a program on our PATH variable named release-check, you should call it like this:
 
@@ -115,7 +142,7 @@ $ release-check C-Hipple code-review-server nopqrs
 merged
 ```
 
-That string will then be put into the title line of the PR via the org-serializer.
+The returned string is stored and exposed as the `release_status` field in PR metadata.
 
 ## Example Config
 
@@ -127,16 +154,20 @@ Repos = [
 ]
 SleepDuration = 5
 
+[SectionSorting]
+"Open PRs" = "newest_first"
+
+[RepoConfigs."C-Hipple/diff-lsp"]
+ReleaseCheckCommand = "release-check"
+
 [[Workflows]]
 WorkflowType = "SyncReviewRequestsWorkflow"
 Name = "List Open PRs"
-Owner = "C-Hipple"
 Filters = ["FilterNotDraft"]
 SectionTitle = "Open PRs"
 
 [[Workflows]]
 WorkflowType = "ListMyPRsWorkflow"
 Name = "List Closed PRs"
-Owner = "C-Hipple"
 SectionTitle = "Closed PRs"
 ```

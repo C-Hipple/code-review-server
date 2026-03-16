@@ -23,10 +23,14 @@ type RawWorkflow struct {
 	Filters             []string
 	SectionTitle        string
 	PRState             string
-	ReleaseCheckCommand string
 	GithubUsername      string
 	IncludeDiff         bool
 	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
+}
+
+// RepoConfig holds per-repository configuration settings.
+type RepoConfig struct {
+	ReleaseCheckCommand string
 }
 
 // Plugin defines the configuration for an installed plugin
@@ -36,6 +40,7 @@ type Plugin struct {
 	IncludeDiff     bool
 	IncludeHeaders  bool
 	IncludeComments bool
+	OnlyOnDemand    bool
 }
 
 // Define your classes
@@ -47,8 +52,10 @@ type Config struct {
 	GithubUsername string
 	RepoLocation   string
 	AutoWorktree   bool
-	SectionPriority map[string]int // Map of section title to priority (lower is better)
+	SectionPriority map[string]int    // Map of section title to priority (lower is better)
+	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins         []Plugin
+	RepoConfigs     map[string]RepoConfig // Keyed by "owner/repo"
 	DB              *database.DB
 }
 
@@ -71,9 +78,22 @@ func SetC(newCfg Config) {
 	c = newCfg
 }
 
+// GetReleaseCheckCommand returns the release check command for a given repo (owner/repo format).
+func (c Config) GetReleaseCheckCommand(ownerRepo string) string {
+	if rc, ok := c.RepoConfigs[ownerRepo]; ok {
+		return rc.ReleaseCheckCommand
+	}
+	return ""
+}
+
 var UserHomeDir = os.UserHomeDir
 
 func getCRSHome() (string, error) {
+	return GetCRSHome()
+}
+
+// GetCRSHome returns the CRS home directory (respects CRS_HOME env override).
+func GetCRSHome() (string, error) {
 	if crsHome := os.Getenv("CRS_HOME"); crsHome != "" {
 		return crsHome, nil
 	}
@@ -95,6 +115,11 @@ func getXDGConfigHome() (string, error) {
 	return filepath.Join(home, ".config"), nil
 }
 
+// ParseConfigForTest is an exported wrapper around parseConfig for use in tests.
+func ParseConfigForTest(data []byte) (*Config, error) {
+	return parseConfig(data)
+}
+
 // parseConfig parses the configuration from bytes and returns a Config struct.
 // It does NOT initialize the database.
 func parseConfig(data []byte) (*Config, error) {
@@ -107,7 +132,9 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoLocation    string
 		AutoWorktree    bool
 		SectionPriority map[string]int
+		SectionSorting  map[string]string
 		Plugins         []Plugin
+		RepoConfigs     map[string]RepoConfig
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -139,6 +166,11 @@ func parseConfig(data []byte) (*Config, error) {
 		parsed_sleep_duration = time.Duration(intermediate_config.SleepDuration) * time.Minute
 	}
 
+	repoConfigs := intermediate_config.RepoConfigs
+	if repoConfigs == nil {
+		repoConfigs = make(map[string]RepoConfig)
+	}
+
 	return &Config{
 		Repos:           intermediate_config.Repos,
 		RawWorkflows:    intermediate_config.Workflows,
@@ -148,7 +180,9 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoLocation:    repoLocation,
 		AutoWorktree:    intermediate_config.AutoWorktree,
 		SectionPriority: intermediate_config.SectionPriority,
+		SectionSorting:  intermediate_config.SectionSorting,
 		Plugins:         intermediate_config.Plugins,
+		RepoConfigs:     repoConfigs,
 	}, nil
 }
 

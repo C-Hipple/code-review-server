@@ -28,11 +28,13 @@ type PRFilter func([]*github.PullRequest) []*github.PullRequest
 func GetPRs(client *github.Client, state string, owner string, repo string) ([]*github.PullRequest, error) {
 	per_page := 100
 	options := github.PullRequestListOptions{State: state, ListOptions: github.ListOptions{PerPage: per_page, Page: 1}}
-	var prs []*github.PullRequest
+	// Use make so a successful fetch with 0 results returns a non-nil empty slice.
+	// Callers use nil to detect fetch failure vs success (nil == failed, non-nil == succeeded).
+	prs := make([]*github.PullRequest, 0)
 
 	// TODO: Consider if I really want deep lookups.
 	// Setting to 0 limits to 1 API call.
-	max_additional_calls := 4
+	max_additional_calls := 1
 	i := 0
 
 	for {
@@ -837,9 +839,9 @@ func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
 }
 
 type InteractionState struct {
-	LastMeTime            time.Time
-	LastOthersTime        time.Time
-	LastCommitTime        time.Time
+	LastMeTime             time.Time
+	LastOthersTime         time.Time
+	LastCommitTime         time.Time
 	HasUnrespondedComments bool
 }
 

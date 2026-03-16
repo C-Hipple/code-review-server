@@ -59,7 +59,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 
 ## Cache Key Convention
 
-DB cache tables use the **short repo name** (e.g., `chaturbate`), NOT the full name (`multimediallc/chaturbate`). `GetName()` returns the short name; `GetFullName()` returns `owner/repo`. All cache lookups from `GetPRDetails` use the short name from RPC args.
+DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT the full name (`C-hipple/code-review-server`). `GetName()` returns the short name; `GetFullName()` returns `owner/repo`. All cache lookups from `GetPRDetails` use the short name from RPC args.
 
 ## Environment Variables
 

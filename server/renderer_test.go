@@ -1,8 +1,11 @@
 package server
 
 import (
+	"crs/database"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v48/github"
 )
@@ -644,5 +647,124 @@ func TestSplitComments(t *testing.T) {
 	}
 	if !foundActive {
 		t.Errorf("Active root (ID 3) not found in active list")
+	}
+}
+
+func TestSortItems(t *testing.T) {
+	now := time.Now()
+	items := []*database.Item{
+		{ID: 1, Title: "middle", CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: 2, Title: "oldest", CreatedAt: now.Add(-2 * time.Hour)},
+		{ID: 3, Title: "newest", CreatedAt: now},
+	}
+
+	t.Run("newest_first", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, SortNewestFirst)
+		if cp[0].Title != "newest" || cp[1].Title != "middle" || cp[2].Title != "oldest" {
+			t.Errorf("newest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("oldest_first", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, SortOldestFirst)
+		if cp[0].Title != "oldest" || cp[1].Title != "middle" || cp[2].Title != "newest" {
+			t.Errorf("oldest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("unknown sort preserves order", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, "unknown")
+		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
+			t.Errorf("unknown sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+
+	t.Run("empty sort string preserves order", func(t *testing.T) {
+		cp := make([]*database.Item, len(items))
+		copy(cp, items)
+		sortItems(cp, "")
+		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
+			t.Errorf("empty sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		}
+	})
+}
+
+func TestPrStatusOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		item     ReviewItem
+		expected int
+	}{
+		{"open PR", ReviewItem{Status: "TODO"}, 0},
+		{"draft PR", ReviewItem{Status: "WAITING"}, 1},
+		{"merged PR", ReviewItem{Status: "DONE", Tags: "repo,merged"}, 2},
+		{"closed PR", ReviewItem{Status: "DONE", Tags: "repo"}, 3},
+		{"closed PR no tags", ReviewItem{Status: "DONE"}, 3},
+		{"unknown status", ReviewItem{Status: "OTHER"}, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := prStatusOrder(tt.item)
+			if got != tt.expected {
+				t.Errorf("prStatusOrder() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetAllReviewsSorting(t *testing.T) {
+	// Shuffled list covering all statuses, multiple repos, and various PR numbers.
+	items := []ReviewItem{
+		{Status: "DONE", Tags: "repo-b", Repo: "repo-b", Number: 10},       // closed
+		{Status: "TODO", Tags: "repo-a", Repo: "repo-a", Number: 5},        // open
+		{Status: "DONE", Tags: "repo-a,merged", Repo: "repo-a", Number: 3}, // merged
+		{Status: "WAITING", Tags: "repo-b", Repo: "repo-b", Number: 1},     // draft
+		{Status: "TODO", Tags: "repo-b", Repo: "repo-b", Number: 2},        // open
+		{Status: "TODO", Tags: "repo-a", Repo: "repo-a", Number: 1},        // open
+		{Status: "DONE", Tags: "repo-a", Repo: "repo-a", Number: 7},        // closed
+		{Status: "DONE", Tags: "repo-b,merged", Repo: "repo-b", Number: 4}, // merged
+		{Status: "WAITING", Tags: "repo-a", Repo: "repo-a", Number: 9},     // draft
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+		if si != sj {
+			return si < sj
+		}
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].Number < items[j].Number
+	})
+
+	// Expected: open → draft → merged → closed; within each group: repo-a before repo-b, lower number first.
+	type want struct{ status, repo string; number int }
+	expected := []want{
+		{"TODO", "repo-a", 1},
+		{"TODO", "repo-a", 5},
+		{"TODO", "repo-b", 2},
+		{"WAITING", "repo-a", 9},
+		{"WAITING", "repo-b", 1},
+		{"DONE", "repo-a", 3}, // merged
+		{"DONE", "repo-b", 4}, // merged
+		{"DONE", "repo-a", 7}, // closed
+		{"DONE", "repo-b", 10}, // closed
+	}
+
+	if len(items) != len(expected) {
+		t.Fatalf("length mismatch: got %d, want %d", len(items), len(expected))
+	}
+	for i, w := range expected {
+		got := items[i]
+		if got.Status != w.status || got.Repo != w.repo || got.Number != w.number {
+			t.Errorf("[%d] got {%s %s #%d}, want {%s %s #%d}",
+				i, got.Status, got.Repo, got.Number, w.status, w.repo, w.number)
+		}
 	}
 }

@@ -145,6 +145,62 @@ Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 
 ---
 
+### `RPCHandler.GetAdjacentPR`
+
+Fetches the next or previous pull request relative to the given PR in the sorted review list (same ordering as `GetAllReviews`: by status, then repo, then number). Navigation **wraps around** — calling with `Previous: false` on the last PR returns the first, and calling with `Previous: true` on the first PR returns the last.
+
+**Arguments** (`GetAdjacentPRArgs`):
+| Field      | Type   | Required | Description                                              |
+|------------|--------|----------|----------------------------------------------------------|
+| `Owner`    | string | Yes      | Repository owner of the **current** PR                   |
+| `Repo`     | string | Yes      | Repository name of the **current** PR                    |
+| `Number`   | int    | Yes      | Pull request number of the **current** PR                |
+| `SkipCache`| bool   | No       | If `true`, bypass cached data for the adjacent PR        |
+| `Previous` | bool   | No       | If `true`, return the previous PR; if `false` (default), return the next PR |
+
+**Reply** (`GetAdjacentPRReply`):
+
+All fields from `GetPRReply` (see above), plus:
+
+| Field              | Type   | Description                                           |
+|--------------------|--------|-------------------------------------------------------|
+| `adjacent_owner`   | string | Owner of the adjacent PR                              |
+| `adjacent_repo`    | string | Repo name of the adjacent PR                          |
+| `adjacent_number`  | int    | PR number of the adjacent PR                          |
+
+> **Note**: The `adjacent_owner`, `adjacent_repo`, and `adjacent_number` fields identify the PR whose data is returned. Clients should use these to update their navigation state rather than parsing `metadata.url`.
+
+**Example** — advance to the next PR from PR #42:
+```json
+{
+  "method": "RPCHandler.GetAdjacentPR",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "Previous": false}],
+  "id": 2
+}
+```
+
+**Response**:
+```json
+{
+  "result": {
+    "okay": true,
+    "adjacent_owner": "octocat",
+    "adjacent_repo": "Hello-World",
+    "adjacent_number": 43,
+    "content": "... formatted PR content ...",
+    "metadata": { "number": 43, "title": "Next PR", ... },
+    "diff": "...",
+    "comments": [],
+    "outdated_comments": [],
+    "reviews": []
+  },
+  "error": null,
+  "id": 2
+}
+```
+
+---
+
 ### `RPCHandler.SyncPR`
 
 Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
@@ -441,6 +497,7 @@ A typical code review workflow using this API:
 4. **Set Feedback**: Optionally use `SetFeedback` to add a top-level review message
 5. **Submit Review**: Call `SubmitReview` with the appropriate event type to publish the review to GitHub
 6. **Sync**: Use `SyncPR` to fetch the latest state after submission
+7. **Navigate**: Use `GetAdjacentPR` to move to the next or previous PR in the review queue without returning to the list; navigation wraps around at both ends
 
 ---
 

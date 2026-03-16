@@ -16,11 +16,11 @@ Emacs client review list
 
 Full documentation is available at [https://code-review-server.readthedocs.io/en/latest/](https://code-review-server.readthedocs.io/en/latest/)
 
-- [Configuration](https://code-review-server.readthedocs.io/en/latest/configuration.html)
-- [Clients](https://code-review-server.readthedocs.io/en/latest/clients.html)
-- [Filters](https://code-review-server.readthedocs.io/en/latest/filters.html)
-- [Plugins](https://code-review-server.readthedocs.io/en/latest/plugins.html)
-- [Protocol](https://code-review-server.readthedocs.io/en/latest/protocol.html)
+- [Configuration](https://code-review-server.readthedocs.io/en/latest/configuration/)
+- [Clients](https://code-review-server.readthedocs.io/en/latest/clients/)
+- [Filters](https://code-review-server.readthedocs.io/en/latest/filters/)
+- [Plugins](https://code-review-server.readthedocs.io/en/latest/plugins/)
+- [Protocol](https://code-review-server.readthedocs.io/en/latest/protocol/)
 
 ## Quickstart
 
@@ -64,6 +64,8 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     ```
 
 3.  **Install Server**
+
+    >  Alternatively, use Docker Compose to run steps 3 and 4 containerized with `docker compose up`.
 
     ```bash
     go install ./...

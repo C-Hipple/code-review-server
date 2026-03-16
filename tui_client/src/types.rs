@@ -171,6 +171,24 @@ pub struct ListPluginsReply {
     pub plugins: Vec<Plugin>,
 }
 
+/// Reply from GetAdjacentPR (embeds GetPRReply fields plus adjacent PR identity)
+#[derive(Debug, Deserialize)]
+pub struct GetAdjacentPRReply {
+    pub okay: bool,
+    pub content: String,
+    pub metadata: Option<PRMetadata>,
+    pub diff: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub comments: Vec<CommentJSON>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub outdated_comments: Vec<CommentJSON>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub reviews: Vec<ReviewJSON>,
+    pub adjacent_owner: String,
+    pub adjacent_repo: String,
+    pub adjacent_number: i32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,6 +19,7 @@ https://github.com/C-Hipple/diff-lsp/pull/5
 
 (crs-shutdown-server)
 
+(clear-buffer-by-name "*crs-client stderr")
 
 (defun  hurr()
   (interactive)
@@ -34,3 +35,13 @@ https://github.com/C-Hipple/diff-lsp/pull/5
     (when (string-match-p "^\\* Review" (buffer-name buffer))
       (kill-buffer buffer)))
   (crs-restart-server))
+
+
+(defun clear-buffer-by-name (buffer-name)
+  "Clear the contents of the buffer named BUFFER-NAME."
+  (interactive)
+  (let ((buf (get-buffer buffer-name)))
+    (if buf
+        (with-current-buffer buf
+          (erase-buffer))
+      (message "Buffer '%s' not found." buffer-name))))

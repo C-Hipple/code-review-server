@@ -1190,10 +1190,11 @@ for more robust position restoration."
                  (cons 'Number number)))
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
-     (let* ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number)))
+     (let* ((buffer (get-buffer-create (format "* Review %s #%d *" repo number)))
             (project-path (expand-file-name (concat "~/" repo)))
             (error-info (cdr (assq 'error result))))
        (with-current-buffer buffer
+         (setq crs--buffer-owner owner)
          (if (file-directory-p project-path)
              (cd project-path)
            (message "Directory not found: %s" project-path)))
@@ -1257,7 +1258,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
          (owner (nth 0 info))
          (repo (nth 1 info))
          (number (nth 2 info))
-         (buffer-name (format "* Outdated Comments %s/%s #%d *" owner repo number))
+         (buffer-name (format "* Outdated Comments %s #%d *" repo number))
          (buffer (get-buffer-create buffer-name))
          (comments crs--buffer-outdated-comments))
     (with-current-buffer buffer
@@ -1303,10 +1304,10 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
   "Extract (owner repo number) from the current buffer name.
 Returns a list (owner repo number) or signals an error if not in a review buffer."
   (let ((name (buffer-name)))
-    (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (list (match-string 1 name)
-              (match-string 2 name)
-              (string-to-number (match-string 3 name)))
+    (if (string-match "\\* Review \\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+        (list crs--buffer-owner
+              (match-string 1 name)
+              (string-to-number (match-string 2 name)))
       (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)
@@ -1323,6 +1324,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "Context for restoring position: (filename position file-line).")
 
 ;; Buffer-local variables for storing PR data separately
+(defvar-local crs--buffer-owner nil
+  "The GitHub owner for the current PR buffer.")
 (defvar-local crs--buffer-diff nil
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
@@ -1372,7 +1375,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result original-line original-context))
                    (message "Comment updated successfully")
@@ -1391,7 +1394,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
            (let ((err (cdr (assq 'error result))))
              (if err
                  (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-               (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+               (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                  (when review-buffer
                    (crs--render-and-update review-buffer result original-line original-context))
                  (message "Comment added successfully")
@@ -1745,7 +1748,7 @@ If not on a local comment, displays a warning message."
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error deleting comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result))
                    (message "Local comment deleted")))))))))))
@@ -1780,7 +1783,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error submitting review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (with-current-buffer review-buffer
                  (setq crs--buffer-review-feedback nil)
@@ -1856,7 +1859,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (crs--render-and-update review-buffer result))
              (message "Review synced successfully!"))))))))

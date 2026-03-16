@@ -106,7 +106,7 @@ func sortItems(items []*database.Item, sortMethod string) {
 	}
 }
 
-func (r *OrgRenderer) RenderAndGetItems(_ bool) (string, []ReviewItem, error) {
+func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
 		return "", nil, err
@@ -162,14 +162,8 @@ func (r *OrgRenderer) RenderAndGetItems(_ bool) (string, []ReviewItem, error) {
 				}
 			}
 
-			// Always append comments sub-tree; clients may strip it if not needed.
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-			if reviewItem.Repo != "" && reviewItem.Number > 0 {
-				content.WriteString(r.buildCommentsTree(reviewItem.Repo, reviewItem.Number))
-			}
-
 			// Structured representation
-			reviewItem = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
+			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 			reviewItems = append(reviewItems, reviewItem)
 		}
 		// Add blank line between sections
@@ -177,40 +171,6 @@ func (r *OrgRenderer) RenderAndGetItems(_ bool) (string, []ReviewItem, error) {
 	}
 
 	return content.String(), reviewItems, nil
-}
-
-// buildCommentsTree renders cached PR comments as an org-mode sub-heading at indent level 3.
-// It reads from the DB comment cache only; no network calls are made.
-func (r *OrgRenderer) buildCommentsTree(repo string, number int) string {
-	commentsJSON, err := r.db.GetPRComments(number, repo)
-	if err != nil || commentsJSON == "" || commentsJSON == "[]" {
-		return ""
-	}
-
-	var ghComments []*github.PullRequestComment
-	if err := json.Unmarshal([]byte(commentsJSON), &ghComments); err != nil {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("*** Comments\n")
-	for _, c := range ghComments {
-		author := ""
-		if c.User != nil {
-			author = c.User.GetLogin()
-		}
-		path := c.GetPath()
-		body := strings.TrimSpace(c.GetBody())
-		if path != "" {
-			sb.WriteString(fmt.Sprintf("**** %s (%s)\n", author, path))
-		} else {
-			sb.WriteString(fmt.Sprintf("**** %s\n", author))
-		}
-		for _, line := range strings.Split(body, "\n") {
-			sb.WriteString("     " + line + "\n")
-		}
-	}
-	return sb.String()
 }
 
 // ReviewItem represents a single PR review item with structured metadata

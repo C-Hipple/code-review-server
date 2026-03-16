@@ -71,9 +71,7 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	return nil
 }
 
-type GetReviewsArgs struct {
-	IncludeCommentsTree bool `json:"IncludeCommentsTree"`
-}
+type GetReviewsArgs struct{}
 
 type GetReviewsReply struct {
 	Content string       `json:"content"` // Kept for simplicity on org-mode clients
@@ -104,7 +102,7 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	}
 
 	renderer := NewOrgRenderer(config.C().DB)
-	content, items, err := renderer.RenderAndGetItems(args.IncludeCommentsTree)
+	content, items, err := renderer.RenderAndGetItems()
 	if err != nil {
 		h.Log.Error("Error rendering org files", "error", err)
 		return err
@@ -194,6 +192,89 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	content, _ := GetFullPRResponse(owner, repo, number, false, details)
 
 	return details, content, nil
+}
+
+type GetAdjacentPRArgs struct {
+	Repo      string `json:"Repo"`
+	Owner     string `json:"Owner"`
+	Number    int    `json:"Number"`
+	SkipCache bool   `json:"SkipCache"`
+	Previous  bool   `json:"Previous"` // true = previous PR, false = next PR
+}
+
+// GetAdjacentPRReply extends the standard PR reply with the adjacent PR's identity,
+// so clients don't need to parse the GitHub URL to know where to navigate next.
+type GetAdjacentPRReply struct {
+	GetPRReply
+	AdjacentOwner  string `json:"adjacent_owner"`
+	AdjacentRepo   string `json:"adjacent_repo"`
+	AdjacentNumber int    `json:"adjacent_number"`
+}
+
+func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
+	renderer := NewOrgRenderer(config.C().DB)
+	_, items, err := renderer.RenderAndGetItems()
+	if err != nil {
+		return err
+	}
+
+	// Sort the same way as GetAllReviews
+	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+		if si != sj {
+			return si < sj
+		}
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].Number < items[j].Number
+	})
+
+	// Find the current PR in the sorted list
+	currentIdx := -1
+	for i, item := range items {
+		if item.Repo == args.Repo && item.Number == args.Number {
+			currentIdx = i
+			break
+		}
+	}
+
+	if currentIdx == -1 {
+		return fmt.Errorf("PR %s/%s#%d not found in reviews", args.Owner, args.Repo, args.Number)
+	}
+
+	if len(items) == 1 {
+		return fmt.Errorf("only one PR in the review list")
+	}
+
+	// Get adjacent index, wrapping around at both ends
+	adjacentIdx := (currentIdx + 1) % len(items)
+	if args.Previous {
+		adjacentIdx = (currentIdx - 1 + len(items)) % len(items)
+	}
+
+	adjacent := items[adjacentIdx]
+	h.Log.Info("GetAdjacentPR returning", "owner", adjacent.Owner, "repo", adjacent.Repo, "number", adjacent.Number)
+	details, content, err := h.fetchPRAndRunPlugins(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
+	if err != nil {
+		return err
+	}
+
+	reply.AdjacentOwner = adjacent.Owner
+	reply.AdjacentRepo = adjacent.Repo
+	reply.AdjacentNumber = adjacent.Number
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
+	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
+	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(adjacent.Owner, adjacent.Repo, adjacent.Number)
+	reply.Feedback = feedback
+	return nil
 }
 
 type AddCommentArgs struct {

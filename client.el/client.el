@@ -380,6 +380,8 @@ Re-renders the buffer with or without comments based on the toggle state."
   "<return>" #'crs-visit-file
   "O" #'crs-show-outdated-comments
   "q" #'quit-window
+  "]" #'crs-next-pr
+  "[" #'crs-prev-pr
   )
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
@@ -446,6 +448,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
     "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
     (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
@@ -467,6 +471,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
     "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
     (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
@@ -1208,6 +1214,57 @@ for more robust position restoration."
          (crs--render-and-update buffer result))
        (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
+
+(defun crs--navigate-pr (previous)
+  "Navigate to the adjacent PR relative to the current review buffer.
+If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the next PR."
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (direction (if previous "previous" "next")))
+    (message "Navigating to %s PR from %s/%s #%d..." direction owner repo number)
+    (crs--send-request
+     "RPCHandler.GetAdjacentPR"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)
+                   (cons 'Previous (if previous t :json-false))))
+     (lambda (result)
+       (let ((err (cdr (assq 'error result))))
+         (if err
+             (message "No %s PR: %s" direction
+                      (if (stringp err) err (cdr (assq 'message err))))
+           (let* ((metadata (cdr (assq 'metadata result)))
+                  (url (cdr (assq 'url metadata)))
+                  (pr-info (when (and url (string-match
+                                         "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
+                                         url))
+                             (list (match-string 1 url)
+                                   (match-string 2 url)
+                                   (string-to-number (match-string 3 url)))))
+                  (adj-owner (or (nth 0 pr-info) owner))
+                  (adj-repo (or (nth 1 pr-info) repo))
+                  (adj-number (or (nth 2 pr-info) (cdr (assq 'number metadata))))
+                  (buffer (get-buffer-create (format "* Review %s/%s #%d *"
+                                                     adj-owner adj-repo adj-number)))
+                  (project-path (expand-file-name (concat "~/" adj-repo))))
+             (with-current-buffer buffer
+               (when (file-directory-p project-path)
+                 (cd project-path)))
+             (crs--render-and-update buffer result)
+             (pop-to-buffer buffer)
+             (message "Navigated to %s PR: %s/%s #%d" direction adj-owner adj-repo adj-number))))))))
+
+(defun crs-next-pr ()
+  "Navigate to the next PR in the review list."
+  (interactive)
+  (crs--navigate-pr nil))
+
+(defun crs-prev-pr ()
+  "Navigate to the previous PR in the review list."
+  (interactive)
+  (crs--navigate-pr t))
 
 (defun crs-start-review-at-point ()
   "Parse a GitHub PR URL from the current line and call crs-get-review.

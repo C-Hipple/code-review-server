@@ -284,6 +284,11 @@ Bun.serve<{
             return handleRpc('RPCHandler.SyncPR', [body]);
         }
 
+        if (url.pathname === '/api/get-adjacent-pr' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.GetAdjacentPR', [body]);
+        }
+
         if (url.pathname === '/api/submit-review' && req.method === 'POST') {
             const body = await req.json();
             return handleRpc('RPCHandler.SubmitReview', [body]);

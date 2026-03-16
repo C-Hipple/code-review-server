@@ -218,6 +218,7 @@ function App() {
                         number={currentPR.number}
                         theme={theme}
                         onThemeChange={setTheme}
+                        onNavigate={handleOpenReview}
                     />
                 )}
                 {view === 'PLUGIN_OUTPUT' && currentPR && (

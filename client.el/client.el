@@ -33,7 +33,10 @@
   "Buffer for accumulating partial JSON-RPC responses.")
 
 (defvar crs-plugins nil
-  "List of plugins configured on the server.")
+  "List of plugin names configured on the server.")
+
+(defvar crs-plugins-full nil
+  "List of full plugin objects from the server, including OnlyOnDemand flag.")
 
 (defcustom crs-include-comments-tree nil
   "When non-nil, include a comments sub-tree for each PR in the GetAllReviews org output.
@@ -280,6 +283,7 @@ CALLBACK is a function to call with the result."
    (vector)
    (lambda (result)
      (let ((plugins-list (append (cdr (assq 'plugins result)) nil)))
+       (setq crs-plugins-full plugins-list)
        (setq crs-plugins (mapcar (lambda (p) (cdr (assq 'Name p))) plugins-list))
        (message "Plugins updated: %d plugins found" (length crs-plugins))))))
 
@@ -406,6 +410,7 @@ Re-renders the buffer with or without comments based on the toggle state."
   "g" #'crs-sync-pr
   "p" #'crs-get-plugin-output
   "P" #'crs-get-single-plugin-output
+  "D" #'crs-run-on-demand-plugin
   "H" #'crs-toggle-comments
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
@@ -475,6 +480,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
@@ -498,6 +504,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "rf" #'crs-set-review-feedback
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
@@ -1597,7 +1604,8 @@ Temporarily disables read-only mode (required when called from
 (defvar-keymap crs-plugin-output-mode-map
   "r" #'crs-refresh-plugin-output
   "q" #'crs-quit-plugin-output
-  "w" #'crs-wash-plugin-output)
+  "w" #'crs-wash-plugin-output
+  "D" #'crs-run-on-demand-plugin)
 
 (define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
   "Major mode for viewing plugin output.
@@ -1609,6 +1617,7 @@ Temporarily disables read-only mode (required when called from
   (evil-define-key 'normal crs-plugin-output-mode-map
     "r" #'crs-refresh-plugin-output
     "q" #'crs-quit-plugin-output
+    "D" #'crs-run-on-demand-plugin
     "w" #'crs-wash-plugin-output))
 
 (defun crs--find-first-hunk-line ()
@@ -2095,7 +2104,38 @@ Uses cached data from the general plugin output buffer if available."
                    (setq crs--plugin-number number)
                    (setq crs--plugin-name plugin)))
                (pop-to-buffer buffer)
-               (message "Plugin output loaded.")))))))))
+               (message "Plugin output loaded."))))))))
+
+(defun crs-run-on-demand-plugin ()
+  "Run an on-demand plugin for the current PR.
+Presents a selection of plugins marked as OnlyOnDemand and triggers
+async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see results."
+  (interactive)
+  (if (null crs-plugins-full)
+      (progn
+        (message "No plugins loaded. Refreshing list... please try again in a moment.")
+        (crs-list-plugins))
+    (let* ((on-demand (seq-filter
+                       (lambda (p) (eq (cdr (assq 'OnlyOnDemand p)) t))
+                       crs-plugins-full))
+           (candidates (mapcar (lambda (p) (cdr (assq 'Name p))) on-demand)))
+      (if (null candidates)
+          (message "No on-demand plugins configured.")
+        (let* ((plugin (completing-read "Run on-demand plugin: " candidates nil t))
+               (info (crs--get-current-review-info))
+               (owner (nth 0 info))
+               (repo (nth 1 info))
+               (number (nth 2 info)))
+          (message "Running on-demand plugin '%s' for %s/%s #%d..." plugin owner repo number)
+          (crs--send-request
+           "RPCHandler.RerunPlugins"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)
+                         (cons 'Plugins (vector plugin))))
+           (lambda (result)
+             (let ((msg (cdr (assq 'message result))))
+               (message "%s" (or msg "On-demand plugin triggered."))))))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)
   "Switch to the project directory, fetch, and checkout the branch.

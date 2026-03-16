@@ -243,18 +243,10 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 		return fmt.Errorf("PR %s/%s#%d not found in reviews", args.Owner, args.Repo, args.Number)
 	}
 
-	// Get adjacent index
-	adjacentIdx := currentIdx + 1
+	// Get adjacent index, wrapping around at both ends
+	adjacentIdx := (currentIdx + 1) % len(items)
 	if args.Previous {
-		adjacentIdx = currentIdx - 1
-	}
-
-	if adjacentIdx < 0 || adjacentIdx >= len(items) {
-		direction := "next"
-		if args.Previous {
-			direction = "previous"
-		}
-		return fmt.Errorf("no %s PR available", direction)
+		adjacentIdx = (currentIdx - 1 + len(items)) % len(items)
 	}
 
 	adjacent := items[adjacentIdx]

@@ -414,6 +414,40 @@ This endpoint is useful for monitoring GitHub API usage and determining if the s
 
 ---
 
+### `RPCHandler.NextPR`
+
+Navigates to the next or previous pull request in the review list, using the same ordering as `GetAllReviews` (status → repo → number), and returns its full details.
+
+**Arguments** (`NextPRArgs`):
+| Field      | Type   | Required | Description                                                          |
+|------------|--------|----------|----------------------------------------------------------------------|
+| `Owner`    | string | Yes      | Repository owner of the *current* PR                                 |
+| `Repo`     | string | Yes      | Repository name of the *current* PR                                  |
+| `Number`   | int    | Yes      | Pull request number of the *current* PR                              |
+| `Previous` | bool   | No       | If `true`, navigate to the previous PR; defaults to `false` (next)  |
+
+**Reply** (`NextPRReply`):
+| Field               | Type          | Description                                          |
+|---------------------|---------------|------------------------------------------------------|
+| `okay`              | bool          | `true` if a target PR was found and fetched          |
+| `owner`             | string        | Owner of the target PR                               |
+| `repo`              | string        | Repo name of the target PR                           |
+| `number`            | int           | PR number of the target PR                           |
+| `content`           | string        | Formatted PR response (diff, comments, metadata)     |
+| `metadata`          | PRMetadata    | Structured PR metadata                               |
+| `diff`              | string        | Raw diff content                                     |
+| `comments`          | []CommentJSON | List of active inline comments                       |
+| `outdated_comments` | []CommentJSON | List of outdated inline comments                     |
+| `reviews`           | []ReviewJSON  | List of submitted reviews                            |
+| `commits`           | []CommitJSON  | List of commits in the PR                            |
+| `feedback`          | string        | Stored local feedback body, if any                   |
+
+Returns an error if the current PR is not found in the review list, or if there is no adjacent PR in the requested direction.
+
+**Ordering**: PRs are sorted identically to `GetAllReviews` — first by status (`TODO` → `WAITING` → merged `DONE` → closed `DONE`), then alphabetically by repo, then by PR number. Within ties the section-based display order is preserved (stable sort).
+
+---
+
 ### `RPCHandler.CheckRepoExists`
 
 Checks if a repository is stored locally in the user's home directory (`~/RepoName`). This is useful for determining if features like LSP (which often require local source code) should be enabled.

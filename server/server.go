@@ -617,6 +617,114 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 	return nil
 }
 
+type NextPRArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
+	Previous bool   `json:"Previous"`
+}
+
+type NextPRReply struct {
+	Okay             bool          `json:"okay"`
+	Owner            string        `json:"owner"`
+	Repo             string        `json:"repo"`
+	Number           int           `json:"number"`
+	Content          string        `json:"content"`
+	Metadata         *PRMetadata   `json:"metadata"`
+	Diff             string        `json:"diff"`
+	Comments         []CommentJSON `json:"comments"`
+	OutdatedComments []CommentJSON `json:"outdated_comments"`
+	Reviews          []ReviewJSON  `json:"reviews"`
+	Commits          []CommitJSON  `json:"commits"`
+	Feedback         string        `json:"feedback"`
+}
+
+// sortReviewItems sorts items in-place using the same ordering as GetAllReviews:
+// prStatusOrder → repo (alpha) → number, stable so section-based relative order is preserved.
+func sortReviewItems(items []ReviewItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+		if si != sj {
+			return si < sj
+		}
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].Number < items[j].Number
+	})
+}
+
+// findAdjacentPR returns the next or previous ReviewItem relative to the given PR in the sorted list.
+func findAdjacentPR(items []ReviewItem, owner, repo string, number int, previous bool) (*ReviewItem, error) {
+	currentIdx := -1
+	for i, item := range items {
+		if item.Owner == owner && item.Repo == repo && item.Number == number {
+			currentIdx = i
+			break
+		}
+	}
+
+	if currentIdx == -1 {
+		return nil, fmt.Errorf("PR %s/%s#%d not found in review list", owner, repo, number)
+	}
+
+	targetIdx := currentIdx + 1
+	if previous {
+		targetIdx = currentIdx - 1
+	}
+
+	if targetIdx < 0 || targetIdx >= len(items) {
+		direction := "next"
+		if previous {
+			direction = "previous"
+		}
+		return nil, fmt.Errorf("no %s PR available", direction)
+	}
+
+	result := items[targetIdx]
+	return &result, nil
+}
+
+// NextPR finds the next (or previous) PR in the sorted review list and returns its full details.
+// PRs are ordered by section priority, then section name, then per-section sort, then prStatusOrder,
+// repo, and number — matching the display order of GetAllReviews.
+func (h *RPCHandler) NextPR(args *NextPRArgs, reply *NextPRReply) error {
+	renderer := NewOrgRenderer(config.C().DB)
+	_, items, err := renderer.RenderAndGetItems()
+	if err != nil {
+		h.Log.Error("Error getting review items for NextPR", "error", err)
+		return err
+	}
+
+	sortReviewItems(items)
+
+	target, err := findAdjacentPR(items, args.Owner, args.Repo, args.Number, args.Previous)
+	if err != nil {
+		return err
+	}
+
+	details, content, err := h.fetchPRAndRunPlugins(target.Owner, target.Repo, target.Number, false)
+	if err != nil {
+		return err
+	}
+
+	reply.Okay = true
+	reply.Owner = target.Owner
+	reply.Repo = target.Repo
+	reply.Number = target.Number
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
+	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
+
+	feedback, _ := config.C().DB.GetFeedback(target.Owner, target.Repo, target.Number)
+	reply.Feedback = feedback
+	return nil
+}
+
 type RerunPluginsArgs struct {
 	Owner   string   `json:"Owner"`
 	Repo    string   `json:"Repo"`

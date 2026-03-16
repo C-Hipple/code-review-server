@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::rpc::RpcClient;
 use crate::types::{
-    GetPRReply, GetPluginOutputReply, GetReviewsReply, ListPluginsReply, PRMetadata, PluginResult,
-    ReviewItem,
+    GetAdjacentPRReply, GetPRReply, GetPluginOutputReply, GetReviewsReply, ListPluginsReply,
+    PRMetadata, PluginResult, ReviewItem,
 };
 
 /// Which screen the user is viewing.
@@ -189,6 +189,53 @@ impl App {
                 )?;
                 let reply: GetPRReply = serde_json::from_value(raw)?;
                 Ok(LoadedPR { reply, owner, repo })
+            })();
+            tx.send(result).ok();
+        });
+    }
+
+    /// Start an async load of the adjacent (next/previous) PR relative to the current one.
+    fn start_load_adjacent_pr(&mut self, previous: bool) {
+        let (number, owner, repo) = match &self.pr_metadata {
+            Some(m) => (m.number, self.pr_owner.clone(), self.pr_repo.clone()),
+            None => return,
+        };
+        let direction = if previous { "previous" } else { "next" };
+        self.status_msg = format!("Loading {direction} PR...");
+        self.loading = true;
+
+        let rpc = Arc::clone(&self.rpc);
+        let (tx, rx) = mpsc::channel();
+        self.pr_load_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = (|| -> Result<LoadedPR> {
+                let raw = rpc.lock().unwrap().call(
+                    "GetAdjacentPR",
+                    serde_json::json!({
+                        "Owner": &owner,
+                        "Repo": &repo,
+                        "Number": number,
+                        "Previous": previous,
+                    }),
+                )?;
+                let reply: GetAdjacentPRReply = serde_json::from_value(raw)?;
+                let adj_owner = reply.adjacent_owner.clone();
+                let adj_repo = reply.adjacent_repo.clone();
+                let pr_reply = GetPRReply {
+                    okay: reply.okay,
+                    content: reply.content,
+                    metadata: reply.metadata,
+                    diff: reply.diff,
+                    comments: reply.comments,
+                    outdated_comments: reply.outdated_comments,
+                    reviews: reply.reviews,
+                };
+                Ok(LoadedPR {
+                    reply: pr_reply,
+                    owner: adj_owner,
+                    repo: adj_repo,
+                })
             })();
             tx.send(result).ok();
         });
@@ -424,6 +471,14 @@ impl App {
                         self.start_load_pr(o, r, n);
                     }
                 }
+            }
+
+            // Navigate to next/previous PR
+            KeyCode::Char(']') => {
+                self.start_load_adjacent_pr(false);
+            }
+            KeyCode::Char('[') => {
+                self.start_load_adjacent_pr(true);
             }
 
             // Plugin selector: pick a single plugin to view

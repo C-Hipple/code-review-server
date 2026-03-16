@@ -106,7 +106,7 @@ func sortItems(items []*database.Item, sortMethod string) {
 	}
 }
 
-func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+func (r *OrgRenderer) RenderAndGetItems(_ bool) (string, []ReviewItem, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
 		return "", nil, err

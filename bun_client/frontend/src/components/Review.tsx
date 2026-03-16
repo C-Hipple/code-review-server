@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import {
@@ -30,6 +30,7 @@ interface ReviewProps {
     number: number;
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
+    onNavigate?: (owner: string, repo: string, number: number) => void;
 }
 
 interface Comment {
@@ -181,6 +182,7 @@ export default function Review({
     number,
     theme,
     onThemeChange: _onThemeChange,
+    onNavigate,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
@@ -217,6 +219,11 @@ export default function Review({
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
 
+    // Prevents double-fetch when navigating: after we load the adjacent PR's data
+    // inline, we update the URL/App state which re-renders with new props. This ref
+    // lets us skip the resulting loadPR() call since we already have the data.
+    const skipFetchRef = useRef<{ owner: string; repo: string; number: number } | null>(null);
+
     // LSP Hook
     const lsp = useLsp({
         mode: 'diff',
@@ -239,6 +246,14 @@ export default function Review({
     >([]);
 
     useEffect(() => {
+        if (
+            skipFetchRef.current?.owner === owner &&
+            skipFetchRef.current?.repo === repo &&
+            skipFetchRef.current?.number === number
+        ) {
+            skipFetchRef.current = null;
+            return;
+        }
         loadPR();
         loadPluginOutputs();
     }, [owner, repo, number]);
@@ -322,6 +337,50 @@ export default function Review({
             loadPluginOutputs();
         } catch (e) {
             console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleNavigate = async (previous: boolean) => {
+        setLoading(true);
+        try {
+            const res = await rpcCall<PRResponse>('RPCHandler.GetAdjacentPR', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Previous: previous,
+                },
+            ]);
+            // Parse owner/repo/number from the adjacent PR's URL
+            const url = res.metadata?.url || '';
+            const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+            const adjOwner = match ? match[1] : owner;
+            const adjRepo = match ? match[2] : repo;
+            const adjNumber = match ? parseInt(match[3], 10) : (res.metadata?.number ?? number);
+
+            // Load data inline (skip the subsequent fetch triggered by prop change)
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
+            setMetadata(res.metadata || null);
+            setFeedbackBody(res.feedback || '');
+            setCollapsedFiles(new Set());
+
+            // Mark this PR as already loaded so the useEffect re-fetch is skipped
+            skipFetchRef.current = { owner: adjOwner, repo: adjRepo, number: adjNumber };
+
+            if (onNavigate) {
+                onNavigate(adjOwner, adjRepo, adjNumber);
+            }
+        } catch (e: any) {
+            console.error(e);
+            const msg = e?.message || String(e);
+            const parsed = (() => { try { return JSON.parse(msg); } catch { return null; } })();
+            alert(parsed?.message ?? msg);
         } finally {
             setLoading(false);
         }
@@ -2181,6 +2240,22 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
+                <Button
+                    onClick={() => handleNavigate(true)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Previous PR"
+                >
+                    ← Prev PR
+                </Button>
+                <Button
+                    onClick={() => handleNavigate(false)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Next PR"
+                >
+                    Next PR →
+                </Button>
                 <Button onClick={handleSync} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>

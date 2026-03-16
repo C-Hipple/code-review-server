@@ -527,6 +527,26 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				ms.Initialize()
 			}
 
+			// Throttle: skip this cycle if the last completed cycle was within half the sleep interval.
+			// This prevents hammering the GitHub API when the server is restarted frequently.
+			db := config.C().DB
+			lastCycle, lastErr := db.GetLastWorkflowCycleTime()
+			if lastErr != nil {
+				log.Warn("Failed to get last workflow cycle time", "error", lastErr)
+			} else if !lastCycle.IsZero() {
+				elapsed := time.Since(lastCycle)
+				minInterval := ms.sleepTime / 2
+				if elapsed < minInterval {
+					log.Info("Skipping cycle, last run was too recent",
+						"last_run", lastCycle.Format(time.RFC3339),
+						"elapsed", elapsed.Round(time.Second),
+						"min_interval", minInterval)
+					time.Sleep(ms.sleepTime)
+					cycle_count++
+					continue
+				}
+			}
+
 			log.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
 			var cycle_wg sync.WaitGroup
 			cycle_wg.Add(1)
@@ -540,7 +560,12 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 			if waitTimeout(&cycle_wg, 240*time.Second) {
 				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
-			// Render org files after each cycle
+
+			// Log cycle completion so the throttle check works on next server start.
+			if err := db.LogWorkflowCycle(); err != nil {
+				log.Error("Failed to log workflow cycle completion", "error", err)
+			}
+
 			time.Sleep(ms.sleepTime)
 			cycle_count++
 		}

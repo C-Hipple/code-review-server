@@ -209,6 +209,11 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
 	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
+
+	CREATE TABLE IF NOT EXISTS WorkflowCycleLog (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -1131,4 +1136,33 @@ func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 
 func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	return db.conn.QueryRow(query, args...)
+}
+
+// LogWorkflowCycle records a completed workflow cycle in the DB.
+func (db *DB) LogWorkflowCycle() error {
+	_, err := db.conn.Exec("INSERT INTO WorkflowCycleLog (completed_at) VALUES (CURRENT_TIMESTAMP)")
+	return err
+}
+
+// GetLastWorkflowCycleTime returns the time of the most recently completed cycle,
+// or the zero time if no cycle has been logged.
+func (db *DB) GetLastWorkflowCycleTime() (time.Time, error) {
+	var completedAtStr string
+	err := db.conn.QueryRow(
+		"SELECT completed_at FROM WorkflowCycleLog ORDER BY id DESC LIMIT 1",
+	).Scan(&completedAtStr)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, parseErr := time.Parse("2006-01-02 15:04:05", completedAtStr)
+	if parseErr != nil {
+		t, parseErr = time.Parse(time.RFC3339, completedAtStr)
+		if parseErr != nil {
+			return time.Time{}, parseErr
+		}
+	}
+	return t, nil
 }

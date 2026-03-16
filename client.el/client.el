@@ -1390,13 +1390,21 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
     "q" #'crs-quit-outdated-comments))
 
 (defun crs--get-current-review-info ()
-  "Extract (owner repo number) from the current buffer name.
-Returns a list (owner repo number) or signals an error if not in a review buffer."
+  "Extract (owner repo number) from the current buffer.
+Returns a list (owner repo number) or signals an error if not in a review buffer.
+The owner is extracted from the URL: field in the buffer header."
   (let ((name (buffer-name)))
     (if (string-match "\\* Review \\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (list crs--buffer-owner
-              (match-string 1 name)
-              (string-to-number (match-string 2 name)))
+        (let ((repo (match-string 1 name))
+              (number (string-to-number (match-string 2 name)))
+              (owner (save-excursion
+                       (goto-char (point-min))
+                       (when (re-search-forward
+                              "^URL:[ \t]+.*github\\.com/\\([^/]+\\)/" nil t)
+                         (match-string 1)))))
+          (unless owner
+            (error "Could not extract owner from URL in buffer: %s" name))
+          (list owner repo number))
       (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)

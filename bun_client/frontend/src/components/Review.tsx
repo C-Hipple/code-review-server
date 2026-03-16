@@ -332,23 +332,12 @@ export default function Review({
     const handleNavigate = async (previous: boolean) => {
         setLoading(true);
         try {
-            const res = await rpcCall<PRResponse>('RPCHandler.GetAdjacentPR', [
-                {
-                    Owner: owner,
-                    Repo: repo,
-                    Number: number,
-                    Previous: previous,
-                },
-            ]);
-            // Parse owner/repo/number from the adjacent PR's GitHub URL
-            const prUrl = res.metadata?.url || '';
-            const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-            const adjOwner = match ? match[1] : owner;
-            const adjRepo = match ? match[2] : repo;
-            const adjNumber = match ? parseInt(match[3], 10) : (res.metadata?.number ?? number);
-
+            const res = await rpcCall<PRResponse & { adjacent_owner: string; adjacent_repo: string; adjacent_number: number }>(
+                'RPCHandler.GetAdjacentPR',
+                [{ Owner: owner, Repo: repo, Number: number, Previous: previous }]
+            );
             if (onNavigate) {
-                onNavigate(adjOwner, adjRepo, adjNumber);
+                onNavigate(res.adjacent_owner || owner, res.adjacent_repo || repo, res.adjacent_number);
             }
         } catch (e: any) {
             console.error(e);

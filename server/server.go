@@ -202,7 +202,16 @@ type GetAdjacentPRArgs struct {
 	Previous  bool   `json:"Previous"` // true = previous PR, false = next PR
 }
 
-func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetPRReply) error {
+// GetAdjacentPRReply extends the standard PR reply with the adjacent PR's identity,
+// so clients don't need to parse the GitHub URL to know where to navigate next.
+type GetAdjacentPRReply struct {
+	GetPRReply
+	AdjacentOwner  string `json:"adjacent_owner"`
+	AdjacentRepo   string `json:"adjacent_repo"`
+	AdjacentNumber int    `json:"adjacent_number"`
+}
+
+func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
 	renderer := NewOrgRenderer(config.C().DB)
 	_, items, err := renderer.RenderAndGetItems()
 	if err != nil {
@@ -255,6 +264,9 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetPRReply) e
 		return err
 	}
 
+	reply.AdjacentOwner = adjacent.Owner
+	reply.AdjacentRepo = adjacent.Repo
+	reply.AdjacentNumber = adjacent.Number
 	reply.Content = content
 	reply.Metadata = &details.Metadata
 	reply.Diff = details.Diff

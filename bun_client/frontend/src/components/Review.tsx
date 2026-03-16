@@ -30,6 +30,7 @@ interface ReviewProps {
     number: number;
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
+    onNavigate?: (owner: string, repo: string, number: number) => void;
 }
 
 interface Comment {
@@ -181,6 +182,7 @@ export default function Review({
     number,
     theme,
     onThemeChange: _onThemeChange,
+    onNavigate,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
@@ -327,6 +329,41 @@ export default function Review({
         }
     };
 
+    const handleNavigate = async (previous: boolean) => {
+        setLoading(true);
+        try {
+            const res = await rpcCall<
+                PRResponse & {
+                    adjacent_owner: string;
+                    adjacent_repo: string;
+                    adjacent_number: number;
+                }
+            >('RPCHandler.GetAdjacentPR', [
+                { Owner: owner, Repo: repo, Number: number, Previous: previous },
+            ]);
+            if (onNavigate) {
+                onNavigate(
+                    res.adjacent_owner || owner,
+                    res.adjacent_repo || repo,
+                    res.adjacent_number
+                );
+            }
+        } catch (e: any) {
+            console.error(e);
+            const msg = e?.message || String(e);
+            const parsed = (() => {
+                try {
+                    return JSON.parse(msg);
+                } catch {
+                    return null;
+                }
+            })();
+            alert(parsed?.message ?? msg);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const resetCommentForm = () => {
         setFilename('');
         setPosition('');
@@ -447,6 +484,7 @@ export default function Review({
         clickable: boolean;
         lineType: LineType;
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
+        origName?: string;
         originalLineIndex: number;
     }
 
@@ -464,6 +502,7 @@ export default function Review({
 
             // New state tracking for empty new files
             let fallbackFilename: string | null = null;
+            let fallbackOrigName: string | null = null;
             let fallbackFileIndex: number | null = null;
             let hasEmittedHeader = false;
 
@@ -485,6 +524,7 @@ export default function Review({
                             clickable: true,
                             lineType: 'file-header',
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex:
                                 fallbackFileIndex !== null ? fallbackFileIndex : index,
                         });
@@ -493,6 +533,7 @@ export default function Review({
                     // Reset for new file
                     hasEmittedHeader = false;
                     pendingFileStatus = 'modified';
+                    fallbackOrigName = null;
                     lineType = 'skip';
 
                     // Parse filename from diff --git a/path b/path
@@ -526,15 +567,22 @@ export default function Review({
                 } else if (line.startsWith('deleted file mode')) {
                     pendingFileStatus = 'deleted';
                     lineType = 'skip';
-                } else if (
-                    line.startsWith('rename from') ||
-                    line.startsWith('rename to') ||
-                    line.startsWith('similarity index')
-                ) {
+                } else if (line.startsWith('rename from ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackOrigName = line.slice('rename from '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('rename to ')) {
+                    pendingFileStatus = 'renamed';
+                    fallbackFilename = line.slice('rename to '.length).trim();
+                    lineType = 'skip';
+                } else if (line.startsWith('similarity index')) {
                     pendingFileStatus = 'renamed';
                     lineType = 'skip';
                 } else if (line.startsWith('index ') || line.startsWith('---')) {
-                    // Skip these git metadata lines
+                    // Detect --- /dev/null: indicates a new file
+                    if (line === '--- /dev/null') {
+                        pendingFileStatus = 'new';
+                    }
                     lineType = 'skip';
                 } else {
                     // Match +++ b/filename as the file header
@@ -542,7 +590,35 @@ export default function Review({
                         line.match(/^\+\+\+\s+b\/(.+)$/) || line.match(/^\+\+\+\s+(.+)$/);
 
                     if (fileMatch) {
-                        currentFile = (fileMatch[1] || fileMatch[2]).trim();
+                        const matchedFile = (fileMatch[1] || fileMatch[2]).trim();
+
+                        if (matchedFile === '/dev/null') {
+                            // +++ /dev/null means this is a deleted file.
+                            // Use fallbackFilename (from diff --git) as the displayed name.
+                            if (fallbackFilename) {
+                                currentFile = fallbackFilename;
+                                currentPos = 0;
+                                foundFirstHunkInFile = false;
+                                pos = 0;
+                                file = currentFile;
+                                clickable = true;
+                                lineType = 'file-header';
+                                hasEmittedHeader = true;
+                                parsedLines.push({
+                                    text: currentFile,
+                                    file,
+                                    pos,
+                                    clickable,
+                                    lineType,
+                                    fileStatus: 'deleted',
+                                    originalLineIndex: index,
+                                });
+                                pendingFileStatus = 'modified';
+                            }
+                            return;
+                        }
+
+                        currentFile = matchedFile;
                         currentPos = 0;
                         foundFirstHunkInFile = false;
 
@@ -561,9 +637,11 @@ export default function Review({
                             clickable,
                             lineType,
                             fileStatus: pendingFileStatus,
+                            origName: fallbackOrigName || undefined,
                             originalLineIndex: index,
                         });
                         pendingFileStatus = 'modified'; // Reset for next file
+                        fallbackOrigName = null;
                         return; // continue equivalent in forEach
                     } else if (currentFile) {
                         const isHunkHeader = line.startsWith('@@');
@@ -617,6 +695,7 @@ export default function Review({
                     clickable: true,
                     lineType: 'file-header',
                     fileStatus: pendingFileStatus,
+                    origName: fallbackOrigName || undefined,
                     originalLineIndex:
                         fallbackFileIndex !== null ? fallbackFileIndex : lines.length,
                 });
@@ -949,7 +1028,9 @@ export default function Review({
                                     color: 'var(--text-primary)',
                                 }}
                             >
-                                {item.text}
+                                {item.fileStatus === 'renamed' && item.origName
+                                    ? `${item.origName} → ${item.text}`
+                                    : item.text}
                             </span>
                             {hasOutdated && (
                                 <button
@@ -2181,6 +2262,22 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
+                <Button
+                    onClick={() => handleNavigate(true)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Previous PR"
+                >
+                    ← Prev PR
+                </Button>
+                <Button
+                    onClick={() => handleNavigate(false)}
+                    variant="secondary"
+                    disabled={loading}
+                    title="Next PR"
+                >
+                    Next PR →
+                </Button>
                 <Button onClick={handleSync} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>

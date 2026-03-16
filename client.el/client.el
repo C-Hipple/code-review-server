@@ -412,6 +412,8 @@ Re-renders the buffer with or without comments based on the toggle state."
   "<return>" #'crs-visit-file
   "O" #'crs-show-outdated-comments
   "q" #'quit-window
+  "]" #'crs-next-pr
+  "[" #'crs-prev-pr
   )
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
@@ -477,7 +479,10 @@ Re-renders the buffer with or without comments based on the toggle state."
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
     "TAB" #'crs-toggle-section
@@ -497,7 +502,10 @@ Re-renders the buffer with or without comments based on the toggle state."
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
     "O" #'crs-show-outdated-comments
-    "q" #'quit-window)
+    "q" #'quit-window
+    "]" #'crs-next-pr
+    "[" #'crs-prev-pr
+    (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
     "C-c C-c" #'crs-submit-review))
@@ -1220,10 +1228,11 @@ for more robust position restoration."
                  (cons 'Number number)))
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
-     (let* ((buffer (get-buffer-create (format "* Review %s/%s #%d *" owner repo number)))
+     (let* ((buffer (get-buffer-create (format "* Review %s #%d *" repo number)))
             (project-path (expand-file-name (concat "~/" repo)))
             (error-info (cdr (assq 'error result))))
        (with-current-buffer buffer
+         (setq crs--buffer-owner owner)
          (if (file-directory-p project-path)
              (cd project-path)
            (message "Directory not found: %s" project-path)))
@@ -1238,6 +1247,57 @@ for more robust position restoration."
          (crs--render-and-update buffer result))
        (pop-to-buffer buffer)
        (message "Review loaded into buffer")))))
+
+(defun crs--navigate-pr (previous)
+  "Navigate to the adjacent PR relative to the current review buffer.
+If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the next PR."
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (direction (if previous "previous" "next")))
+    (message "Navigating to %s PR from %s/%s #%d..." direction owner repo number)
+    (crs--send-request
+     "RPCHandler.GetAdjacentPR"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)
+                   (cons 'Previous (if previous t :json-false))))
+     (lambda (result)
+       (let ((err (cdr (assq 'error result))))
+         (if err
+             (message "No %s PR: %s" direction
+                      (if (stringp err) err (cdr (assq 'message err))))
+           (let* ((metadata (cdr (assq 'metadata result)))
+                  (url (cdr (assq 'url metadata)))
+                  (pr-info (when (and url (string-match
+                                         "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
+                                         url))
+                             (list (match-string 1 url)
+                                   (match-string 2 url)
+                                   (string-to-number (match-string 3 url)))))
+                  (adj-owner (or (nth 0 pr-info) owner))
+                  (adj-repo (or (nth 1 pr-info) repo))
+                  (adj-number (or (nth 2 pr-info) (cdr (assq 'number metadata))))
+                  (buffer (get-buffer-create (format "* Review %s/%s #%d *"
+                                                     adj-owner adj-repo adj-number)))
+                  (project-path (expand-file-name (concat "~/" adj-repo))))
+             (with-current-buffer buffer
+               (when (file-directory-p project-path)
+                 (cd project-path)))
+             (crs--render-and-update buffer result)
+             (pop-to-buffer buffer)
+             (message "Navigated to %s PR: %s/%s #%d" direction adj-owner adj-repo adj-number))))))))
+
+(defun crs-next-pr ()
+  "Navigate to the next PR in the review list."
+  (interactive)
+  (crs--navigate-pr nil))
+
+(defun crs-prev-pr ()
+  "Navigate to the previous PR in the review list."
+  (interactive)
+  (crs--navigate-pr t))
 
 (defun crs-start-review-at-point ()
   "Parse a GitHub PR URL from the current line and call crs-get-review.
@@ -1287,7 +1347,7 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
          (owner (nth 0 info))
          (repo (nth 1 info))
          (number (nth 2 info))
-         (buffer-name (format "* Outdated Comments %s/%s #%d *" owner repo number))
+         (buffer-name (format "* Outdated Comments %s #%d *" repo number))
          (buffer (get-buffer-create buffer-name))
          (comments crs--buffer-outdated-comments))
     (with-current-buffer buffer
@@ -1333,10 +1393,10 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
   "Extract (owner repo number) from the current buffer name.
 Returns a list (owner repo number) or signals an error if not in a review buffer."
   (let ((name (buffer-name)))
-    (if (string-match "\\* Review \\([^/]+\\)/\\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (list (match-string 1 name)
-              (match-string 2 name)
-              (string-to-number (match-string 3 name)))
+    (if (string-match "\\* Review \\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
+        (list crs--buffer-owner
+              (match-string 1 name)
+              (string-to-number (match-string 2 name)))
       (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)
@@ -1353,6 +1413,8 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
   "Context for restoring position: (filename position file-line).")
 
 ;; Buffer-local variables for storing PR data separately
+(defvar-local crs--buffer-owner nil
+  "The GitHub owner for the current PR buffer.")
 (defvar-local crs--buffer-diff nil
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil
@@ -1402,7 +1464,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result original-line original-context))
                    (message "Comment updated successfully")
@@ -1421,7 +1483,7 @@ Returns a list (owner repo number) or signals an error if not in a review buffer
            (let ((err (cdr (assq 'error result))))
              (if err
                  (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-               (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+               (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                  (when review-buffer
                    (crs--render-and-update review-buffer result original-line original-context))
                  (message "Comment added successfully")
@@ -1775,7 +1837,7 @@ If not on a local comment, displays a warning message."
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error deleting comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result))
                    (message "Local comment deleted")))))))))))
@@ -1810,7 +1872,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error submitting review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (with-current-buffer review-buffer
                  (setq crs--buffer-review-feedback nil)
@@ -1886,7 +1948,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s/%s #%d *" owner repo number))))
+           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
              (when review-buffer
                (crs--render-and-update review-buffer result))
              (message "Review synced successfully!"))))))))
@@ -2054,6 +2116,27 @@ BRANCH-NAME is the name of the branch to checkout."
         (message "Checking out: %s" ref-name)
         (crs--switch-and-fetch (projectile-project-name) ref-name))
     (message "Warning: Could not find branch name in Refs line")))
+
+;;;###autoload
+(defun crs-get-rate-limit-status ()
+  "Show the GitHub API rate limit status in the minibuffer."
+  (interactive)
+  (crs-start-server)
+  (crs--send-request
+   "RPCHandler.GetRateLimitStatus"
+   (make-hash-table)
+   (lambda (result)
+     (if (cdr (assq 'error result))
+         (message "Error fetching rate limit status: %s"
+                  (cdr (assq 'error result)))
+       (let* ((remaining (cdr (assq 'remaining result)))
+              (limit (cdr (assq 'limit result)))
+              (reset-at (cdr (assq 'reset_at result)))
+              (total (cdr (assq 'total_requests result)))
+              (throttled (cdr (assq 'throttled_count result)))
+              (rate-limited (cdr (assq 'rate_limited_count result))))
+         (message "Rate limit: %d/%d remaining (resets %s) | requests: %d, throttled: %d, rate-limited: %d"
+                  remaining limit reset-at total throttled rate-limited))))))
 
 (provide 'crs-client)
 

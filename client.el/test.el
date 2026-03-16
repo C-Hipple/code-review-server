@@ -18,7 +18,9 @@ https://github.com/IAmTomShaw/f1-race-replay/pull/18
 (crs-get-reviews)
 (crs-list-plugins)
 
+https://github.com/C-Hipple/code-review-server/pull/83 ;; the debug PR
 https://github.com/C-Hipple/diff-lsp/pull/5
+http://localhost:5172/?owner=C-Hipple&repo=code-review-server&number=83  ;; For opening in bun_client
 
 (crs-shutdown-server)
 

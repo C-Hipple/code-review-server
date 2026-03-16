@@ -194,6 +194,80 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	return details, content, nil
 }
 
+type GetAdjacentPRArgs struct {
+	Repo      string `json:"Repo"`
+	Owner     string `json:"Owner"`
+	Number    int    `json:"Number"`
+	SkipCache bool   `json:"SkipCache"`
+	Previous  bool   `json:"Previous"` // true = previous PR, false = next PR
+}
+
+func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetPRReply) error {
+	renderer := NewOrgRenderer(config.C().DB)
+	_, items, err := renderer.RenderAndGetItems()
+	if err != nil {
+		return err
+	}
+
+	// Sort the same way as GetAllReviews
+	sort.SliceStable(items, func(i, j int) bool {
+		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
+		if si != sj {
+			return si < sj
+		}
+		if items[i].Repo != items[j].Repo {
+			return items[i].Repo < items[j].Repo
+		}
+		return items[i].Number < items[j].Number
+	})
+
+	// Find the current PR in the sorted list
+	currentIdx := -1
+	for i, item := range items {
+		if item.Repo == args.Repo && item.Number == args.Number {
+			currentIdx = i
+			break
+		}
+	}
+
+	if currentIdx == -1 {
+		return fmt.Errorf("PR %s/%s#%d not found in reviews", args.Owner, args.Repo, args.Number)
+	}
+
+	// Get adjacent index
+	adjacentIdx := currentIdx + 1
+	if args.Previous {
+		adjacentIdx = currentIdx - 1
+	}
+
+	if adjacentIdx < 0 || adjacentIdx >= len(items) {
+		direction := "next"
+		if args.Previous {
+			direction = "previous"
+		}
+		return fmt.Errorf("no %s PR available", direction)
+	}
+
+	adjacent := items[adjacentIdx]
+	details, content, err := h.fetchPRAndRunPlugins(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
+	if err != nil {
+		return err
+	}
+
+	reply.Content = content
+	reply.Metadata = &details.Metadata
+	reply.Diff = details.Diff
+	reply.Comments = details.Comments
+	reply.OutdatedComments = details.OutdatedComments
+	reply.Reviews = details.Reviews
+	reply.Commits = details.Commits
+	reply.Okay = true
+
+	feedback, _ := config.C().DB.GetFeedback(adjacent.Owner, adjacent.Repo, adjacent.Number)
+	reply.Feedback = feedback
+	return nil
+}
+
 type AddCommentArgs struct {
 	Owner     string `json:"Owner"`
 	Repo      string `json:"Repo"`

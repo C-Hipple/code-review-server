@@ -38,7 +38,8 @@
 (defcustom crs-include-comments-tree nil
   "When non-nil, include a comments sub-tree for each PR in the GetAllReviews org output.
 This causes the server to embed cached PR comments inline under each PR heading.
-Disabled by default because fetching and rendering comments slows down the reviews buffer."
+Disabled by default because fetching and rendering comments slows down the reviews buffer.
+This slowdown is on the client side as there can be hundreds of more lines for org to render."
   :type 'boolean
   :group 'crs)
 
@@ -1271,8 +1272,8 @@ If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the n
            (let* ((metadata (cdr (assq 'metadata result)))
                   (url (cdr (assq 'url metadata)))
                   (pr-info (when (and url (string-match
-                                         "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
-                                         url))
+                                           "github\\.com/\\([^/]+\\)/\\([^/]+\\)/pull/\\([0-9]+\\)"
+                                           url))
                              (list (match-string 1 url)
                                    (match-string 2 url)
                                    (string-to-number (match-string 3 url)))))

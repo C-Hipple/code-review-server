@@ -3,6 +3,8 @@
 (crs-kill-reviews-and-restart)
 (crs-shutdown-server)
 
+;; If I want comments
+(setq crs-include-comments-tree 't)
 
 ;; https://github.com/C-Hipple/code-review-server/pull/83
 (crs-get-review "C-Hipple" "gtdbot" 9)

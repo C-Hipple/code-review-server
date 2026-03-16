@@ -51,6 +51,7 @@ dist-ssr/
 build/
 out/
 coverage/
+bun_client/embedded_assets.ts
 
 # Logs
 logs/

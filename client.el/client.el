@@ -877,13 +877,13 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (setq sb (concat sb (format "Refs:  %s ... %s\n" base head)))
       (setq sb (concat sb (format "URL:   %s\n" url)))
       (setq sb (concat sb (format "State: \t%s\n" state)))
-      (setq sb (concat sb (format "Milestone: \t%s\n" (or milestone "No milestone"))))
+      (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "True" "False"))))
+      ;; (setq sb (concat sb (format "Milestone: \t%s\n" (or milestone "No milestone"))))
 
       (let ((labels-str (if (> (length labels) 0) (string-join (append labels nil) ", ") "None yet")))
         (setq sb (concat sb (format "Labels: \t%s\n" labels-str))))
 
       (setq sb (concat sb "Projects: \tNone yet\n"))
-      (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "true" "false"))))
 
       (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
         (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))

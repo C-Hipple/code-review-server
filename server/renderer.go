@@ -433,6 +433,9 @@ type PRMetadata struct {
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
 	ReleaseStatus      string   `json:"release_status"`
+	ChangedFiles       int      `json:"changed_files"`
+	Additions          int      `json:"additions"`
+	Deletions          int      `json:"deletions"`
 }
 
 type PRDetails struct {
@@ -882,6 +885,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				CIFailures:         ciFailures,
 				Body:               pr.GetBody(),
 				URL:                pr.GetHTMLURL(),
+				ChangedFiles:       int(pr.GetChangedFiles()),
+				Additions:          int(pr.GetAdditions()),
+				Deletions:          int(pr.GetDeletions()),
 			}
 
 			// Fetch worktree path if it exists

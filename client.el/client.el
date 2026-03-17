@@ -46,7 +46,7 @@ Disabled by default because fetching and rendering comments slows down the revie
   :group 'crs)
 
 (defvar crs--section-header-regexp
-  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Your Review Feedback\\|Files changed .*\\)$"
+  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
 
 (defconst crs--html-placeholder-regexp
@@ -1155,7 +1155,17 @@ for more robust position restoration."
                               crs--buffer-reviews
                               crs--buffer-outdated-comments
                               crs--buffer-commits))
-               (preamble (concat header "\n" conversation))
+               (changes-header
+                (let* ((meta crs--buffer-metadata)
+                       (nfiles (or (cdr (assq 'changed_files meta)) 0))
+                       (adds (or (cdr (assq 'additions meta)) 0))
+                       (dels (or (cdr (assq 'deletions meta)) 0)))
+                  (concat "\nChanges\n"
+                          (format "%d file%s changed, +%d addition%s, -%d deletion%s\n"
+                                  nfiles (if (= nfiles 1) "" "s")
+                                  adds (if (= adds 1) "" "s")
+                                  dels (if (= dels 1) "" "s")))))
+               (preamble (concat header "\n" conversation changes-header "\n"))
                (feedback existing-review-feedback))
 
           ;; Inject feedback into preamble (logic from crs--render-from-stored-data)

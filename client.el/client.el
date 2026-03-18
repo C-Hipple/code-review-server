@@ -1327,21 +1327,25 @@ The line should contain a URL in the format https://github.com/OWNER/REPO/pull/N
       (error "Could not find GitHub PR URL on current line"))))
 
 (defun crs-visit-file ()
-  "Visit the file at point in the code review buffer."
+  "Visit the file at point in the code review buffer.
+If point is on a URL: line, open the URL in the browser instead."
   (interactive)
-  (let* ((ctx (crs--get-comment-context))
-         (filename (nth 3 ctx))
-         (line (nth 8 ctx)))
-    (if (and filename (not (string= filename "")))
-        (if (file-exists-p filename)
-            (progn
-              (find-file filename)
-              (when line
-                (goto-char (point-min))
-                (forward-line (1- line))
-                (recenter)))
-          (message "File not found: %s" filename))
-      (message "No file found at point"))))
+  (let ((line-text (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+    (if (string-match "^URL:[ \t]+\\(https?://[^ \t\n]+\\)" line-text)
+        (browse-url (match-string 1 line-text))
+      (let* ((ctx (crs--get-comment-context))
+             (filename (nth 3 ctx))
+             (line (nth 8 ctx)))
+        (if (and filename (not (string= filename "")))
+            (if (file-exists-p filename)
+                (progn
+                  (find-file filename)
+                  (when line
+                    (goto-char (point-min))
+                    (forward-line (1- line))
+                    (recenter)))
+              (message "File not found: %s" filename))
+          (message "No file found at point"))))))
 
 (defun crs-show-outdated-comments ()
   "Show outdated comments for the current PR in a separate buffer."

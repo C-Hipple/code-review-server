@@ -2,6 +2,7 @@ package server
 
 import (
 	"crs/database"
+	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
@@ -715,6 +716,88 @@ func TestPrStatusOrder(t *testing.T) {
 				t.Errorf("prStatusOrder() = %d, want %d", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestPRMetadataStatsFieldsSerialization(t *testing.T) {
+	meta := PRMetadata{
+		Number:       42,
+		Title:        "Add feature",
+		ChangedFiles: 5,
+		Additions:    120,
+		Deletions:    30,
+	}
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+
+	// Verify correct JSON key names
+	jsonStr := string(data)
+	for _, key := range []string{`"changed_files":5`, `"additions":120`, `"deletions":30`} {
+		if !strings.Contains(jsonStr, key) {
+			t.Errorf("marshaled JSON missing %s; got: %s", key, jsonStr)
+		}
+	}
+
+	// Roundtrip
+	var got PRMetadata
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if got.ChangedFiles != meta.ChangedFiles {
+		t.Errorf("ChangedFiles: got %d, want %d", got.ChangedFiles, meta.ChangedFiles)
+	}
+	if got.Additions != meta.Additions {
+		t.Errorf("Additions: got %d, want %d", got.Additions, meta.Additions)
+	}
+	if got.Deletions != meta.Deletions {
+		t.Errorf("Deletions: got %d, want %d", got.Deletions, meta.Deletions)
+	}
+}
+
+func TestPRMetadataStatsZeroValues(t *testing.T) {
+	// Zero values should serialize as 0 (not omitted) so the client can distinguish
+	// a cached entry with no stats from a PR with actual zero changes.
+	meta := PRMetadata{Number: 1}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	jsonStr := string(data)
+	for _, key := range []string{`"changed_files":0`, `"additions":0`, `"deletions":0`} {
+		if !strings.Contains(jsonStr, key) {
+			t.Errorf("marshaled JSON missing zero-value field %s; got: %s", key, jsonStr)
+		}
+	}
+}
+
+func TestPRMetadataStatsRoundtripFromGitHub(t *testing.T) {
+	// Simulate the values populated from go-github getters (which return int).
+	changedFiles := 3
+	additions := 50
+	deletions := 10
+
+	meta := PRMetadata{
+		Number:       7,
+		ChangedFiles: changedFiles,
+		Additions:    additions,
+		Deletions:    deletions,
+	}
+
+	data, _ := json.Marshal(meta)
+	var got PRMetadata
+	json.Unmarshal(data, &got)
+
+	if got.ChangedFiles != changedFiles {
+		t.Errorf("ChangedFiles roundtrip: got %d, want %d", got.ChangedFiles, changedFiles)
+	}
+	if got.Additions != additions {
+		t.Errorf("Additions roundtrip: got %d, want %d", got.Additions, additions)
+	}
+	if got.Deletions != deletions {
+		t.Errorf("Deletions roundtrip: got %d, want %d", got.Deletions, deletions)
 	}
 }
 

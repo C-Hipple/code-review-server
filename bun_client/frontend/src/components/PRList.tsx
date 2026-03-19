@@ -273,7 +273,11 @@ export default function PRList({
                                 /https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
                             );
                             if (githubMatch) {
-                                onOpenReview(githubMatch[1], githubMatch[2], parseInt(githubMatch[3], 10));
+                                onOpenReview(
+                                    githubMatch[1],
+                                    githubMatch[2],
+                                    parseInt(githubMatch[3], 10)
+                                );
                                 return;
                             }
                             setFilterText(value);

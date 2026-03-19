@@ -1116,7 +1116,20 @@ export default function Review({
                                             alignItems: 'center',
                                         }}
                                     >
-                                        <span>{rc.author} commented</span>
+                                        <span>
+                                            {rc.author} commented
+                                            {rc.created_at &&
+                                                !rc.created_at.startsWith('0001') && (
+                                                    <span
+                                                        style={{
+                                                            marginLeft: '6px',
+                                                            opacity: 0.7,
+                                                        }}
+                                                    >
+                                                        {new Date(rc.created_at).toLocaleString()}
+                                                    </span>
+                                                )}
+                                        </span>
                                         <div
                                             style={{
                                                 display: 'flex',
@@ -1156,9 +1169,24 @@ export default function Review({
                                                         fontSize: '11px',
                                                         color: 'var(--accent)',
                                                         marginBottom: '5px',
+                                                        display: 'flex',
+                                                        gap: '8px',
                                                     }}
                                                 >
-                                                    Reply by {c.author}:
+                                                    <span>Reply by {c.author}:</span>
+                                                    {c.created_at &&
+                                                        !c.created_at.startsWith('0001') && (
+                                                            <span
+                                                                style={{
+                                                                    opacity: 0.7,
+                                                                    color: 'var(--text-secondary)',
+                                                                }}
+                                                            >
+                                                                {new Date(
+                                                                    c.created_at,
+                                                                ).toLocaleString()}
+                                                            </span>
+                                                        )}
                                                 </div>
                                             )}
                                             <div

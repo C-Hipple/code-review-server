@@ -404,6 +404,20 @@ export default function Review({
         }
     };
 
+    const handleDeleteComment = async (id: number) => {
+        try {
+            const res = await rpcCall<PRResponse>('RPCHandler.DeleteComment', [
+                { Owner: owner, Repo: repo, Number: number, ID: id },
+            ]);
+            setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
+        } catch (e) {
+            console.error(e);
+            alert('Error deleting comment');
+        }
+    };
+
     const handleSubmitReview = async () => {
         setIsSubmittingReview(true);
         try {
@@ -1102,7 +1116,19 @@ export default function Review({
                                             alignItems: 'center',
                                         }}
                                     >
-                                        <span>{rc.author} commented</span>
+                                        <span>
+                                            {rc.author} commented
+                                            {rc.created_at && !rc.created_at.startsWith('0001') && (
+                                                <span
+                                                    style={{
+                                                        marginLeft: '6px',
+                                                        opacity: 0.7,
+                                                    }}
+                                                >
+                                                    {new Date(rc.created_at).toLocaleString()}
+                                                </span>
+                                            )}
+                                        </span>
                                         <div
                                             style={{
                                                 display: 'flex',
@@ -1142,12 +1168,59 @@ export default function Review({
                                                         fontSize: '11px',
                                                         color: 'var(--accent)',
                                                         marginBottom: '5px',
+                                                        display: 'flex',
+                                                        gap: '8px',
                                                     }}
                                                 >
-                                                    Reply by {c.author}:
+                                                    <span>Reply by {c.author}:</span>
+                                                    {c.created_at &&
+                                                        !c.created_at.startsWith('0001') && (
+                                                            <span
+                                                                style={{
+                                                                    opacity: 0.7,
+                                                                    color: 'var(--text-secondary)',
+                                                                }}
+                                                            >
+                                                                {new Date(
+                                                                    c.created_at
+                                                                ).toLocaleString()}
+                                                            </span>
+                                                        )}
                                                 </div>
                                             )}
-                                            <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                                            <div
+                                                style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'flex-start',
+                                                    gap: '8px',
+                                                }}
+                                            >
+                                                <div style={{ whiteSpace: 'pre-wrap', flex: 1 }}>
+                                                    {c.body}
+                                                </div>
+                                                {c.author === 'local' && (
+                                                    <button
+                                                        onClick={e => {
+                                                            e.stopPropagation();
+                                                            handleDeleteComment(parseInt(c.id, 10));
+                                                        }}
+                                                        style={{
+                                                            background: 'none',
+                                                            border: 'none',
+                                                            color: 'var(--text-secondary)',
+                                                            cursor: 'pointer',
+                                                            fontSize: '12px',
+                                                            padding: '0 4px',
+                                                            opacity: 0.6,
+                                                            flexShrink: 0,
+                                                        }}
+                                                        title="Delete local comment"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
                                     ))}
                                 </div>

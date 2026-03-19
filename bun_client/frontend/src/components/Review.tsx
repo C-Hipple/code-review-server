@@ -1196,6 +1196,7 @@ export default function Review({
                                                 },
                                             ]);
                                         }}
+                                        onClose={() => lsp.clearData()}
                                     />
                                 )}
                                 <textarea
@@ -1407,6 +1408,10 @@ export default function Review({
                                             },
                                         },
                                     ]);
+                                }}
+                                onClose={() => {
+                                    setActiveLspIndex(null);
+                                    lsp.clearData();
                                 }}
                             />
                         )}

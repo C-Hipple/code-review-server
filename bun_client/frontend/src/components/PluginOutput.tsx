@@ -20,6 +20,10 @@ interface GetPluginOutputResponse {
     output: Record<string, PluginResult>;
 }
 
+interface ListPluginsResponse {
+    plugins: Array<{ Name: string; OnlyOnDemand: boolean }>;
+}
+
 export default function PluginOutput({
     owner,
     repo,
@@ -30,9 +34,12 @@ export default function PluginOutput({
 }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
+    const [onDemandPlugins, setOnDemandPlugins] = useState<Set<string>>(new Set());
+    const [runningPlugins, setRunningPlugins] = useState<Set<string>>(new Set());
 
     useEffect(() => {
         loadPluginOutput();
+        loadOnDemandPlugins();
     }, [owner, repo, number]);
 
     useEffect(() => {
@@ -45,6 +52,20 @@ export default function PluginOutput({
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
+
+    const loadOnDemandPlugins = async () => {
+        try {
+            const response = await rpcCall<ListPluginsResponse>('RPCHandler.ListPlugins', [{}]);
+            const names = new Set(
+                (response.plugins || [])
+                    .filter(p => p.OnlyOnDemand)
+                    .map(p => p.Name)
+            );
+            setOnDemandPlugins(names);
+        } catch (e) {
+            console.error('Failed to load plugin list:', e);
+        }
+    };
 
     const loadPluginOutput = async () => {
         setLoading(true);
@@ -62,6 +83,30 @@ export default function PluginOutput({
             setPluginOutput({});
         } finally {
             setLoading(false);
+        }
+    };
+
+    const runOnDemandPlugin = async (pluginName: string) => {
+        setRunningPlugins(prev => new Set(prev).add(pluginName));
+        try {
+            await rpcCall<{ okay: boolean; message: string }>('RPCHandler.RerunPlugins', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Plugins: [pluginName],
+                },
+            ]);
+            // Refresh output after triggering
+            await loadPluginOutput();
+        } catch (e) {
+            console.error('Failed to run on-demand plugin:', e);
+        } finally {
+            setRunningPlugins(prev => {
+                const next = new Set(prev);
+                next.delete(pluginName);
+                return next;
+            });
         }
     };
 
@@ -118,6 +163,9 @@ export default function PluginOutput({
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                         {pluginNames.map(pluginName => {
                             const plugin = pluginOutput[pluginName];
+                            const isOnDemand = onDemandPlugins.has(pluginName);
+                            const isDeferred = plugin.status === 'deferred';
+                            const isRunning = runningPlugins.has(pluginName);
                             return (
                                 <Card
                                     key={pluginName}
@@ -147,6 +195,17 @@ export default function PluginOutput({
                                         >
                                             {pluginName}
                                         </span>
+                                        {isOnDemand && isDeferred && (
+                                            <Button
+                                                onClick={() => runOnDemandPlugin(pluginName)}
+                                                loading={isRunning}
+                                                variant="primary"
+                                                size="sm"
+                                                style={{ marginLeft: 'auto' }}
+                                            >
+                                                Run
+                                            </Button>
+                                        )}
                                     </div>
                                     <div
                                         style={{
@@ -155,7 +214,17 @@ export default function PluginOutput({
                                             overflowY: 'auto',
                                         }}
                                     >
-                                        {plugin.result ? (
+                                        {isDeferred ? (
+                                            <div
+                                                style={{
+                                                    color: 'var(--text-secondary)',
+                                                    fontStyle: 'italic',
+                                                    fontSize: '14px',
+                                                }}
+                                            >
+                                                On-demand plugin — click Run to execute
+                                            </div>
+                                        ) : plugin.result ? (
                                             <pre
                                                 style={{
                                                     margin: 0,

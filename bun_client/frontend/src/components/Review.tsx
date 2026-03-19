@@ -191,6 +191,8 @@ export default function Review({
     const [reviews, setReviews] = useState<ReviewData[]>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
+    const [onDemandPlugins, setOnDemandPlugins] = useState<Set<string>>(new Set());
+    const [runningPlugins, setRunningPlugins] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
 
     // UI State
@@ -243,6 +245,7 @@ export default function Review({
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
+        loadOnDemandPlugins();
     }, [owner, repo, number]);
 
     useEffect(() => {
@@ -276,6 +279,44 @@ export default function Review({
             setPluginOutputs(res.output || {});
         } catch (e) {
             console.error('Failed to load plugin outputs:', e);
+        }
+    };
+
+    const loadOnDemandPlugins = async () => {
+        try {
+            const res = await rpcCall<{ plugins: Array<{ Name: string; OnlyOnDemand: boolean }> }>(
+                'RPCHandler.ListPlugins',
+                [{}]
+            );
+            const names = new Set(
+                (res.plugins || []).filter(p => p.OnlyOnDemand).map(p => p.Name)
+            );
+            setOnDemandPlugins(names);
+        } catch (e) {
+            console.error('Failed to load plugin list:', e);
+        }
+    };
+
+    const runOnDemandPlugin = async (pluginName: string) => {
+        setRunningPlugins(prev => new Set(prev).add(pluginName));
+        try {
+            await rpcCall<{ okay: boolean; message: string }>('RPCHandler.RerunPlugins', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Plugins: [pluginName],
+                },
+            ]);
+            await loadPluginOutputs();
+        } catch (e) {
+            console.error('Failed to run on-demand plugin:', e);
+        } finally {
+            setRunningPlugins(prev => {
+                const next = new Set(prev);
+                next.delete(pluginName);
+                return next;
+            });
         }
     };
 
@@ -2678,34 +2719,47 @@ export default function Review({
                                                     display: 'flex',
                                                     justifyContent: 'space-between',
                                                     alignItems: 'center',
+                                                    gap: '8px',
                                                 }}
                                             >
                                                 <span style={{ fontWeight: 600, fontSize: '14px' }}>
                                                     {name}
                                                 </span>
-                                                <span
-                                                    style={{
-                                                        fontSize: '11px',
-                                                        padding: '2px 10px',
-                                                        borderRadius: '12px',
-                                                        fontWeight: 600,
-                                                        background:
-                                                            data.status === 'success'
-                                                                ? colors.bgSuccessDim
-                                                                : data.status === 'pending'
-                                                                  ? colors.bgWarningDim
-                                                                  : colors.bgDangerDim,
-                                                        color:
-                                                            data.status === 'success'
-                                                                ? colors.textSuccess
-                                                                : data.status === 'pending'
-                                                                  ? colors.textWarning
-                                                                  : colors.textDanger,
-                                                        border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
-                                                    }}
-                                                >
-                                                    {data.status.toUpperCase()}
-                                                </span>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+                                                    {onDemandPlugins.has(name) && data.status === 'deferred' && (
+                                                        <Button
+                                                            onClick={() => runOnDemandPlugin(name)}
+                                                            loading={runningPlugins.has(name)}
+                                                            variant="primary"
+                                                            size="sm"
+                                                        >
+                                                            Run
+                                                        </Button>
+                                                    )}
+                                                    <span
+                                                        style={{
+                                                            fontSize: '11px',
+                                                            padding: '2px 10px',
+                                                            borderRadius: '12px',
+                                                            fontWeight: 600,
+                                                            background:
+                                                                data.status === 'success'
+                                                                    ? colors.bgSuccessDim
+                                                                    : data.status === 'pending'
+                                                                      ? colors.bgWarningDim
+                                                                      : colors.bgDangerDim,
+                                                            color:
+                                                                data.status === 'success'
+                                                                    ? colors.textSuccess
+                                                                    : data.status === 'pending'
+                                                                      ? colors.textWarning
+                                                                      : colors.textDanger,
+                                                            border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                        }}
+                                                    >
+                                                        {data.status.toUpperCase()}
+                                                    </span>
+                                                </div>
                                             </div>
                                             <div
                                                 className="plugin-output markdown-content"
@@ -2717,7 +2771,16 @@ export default function Review({
                                                     background: 'var(--bg-primary)',
                                                 }}
                                             >
-                                                {data.result ? (
+                                                {data.status === 'deferred' ? (
+                                                    <span
+                                                        style={{
+                                                            color: 'var(--text-secondary)',
+                                                            fontStyle: 'italic',
+                                                        }}
+                                                    >
+                                                        On-demand plugin — click Run to execute
+                                                    </span>
+                                                ) : data.result ? (
                                                     <Markdown>{data.result}</Markdown>
                                                 ) : (
                                                     <span

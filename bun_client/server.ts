@@ -332,6 +332,11 @@ Bun.serve<{
             return handleRpc('RPCHandler.GetPluginOutput', [body]);
         }
 
+        if (url.pathname === '/api/rerun-plugins' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.RerunPlugins', [body]);
+        }
+
         if (url.pathname === '/api/check-lsp' && req.method === 'GET') {
             return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
                 headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },

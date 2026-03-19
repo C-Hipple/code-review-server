@@ -1118,17 +1118,16 @@ export default function Review({
                                     >
                                         <span>
                                             {rc.author} commented
-                                            {rc.created_at &&
-                                                !rc.created_at.startsWith('0001') && (
-                                                    <span
-                                                        style={{
-                                                            marginLeft: '6px',
-                                                            opacity: 0.7,
-                                                        }}
-                                                    >
-                                                        {new Date(rc.created_at).toLocaleString()}
-                                                    </span>
-                                                )}
+                                            {rc.created_at && !rc.created_at.startsWith('0001') && (
+                                                <span
+                                                    style={{
+                                                        marginLeft: '6px',
+                                                        opacity: 0.7,
+                                                    }}
+                                                >
+                                                    {new Date(rc.created_at).toLocaleString()}
+                                                </span>
+                                            )}
                                         </span>
                                         <div
                                             style={{
@@ -1183,7 +1182,7 @@ export default function Review({
                                                                 }}
                                                             >
                                                                 {new Date(
-                                                                    c.created_at,
+                                                                    c.created_at
                                                                 ).toLocaleString()}
                                                             </span>
                                                         )}

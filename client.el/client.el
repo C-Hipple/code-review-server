@@ -45,6 +45,13 @@ Disabled by default because fetching and rendering comments slows down the revie
   :type 'boolean
   :group 'crs)
 
+(defcustom crs-shr-render-timeout 10
+  "Seconds to wait for shr HTML rendering before falling back to plain text.
+Set to nil to disable the timeout."
+  :type '(choice (number :tag "Seconds")
+                 (const :tag "No timeout" nil))
+  :group 'crs)
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")
@@ -67,18 +74,38 @@ br elements so that shr preserves the visual line structure."
            (with-brs (replace-regexp-in-string "\n" "<br>" with-paras)))
       (concat "<p>" with-brs "</p>"))))
 
+(defun crs--shr-render (html-string start)
+  "Render HTML-STRING with shr, starting from buffer position START.
+On timeout or error, remove any partial output and insert HTML-STRING as plain text."
+  (let ((do-render
+         (lambda ()
+           (condition-case err
+               (let ((dom (libxml-parse-html-region start (point))))
+                 (delete-region start (point))
+                 (shr-insert-document dom))
+             (error
+              (message "crs: shr rendering error: %s" (error-message-string err))
+              (delete-region start (point))
+              (insert html-string))))))
+    (if crs-shr-render-timeout
+        (with-timeout (crs-shr-render-timeout
+                       (message "crs: shr rendering timed out, falling back to plain text")
+                       (delete-region start (point))
+                       (insert html-string))
+          (funcall do-render))
+      (funcall do-render))))
+
 (defun crs--insert-html (html-string &optional prefix)
   "Insert HTML-STRING at point, rendering it with shr.
 If PREFIX is provided, it is prepended to each line of the rendered content.
 Images will be displayed inline if running in graphical Emacs.
-Requires Emacs to be compiled with libxml support."
+Requires Emacs to be compiled with libxml support.
+Falls back to plain text if rendering times out (see `crs-shr-render-timeout')."
   (if (and html-string (not (string-empty-p html-string)))
       (let ((start (point)))
         (insert (crs--ensure-html html-string))
         (when (fboundp 'libxml-parse-html-region)
-          (let ((dom (libxml-parse-html-region start (point))))
-            (delete-region start (point))
-            (shr-insert-document dom)))
+          (crs--shr-render html-string start))
         (when (and prefix (not (string-empty-p prefix)))
           (let ((end (point-marker)))
             (save-excursion

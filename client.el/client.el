@@ -45,7 +45,7 @@ Disabled by default because fetching and rendering comments slows down the revie
   :type 'boolean
   :group 'crs)
 
-(defcustom crs-shr-render-timeout 10
+(defcustom crs-shr-render-timeout 2
   "Seconds to wait for shr HTML rendering before falling back to plain text.
 Set to nil to disable the timeout."
   :type '(choice (number :tag "Seconds")

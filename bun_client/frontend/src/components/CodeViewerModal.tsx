@@ -864,6 +864,10 @@ export default function CodeViewerModal({
                                                 setActiveLspLine(null);
                                                 lsp.clearData();
                                             }}
+                                            onClose={() => {
+                                                setActiveLspLine(null);
+                                                lsp.clearData();
+                                            }}
                                         />
                                     </div>
                                 )}

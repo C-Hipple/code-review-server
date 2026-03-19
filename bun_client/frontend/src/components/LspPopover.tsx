@@ -33,6 +33,7 @@ export default function LspPopover({
     typeDefinitions,
     variant,
     onRefClick,
+    onClose,
 }: LspPopoverProps) {
     if (variant === 'floating') {
         return (
@@ -53,6 +54,29 @@ export default function LspPopover({
                 }}
                 onClick={e => e.stopPropagation()}
             >
+                {onClose && (
+                    <button
+                        onClick={e => {
+                            e.stopPropagation();
+                            onClose();
+                        }}
+                        style={{
+                            position: 'absolute',
+                            top: '6px',
+                            right: '6px',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-secondary)',
+                            fontSize: '16px',
+                            lineHeight: 1,
+                            padding: '2px 4px',
+                        }}
+                        aria-label="Close"
+                    >
+                        ×
+                    </button>
+                )}
                 {hover && (
                     <div
                         style={{
@@ -205,9 +229,32 @@ export default function LspPopover({
                     padding: '5px 10px',
                     fontWeight: 600,
                     borderBottom: '1px solid var(--border)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
                 }}
             >
                 LSP Info
+                {onClose && (
+                    <button
+                        onClick={e => {
+                            e.stopPropagation();
+                            onClose();
+                        }}
+                        style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-secondary)',
+                            fontSize: '16px',
+                            lineHeight: 1,
+                            padding: '0 2px',
+                        }}
+                        aria-label="Close"
+                    >
+                        ×
+                    </button>
+                )}
             </div>
             <div
                 style={{

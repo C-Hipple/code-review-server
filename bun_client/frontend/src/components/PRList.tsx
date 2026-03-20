@@ -267,8 +267,22 @@ export default function PRList({
                     <Input
                         type="text"
                         value={filterText}
-                        onChange={e => setFilterText(e.target.value)}
-                        placeholder="Filter by title, author, owner, or repo..."
+                        onChange={e => {
+                            const value = e.target.value;
+                            const githubMatch = value.match(
+                                /https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
+                            );
+                            if (githubMatch) {
+                                onOpenReview(
+                                    githubMatch[1],
+                                    githubMatch[2],
+                                    parseInt(githubMatch[3], 10)
+                                );
+                                return;
+                            }
+                            setFilterText(value);
+                        }}
+                        placeholder="Filter by title, author, owner, or repo... (or paste a GitHub PR URL)"
                         icon={<span>⌕</span>}
                         clearable
                         onClear={() => setFilterText('')}

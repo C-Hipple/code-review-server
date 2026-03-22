@@ -26,6 +26,9 @@ interface CodeViewerModalProps {
     initialLine?: number;
     theme: Theme;
     initialPosition?: { x: number; y: number };
+    onDock?: () => void;
+    onUndock?: () => void;
+    docked?: boolean;
 }
 
 interface FileNode {
@@ -186,6 +189,9 @@ export default function CodeViewerModal({
     initialLine = 1,
     theme,
     initialPosition,
+    onDock,
+    onUndock,
+    docked = false,
 }: CodeViewerModalProps) {
     const [currentFilePath, setCurrentFilePath] = useState(filePath);
     const [content, setContent] = useState<string>('');
@@ -344,6 +350,19 @@ export default function CodeViewerModal({
         if (!isDragging) return;
 
         const handleMouseMove = (e: MouseEvent) => {
+            // Highlight dock zone while dragging
+            if (onDock) {
+                const dockZone = document.querySelector('[data-dock-zone]');
+                if (dockZone) {
+                    const rect = dockZone.getBoundingClientRect();
+                    const isOver =
+                        e.clientX >= rect.left &&
+                        e.clientX <= rect.right &&
+                        e.clientY >= rect.top &&
+                        e.clientY <= rect.bottom;
+                    dockZone.setAttribute('data-dock-hover', isOver ? 'true' : 'false');
+                }
+            }
             if (!animationFrameId.current) {
                 animationFrameId.current = requestAnimationFrame(() => {
                     setPosition({
@@ -355,11 +374,28 @@ export default function CodeViewerModal({
             }
         };
 
-        const handleMouseUp = () => {
+        const handleMouseUp = (e: MouseEvent) => {
             setIsDragging(false);
             if (animationFrameId.current) {
                 cancelAnimationFrame(animationFrameId.current);
                 animationFrameId.current = null;
+            }
+            // Check if dropped on dock zone
+            if (onDock) {
+                const dockZone = document.querySelector('[data-dock-zone]');
+                if (dockZone) {
+                    dockZone.setAttribute('data-dock-hover', 'false');
+                    const rect = dockZone.getBoundingClientRect();
+                    const isOver =
+                        e.clientX >= rect.left &&
+                        e.clientX <= rect.right &&
+                        e.clientY >= rect.top &&
+                        e.clientY <= rect.bottom;
+                    if (isOver) {
+                        onDock();
+                        return;
+                    }
+                }
             }
         };
 
@@ -372,8 +408,11 @@ export default function CodeViewerModal({
                 cancelAnimationFrame(animationFrameId.current);
                 animationFrameId.current = null;
             }
+            // Clean up dock hover state
+            const dockZone = document.querySelector('[data-dock-zone]');
+            if (dockZone) dockZone.setAttribute('data-dock-hover', 'false');
         };
-    }, [isDragging, dragOffset]);
+    }, [isDragging, dragOffset, onDock]);
 
     // Handle resizing with requestAnimationFrame throttling
     useEffect(() => {
@@ -555,114 +594,121 @@ export default function CodeViewerModal({
 
     const displayFilename = currentFilePath.split('/').pop() || currentFilePath;
 
-    return (
-        <div
-            style={{
-                position: 'fixed',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                zIndex: 999,
-                pointerEvents: 'none',
-            }}
-        >
+    const headerContent = (
+        <>
+            {/* Header */}
             <div
-                ref={modalRef}
                 style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
-                    width: size.width,
-                    height: size.height,
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    boxShadow: shadows.lg,
+                    padding: '12px 16px',
+                    background: 'var(--bg-tertiary)',
+                    borderBottom: '1px solid var(--border)',
                     display: 'flex',
-                    flexDirection: 'column',
-                    pointerEvents: 'auto',
-                    overflow: 'hidden',
-                    willChange: isDragging || isResizing ? 'transform' : 'auto',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    cursor: docked ? 'default' : 'move',
+                    userSelect: 'none',
                 }}
+                onMouseDown={docked ? undefined : startDrag}
             >
-                {/* Header - draggable */}
                 <div
                     style={{
-                        padding: '12px 16px',
-                        background: 'var(--bg-tertiary)',
-                        borderBottom: '1px solid var(--border)',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'space-between',
-                        cursor: 'move',
-                        userSelect: 'none',
+                        gap: '8px',
+                        overflow: 'hidden',
                     }}
-                    onMouseDown={startDrag}
                 >
-                    <div
+                    <button
+                        onClick={() => setShowFileTree(!showFileTree)}
                         style={{
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '4px',
+                            padding: '4px 8px',
+                            color: 'var(--text-primary)',
+                            fontSize: '12px',
+                            cursor: 'pointer',
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '8px',
-                            overflow: 'hidden',
+                            gap: '4px',
                         }}
                     >
-                        <button
-                            onClick={() => setShowFileTree(!showFileTree)}
-                            style={{
-                                background: 'var(--bg-secondary)',
-                                border: '1px solid var(--border)',
-                                borderRadius: '4px',
-                                padding: '4px 8px',
-                                color: 'var(--text-primary)',
-                                fontSize: '12px',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                            }}
-                        >
-                            {showFileTree ? '◀ Hide Tree' : '▶ Files'}
-                        </button>
-                        <span style={{ fontSize: '16px', marginLeft: '8px' }}>
-                            {getIconFromFilename(displayFilename, false)}
+                        {showFileTree ? '◀ Hide Tree' : '▶ Files'}
+                    </button>
+                    <span style={{ fontSize: '16px', marginLeft: '8px' }}>
+                        {getIconFromFilename(displayFilename, false)}
+                    </span>
+                    <span
+                        style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '13px',
+                            color: 'var(--text-primary)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                        }}
+                        title={currentFilePath}
+                    >
+                        {displayFilename}
+                    </span>
+                    {currentFilePath === filePath && initialLine && (
+                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            (line {initialLine})
                         </span>
+                    )}
+                    {lsp.connected && (
                         <span
                             style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '13px',
-                                color: 'var(--text-primary)',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
+                                fontSize: '10px',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: colors.bgSuccessDim,
+                                color: colors.success,
+                                fontWeight: 600,
                             }}
-                            title={currentFilePath}
+                            title="Language server connected"
                         >
-                            {displayFilename}
+                            LSP
                         </span>
-                        {currentFilePath === filePath && initialLine && (
-                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                (line {initialLine})
-                            </span>
-                        )}
-                        {lsp.connected && (
-                            <span
-                                style={{
-                                    fontSize: '10px',
-                                    padding: '2px 6px',
-                                    borderRadius: '4px',
-                                    background: colors.bgSuccessDim,
-                                    color: colors.success,
-                                    fontWeight: 600,
-                                }}
-                                title="Language server connected"
-                            >
-                                LSP
-                            </span>
-                        )}
-                    </div>
+                    )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {docked && onUndock && (
+                        <button
+                            onClick={onUndock}
+                            title="Pop out as floating window"
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'var(--text-secondary)',
+                                fontSize: '14px',
+                                cursor: 'pointer',
+                                padding: '2px 6px',
+                                lineHeight: 1,
+                                borderRadius: '4px',
+                            }}
+                        >
+                            ↗
+                        </button>
+                    )}
+                    {!docked && onDock && (
+                        <button
+                            onClick={onDock}
+                            title="Pin as tab in review pane"
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'var(--text-secondary)',
+                                fontSize: '14px',
+                                cursor: 'pointer',
+                                padding: '2px 6px',
+                                lineHeight: 1,
+                                borderRadius: '4px',
+                            }}
+                        >
+                            ⊞
+                        </button>
+                    )}
                     <button
                         onClick={onClose}
                         style={{
@@ -678,6 +724,24 @@ export default function CodeViewerModal({
                         ×
                     </button>
                 </div>
+            </div>
+        </>
+    );
+
+    // Docked mode: render inline filling its container
+    if (docked) {
+        return (
+            <div
+                ref={modalRef}
+                style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    height: '100%',
+                    background: 'var(--bg-secondary)',
+                    overflow: 'hidden',
+                }}
+            >
+                {headerContent}
 
                 {/* Sidebar and Content Container */}
                 <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -722,6 +786,215 @@ export default function CodeViewerModal({
                                     scrollbar-color: var(--border) var(--bg-secondary);
                                 }
                             `}</style>
+                            <div
+                                style={{
+                                    padding: '10px 12px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    color: 'var(--text-tertiary)',
+                                    borderBottom: '1px solid var(--border)',
+                                    background: 'var(--bg-tertiary)',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.5px',
+                                }}
+                            >
+                                Project Explorer
+                            </div>
+                            <div
+                                className="custom-scrollbar"
+                                style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+                            >
+                                {renderFileTree(fileTree)}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Main Content */}
+                    <div
+                        ref={contentRef}
+                        className="custom-scrollbar"
+                        style={{
+                            flex: 1,
+                            overflow: 'auto',
+                            background: 'var(--bg-primary)',
+                        }}
+                    >
+                        {loading && (
+                            <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
+                                Loading...
+                            </div>
+                        )}
+                        {error && (
+                            <div style={{ padding: '20px', color: colors.danger }}>
+                                Error: {error}
+                            </div>
+                        )}
+                        {!loading && !error && content && (
+                            <div style={{ position: 'relative' }}>
+                                <SyntaxHighlighter
+                                    language={language}
+                                    style={syntaxTheme}
+                                    showLineNumbers={true}
+                                    wrapLines={true}
+                                    lineProps={(lineNumber: number) => {
+                                        const isInitialTarget =
+                                            currentFilePath === filePath &&
+                                            lineNumber === initialLine;
+                                        const isScrollTarget =
+                                            scrollToLine !== null && lineNumber === scrollToLine;
+                                        const isTargetLine = isInitialTarget || isScrollTarget;
+                                        const isLspActive = activeLspLine === lineNumber;
+                                        return {
+                                            style: {
+                                                display: 'block',
+                                                position: 'relative' as const,
+                                                background: isLspActive
+                                                    ? colors.bgInfoDim
+                                                    : isTargetLine
+                                                      ? colors.bgWarningDim
+                                                      : 'transparent',
+                                                borderLeft: isLspActive
+                                                    ? `3px solid var(--accent)`
+                                                    : isTargetLine
+                                                      ? `3px solid ${colors.warning}`
+                                                      : '3px solid transparent',
+                                                paddingLeft: '8px',
+                                                cursor: lsp.available ? 'pointer' : 'default',
+                                            },
+                                            onClick: (e: React.MouseEvent) => {
+                                                if (!lsp.available) return;
+                                                const col = getClickColumn(
+                                                    e,
+                                                    e.currentTarget as HTMLElement
+                                                );
+                                                const lspLine = lineNumber - 1; // 0-indexed for LSP
+                                                if (activeLspLine === lineNumber) {
+                                                    setActiveLspLine(null);
+                                                    lsp.clearData();
+                                                } else {
+                                                    lsp.query(lspLine, col).then(result => {
+                                                        if (result) {
+                                                            setActiveLspLine(lineNumber);
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                        };
+                                    }}
+                                    lineNumberStyle={{
+                                        minWidth: '50px',
+                                        paddingRight: '8px',
+                                        textAlign: 'right',
+                                        color: 'var(--text-tertiary)',
+                                        background: 'var(--bg-secondary)',
+                                        borderRight: '1px solid var(--border)',
+                                        userSelect: 'none',
+                                    }}
+                                    customStyle={{
+                                        margin: 0,
+                                        padding: 0,
+                                        background: 'transparent',
+                                        fontFamily: 'var(--font-mono)',
+                                        fontSize: '13px',
+                                    }}
+                                >
+                                    {content}
+                                </SyntaxHighlighter>
+                                {activeLspLine !== null && lsp.lspData && (
+                                    <div
+                                        style={{
+                                            position: 'absolute',
+                                            top: `${activeLspLine * 20 + 20}px`,
+                                            left: '60px',
+                                            zIndex: 100,
+                                        }}
+                                    >
+                                        <LspPopover
+                                            hover={lsp.lspData.hover}
+                                            refs={lsp.lspData.refs}
+                                            definitions={lsp.lspData.definitions}
+                                            typeDefinitions={lsp.lspData.typeDefinitions}
+                                            variant="floating"
+                                            onRefClick={r => {
+                                                const refPath = r.uri.replace('file://', '');
+                                                const relativePath = refPath.startsWith(
+                                                    repoPath + '/'
+                                                )
+                                                    ? refPath.slice(repoPath.length + 1)
+                                                    : refPath;
+                                                const targetLine = r.range.start.line + 1;
+                                                setCurrentFilePath(relativePath);
+                                                setScrollToLine(targetLine);
+                                                setActiveLspLine(null);
+                                                lsp.clearData();
+                                            }}
+                                            onClose={() => {
+                                                setActiveLspLine(null);
+                                                lsp.clearData();
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Floating mode (default)
+    return (
+        <div
+            style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 999,
+                pointerEvents: 'none',
+            }}
+        >
+            <div
+                ref={modalRef}
+                style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
+                    width: size.width,
+                    height: size.height,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    boxShadow: shadows.lg,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    pointerEvents: 'auto',
+                    overflow: 'hidden',
+                    willChange: isDragging || isResizing ? 'transform' : 'auto',
+                }}
+            >
+                {headerContent}
+
+                {/* Sidebar and Content Container */}
+                <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                    {/* Sidebar */}
+                    {showFileTree && (
+                        <div
+                            className="custom-scrollbar"
+                            style={{
+                                width: '250px',
+                                minWidth: '150px',
+                                borderRight: '1px solid var(--border)',
+                                background: 'var(--bg-secondary)',
+                                overflowY: 'auto',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                animation: 'slideIn 0.2s ease-out',
+                            }}
+                        >
                             <div
                                 style={{
                                     padding: '10px 12px',

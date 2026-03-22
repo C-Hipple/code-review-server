@@ -25,7 +25,8 @@
       "Bash(emacs:*)",
       "Bash(/home/chris/.bun/bin/bun run:*)",
       "Bash(cargo build:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(bun run:*)"
     ]
   }
 }

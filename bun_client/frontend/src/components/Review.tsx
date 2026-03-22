@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import {
@@ -16,6 +16,16 @@ import { rpcCall } from '../api';
 import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { getClickColumn } from '../utils/dom';
+import {
+    dockViewer as dockViewerState,
+    undockTab as undockTabState,
+    closeDockedTab as closeDockedTabState,
+    dockDiffFile as dockDiffFileState,
+    moveTabToPanel,
+    toggleSplit,
+    allDockedTabs,
+} from '../dock_utils';
+import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
 import LspPopover from './LspPopover';
 import CodeViewerModal from './CodeViewerModal';
 
@@ -230,15 +240,18 @@ export default function Review({
         enabled: !!diff && !!metadata,
     });
 
-    // Code Viewer Modal State
-    const [codeViewers, setCodeViewers] = useState<
-        Array<{
-            id: number;
-            filePath: string;
-            line: number;
-            position?: { x: number; y: number };
-        }>
-    >([]);
+    // Dock state (floating viewers + split panels)
+    const [dockState, setDockState] = useState<DockState>({
+        codeViewers: [],
+        split: false,
+        left: { dockedTabs: [], activeTab: 'review' },
+        right: { dockedTabs: [], activeTab: 'review' },
+    });
+    const [dragOverPanel, setDragOverPanel] = useState<PanelId | null>(null);
+
+    // Convenience accessors
+    const codeViewers = dockState.codeViewers;
+    const dockedTabs = allDockedTabs(dockState);
 
     useEffect(() => {
         loadPR();
@@ -754,6 +767,69 @@ export default function Review({
         }
     };
 
+    // Dock a floating code viewer as a tab
+    const handleDockViewer = (viewerId: number, panel: PanelId = 'left') => {
+        setDockState(prev => dockViewerState(prev, viewerId, panel));
+    };
+
+    // Undock a tab back to a floating modal
+    const handleUndockTab = (tabId: number) => {
+        setDockState(prev => undockTabState(prev, tabId));
+    };
+
+    // Close a docked tab
+    const handleCloseDockedTab = (tabId: number) => {
+        setDockState(prev => closeDockedTabState(prev, tabId));
+    };
+
+    // Dock a diff file as a tab
+    const handleDockDiffFile = (filePath: string, panel: PanelId = 'left') => {
+        setDockState(prev => dockDiffFileState(prev, filePath, panel));
+    };
+
+    // Toggle split pane
+    const handleToggleSplit = () => {
+        setDockState(prev => toggleSplit(prev));
+    };
+
+    // Set active tab for a specific panel
+    const handleSetActiveTab = (panel: PanelId, tab: ActiveTab) => {
+        setDockState(prev => ({
+            ...prev,
+            [panel]: { ...prev[panel], activeTab: tab },
+        }));
+    };
+
+    // Handle drag-and-drop of tabs between panels
+    const handleTabDragStart = useCallback(
+        (e: React.DragEvent, tabId: number, sourcePanel: PanelId) => {
+            e.dataTransfer.setData('application/x-tab', JSON.stringify({ tabId, sourcePanel }));
+            e.dataTransfer.effectAllowed = 'move';
+        },
+        []
+    );
+
+    const handlePanelDragOver = useCallback((e: React.DragEvent) => {
+        if (e.dataTransfer.types.includes('application/x-tab')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        }
+    }, []);
+
+    const handlePanelDrop = useCallback((e: React.DragEvent, targetPanel: PanelId) => {
+        e.preventDefault();
+        setDragOverPanel(null);
+        const raw = e.dataTransfer.getData('application/x-tab');
+        if (!raw) return;
+        const { tabId, sourcePanel } = JSON.parse(raw) as {
+            tabId: number;
+            sourcePanel: PanelId;
+        };
+        if (sourcePanel !== targetPanel) {
+            setDockState(prev => moveTabToPanel(prev, tabId, targetPanel));
+        }
+    }, []);
+
     // Handle clicking on a reply thread to reply to the last message
     const handleThreadClick = (thread: Comment[], file: string, pos: number, lineIdx: number) => {
         const lastComment = thread[thread.length - 1];
@@ -913,7 +989,7 @@ export default function Review({
         }
     };
 
-    const renderDiff = () => {
+    const renderDiff = (filterFile?: string) => {
         const lines = parseDiff();
         if (lines.length === 0) return null;
 
@@ -930,6 +1006,11 @@ export default function Review({
             // Update current file when we hit a file header
             if (isFileHeader) {
                 currentFile = item.file;
+            }
+
+            // If filtering by file, skip lines not belonging to that file
+            if (filterFile && currentFile !== filterFile) {
+                return null;
             }
 
             // Skip rendering lines that belong to collapsed files (but always render file headers)
@@ -1070,6 +1151,31 @@ export default function Review({
                                     {' '}
                                     <span>⚠️</span> Outdated Comments ({fileOutdatedComments.length}
                                     )
+                                </button>
+                            )}
+                            {item.file && (
+                                <button
+                                    onClick={e => {
+                                        e.stopPropagation();
+                                        handleDockDiffFile(item.file!);
+                                    }}
+                                    style={{
+                                        marginLeft: hasOutdated ? '6px' : 'auto',
+                                        background: 'transparent',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-tertiary)',
+                                        padding: '4px 8px',
+                                        borderRadius: '4px',
+                                        fontSize: '12px',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        transition: 'color 0.15s ease',
+                                    }}
+                                    title="Open in tab"
+                                >
+                                    <span style={{ fontSize: '13px' }}>⊞</span>
                                 </button>
                             )}
                         </div>
@@ -1256,18 +1362,21 @@ export default function Review({
                                         variant="inline"
                                         onRefClick={(r, e) => {
                                             const filePath = r.uri.replace('file://', '');
-                                            setCodeViewers(prev => [
+                                            setDockState(prev => ({
                                                 ...prev,
-                                                {
-                                                    id: Date.now(),
-                                                    filePath,
-                                                    line: r.range.start.line + 1,
-                                                    position: {
-                                                        x: e.clientX + 20,
-                                                        y: e.clientY - 50,
+                                                codeViewers: [
+                                                    ...prev.codeViewers,
+                                                    {
+                                                        id: Date.now(),
+                                                        filePath,
+                                                        line: r.range.start.line + 1,
+                                                        position: {
+                                                            x: e.clientX + 20,
+                                                            y: e.clientY - 50,
+                                                        },
                                                     },
-                                                },
-                                            ]);
+                                                ],
+                                            }));
                                         }}
                                         onClose={() => lsp.clearData()}
                                     />
@@ -1469,18 +1578,21 @@ export default function Review({
                                 variant="floating"
                                 onRefClick={(r, e) => {
                                     const filePath = r.uri.replace('file://', '');
-                                    setCodeViewers(prev => [
+                                    setDockState(prev => ({
                                         ...prev,
-                                        {
-                                            id: Date.now(),
-                                            filePath,
-                                            line: r.range.start.line + 1,
-                                            position: {
-                                                x: e.clientX + 20,
-                                                y: e.clientY - 50,
+                                        codeViewers: [
+                                            ...prev.codeViewers,
+                                            {
+                                                id: Date.now(),
+                                                filePath,
+                                                line: r.range.start.line + 1,
+                                                position: {
+                                                    x: e.clientX + 20,
+                                                    y: e.clientY - 50,
+                                                },
                                             },
-                                        },
-                                    ]);
+                                        ],
+                                    }));
                                 }}
                                 onClose={() => {
                                     setActiveLspIndex(null);
@@ -2416,152 +2528,438 @@ export default function Review({
                 </span>
             </div>
 
-            {/* Diff Section */}
-            <div
-                className="diff-section"
-                style={{
-                    background: 'var(--bg-secondary)',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border)',
-                    overflow: 'hidden',
-                }}
-            >
+            {/* Dock zone for floating modal drag-to-dock */}
+            {dockedTabs.length > 0 ? (
                 <div
+                    data-dock-zone
                     style={{
-                        padding: '12px 16px',
-                        borderBottom: '1px solid var(--border)',
-                        background: 'var(--bg-primary)',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: 'var(--text-secondary)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
+                        height: '0px',
+                        overflow: 'hidden',
+                    }}
+                />
+            ) : (
+                <div
+                    data-dock-zone
+                    style={{
+                        height: '0px',
+                        overflow: 'hidden',
+                        transition: 'all 0.2s ease',
+                        borderRadius: '8px',
+                        marginBottom: '0',
                     }}
                 >
-                    <span style={{ color: 'var(--accent)' }}>◈</span>
-                    Changes
-                    {metadata && !metadata.repo_path && (
-                        <div
-                            style={{
-                                marginLeft: '12px',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                color: 'var(--warning)',
-                                fontSize: '12px',
-                                fontWeight: 400,
-                            }}
-                        >
-                            <span style={{ fontSize: '14px' }}>⚠️</span>
-                            Repo not found locally. LSP disabled.
-                        </div>
-                    )}
-                    {lsp.available === false && (
-                        <div
-                            style={{
-                                marginLeft: '12px',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                color: 'var(--warning)',
-                                fontSize: '12px',
-                                fontWeight: 400,
-                            }}
-                            title="diff-lsp binary not found on server path"
-                        >
-                            <span style={{ fontSize: '14px' }}>⚠️</span>
-                            LSP not active
-                        </div>
-                    )}
-                </div>
-                <div
-                    style={{
-                        padding: '16px',
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '13px',
-                        overflowX: 'auto',
-                    }}
-                >
-                    {renderDiff()}
-                </div>
-            </div>
-
-            {/* Review Feedback Section */}
-            <div
-                style={{
-                    background: 'var(--bg-secondary)',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border)',
-                    overflow: 'hidden',
-                    marginTop: '16px',
-                }}
-            >
-                <div
-                    style={{
-                        padding: '12px 16px',
-                        borderBottom: '1px solid var(--border)',
-                        background: 'var(--bg-primary)',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: 'var(--text-secondary)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                    }}
-                >
-                    <span style={{ color: 'var(--accent)' }}>✎</span>
-                    Review Feedback
-                    <span
-                        style={{
-                            marginLeft: '8px',
-                            fontSize: '11px',
-                            color: 'var(--text-tertiary)',
-                            fontWeight: 400,
-                        }}
-                    >
-                        PR-level comment body — used when you submit a review
+                    <style>{`
+                        [data-dock-zone][data-dock-hover="true"] {
+                            height: 40px !important;
+                            overflow: visible !important;
+                            background: var(--bg-secondary) !important;
+                            border: 2px dashed var(--accent) !important;
+                            margin-bottom: 8px !important;
+                            display: flex !important;
+                            align-items: center !important;
+                            justify-content: center !important;
+                        }
+                    `}</style>
+                    <span style={{ color: 'var(--accent)', fontSize: '13px', fontWeight: 500 }}>
+                        Drop here to pin as tab
                     </span>
                 </div>
-                <div style={{ padding: '16px' }}>
-                    <textarea
-                        placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
-                        value={feedbackBody}
-                        onChange={e => setFeedbackBody(e.target.value)}
-                        disabled={isSavingFeedback}
-                        style={{
-                            width: '100%',
-                            minHeight: '120px',
-                            padding: '10px',
-                            background: 'var(--bg-primary)',
-                            border: '1px solid var(--border)',
-                            color: 'var(--text-primary)',
-                            borderRadius: '6px',
-                            fontFamily: 'inherit',
-                            fontSize: '13px',
-                            resize: 'vertical',
-                            boxSizing: 'border-box',
-                        }}
-                    />
+            )}
+
+            {/* Split Pane Layout */}
+            {(() => {
+                const hasTabs = dockedTabs.length > 0;
+
+                // Render a panel's tab bar
+                const renderTabBar = (
+                    panelId: PanelId,
+                    panel: PanelState,
+                    showSplitBtn: boolean
+                ) => (
                     <div
+                        data-dock-zone={panelId === 'left' ? '' : undefined}
                         style={{
                             display: 'flex',
-                            gap: '10px',
-                            justifyContent: 'flex-end',
-                            marginTop: '10px',
+                            alignItems: 'stretch',
+                            gap: '0',
+                            marginBottom: '0',
+                            background: 'var(--bg-secondary)',
+                            borderRadius: '8px 8px 0 0',
+                            border: '1px solid var(--border)',
+                            borderBottom: 'none',
+                            overflow: 'hidden',
+                            transition: 'box-shadow 0.2s ease',
+                            ...(dragOverPanel === panelId
+                                ? { boxShadow: 'inset 0 0 0 2px var(--accent)' }
+                                : {}),
                         }}
+                        onDragOver={handlePanelDragOver}
+                        onDragEnter={() => setDragOverPanel(panelId)}
+                        onDragLeave={e => {
+                            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                setDragOverPanel(null);
+                            }
+                        }}
+                        onDrop={e => handlePanelDrop(e, panelId)}
                     >
-                        <Button
-                            onClick={handleSaveFeedback}
-                            size="sm"
-                            loading={isSavingFeedback}
-                            disabled={isSavingFeedback}
+                        <button
+                            onClick={() => handleSetActiveTab(panelId, 'review')}
+                            style={{
+                                padding: '10px 20px',
+                                background:
+                                    panel.activeTab === 'review'
+                                        ? 'var(--bg-primary)'
+                                        : 'transparent',
+                                border: 'none',
+                                borderBottom:
+                                    panel.activeTab === 'review'
+                                        ? '2px solid var(--accent)'
+                                        : '2px solid transparent',
+                                color:
+                                    panel.activeTab === 'review'
+                                        ? 'var(--text-primary)'
+                                        : 'var(--text-secondary)',
+                                fontSize: '13px',
+                                fontWeight: panel.activeTab === 'review' ? 600 : 400,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                transition: 'all 0.15s ease',
+                            }}
                         >
-                            Save Feedback
-                        </Button>
+                            <span style={{ color: 'var(--accent)' }}>◈</span>
+                            Review
+                        </button>
+                        {panel.dockedTabs.map(tab => {
+                            const tabFilename = tab.filePath.split('/').pop() || tab.filePath;
+                            const isActive = panel.activeTab === tab.id;
+                            return (
+                                <div
+                                    key={tab.id}
+                                    draggable
+                                    onDragStart={e => handleTabDragStart(e, tab.id, panelId)}
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        background: isActive ? 'var(--bg-primary)' : 'transparent',
+                                        borderBottom: isActive
+                                            ? '2px solid var(--accent)'
+                                            : '2px solid transparent',
+                                        transition: 'all 0.15s ease',
+                                        cursor: 'grab',
+                                    }}
+                                >
+                                    <button
+                                        onClick={() => handleSetActiveTab(panelId, tab.id)}
+                                        style={{
+                                            padding: '10px 12px',
+                                            background: 'transparent',
+                                            border: 'none',
+                                            color: isActive
+                                                ? 'var(--text-primary)'
+                                                : 'var(--text-secondary)',
+                                            fontSize: '13px',
+                                            fontWeight: isActive ? 600 : 400,
+                                            cursor: 'inherit',
+                                            fontFamily: 'var(--font-mono)',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                        }}
+                                        title={tab.filePath}
+                                    >
+                                        {tabFilename}
+                                        {tab.line > 1 && (
+                                            <span
+                                                style={{
+                                                    fontSize: '11px',
+                                                    color: 'var(--text-tertiary)',
+                                                }}
+                                            >
+                                                :{tab.line}
+                                            </span>
+                                        )}
+                                    </button>
+                                    <button
+                                        onClick={e => {
+                                            e.stopPropagation();
+                                            handleCloseDockedTab(tab.id);
+                                        }}
+                                        style={{
+                                            background: 'transparent',
+                                            border: 'none',
+                                            color: 'var(--text-tertiary)',
+                                            fontSize: '14px',
+                                            cursor: 'pointer',
+                                            padding: '4px 8px 4px 0',
+                                            lineHeight: 1,
+                                        }}
+                                        title="Close tab"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                            );
+                        })}
+                        {showSplitBtn && (
+                            <button
+                                onClick={handleToggleSplit}
+                                style={{
+                                    marginLeft: 'auto',
+                                    padding: '6px 12px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: dockState.split
+                                        ? 'var(--accent)'
+                                        : 'var(--text-tertiary)',
+                                    fontSize: '14px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'color 0.15s ease',
+                                }}
+                                title={
+                                    dockState.split ? 'Close split view' : 'Split view vertically'
+                                }
+                            >
+                                <span style={{ fontFamily: 'monospace', fontSize: '16px' }}>
+                                    {dockState.split ? '◧' : '◫'}
+                                </span>
+                            </button>
+                        )}
                     </div>
-                </div>
-            </div>
+                );
+
+                // Render the review content (diff + feedback)
+                const renderReviewContent = (inPanel: boolean) => (
+                    <>
+                        {/* Diff Section */}
+                        <div
+                            className="diff-section"
+                            style={{
+                                background: 'var(--bg-secondary)',
+                                borderRadius: inPanel ? '0 0 8px 8px' : '8px',
+                                border: '1px solid var(--border)',
+                                borderTop: inPanel ? 'none' : undefined,
+                                overflow: 'hidden',
+                            }}
+                        >
+                            <div
+                                style={{
+                                    padding: '12px 16px',
+                                    borderBottom: '1px solid var(--border)',
+                                    background: 'var(--bg-primary)',
+                                    fontSize: '13px',
+                                    fontWeight: 500,
+                                    color: 'var(--text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                }}
+                            >
+                                <span style={{ color: 'var(--accent)' }}>◈</span>
+                                Changes
+                                {metadata && !metadata.repo_path && (
+                                    <div
+                                        style={{
+                                            marginLeft: '12px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            color: 'var(--warning)',
+                                            fontSize: '12px',
+                                            fontWeight: 400,
+                                        }}
+                                    >
+                                        <span style={{ fontSize: '14px' }}>⚠️</span>
+                                        Repo not found locally. LSP disabled.
+                                    </div>
+                                )}
+                                {lsp.available === false && (
+                                    <div
+                                        style={{
+                                            marginLeft: '12px',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            color: 'var(--warning)',
+                                            fontSize: '12px',
+                                            fontWeight: 400,
+                                        }}
+                                        title="diff-lsp binary not found on server path"
+                                    >
+                                        <span style={{ fontSize: '14px' }}>⚠️</span>
+                                        LSP not active
+                                    </div>
+                                )}
+                            </div>
+                            <div
+                                style={{
+                                    padding: '16px',
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '13px',
+                                    overflowX: 'auto',
+                                }}
+                            >
+                                {renderDiff()}
+                            </div>
+                        </div>
+
+                        {/* Review Feedback Section */}
+                        <div
+                            style={{
+                                background: 'var(--bg-secondary)',
+                                borderRadius: '8px',
+                                border: '1px solid var(--border)',
+                                overflow: 'hidden',
+                                marginTop: '16px',
+                            }}
+                        >
+                            <div
+                                style={{
+                                    padding: '12px 16px',
+                                    borderBottom: '1px solid var(--border)',
+                                    background: 'var(--bg-primary)',
+                                    fontSize: '13px',
+                                    fontWeight: 500,
+                                    color: 'var(--text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                }}
+                            >
+                                <span style={{ color: 'var(--accent)' }}>✎</span>
+                                Review Feedback
+                                <span
+                                    style={{
+                                        marginLeft: '8px',
+                                        fontSize: '11px',
+                                        color: 'var(--text-tertiary)',
+                                        fontWeight: 400,
+                                    }}
+                                >
+                                    PR-level comment body — used when you submit a review
+                                </span>
+                            </div>
+                            <div style={{ padding: '16px' }}>
+                                <textarea
+                                    placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
+                                    value={feedbackBody}
+                                    onChange={e => setFeedbackBody(e.target.value)}
+                                    disabled={isSavingFeedback}
+                                    style={{
+                                        width: '100%',
+                                        minHeight: '120px',
+                                        padding: '10px',
+                                        background: 'var(--bg-primary)',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-primary)',
+                                        borderRadius: '6px',
+                                        fontFamily: 'inherit',
+                                        fontSize: '13px',
+                                        resize: 'vertical',
+                                        boxSizing: 'border-box',
+                                    }}
+                                />
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        gap: '10px',
+                                        justifyContent: 'flex-end',
+                                        marginTop: '10px',
+                                    }}
+                                >
+                                    <Button
+                                        onClick={handleSaveFeedback}
+                                        size="sm"
+                                        loading={isSavingFeedback}
+                                        disabled={isSavingFeedback}
+                                    >
+                                        Save Feedback
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </>
+                );
+
+                // Render a panel's content area
+                const renderPanelContent = (_panelId: PanelId, panel: PanelState) => (
+                    <>
+                        {panel.activeTab === 'review' && renderReviewContent(true)}
+                        {panel.dockedTabs.map(tab => (
+                            <div
+                                key={tab.id}
+                                style={{
+                                    display: panel.activeTab === tab.id ? 'block' : 'none',
+                                    background: 'var(--bg-secondary)',
+                                    borderRadius: '0 0 8px 8px',
+                                    border: '1px solid var(--border)',
+                                    borderTop: 'none',
+                                    overflow: 'hidden',
+                                    height: '70vh',
+                                }}
+                            >
+                                {tab.tabType === 'diff' ? (
+                                    <div
+                                        style={{
+                                            height: '100%',
+                                            overflowY: 'auto',
+                                            padding: '16px',
+                                            fontFamily: 'var(--font-mono)',
+                                            fontSize: '13px',
+                                        }}
+                                    >
+                                        {renderDiff(tab.filePath)}
+                                    </div>
+                                ) : (
+                                    <CodeViewerModal
+                                        isOpen={true}
+                                        onClose={() => handleCloseDockedTab(tab.id)}
+                                        filePath={tab.filePath}
+                                        repoPath={metadata?.repo_path || ''}
+                                        initialLine={tab.line}
+                                        theme={theme}
+                                        docked={true}
+                                        onUndock={() => handleUndockTab(tab.id)}
+                                    />
+                                )}
+                            </div>
+                        ))}
+                    </>
+                );
+
+                // No tabs docked — just show review content directly
+                if (!hasTabs) {
+                    return renderReviewContent(false);
+                }
+
+                // Tabs docked, not split — single panel
+                if (!dockState.split) {
+                    return (
+                        <div>
+                            {renderTabBar('left', dockState.left, true)}
+                            {renderPanelContent('left', dockState.left)}
+                        </div>
+                    );
+                }
+
+                // Split view — two panels side by side
+                return (
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                        <div style={{ flex: 1, minWidth: 0, position: 'sticky', top: '70px' }}>
+                            {renderTabBar('left', dockState.left, true)}
+                            {renderPanelContent('left', dockState.left)}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0, position: 'sticky', top: '70px' }}>
+                            {renderTabBar('right', dockState.right, false)}
+                            {renderPanelContent('right', dockState.right)}
+                        </div>
+                    </div>
+                );
+            })()}
 
             <Modal
                 isOpen={showCommentModal}
@@ -2991,12 +3389,18 @@ export default function Review({
                 <CodeViewerModal
                     key={viewer.id}
                     isOpen={true}
-                    onClose={() => setCodeViewers(prev => prev.filter(v => v.id !== viewer.id))}
+                    onClose={() =>
+                        setDockState(prev => ({
+                            ...prev,
+                            codeViewers: prev.codeViewers.filter(v => v.id !== viewer.id),
+                        }))
+                    }
                     filePath={viewer.filePath}
                     repoPath={metadata?.repo_path || ''}
                     initialLine={viewer.line}
                     theme={theme}
                     initialPosition={viewer.position}
+                    onDock={() => handleDockViewer(viewer.id)}
                 />
             ))}
         </div>

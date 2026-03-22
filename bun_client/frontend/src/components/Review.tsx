@@ -2681,6 +2681,26 @@ export default function Review({
                                             </span>
                                         )}
                                     </button>
+                                    {tab.tabType !== 'diff' && (
+                                        <button
+                                            onClick={e => {
+                                                e.stopPropagation();
+                                                handleUndockTab(tab.id);
+                                            }}
+                                            style={{
+                                                background: 'transparent',
+                                                border: 'none',
+                                                color: 'var(--text-tertiary)',
+                                                fontSize: '12px',
+                                                cursor: 'pointer',
+                                                padding: '4px 4px 4px 0',
+                                                lineHeight: 1,
+                                            }}
+                                            title="Pop out as floating window"
+                                        >
+                                            ↗
+                                        </button>
+                                    )}
                                     <button
                                         onClick={e => {
                                             e.stopPropagation();

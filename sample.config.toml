@@ -46,3 +46,10 @@ Command = "summarize_diff"
 IncludeDiff = true
 IncludeHeaders = true
 IncludeComments = true
+
+[[Plugins]]
+Name = "Rate Comments"
+Command = "rate_comments"
+IncludeDiff = true
+IncludeHeaders = true
+IncludeComments = true

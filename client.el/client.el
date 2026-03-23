@@ -316,31 +316,37 @@ CALLBACK is a function to call with the result."
 
 ;;;###autoload
 (defun crs-get-reviews ()
-  "Call the GetAllReviews RPC method and display the result in '* Reviews *' buffer."
+  "Call the GetAllReviews RPC method and display the result in '* Reviews *' buffer.
+If the buffer already exists, switch to it instead of making a new RPC call."
   (interactive)
-  (unless (and crs--process
-               (process-live-p crs--process))
-    (crs-start-server)
-    ;; Give the server a moment to start
-    (sleep-for 0.5))
+  (let ((existing-buffer (get-buffer "* Reviews *")))
+    (if existing-buffer
+        (progn
+          (display-buffer existing-buffer)
+          (message "Switched to existing '* Reviews *' buffer"))
+      (unless (and crs--process
+                   (process-live-p crs--process))
+        (crs-start-server)
+        ;; Give the server a moment to start
+        (sleep-for 0.5))
 
-  (crs--send-request
-   "RPCHandler.GetAllReviews"
-   (vector)
-   (lambda (result)
-     (let* ((content (cdr (assq 'content result)))
-            (rendered (if crs-include-comments-tree
-                          content
-                        (crs--strip-comments-tree content)))
-            (buffer (get-buffer-create "* Reviews *")))
-       (with-current-buffer buffer
-         (erase-buffer)
-         (insert (or rendered ""))
-         (crs--process-html-placeholders)
-         (goto-char (point-min))
-         (org-mode))
-       (display-buffer buffer)
-       (message "Reviews loaded into '* Reviews *' buffer")))))
+      (crs--send-request
+       "RPCHandler.GetAllReviews"
+       (vector)
+       (lambda (result)
+         (let* ((content (cdr (assq 'content result)))
+                (rendered (if crs-include-comments-tree
+                              content
+                            (crs--strip-comments-tree content)))
+                (buffer (get-buffer-create "* Reviews *")))
+           (with-current-buffer buffer
+             (erase-buffer)
+             (insert (or rendered ""))
+             (crs--process-html-placeholders)
+             (goto-char (point-min))
+             (org-mode))
+           (display-buffer buffer)
+           (message "Reviews loaded into '* Reviews *' buffer")))))))
 
 (defun crs-toggle-section ()
   "Toggle visibility of the section under the current header."

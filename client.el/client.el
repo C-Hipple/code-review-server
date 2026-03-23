@@ -32,6 +32,9 @@
 (defvar crs--response-buffer ""
   "Buffer for accumulating partial JSON-RPC responses.")
 
+(defvar crs-reviews-buffer-name "* Reviews *"
+  "Name of the buffer used to display the reviews list.")
+
 (defvar crs-plugins nil
   "List of plugin names configured on the server.")
 
@@ -316,14 +319,14 @@ CALLBACK is a function to call with the result."
 
 ;;;###autoload
 (defun crs-get-reviews ()
-  "Call the GetAllReviews RPC method and display the result in '* Reviews *' buffer.
+  "Call the GetAllReviews RPC method and display the result in `crs-reviews-buffer-name'.
 If the buffer already exists, switch to it instead of making a new RPC call."
   (interactive)
-  (let ((existing-buffer (get-buffer "* Reviews *")))
+  (let ((existing-buffer (get-buffer crs-reviews-buffer-name)))
     (if existing-buffer
         (progn
           (display-buffer existing-buffer)
-          (message "Switched to existing '* Reviews *' buffer"))
+          (message "Switched to existing '%s' buffer" crs-reviews-buffer-name))
       (unless (and crs--process
                    (process-live-p crs--process))
         (crs-start-server)
@@ -338,7 +341,7 @@ If the buffer already exists, switch to it instead of making a new RPC call."
                 (rendered (if crs-include-comments-tree
                               content
                             (crs--strip-comments-tree content)))
-                (buffer (get-buffer-create "* Reviews *")))
+                (buffer (get-buffer-create crs-reviews-buffer-name)))
            (with-current-buffer buffer
              (erase-buffer)
              (insert (or rendered ""))
@@ -346,7 +349,7 @@ If the buffer already exists, switch to it instead of making a new RPC call."
              (goto-char (point-min))
              (org-mode))
            (display-buffer buffer)
-           (message "Reviews loaded into '* Reviews *' buffer")))))))
+           (message "Reviews loaded into '%s' buffer" crs-reviews-buffer-name)))))))
 
 (defun crs-toggle-section ()
   "Toggle visibility of the section under the current header."

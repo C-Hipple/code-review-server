@@ -748,7 +748,7 @@ export default function CodeViewerModal({
                     {/* Sidebar */}
                     {showFileTree && (
                         <div
-                            className="custom-scrollbar"
+                            
                             style={{
                                 width: '250px',
                                 minWidth: '150px',
@@ -764,26 +764,6 @@ export default function CodeViewerModal({
                                 @keyframes slideIn {
                                     from { width: 0; opacity: 0; }
                                     to { width: 250px; opacity: 1; }
-                                }
-                                .custom-scrollbar::-webkit-scrollbar {
-                                    width: 10px;
-                                    height: 10px;
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-track {
-                                    background: var(--bg-secondary);
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb {
-                                    background: var(--border);
-                                    border-radius: 5px;
-                                    border: 2px solid var(--bg-secondary);
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                                    background: var(--text-tertiary);
-                                }
-                                /* Firefox */
-                                .custom-scrollbar {
-                                    scrollbar-width: thin;
-                                    scrollbar-color: var(--border) var(--bg-secondary);
                                 }
                             `}</style>
                             <div
@@ -801,7 +781,7 @@ export default function CodeViewerModal({
                                 Project Explorer
                             </div>
                             <div
-                                className="custom-scrollbar"
+                                
                                 style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
                             >
                                 {renderFileTree(fileTree)}
@@ -812,7 +792,7 @@ export default function CodeViewerModal({
                     {/* Main Content */}
                     <div
                         ref={contentRef}
-                        className="custom-scrollbar"
+                        
                         style={{
                             flex: 1,
                             overflow: 'auto',
@@ -983,7 +963,7 @@ export default function CodeViewerModal({
                     {/* Sidebar */}
                     {showFileTree && (
                         <div
-                            className="custom-scrollbar"
+                            
                             style={{
                                 width: '250px',
                                 minWidth: '150px',
@@ -1010,7 +990,7 @@ export default function CodeViewerModal({
                                 Project Explorer
                             </div>
                             <div
-                                className="custom-scrollbar"
+                                
                                 style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
                             >
                                 {renderFileTree(fileTree)}
@@ -1021,7 +1001,7 @@ export default function CodeViewerModal({
                     {/* Main Content */}
                     <div
                         ref={contentRef}
-                        className="custom-scrollbar"
+                        
                         style={{
                             flex: 1,
                             overflow: 'auto',

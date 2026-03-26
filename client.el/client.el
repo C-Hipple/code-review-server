@@ -1791,12 +1791,16 @@ If on a local comment, local-comment-id and local-comment-body will be set."
                ((string-match "^@@ -[0-9]+,[0-9]+ \\+\\([0-9]+\\),[0-9]+ @@" line-content)
                 (if (not first-hunk-counted)
                     (setq first-hunk-counted t)
-                  ;; Count subsequent hunk headers to match GitHub's position convention
                   (setq count (1+ count)))
                 (setq file-line (string-to-number (match-string 1 line-content)))
                 (setq target-file-line file-line))
                ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
                 ;; Skip comment blocks
+                nil)
+               ;; Skip empty separator lines between hunks (emitted by formatDiff).
+               ;; Diff content lines always have a prefix char (+, -, or space)
+               ;; so they are never zero-length, even for blank source lines.
+               ((= (length line-content) 0)
                 nil)
                (t
                 ;; Content line

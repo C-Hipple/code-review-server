@@ -233,24 +233,29 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 	// Find the current PR in the sorted list
 	currentIdx := -1
 	for i, item := range items {
-		if item.Repo == args.Repo && item.Number == args.Number {
+		if item.Owner == args.Owner && item.Repo == args.Repo && item.Number == args.Number {
 			currentIdx = i
 			break
 		}
 	}
 
+	if len(items) == 0 {
+		return fmt.Errorf("no PRs in the review list")
+	}
+
+	var adjacentIdx int
 	if currentIdx == -1 {
-		return fmt.Errorf("PR %s/%s#%d not found in reviews", args.Owner, args.Repo, args.Number)
-	}
-
-	if len(items) == 1 {
+		// Current PR is no longer in the list (e.g. after submitting a review);
+		// navigate to the first item instead of blocking the user.
+		adjacentIdx = 0
+	} else if len(items) == 1 {
 		return fmt.Errorf("only one PR in the review list")
-	}
-
-	// Get adjacent index, wrapping around at both ends
-	adjacentIdx := (currentIdx + 1) % len(items)
-	if args.Previous {
-		adjacentIdx = (currentIdx - 1 + len(items)) % len(items)
+	} else {
+		// Get adjacent index, wrapping around at both ends
+		adjacentIdx = (currentIdx + 1) % len(items)
+		if args.Previous {
+			adjacentIdx = (currentIdx - 1 + len(items)) % len(items)
+		}
 	}
 
 	adjacent := items[adjacentIdx]

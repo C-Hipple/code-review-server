@@ -1797,8 +1797,10 @@ If on a local comment, local-comment-id and local-comment-body will be set."
                ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
                 ;; Skip comment blocks
                 nil)
-               ;; Skip blank separator lines between hunks (emitted by formatDiff)
-               ((string-match-p "^[[:space:]]*$" line-content)
+               ;; Skip empty separator lines between hunks (emitted by formatDiff).
+               ;; Diff content lines always have a prefix char (+, -, or space)
+               ;; so they are never zero-length, even for blank source lines.
+               ((= (length line-content) 0)
                 nil)
                (t
                 ;; Content line

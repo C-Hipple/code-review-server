@@ -220,6 +220,8 @@ export default function Review({
     const [position, setPosition] = useState('');
     const [commentBody, setCommentBody] = useState('');
     const [replyToId, setReplyToId] = useState<number | null>(null);
+    const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
+    const [editingCommentBody, setEditingCommentBody] = useState('');
 
     // Review feedback (PR-level comment body, persisted server-side)
     const [feedbackBody, setFeedbackBody] = useState('');
@@ -382,6 +384,8 @@ export default function Review({
         setPosition('');
         setCommentBody('');
         setReplyToId(null);
+        setEditingCommentId(null);
+        setEditingCommentBody('');
         setShowCommentModal(false);
         setActiveLineIndex(null);
         // Do not reset LSP index here as users might want to keep references open while adding a comment
@@ -428,6 +432,27 @@ export default function Review({
         } catch (e) {
             console.error(e);
             alert('Error deleting comment');
+        }
+    };
+
+    const handleEditComment = async () => {
+        if (editingCommentId === null || !editingCommentBody) return;
+        setIsAddingComment(true);
+        try {
+            const res = await rpcCall<PRResponse>('RPCHandler.EditComment', [
+                { Owner: owner, Repo: repo, Number: number, ID: editingCommentId, Body: editingCommentBody },
+            ]);
+            setContent(res.content || '');
+            setDiff(res.diff || '');
+            setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
+            resetCommentForm();
+        } catch (e) {
+            console.error(e);
+            alert('Error editing comment');
+        } finally {
+            setIsAddingComment(false);
         }
     };
 
@@ -830,15 +855,25 @@ export default function Review({
         }
     }, []);
 
-    // Handle clicking on a reply thread to reply to the last message
+    // Handle clicking on a reply thread to reply to the last message, or edit if local
     const handleThreadClick = (thread: Comment[], file: string, pos: number, lineIdx: number) => {
-        const lastComment = thread[thread.length - 1];
+        const rc = thread[0];
         setFilename(file);
         setPosition(pos.toString());
-        setReplyToId(parseInt(lastComment.id, 10));
         setActiveLineIndex(lineIdx);
         setShowCommentModal(false);
-        setCommentBody('');
+        if (rc.author === 'local') {
+            setEditingCommentId(parseInt(rc.id, 10));
+            setEditingCommentBody(rc.body);
+            setReplyToId(null);
+            setCommentBody('');
+        } else {
+            const lastComment = thread[thread.length - 1];
+            setReplyToId(parseInt(lastComment.id, 10));
+            setEditingCommentId(null);
+            setEditingCommentBody('');
+            setCommentBody('');
+        }
     };
 
     // Custom theme based on oneDark but adjusted for diff context
@@ -1184,9 +1219,12 @@ export default function Review({
                                 rc,
                                 ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
                             ];
+                            const isLocalComment = rc.author === 'local';
                             const isReplyingToThread =
-                                replyToId !== null &&
-                                thread.some(c => parseInt(c.id, 10) === replyToId);
+                                (replyToId !== null &&
+                                    thread.some(c => parseInt(c.id, 10) === replyToId)) ||
+                                (editingCommentId !== null &&
+                                    thread.some(c => parseInt(c.id, 10) === editingCommentId));
                             return (
                                 <div
                                     key={rc.id}
@@ -1208,7 +1246,7 @@ export default function Review({
                                         }
                                     }}
                                     className="hover-thread"
-                                    title="Click to reply to this thread"
+                                    title={isLocalComment ? 'Click to edit this comment' : 'Click to reply to this thread'}
                                 >
                                     <div
                                         style={{
@@ -1252,7 +1290,7 @@ export default function Review({
                                                     borderRadius: '4px',
                                                 }}
                                             >
-                                                ↩ click to reply
+                                                {isLocalComment ? '✎ click to edit' : '↩ click to reply'}
                                             </span>
                                             <span>ID: {rc.id}</span>
                                         </div>
@@ -1349,9 +1387,11 @@ export default function Review({
                                         color: 'var(--text-secondary)',
                                     }}
                                 >
-                                    {replyToId !== null
-                                        ? `Replying to comment #${replyToId}`
-                                        : `Commenting on ${item.file}:${item.pos}`}
+                                    {editingCommentId !== null
+                                        ? `Editing local comment #${editingCommentId}`
+                                        : replyToId !== null
+                                          ? `Replying to comment #${replyToId}`
+                                          : `Commenting on ${item.file}:${item.pos}`}
                                 </div>
                                 {lsp.lspData && (
                                     <LspPopover
@@ -1384,12 +1424,18 @@ export default function Review({
                                 <textarea
                                     autoFocus
                                     placeholder={
-                                        replyToId !== null
-                                            ? 'Write a reply...'
-                                            : 'Write a comment...'
+                                        editingCommentId !== null
+                                            ? 'Edit your comment...'
+                                            : replyToId !== null
+                                              ? 'Write a reply...'
+                                              : 'Write a comment...'
                                     }
-                                    value={commentBody}
-                                    onChange={e => setCommentBody(e.target.value)}
+                                    value={editingCommentId !== null ? editingCommentBody : commentBody}
+                                    onChange={e =>
+                                        editingCommentId !== null
+                                            ? setEditingCommentBody(e.target.value)
+                                            : setCommentBody(e.target.value)
+                                    }
                                     disabled={isAddingComment}
                                     style={{
                                         width: '100%',
@@ -1415,6 +1461,8 @@ export default function Review({
                                         onClick={() => {
                                             setActiveLineIndex(null);
                                             setReplyToId(null);
+                                            setEditingCommentId(null);
+                                            setEditingCommentBody('');
                                         }}
                                         variant="secondary"
                                         size="sm"
@@ -1423,11 +1471,11 @@ export default function Review({
                                         Cancel
                                     </Button>
                                     <Button
-                                        onClick={handleAddComment}
+                                        onClick={editingCommentId !== null ? handleEditComment : handleAddComment}
                                         size="sm"
                                         loading={isAddingComment}
                                     >
-                                        {replyToId !== null ? 'Reply' : 'Add Comment'}
+                                        {editingCommentId !== null ? 'Save Edit' : replyToId !== null ? 'Reply' : 'Add Comment'}
                                     </Button>
                                 </div>
                             </div>
@@ -1606,9 +1654,12 @@ export default function Review({
                             rc,
                             ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
                         ];
+                        const isLocalComment = rc.author === 'local';
                         const isReplyingToThread =
-                            replyToId !== null &&
-                            thread.some(c => parseInt(c.id, 10) === replyToId);
+                            (replyToId !== null &&
+                                thread.some(c => parseInt(c.id, 10) === replyToId)) ||
+                            (editingCommentId !== null &&
+                                thread.some(c => parseInt(c.id, 10) === editingCommentId));
                         return (
                             <div
                                 key={rc.id}
@@ -1630,7 +1681,7 @@ export default function Review({
                                     }
                                 }}
                                 className="hover-thread"
-                                title="Click to reply to this thread"
+                                title={isLocalComment ? 'Click to edit this comment' : 'Click to reply to this thread'}
                             >
                                 <div
                                     style={{
@@ -1644,7 +1695,14 @@ export default function Review({
                                         alignItems: 'center',
                                     }}
                                 >
-                                    <span>{rc.author} commented</span>
+                                    <span>
+                                        {rc.author} commented
+                                        {rc.created_at && !rc.created_at.startsWith('0001') && (
+                                            <span style={{ marginLeft: '6px', opacity: 0.7 }}>
+                                                {new Date(rc.created_at).toLocaleString()}
+                                            </span>
+                                        )}
+                                    </span>
                                     <div
                                         style={{
                                             display: 'flex',
@@ -1662,7 +1720,7 @@ export default function Review({
                                                 borderRadius: '4px',
                                             }}
                                         >
-                                            ↩ click to reply
+                                            {isLocalComment ? '✎ click to edit' : '↩ click to reply'}
                                         </span>
                                         <span>ID: {rc.id}</span>
                                     </div>
@@ -1689,7 +1747,37 @@ export default function Review({
                                                 Reply by {c.author}:
                                             </div>
                                         )}
-                                        <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'flex-start',
+                                                gap: '8px',
+                                            }}
+                                        >
+                                            <div style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{c.body}</div>
+                                            {c.author === 'local' && (
+                                                <button
+                                                    onClick={e => {
+                                                        e.stopPropagation();
+                                                        handleDeleteComment(parseInt(c.id, 10));
+                                                    }}
+                                                    style={{
+                                                        background: 'none',
+                                                        border: 'none',
+                                                        color: 'var(--text-secondary)',
+                                                        cursor: 'pointer',
+                                                        fontSize: '12px',
+                                                        padding: '0 4px',
+                                                        opacity: 0.6,
+                                                        flexShrink: 0,
+                                                    }}
+                                                    title="Delete local comment"
+                                                >
+                                                    ✕
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -1712,17 +1800,27 @@ export default function Review({
                                     color: 'var(--text-secondary)',
                                 }}
                             >
-                                {replyToId !== null
-                                    ? `Replying to comment #${replyToId}`
-                                    : `Commenting on ${item.file}:${item.pos}`}
+                                {editingCommentId !== null
+                                    ? `Editing local comment #${editingCommentId}`
+                                    : replyToId !== null
+                                      ? `Replying to comment #${replyToId}`
+                                      : `Commenting on ${item.file}:${item.pos}`}
                             </div>
                             <textarea
                                 autoFocus
                                 placeholder={
-                                    replyToId !== null ? 'Write a reply...' : 'Write a comment...'
+                                    editingCommentId !== null
+                                        ? 'Edit your comment...'
+                                        : replyToId !== null
+                                          ? 'Write a reply...'
+                                          : 'Write a comment...'
                                 }
-                                value={commentBody}
-                                onChange={e => setCommentBody(e.target.value)}
+                                value={editingCommentId !== null ? editingCommentBody : commentBody}
+                                onChange={e =>
+                                    editingCommentId !== null
+                                        ? setEditingCommentBody(e.target.value)
+                                        : setCommentBody(e.target.value)
+                                }
                                 disabled={isAddingComment}
                                 style={{
                                     width: '100%',
@@ -1744,6 +1842,8 @@ export default function Review({
                                     onClick={() => {
                                         setActiveLineIndex(null);
                                         setReplyToId(null);
+                                        setEditingCommentId(null);
+                                        setEditingCommentBody('');
                                     }}
                                     variant="secondary"
                                     size="sm"
@@ -1752,11 +1852,11 @@ export default function Review({
                                     Cancel
                                 </Button>
                                 <Button
-                                    onClick={handleAddComment}
+                                    onClick={editingCommentId !== null ? handleEditComment : handleAddComment}
                                     size="sm"
                                     loading={isAddingComment}
                                 >
-                                    {replyToId !== null ? 'Reply' : 'Add Comment'}
+                                    {editingCommentId !== null ? 'Save Edit' : replyToId !== null ? 'Reply' : 'Add Comment'}
                                 </Button>
                             </div>
                         </div>

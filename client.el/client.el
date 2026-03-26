@@ -904,6 +904,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
           (commented (cdr (assq 'commented_by metadata))) ;; array
           (ci-status (cdr (assq 'ci_status metadata)))
           (ci-failures (cdr (assq 'ci_failures metadata))) ;; array
+          (worktree (cdr (assq 'worktree_path metadata)))
           (body (cdr (assq 'body metadata)))
           (sb ""))
 
@@ -911,6 +912,8 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (setq sb (concat sb (format "Author: \t@%s\n" author)))
       (setq sb (concat sb (format "Title: \t%s\n" title)))
       (setq sb (concat sb (format "Refs:  %s ... %s\n" base head)))
+      (when (and worktree (not (string-empty-p worktree)))
+        (setq sb (concat sb (format "Worktree: \t%s\n" worktree))))
       (setq sb (concat sb (format "URL:   %s\n" url)))
       (setq sb (concat sb (format "State: \t%s\n" state)))
       (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "True" "False"))))

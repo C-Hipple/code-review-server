@@ -440,7 +440,13 @@ export default function Review({
         setIsAddingComment(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.EditComment', [
-                { Owner: owner, Repo: repo, Number: number, ID: editingCommentId, Body: editingCommentBody },
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    ID: editingCommentId,
+                    Body: editingCommentBody,
+                },
             ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
@@ -1246,7 +1252,11 @@ export default function Review({
                                         }
                                     }}
                                     className="hover-thread"
-                                    title={isLocalComment ? 'Click to edit this comment' : 'Click to reply to this thread'}
+                                    title={
+                                        isLocalComment
+                                            ? 'Click to edit this comment'
+                                            : 'Click to reply to this thread'
+                                    }
                                 >
                                     <div
                                         style={{
@@ -1290,7 +1300,9 @@ export default function Review({
                                                     borderRadius: '4px',
                                                 }}
                                             >
-                                                {isLocalComment ? '✎ click to edit' : '↩ click to reply'}
+                                                {isLocalComment
+                                                    ? '✎ click to edit'
+                                                    : '↩ click to reply'}
                                             </span>
                                             <span>ID: {rc.id}</span>
                                         </div>
@@ -1430,7 +1442,9 @@ export default function Review({
                                               ? 'Write a reply...'
                                               : 'Write a comment...'
                                     }
-                                    value={editingCommentId !== null ? editingCommentBody : commentBody}
+                                    value={
+                                        editingCommentId !== null ? editingCommentBody : commentBody
+                                    }
                                     onChange={e =>
                                         editingCommentId !== null
                                             ? setEditingCommentBody(e.target.value)
@@ -1471,11 +1485,19 @@ export default function Review({
                                         Cancel
                                     </Button>
                                     <Button
-                                        onClick={editingCommentId !== null ? handleEditComment : handleAddComment}
+                                        onClick={
+                                            editingCommentId !== null
+                                                ? handleEditComment
+                                                : handleAddComment
+                                        }
                                         size="sm"
                                         loading={isAddingComment}
                                     >
-                                        {editingCommentId !== null ? 'Save Edit' : replyToId !== null ? 'Reply' : 'Add Comment'}
+                                        {editingCommentId !== null
+                                            ? 'Save Edit'
+                                            : replyToId !== null
+                                              ? 'Reply'
+                                              : 'Add Comment'}
                                     </Button>
                                 </div>
                             </div>
@@ -1681,7 +1703,11 @@ export default function Review({
                                     }
                                 }}
                                 className="hover-thread"
-                                title={isLocalComment ? 'Click to edit this comment' : 'Click to reply to this thread'}
+                                title={
+                                    isLocalComment
+                                        ? 'Click to edit this comment'
+                                        : 'Click to reply to this thread'
+                                }
                             >
                                 <div
                                     style={{
@@ -1720,7 +1746,9 @@ export default function Review({
                                                 borderRadius: '4px',
                                             }}
                                         >
-                                            {isLocalComment ? '✎ click to edit' : '↩ click to reply'}
+                                            {isLocalComment
+                                                ? '✎ click to edit'
+                                                : '↩ click to reply'}
                                         </span>
                                         <span>ID: {rc.id}</span>
                                     </div>
@@ -1755,7 +1783,9 @@ export default function Review({
                                                 gap: '8px',
                                             }}
                                         >
-                                            <div style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{c.body}</div>
+                                            <div style={{ whiteSpace: 'pre-wrap', flex: 1 }}>
+                                                {c.body}
+                                            </div>
                                             {c.author === 'local' && (
                                                 <button
                                                     onClick={e => {
@@ -1852,11 +1882,19 @@ export default function Review({
                                     Cancel
                                 </Button>
                                 <Button
-                                    onClick={editingCommentId !== null ? handleEditComment : handleAddComment}
+                                    onClick={
+                                        editingCommentId !== null
+                                            ? handleEditComment
+                                            : handleAddComment
+                                    }
                                     size="sm"
                                     loading={isAddingComment}
                                 >
-                                    {editingCommentId !== null ? 'Save Edit' : replyToId !== null ? 'Reply' : 'Add Comment'}
+                                    {editingCommentId !== null
+                                        ? 'Save Edit'
+                                        : replyToId !== null
+                                          ? 'Reply'
+                                          : 'Add Comment'}
                                 </Button>
                             </div>
                         </div>

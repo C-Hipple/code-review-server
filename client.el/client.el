@@ -922,12 +922,12 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (let ((labels-str (if (> (length labels) 0) (string-join (append labels nil) ", ") "None yet")))
         (setq sb (concat sb (format "Labels: \t%s\n" labels-str))))
 
-      (setq sb (concat sb "Projects: \tNone yet\n"))
+      ;; (setq sb (concat sb "Projects: \tNone yet\n"))
 
-      (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
-        (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))
+      ;; (let ((assignees-str (if (> (length assignees) 0) (string-join (append assignees nil) ", ") "No one -- Assign yourself")))
+      ;; (setq sb (concat sb (format "Assignees: \t%s\n" assignees-str))))
 
-      (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
+      ;; (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
 
       (let* ((reviewers-list (append reviewers nil))
              (teams-list (mapcar (lambda (t) (concat "team:" t)) (append teams nil)))

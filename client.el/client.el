@@ -65,11 +65,12 @@ Set to nil to disable the timeout."
 
 (defun crs--ensure-html (text)
   "Return TEXT as HTML suitable for shr rendering.
-If TEXT already looks like HTML (starts with a tag), return it unchanged.
+If TEXT already looks like HTML (starts with a tag), bare newlines are
+replaced with <br> elements so shr preserves the visual line structure.
 Otherwise convert plain text/Markdown line breaks to HTML paragraphs and
 br elements so that shr preserves the visual line structure."
   (if (string-match-p "\\`[[:space:]]*<" text)
-      text
+      (replace-regexp-in-string "\n" "<br>" text)
     (let* ((escaped (replace-regexp-in-string "&" "&amp;" text))
            (escaped (replace-regexp-in-string "<" "&lt;" escaped))
            (escaped (replace-regexp-in-string ">" "&gt;" escaped))

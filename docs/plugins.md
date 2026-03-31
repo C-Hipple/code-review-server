@@ -53,6 +53,7 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 
 - **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
+- **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
@@ -117,3 +118,45 @@ By default, plugins only run once per PR commit (SHA). To force plugins to rerun
 ```
 
 The rerun bypasses the SHA cache check, allowing you to reprocess the same PR commit with potentially updated plugin logic or external dependencies.
+
+## Style Guidelines Plugin
+
+The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your own style rules.
+
+### Setup
+
+1. **Install the binary:**
+   ```sh
+   go install ./cmd/style_guidelines/...
+   ```
+
+2. **Create your style guide** at `~/.config/style_guidelines.md`. Write your rules in plain Markdown — the entire file is used as the system prompt for Gemini. For example:
+   ```markdown
+   # Style Guidelines
+
+   - Functions must have docstrings explaining their purpose.
+   - Use snake_case for all variable names.
+   - No magic numbers; use named constants instead.
+   - Error messages must be lowercase and end without punctuation.
+   ```
+
+3. **Set your Gemini API key:**
+   ```sh
+   export GEMINI_API_KEY=your_key_here
+   ```
+
+4. **Add to `~/.config/codereviewserver.toml`:**
+   ```toml
+   [[Plugins]]
+   Name = "Style Guidelines"
+   Command = "style_guidelines"
+   IncludeDiff = true
+   IncludeHeaders = true
+   ```
+
+### Output
+
+The plugin produces a brief report with:
+- Specific violations (with file/line references where available)
+- Areas of the diff that comply well with the guidelines
+- An overall style compliance assessment

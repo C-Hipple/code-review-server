@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -674,6 +675,116 @@ func GetLocalRepoPath(repo string) (string, error) {
 	print(repoPath)
 	// Clean path to remove double slashes if any
 	return filepath.Clean(repoPath), nil
+}
+
+type GetHunkContextArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
+	Filename string `json:"Filename"` // File path within the repo
+	Side     string `json:"Side"`     // "old" or "new" — which version of the file to read from
+	// Anchor line number in the file (not the diff position).
+	// For Direction "before": lines *above* this line are returned.
+	// For Direction "after":  lines *below* this line are returned.
+	AnchorLine int    `json:"AnchorLine"`
+	Direction  string `json:"Direction"` // "before" or "after"
+	Count      int    `json:"Count"`     // Number of extra lines to fetch (capped at 100)
+}
+
+type GetHunkContextReply struct {
+	Lines     []string `json:"lines"`      // The extra context lines
+	StartLine int      `json:"start_line"` // 1-based line number of the first returned line
+	EndLine   int      `json:"end_line"`   // 1-based line number of the last returned line
+}
+
+// GetHunkContext returns extra context lines before or after a hunk boundary,
+// allowing clients to expand the visible context around a diff without visiting the full file.
+func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkContextReply) error {
+	if args.Direction != "before" && args.Direction != "after" {
+		return fmt.Errorf("Direction must be \"before\" or \"after\", got %q", args.Direction)
+	}
+	if args.Side != "old" && args.Side != "new" {
+		return fmt.Errorf("Side must be \"old\" or \"new\", got %q", args.Side)
+	}
+	if args.AnchorLine < 1 {
+		return fmt.Errorf("AnchorLine must be >= 1, got %d", args.AnchorLine)
+	}
+	count := args.Count
+	if count <= 0 {
+		count = 20
+	}
+	if count > 100 {
+		count = 100
+	}
+
+	// Determine the ref to fetch from.
+	// For "new" side, use the PR's head SHA; for "old" side, use the base ref.
+	client := git_tools.GetGithubClient()
+
+	// Try to get head SHA from DB first (avoids an extra API call)
+	_, headSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+
+	var ref string
+	if args.Side == "new" {
+		if headSHA != "" {
+			ref = headSHA
+		} else {
+			// Fall back to fetching PR metadata from GitHub
+			pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+			if err != nil {
+				return fmt.Errorf("error fetching PR: %w", err)
+			}
+			ref = pr.GetHead().GetSHA()
+		}
+	} else {
+		// "old" side — need base ref
+		pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+		if err != nil {
+			return fmt.Errorf("error fetching PR: %w", err)
+		}
+		ref = pr.GetBase().GetSHA()
+	}
+
+	content, err := git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
+	if err != nil {
+		h.Log.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
+		return err
+	}
+
+	fileLines := strings.Split(content, "\n")
+	totalLines := len(fileLines)
+
+	var startLine, endLine int // 1-based, inclusive
+	if args.Direction == "before" {
+		endLine = args.AnchorLine - 1
+		startLine = endLine - count + 1
+		if startLine < 1 {
+			startLine = 1
+		}
+		if endLine < 1 {
+			reply.Lines = []string{}
+			reply.StartLine = 0
+			reply.EndLine = 0
+			return nil
+		}
+	} else { // "after"
+		startLine = args.AnchorLine + 1
+		endLine = startLine + count - 1
+		if startLine > totalLines {
+			reply.Lines = []string{}
+			reply.StartLine = 0
+			reply.EndLine = 0
+			return nil
+		}
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+	}
+
+	reply.Lines = fileLines[startLine-1 : endLine]
+	reply.StartLine = startLine
+	reply.EndLine = endLine
+	return nil
 }
 
 type GetPluginOutputArgs struct {

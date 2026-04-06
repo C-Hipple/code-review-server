@@ -1202,3 +1202,20 @@ func MakeExcludeAuthorFilter(authorLogin string) PRFilter {
 		return FilterPRsExcludeAuthor(prs, authorLogin)
 	}
 }
+
+// GetFileContent fetches the content of a file from a GitHub repository at a given ref (branch, tag, or SHA).
+func GetFileContent(client *github.Client, owner, repo, path, ref string) (string, error) {
+	opts := &github.RepositoryContentGetOptions{Ref: ref}
+	fileContent, _, _, err := client.Repositories.GetContents(context.Background(), owner, repo, path, opts)
+	if err != nil {
+		return "", fmt.Errorf("error fetching file content for %s at ref %s: %w", path, ref, err)
+	}
+	if fileContent == nil {
+		return "", fmt.Errorf("path %s is a directory, not a file", path)
+	}
+	content, err := fileContent.GetContent()
+	if err != nil {
+		return "", fmt.Errorf("error decoding file content for %s: %w", path, err)
+	}
+	return content, nil
+}

@@ -208,6 +208,234 @@ func TestGetHunkContextCountDefaults(t *testing.T) {
 	}
 }
 
+// simulateGetHunkContext runs the pure line-extraction and header-computation
+// logic from GetHunkContext against in-memory file content, without needing
+// GitHub API access. This lets us chain consecutive calls in tests.
+func simulateGetHunkContext(
+	fileContent string,
+	anchorLine int,
+	direction string,
+	count int,
+	origStart, origLength, newStart, newLength int,
+	hunkHeader string,
+) (GetHunkContextReply, error) {
+	if direction != "before" && direction != "after" {
+		return GetHunkContextReply{}, fmt.Errorf("bad direction %q", direction)
+	}
+
+	fileLines := strings.Split(fileContent, "\n")
+	totalLines := len(fileLines)
+
+	var startLine, endLine int
+	if direction == "before" {
+		endLine = anchorLine - 1
+		startLine = endLine - count + 1
+		if startLine < 1 {
+			startLine = 1
+		}
+		if endLine < 1 {
+			return GetHunkContextReply{Lines: []string{}}, nil
+		}
+	} else {
+		startLine = anchorLine + 1
+		endLine = startLine + count - 1
+		if startLine > totalLines {
+			return GetHunkContextReply{Lines: []string{}}, nil
+		}
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+	}
+
+	extraCount := endLine - startLine + 1
+	if direction == "before" {
+		origStart -= extraCount
+		origLength += extraCount
+		newStart -= extraCount
+		newLength += extraCount
+	} else {
+		origLength += extraCount
+		newLength += extraCount
+	}
+
+	headerSuffix := ""
+	if hunkHeader != "" {
+		headerSuffix = " " + hunkHeader
+	}
+
+	return GetHunkContextReply{
+		Lines:       fileLines[startLine-1 : endLine],
+		StartLine:   startLine,
+		EndLine:     endLine,
+		RangeHeader: fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix),
+	}, nil
+}
+
+// TestConsecutiveHunkExpansion simulates a client expanding a single hunk
+// three times in a row — twice upward ("before") and once downward ("after") —
+// and verifies that the returned lines and range headers accumulate correctly.
+//
+// Scenario: a 30-line file, hunk originally at @@ -15,3 +15,4 @@ func doStuff()
+//
+//   Expansion 1: 3 lines before (top of hunk)  → lines 12-14, header @@ -12,6 +12,7 @@
+//   Expansion 2: 3 more lines before            → lines 9-11,  header @@ -9,9 +9,10 @@
+//   Expansion 3: 3 lines after (bottom of hunk) → lines 19-21, header @@ -9,12 +9,13 @@
+func TestConsecutiveHunkExpansion(t *testing.T) {
+	// Build a 30-line file: "line 1\nline 2\n...line 30"
+	var lines []string
+	for i := 1; i <= 30; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	fileContent := strings.Join(lines, "\n")
+
+	// --- Initial hunk state ---
+	// @@ -15,3 +15,4 @@ func doStuff()
+	// Old side: lines 15,16,17   New side: lines 15,16,17,18
+	origStart, origLength := 15, 3
+	newStart, newLength := 15, 4
+	hunkHeader := "func doStuff()"
+
+	// The client tracks the top and bottom anchors of the visible hunk.
+	// "before" anchor = first line of the hunk on the new side = newStart
+	// "after"  anchor = last line of the hunk on the new side  = newStart + newLength - 1
+	topAnchor := newStart                   // 15
+	bottomAnchor := newStart + newLength - 1 // 18
+
+	// Track all context lines the client has accumulated (prepended/appended).
+	var contextBefore []string
+	var contextAfter []string
+
+	// ──────────────────────────────────────────────────
+	// Expansion 1: expand 3 lines BEFORE the hunk
+	// ──────────────────────────────────────────────────
+	reply, err := simulateGetHunkContext(fileContent, topAnchor, "before", 3,
+		origStart, origLength, newStart, newLength, hunkHeader)
+	if err != nil {
+		t.Fatalf("expansion 1 error: %v", err)
+	}
+
+	// Should return lines 12, 13, 14
+	if reply.StartLine != 12 || reply.EndLine != 14 {
+		t.Errorf("exp1: range = [%d,%d], want [12,14]", reply.StartLine, reply.EndLine)
+	}
+	wantLines := []string{"line 12", "line 13", "line 14"}
+	if len(reply.Lines) != len(wantLines) {
+		t.Fatalf("exp1: got %d lines, want %d", len(reply.Lines), len(wantLines))
+	}
+	for i, l := range reply.Lines {
+		if l != wantLines[i] {
+			t.Errorf("exp1: line[%d] = %q, want %q", i, l, wantLines[i])
+		}
+	}
+	if reply.RangeHeader != "@@ -12,6 +12,7 @@ func doStuff()" {
+		t.Errorf("exp1: header = %q, want %q", reply.RangeHeader, "@@ -12,6 +12,7 @@ func doStuff()")
+	}
+
+	// Client updates its state from the reply
+	contextBefore = append(reply.Lines, contextBefore...)
+	origStart, origLength = 12, 6
+	newStart, newLength = 12, 7
+	topAnchor = reply.StartLine // 12
+
+	// ──────────────────────────────────────────────────
+	// Expansion 2: expand 3 more lines BEFORE the hunk
+	// ──────────────────────────────────────────────────
+	reply, err = simulateGetHunkContext(fileContent, topAnchor, "before", 3,
+		origStart, origLength, newStart, newLength, hunkHeader)
+	if err != nil {
+		t.Fatalf("expansion 2 error: %v", err)
+	}
+
+	// Should return lines 9, 10, 11
+	if reply.StartLine != 9 || reply.EndLine != 11 {
+		t.Errorf("exp2: range = [%d,%d], want [9,11]", reply.StartLine, reply.EndLine)
+	}
+	wantLines = []string{"line 9", "line 10", "line 11"}
+	if len(reply.Lines) != len(wantLines) {
+		t.Fatalf("exp2: got %d lines, want %d", len(reply.Lines), len(wantLines))
+	}
+	for i, l := range reply.Lines {
+		if l != wantLines[i] {
+			t.Errorf("exp2: line[%d] = %q, want %q", i, l, wantLines[i])
+		}
+	}
+	if reply.RangeHeader != "@@ -9,9 +9,10 @@ func doStuff()" {
+		t.Errorf("exp2: header = %q, want %q", reply.RangeHeader, "@@ -9,9 +9,10 @@ func doStuff()")
+	}
+
+	// Client updates its state
+	contextBefore = append(reply.Lines, contextBefore...)
+	origStart, origLength = 9, 9
+	newStart, newLength = 9, 10
+	topAnchor = reply.StartLine // 9
+
+	// ──────────────────────────────────────────────────
+	// Expansion 3: expand 3 lines AFTER the hunk
+	// ──────────────────────────────────────────────────
+	// bottomAnchor is still 18 (last line of original new-side hunk content).
+	reply, err = simulateGetHunkContext(fileContent, bottomAnchor, "after", 3,
+		origStart, origLength, newStart, newLength, hunkHeader)
+	if err != nil {
+		t.Fatalf("expansion 3 error: %v", err)
+	}
+
+	// Should return lines 19, 20, 21
+	if reply.StartLine != 19 || reply.EndLine != 21 {
+		t.Errorf("exp3: range = [%d,%d], want [19,21]", reply.StartLine, reply.EndLine)
+	}
+	wantLines = []string{"line 19", "line 20", "line 21"}
+	if len(reply.Lines) != len(wantLines) {
+		t.Fatalf("exp3: got %d lines, want %d", len(reply.Lines), len(wantLines))
+	}
+	for i, l := range reply.Lines {
+		if l != wantLines[i] {
+			t.Errorf("exp3: line[%d] = %q, want %q", i, l, wantLines[i])
+		}
+	}
+	if reply.RangeHeader != "@@ -9,12 +9,13 @@ func doStuff()" {
+		t.Errorf("exp3: header = %q, want %q", reply.RangeHeader, "@@ -9,12 +9,13 @@ func doStuff()")
+	}
+
+	// Client updates its state
+	contextAfter = append(contextAfter, reply.Lines...)
+	bottomAnchor = reply.EndLine // 21
+
+	// ──────────────────────────────────────────────────
+	// Final verification: the accumulated context lines
+	// ──────────────────────────────────────────────────
+	// Before context (prepended top-down): line 9..14
+	expectedBefore := []string{"line 9", "line 10", "line 11", "line 12", "line 13", "line 14"}
+	if len(contextBefore) != len(expectedBefore) {
+		t.Fatalf("contextBefore: got %d lines, want %d", len(contextBefore), len(expectedBefore))
+	}
+	for i, l := range contextBefore {
+		if l != expectedBefore[i] {
+			t.Errorf("contextBefore[%d] = %q, want %q", i, l, expectedBefore[i])
+		}
+	}
+
+	// After context (appended): line 19..21
+	expectedAfter := []string{"line 19", "line 20", "line 21"}
+	if len(contextAfter) != len(expectedAfter) {
+		t.Fatalf("contextAfter: got %d lines, want %d", len(contextAfter), len(expectedAfter))
+	}
+	for i, l := range contextAfter {
+		if l != expectedAfter[i] {
+			t.Errorf("contextAfter[%d] = %q, want %q", i, l, expectedAfter[i])
+		}
+	}
+
+	// The fully expanded hunk now spans lines 9-21 in the file (13 lines on new side).
+	// Verify the final visible range makes sense:
+	// top = topAnchor (9), bottom = bottomAnchor (21)
+	if topAnchor != 9 {
+		t.Errorf("final topAnchor = %d, want 9", topAnchor)
+	}
+	if bottomAnchor != 21 {
+		t.Errorf("final bottomAnchor = %d, want 21", bottomAnchor)
+	}
+}
+
 func TestComputeRangeHeader(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -11,6 +11,7 @@ import (
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -659,6 +660,26 @@ func (h *RPCHandler) GetRateLimitStatus(args *GetRateLimitStatusArgs, reply *Get
 	return nil
 }
 
+// getFileContentLocal reads a file at a given git ref from the local clone
+// using "git show <ref>:<path>". Returns an error if the repo isn't cloned
+// locally or the ref/path doesn't exist.
+func getFileContentLocal(repo, ref, filePath string) (string, error) {
+	repoPath, err := GetLocalRepoPath(repo)
+	if err != nil {
+		return "", err
+	}
+	// Check the repo directory actually exists before shelling out.
+	if _, err := os.Stat(repoPath); err != nil {
+		return "", fmt.Errorf("local repo not found at %s: %w", repoPath, err)
+	}
+	cmd := exec.Command("git", "-C", repoPath, "show", fmt.Sprintf("%s:%s", ref, filePath))
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git show %s:%s in %s failed: %w", ref, filePath, repoPath, err)
+	}
+	return string(out), nil
+}
+
 // GetLocalRepoPath returns the expected location of a local repository.
 // It does NOT check if the directory actually exists.
 func GetLocalRepoPath(repo string) (string, error) {
@@ -725,38 +746,41 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 		count = 100
 	}
 
-	// Determine the ref to fetch from.
+	// Determine the ref to use.
 	// For "new" side, use the PR's head SHA; for "old" side, use the base ref.
-	client := git_tools.GetGithubClient()
-
-	// Try to get head SHA from DB first (avoids an extra API call)
 	_, headSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
 
 	var ref string
 	if args.Side == "new" {
 		if headSHA != "" {
 			ref = headSHA
-		} else {
-			// Fall back to fetching PR metadata from GitHub
-			pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
-			if err != nil {
-				return fmt.Errorf("error fetching PR: %w", err)
-			}
-			ref = pr.GetHead().GetSHA()
 		}
-	} else {
-		// "old" side — need base ref
+	}
+	// If we still need a ref (no cached SHA, or "old" side), fetch from GitHub.
+	if ref == "" {
+		client := git_tools.GetGithubClient()
 		pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
 		if err != nil {
 			return fmt.Errorf("error fetching PR: %w", err)
 		}
-		ref = pr.GetBase().GetSHA()
+		if args.Side == "new" {
+			ref = pr.GetHead().GetSHA()
+		} else {
+			ref = pr.GetBase().GetSHA()
+		}
 	}
 
-	content, err := git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
+	// Try reading from the local repo first via "git show <ref>:<path>".
+	// Falls back to the GitHub API only if the local repo isn't available.
+	content, err := getFileContentLocal(args.Repo, ref, args.Filename)
 	if err != nil {
-		h.Log.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
-		return err
+		h.Log.Info("Local git show failed, falling back to GitHub API", "file", args.Filename, "error", err)
+		client := git_tools.GetGithubClient()
+		content, err = git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
+		if err != nil {
+			h.Log.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
+			return err
+		}
 	}
 
 	fileLines := strings.Split(content, "\n")

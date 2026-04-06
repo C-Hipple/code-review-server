@@ -665,6 +665,9 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 		auxData.HeadSHA = *pr.Head.SHA
 		headSHA = *pr.Head.SHA
 	}
+	if pr != nil && pr.Base != nil && pr.Base.SHA != nil {
+		auxData.BaseSHA = *pr.Base.SHA
+	}
 
 	var wg sync.WaitGroup
 
@@ -839,10 +842,10 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 
 	// 2. Diff + SHA
 	if auxData.Diff != "" {
-		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.Diff)
+		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff)
 	} else if auxData.HeadSHA != "" {
 		// Store SHA even without diff so GetPRDetails can look up CI status
-		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, "")
+		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, "")
 	}
 
 	// 3. Reviews (stored in same JSON format as server.ReviewJSON)

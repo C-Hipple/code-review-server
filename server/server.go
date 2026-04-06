@@ -747,16 +747,17 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	}
 
 	// Determine the ref to use.
-	// For "new" side, use the PR's head SHA; for "old" side, use the base ref.
-	_, headSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+	// For "new" side, use the PR's head SHA; for "old" side, use the base SHA.
+	// Both are cached in the DB from workflow/renderer fetches.
+	headSHA, baseSHA, _ := config.C().DB.GetPullRequestSHAs(args.Number, args.Repo)
 
 	var ref string
 	if args.Side == "new" {
-		if headSHA != "" {
-			ref = headSHA
-		}
+		ref = headSHA
+	} else {
+		ref = baseSHA
 	}
-	// If we still need a ref (no cached SHA, or "old" side), fetch from GitHub.
+	// Fall back to GitHub API only if the cached SHA is missing.
 	if ref == "" {
 		client := git_tools.GetGithubClient()
 		pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)

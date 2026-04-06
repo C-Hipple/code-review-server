@@ -41,13 +41,13 @@ func TestExtractHunkContextLines(t *testing.T) {
 	content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 
 	tests := []struct {
-		name       string
-		anchor     int
-		direction  string
-		count      int
-		wantLines  []string
-		wantStart  int
-		wantEnd    int
+		name      string
+		anchor    int
+		direction string
+		count     int
+		wantLines []string
+		wantStart int
+		wantEnd   int
 	}{
 		{
 			name:      "3 lines before anchor at line 5",
@@ -203,6 +203,85 @@ func TestGetHunkContextCountDefaults(t *testing.T) {
 			}
 			if count != tt.expected {
 				t.Errorf("capped count = %d, want %d", count, tt.expected)
+			}
+		})
+	}
+}
+
+func TestComputeRangeHeader(t *testing.T) {
+	tests := []struct {
+		name       string
+		direction  string
+		extraCount int
+		origStart  int
+		origLength int
+		newStart   int
+		newLength  int
+		hunkHeader string
+		wantHeader string
+	}{
+		{
+			name:       "expand before — 5 extra lines",
+			direction:  "before",
+			extraCount: 5,
+			origStart:  10, origLength: 7,
+			newStart: 12, newLength: 8,
+			hunkHeader: "func main()",
+			wantHeader: "@@ -5,12 +7,13 @@ func main()",
+		},
+		{
+			name:       "expand after — 3 extra lines",
+			direction:  "after",
+			extraCount: 3,
+			origStart:  10, origLength: 7,
+			newStart: 12, newLength: 8,
+			hunkHeader: "",
+			wantHeader: "@@ -10,10 +12,11 @@",
+		},
+		{
+			name:       "expand before — clamped (fewer lines available)",
+			direction:  "before",
+			extraCount: 2,
+			origStart:  3, origLength: 4,
+			newStart: 3, newLength: 5,
+			hunkHeader: "",
+			wantHeader: "@@ -1,6 +1,7 @@",
+		},
+		{
+			name:       "expand after with hunk header",
+			direction:  "after",
+			extraCount: 10,
+			origStart:  20, origLength: 5,
+			newStart: 25, newLength: 6,
+			hunkHeader: "type Foo struct",
+			wantHeader: "@@ -20,15 +25,16 @@ type Foo struct",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origStart := tt.origStart
+			origLength := tt.origLength
+			newStart := tt.newStart
+			newLength := tt.newLength
+
+			if tt.direction == "before" {
+				origStart -= tt.extraCount
+				origLength += tt.extraCount
+				newStart -= tt.extraCount
+				newLength += tt.extraCount
+			} else {
+				origLength += tt.extraCount
+				newLength += tt.extraCount
+			}
+
+			headerSuffix := ""
+			if tt.hunkHeader != "" {
+				headerSuffix = " " + tt.hunkHeader
+			}
+			got := fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix)
+			if got != tt.wantHeader {
+				t.Errorf("got %q, want %q", got, tt.wantHeader)
 			}
 		})
 	}

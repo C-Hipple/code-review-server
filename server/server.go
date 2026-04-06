@@ -689,12 +689,20 @@ type GetHunkContextArgs struct {
 	AnchorLine int    `json:"AnchorLine"`
 	Direction  string `json:"Direction"` // "before" or "after"
 	Count      int    `json:"Count"`     // Number of extra lines to fetch (capped at 100)
+
+	// Current hunk range — used to compute the updated hunk header after expansion.
+	OrigStart  int    `json:"OrigStart"`  // Current @@ -OrigStart,OrigLength
+	OrigLength int    `json:"OrigLength"`
+	NewStart   int    `json:"NewStart"`   // Current @@ +NewStart,NewLength
+	NewLength  int    `json:"NewLength"`
+	HunkHeader string `json:"HunkHeader"` // Optional text after @@ (e.g. function name)
 }
 
 type GetHunkContextReply struct {
-	Lines     []string `json:"lines"`      // The extra context lines
-	StartLine int      `json:"start_line"` // 1-based line number of the first returned line
-	EndLine   int      `json:"end_line"`   // 1-based line number of the last returned line
+	Lines       []string `json:"lines"`        // The extra context lines
+	StartLine   int      `json:"start_line"`   // 1-based line number of the first returned line
+	EndLine     int      `json:"end_line"`     // 1-based line number of the last returned line
+	RangeHeader string   `json:"range_header"` // Updated @@ -a,b +c,d @@ header for the expanded hunk
 }
 
 // GetHunkContext returns extra context lines before or after a hunk boundary,
@@ -784,6 +792,33 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	reply.Lines = fileLines[startLine-1 : endLine]
 	reply.StartLine = startLine
 	reply.EndLine = endLine
+
+	// Compute the updated hunk header reflecting the expansion.
+	// The extra lines are context (unchanged), so they increase both orig and new lengths equally.
+	extraCount := endLine - startLine + 1
+	origStart := args.OrigStart
+	origLength := args.OrigLength
+	newStart := args.NewStart
+	newLength := args.NewLength
+
+	if args.Direction == "before" {
+		// Expanding upward: the hunk now starts earlier, length grows.
+		origStart -= extraCount
+		origLength += extraCount
+		newStart -= extraCount
+		newLength += extraCount
+	} else {
+		// Expanding downward: start stays the same, length grows.
+		origLength += extraCount
+		newLength += extraCount
+	}
+
+	headerSuffix := ""
+	if args.HunkHeader != "" {
+		headerSuffix = " " + args.HunkHeader
+	}
+	reply.RangeHeader = fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix)
+
 	return nil
 }
 

@@ -308,6 +308,11 @@ Bun.serve<{
             return handleRpc('RPCHandler.RemovePRComments', [body]);
         }
 
+        if (url.pathname === '/api/get-hunk-context' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.GetHunkContext', [body]);
+        }
+
         if (
             url.pathname === '/api/list-plugins' &&
             (req.method === 'POST' || req.method === 'GET')

@@ -12,7 +12,7 @@ import {
     nord,
     nightOwl,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { rpcCall } from '../api';
+import { rpcCall, getHunkContext } from '../api';
 import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { getClickColumn } from '../utils/dom';
@@ -341,6 +341,78 @@ export default function Review({
             console.error(e);
         } finally {
             setLoading(false);
+        }
+    };
+
+    // Expand a hunk by fetching extra context lines from the server and
+    // splicing them into the current diff text.
+    const handleExpandHunk = async (
+        hunkLineIndex: number,
+        file: string,
+        direction: 'before' | 'after',
+        count: number = 20
+    ) => {
+        const lines = diff.split('\n');
+        const hunkLine = lines[hunkLineIndex];
+        if (!hunkLine) return;
+        const hunkMatch = hunkLine.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
+        if (!hunkMatch) return;
+        const origStart = parseInt(hunkMatch[1], 10);
+        const origLength = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
+        const newStart = parseInt(hunkMatch[3], 10);
+        const newLength = hunkMatch[4] !== undefined ? parseInt(hunkMatch[4], 10) : 1;
+        const hunkHeader = hunkMatch[5].replace(/^\s+/, '');
+
+        // Anchor: for "before", the first new-side line of the hunk; for "after",
+        // the last new-side line of the hunk.
+        const anchorLine = direction === 'before' ? newStart : newStart + newLength - 1;
+        if (anchorLine < 1) return;
+
+        try {
+            const res = await getHunkContext({
+                Owner: owner,
+                Repo: repo,
+                Number: number,
+                Filename: file,
+                Side: 'new',
+                AnchorLine: anchorLine,
+                Direction: direction,
+                Count: count,
+                OrigStart: origStart,
+                OrigLength: origLength,
+                NewStart: newStart,
+                NewLength: newLength,
+                HunkHeader: hunkHeader,
+            });
+
+            if (!res.lines || res.lines.length === 0) return;
+
+            // Prefix each context line with a single space (diff convention for
+            // unchanged lines).
+            const contextLines = res.lines.map(l => ` ${l}`);
+
+            const newLines = lines.slice();
+            // Replace the hunk header with the updated range header from the server.
+            if (res.range_header) {
+                newLines[hunkLineIndex] = res.range_header;
+            }
+
+            if (direction === 'before') {
+                newLines.splice(hunkLineIndex + 1, 0, ...contextLines);
+            } else {
+                // Find the end of this hunk: next hunk header, next file, or EOF.
+                let endIdx = hunkLineIndex + 1;
+                while (endIdx < newLines.length) {
+                    const l = newLines[endIdx];
+                    if (l.startsWith('@@ ') || l.startsWith('diff --git ')) break;
+                    endIdx++;
+                }
+                newLines.splice(endIdx, 0, ...contextLines);
+            }
+
+            setDiff(newLines.join('\n'));
+        } catch (e) {
+            console.error('Failed to expand hunk context:', e);
         }
     };
 
@@ -1617,6 +1689,65 @@ export default function Review({
                                 }
                             >
                                 {isAddition ? '+' : isDeletion ? '-' : ''}
+                            </span>
+                        )}
+                        {isHunkHeader && item.file && (
+                            <span
+                                style={{
+                                    display: 'inline-flex',
+                                    gap: '4px',
+                                    padding: '0 6px',
+                                    alignItems: 'center',
+                                }}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={e => {
+                                        e.stopPropagation();
+                                        handleExpandHunk(
+                                            item.originalLineIndex,
+                                            item.file!,
+                                            'before'
+                                        );
+                                    }}
+                                    title="Expand 20 lines before this hunk"
+                                    style={{
+                                        background: 'transparent',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-secondary)',
+                                        borderRadius: '3px',
+                                        padding: '0 6px',
+                                        fontSize: '11px',
+                                        lineHeight: '16px',
+                                        cursor: 'pointer',
+                                    }}
+                                >
+                                    ↑
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={e => {
+                                        e.stopPropagation();
+                                        handleExpandHunk(
+                                            item.originalLineIndex,
+                                            item.file!,
+                                            'after'
+                                        );
+                                    }}
+                                    title="Expand 20 lines after this hunk"
+                                    style={{
+                                        background: 'transparent',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-secondary)',
+                                        borderRadius: '3px',
+                                        padding: '0 6px',
+                                        fontSize: '11px',
+                                        lineHeight: '16px',
+                                        cursor: 'pointer',
+                                    }}
+                                >
+                                    ↓
+                                </button>
                             </span>
                         )}
                         <span

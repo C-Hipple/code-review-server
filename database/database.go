@@ -319,6 +319,15 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add base_sha column to PullRequests if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PullRequests') WHERE name='base_sha'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PullRequests ADD COLUMN base_sha TEXT DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding base_sha column to PullRequests", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -832,13 +841,27 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 	return body, sha, nil
 }
 
-func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, body string) error {
+// GetPullRequestSHAs returns both the head and base SHAs for a cached PR.
+func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA string, err error) {
+	err = db.conn.QueryRow(
+		"SELECT latest_sha, COALESCE(base_sha, '') FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		prNumber, repo,
+	).Scan(&headSHA, &baseSHA)
+
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	return
+}
+
+func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, baseSha, body string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PullRequests (pr_number, repo, latest_sha, body)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO PullRequests (pr_number, repo, latest_sha, base_sha, body)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
-			body = excluded.body`,
-		prNumber, repo, latestSha, body,
+			body = excluded.body,
+			base_sha = excluded.base_sha`,
+		prNumber, repo, latestSha, baseSha, body,
 	)
 	return err
 }

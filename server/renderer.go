@@ -742,6 +742,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	var metadata PRMetadata
 	var headSHA string
+	var baseSHA string
 	var reviews []ReviewJSON
 	needsFreshFetch := skipCache
 
@@ -775,9 +776,12 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				return nil, err
 			}
 		} else {
-			// Extract SHA for CI status lookup
+			// Extract SHAs for CI status lookup and context expansion
 			if pr.Head != nil && pr.Head.SHA != nil {
 				headSHA = *pr.Head.SHA
+			}
+			if pr.Base != nil && pr.Base.SHA != nil {
+				baseSHA = *pr.Base.SHA
 			}
 
 			// Fetch Reviewers (Requested)
@@ -936,7 +940,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		} else {
 			diff = d
 			// Store in cache
-			config.C().DB.UpsertPullRequest(number, repo, headSHA, diff)
+			config.C().DB.UpsertPullRequest(number, repo, headSHA, baseSHA, diff)
 		}
 	}
 

@@ -46,6 +46,7 @@ type PRAuxData struct {
 	Diff              string
 	DiffLines         []string
 	HeadSHA           string // SHA of the PR head for DB storage
+	BaseSHA           string // SHA of the PR base for DB storage
 }
 
 type Workflow interface {
@@ -247,7 +248,13 @@ func (prb PRToOrgBridge) Details() []string {
 				if sha == "" {
 					sha = headSHA
 				}
-				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetName(), sha, auxData.Diff); err != nil {
+				baseSHA := ""
+				if auxData.BaseSHA != "" {
+					baseSHA = auxData.BaseSHA
+				} else if prb.PR.Base != nil && prb.PR.Base.SHA != nil {
+					baseSHA = *prb.PR.Base.SHA
+				}
+				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetName(), sha, baseSHA, auxData.Diff); err != nil {
 					slog.Error("Error storing pre-fetched PR diff in database", "pr", prb.PR.GetNumber(), "error", err)
 				}
 			}
@@ -534,8 +541,8 @@ func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 		return []string{}
 	}
 
-	// Store the result in the database
-	if err := config.C().DB.UpsertPullRequest(number, repo, headSHA, diff); err != nil {
+	// Store the result in the database (base SHA unknown at this point, will be filled by workflow)
+	if err := config.C().DB.UpsertPullRequest(number, repo, headSHA, "", diff); err != nil {
 		slog.Error("Error storing PR diff in database", "pr", number, "repo", repo, "error", err)
 		// Continue even if storage fails
 	}

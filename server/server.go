@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -10,6 +11,7 @@ import (
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -658,6 +660,26 @@ func (h *RPCHandler) GetRateLimitStatus(args *GetRateLimitStatusArgs, reply *Get
 	return nil
 }
 
+// getFileContentLocal reads a file at a given git ref from the local clone
+// using "git show <ref>:<path>". Returns an error if the repo isn't cloned
+// locally or the ref/path doesn't exist.
+func getFileContentLocal(repo, ref, filePath string) (string, error) {
+	repoPath, err := GetLocalRepoPath(repo)
+	if err != nil {
+		return "", err
+	}
+	// Check the repo directory actually exists before shelling out.
+	if _, err := os.Stat(repoPath); err != nil {
+		return "", fmt.Errorf("local repo not found at %s: %w", repoPath, err)
+	}
+	cmd := exec.Command("git", "-C", repoPath, "show", fmt.Sprintf("%s:%s", ref, filePath))
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git show %s:%s in %s failed: %w", ref, filePath, repoPath, err)
+	}
+	return string(out), nil
+}
+
 // GetLocalRepoPath returns the expected location of a local repository.
 // It does NOT check if the directory actually exists.
 func GetLocalRepoPath(repo string) (string, error) {
@@ -674,6 +696,155 @@ func GetLocalRepoPath(repo string) (string, error) {
 	print(repoPath)
 	// Clean path to remove double slashes if any
 	return filepath.Clean(repoPath), nil
+}
+
+type GetHunkContextArgs struct {
+	Owner    string `json:"Owner"`
+	Repo     string `json:"Repo"`
+	Number   int    `json:"Number"`
+	Filename string `json:"Filename"` // File path within the repo
+	Side     string `json:"Side"`     // "old" or "new" — which version of the file to read from
+	// Anchor line number in the file (not the diff position).
+	// For Direction "before": lines *above* this line are returned.
+	// For Direction "after":  lines *below* this line are returned.
+	AnchorLine int    `json:"AnchorLine"`
+	Direction  string `json:"Direction"` // "before" or "after"
+	Count      int    `json:"Count"`     // Number of extra lines to fetch (capped at 100)
+
+	// Current hunk range — used to compute the updated hunk header after expansion.
+	OrigStart  int    `json:"OrigStart"`  // Current @@ -OrigStart,OrigLength
+	OrigLength int    `json:"OrigLength"`
+	NewStart   int    `json:"NewStart"`   // Current @@ +NewStart,NewLength
+	NewLength  int    `json:"NewLength"`
+	HunkHeader string `json:"HunkHeader"` // Optional text after @@ (e.g. function name)
+}
+
+type GetHunkContextReply struct {
+	Lines       []string `json:"lines"`        // The extra context lines
+	StartLine   int      `json:"start_line"`   // 1-based line number of the first returned line
+	EndLine     int      `json:"end_line"`     // 1-based line number of the last returned line
+	RangeHeader string   `json:"range_header"` // Updated @@ -a,b +c,d @@ header for the expanded hunk
+}
+
+// GetHunkContext returns extra context lines before or after a hunk boundary,
+// allowing clients to expand the visible context around a diff without visiting the full file.
+func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkContextReply) error {
+	if args.Direction != "before" && args.Direction != "after" {
+		return fmt.Errorf("Direction must be \"before\" or \"after\", got %q", args.Direction)
+	}
+	if args.Side != "old" && args.Side != "new" {
+		return fmt.Errorf("Side must be \"old\" or \"new\", got %q", args.Side)
+	}
+	if args.AnchorLine < 1 {
+		return fmt.Errorf("AnchorLine must be >= 1, got %d", args.AnchorLine)
+	}
+	count := args.Count
+	if count <= 0 {
+		count = 20
+	}
+	if count > 100 {
+		count = 100
+	}
+
+	// Determine the ref to use.
+	// For "new" side, use the PR's head SHA; for "old" side, use the base SHA.
+	// Both are cached in the DB from workflow/renderer fetches.
+	headSHA, baseSHA, _ := config.C().DB.GetPullRequestSHAs(args.Number, args.Repo)
+
+	var ref string
+	if args.Side == "new" {
+		ref = headSHA
+	} else {
+		ref = baseSHA
+	}
+	// Fall back to GitHub API only if the cached SHA is missing.
+	if ref == "" {
+		client := git_tools.GetGithubClient()
+		pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+		if err != nil {
+			return fmt.Errorf("error fetching PR: %w", err)
+		}
+		if args.Side == "new" {
+			ref = pr.GetHead().GetSHA()
+		} else {
+			ref = pr.GetBase().GetSHA()
+		}
+	}
+
+	// Try reading from the local repo first via "git show <ref>:<path>".
+	// Falls back to the GitHub API only if the local repo isn't available.
+	content, err := getFileContentLocal(args.Repo, ref, args.Filename)
+	if err != nil {
+		h.Log.Info("Local git show failed, falling back to GitHub API", "file", args.Filename, "error", err)
+		client := git_tools.GetGithubClient()
+		content, err = git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
+		if err != nil {
+			h.Log.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
+			return err
+		}
+	}
+
+	fileLines := strings.Split(content, "\n")
+	totalLines := len(fileLines)
+
+	var startLine, endLine int // 1-based, inclusive
+	if args.Direction == "before" {
+		endLine = args.AnchorLine - 1
+		startLine = endLine - count + 1
+		if startLine < 1 {
+			startLine = 1
+		}
+		if endLine < 1 {
+			reply.Lines = []string{}
+			reply.StartLine = 0
+			reply.EndLine = 0
+			return nil
+		}
+	} else { // "after"
+		startLine = args.AnchorLine + 1
+		endLine = startLine + count - 1
+		if startLine > totalLines {
+			reply.Lines = []string{}
+			reply.StartLine = 0
+			reply.EndLine = 0
+			return nil
+		}
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+	}
+
+	reply.Lines = fileLines[startLine-1 : endLine]
+	reply.StartLine = startLine
+	reply.EndLine = endLine
+
+	// Compute the updated hunk header reflecting the expansion.
+	// The extra lines are context (unchanged), so they increase both orig and new lengths equally.
+	extraCount := endLine - startLine + 1
+	origStart := args.OrigStart
+	origLength := args.OrigLength
+	newStart := args.NewStart
+	newLength := args.NewLength
+
+	if args.Direction == "before" {
+		// Expanding upward: the hunk now starts earlier, length grows.
+		origStart -= extraCount
+		origLength += extraCount
+		newStart -= extraCount
+		newLength += extraCount
+	} else {
+		// Expanding downward: start stays the same, length grows.
+		origLength += extraCount
+		newLength += extraCount
+	}
+
+	headerSuffix := ""
+	if args.HunkHeader != "" {
+		headerSuffix = " " + args.HunkHeader
+	}
+	reply.RangeHeader = fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix)
+
+	return nil
 }
 
 type GetPluginOutputArgs struct {

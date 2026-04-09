@@ -660,6 +660,8 @@ Re-renders the buffer with or without comments based on the toggle state."
   "q" #'quit-window
   "]" #'crs-next-pr
   "[" #'crs-prev-pr
+  "<" #'crs-expand-hunk-before
+  ">" #'crs-expand-hunk-after
   )
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
@@ -2214,6 +2216,218 @@ If the body is empty, prompts the user."
   "Request changes on the review."
   (interactive)
   (crs-submit-review "REQUEST_CHANGES"))
+
+(defun crs--parse-hunk-header (line)
+  "Parse a diff \"@@ -a,b +c,d @@\" header LINE.
+Returns a plist (:orig-start :orig-length :new-start :new-length :suffix)
+or nil if LINE does not match."
+  (when (string-match
+         "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@\\(.*\\)$"
+         line)
+    (list :orig-start (string-to-number (match-string 1 line))
+          :orig-length (if (match-string 2 line)
+                           (string-to-number (match-string 2 line))
+                         1)
+          :new-start (string-to-number (match-string 3 line))
+          :new-length (if (match-string 4 line)
+                          (string-to-number (match-string 4 line))
+                        1)
+          :suffix (or (match-string 5 line) ""))))
+
+(defun crs--find-current-hunk-info ()
+  "Return info about the hunk at point in the current review buffer.
+The return value is a plist with keys:
+  :filename    — file path from the nearest file header above point
+  :hunk-index  — 0-based index of the current hunk within that file
+  :header-line — buffer line number of the @@ header for this hunk
+  :orig-start :orig-length :new-start :new-length :suffix — parsed header fields
+Signals a `user-error' when the cursor is not inside a hunk."
+  (save-excursion
+    (end-of-line)
+    (let ((target-line (line-number-at-pos))
+          filename hunk-headers)
+      ;; 1. Nearest file header above point
+      (unless (re-search-backward
+               "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+\\([^[:space:]\n].*?\\)[[:space:]]*$"
+               nil t)
+        (user-error "No file header found above point"))
+      (setq filename (match-string 2))
+      ;; 2. Scan @@ headers between this file header and the next file header (or EOF)
+      (forward-line 1)
+      (let ((next-file-pos
+             (or (save-excursion
+                   (when (re-search-forward
+                          "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+"
+                          nil t)
+                     (line-beginning-position)))
+                 (point-max))))
+        (while (re-search-forward "^@@ " next-file-pos t)
+          (let ((line-start (line-beginning-position))
+                (line-end (line-end-position)))
+            (push (cons (line-number-at-pos)
+                        (buffer-substring-no-properties line-start line-end))
+                  hunk-headers))
+          (forward-line 1)))
+      (setq hunk-headers (nreverse hunk-headers))
+      ;; 3. Pick the last hunk header whose line is at or above target-line
+      (let ((current nil) (current-idx nil) (idx 0))
+        (dolist (h hunk-headers)
+          (when (<= (car h) target-line)
+            (setq current h)
+            (setq current-idx idx))
+          (setq idx (1+ idx)))
+        (unless current
+          (user-error "Not inside a hunk in file %s" filename))
+        (let ((parsed (crs--parse-hunk-header (cdr current))))
+          (unless parsed
+            (error "Could not parse hunk header: %s" (cdr current)))
+          (append (list :filename filename
+                        :hunk-index current-idx
+                        :header-line (car current))
+                  parsed))))))
+
+(defun crs--expand-hunk-in-diff (diff filename hunk-index direction new-lines new-header)
+  "Return an updated DIFF string with context added to a specific hunk.
+FILENAME selects the file, HUNK-INDEX is the 0-based hunk index within that
+file, DIRECTION is \"before\" or \"after\", NEW-LINES is a list of raw file
+line strings (without leading \" \" prefix), and NEW-HEADER is the updated
+\"@@ -a,b +c,d @@ ...\" line to replace the existing one."
+  (with-temp-buffer
+    (insert diff)
+    (goto-char (point-min))
+    (let ((current-file nil)
+          (in-target nil)
+          (hunk-count 0)
+          (done nil))
+      (while (and (not done) (not (eobp)))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position))))
+          (cond
+           ;; "diff --git a/foo b/foo" header: start of a new file section
+           ((string-match "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" line)
+            (let ((file-a (match-string 1 line))
+                  (file-b (match-string 2 line)))
+              (setq current-file (if (string= file-b "dev/null") file-a file-b))
+              (setq in-target (string= current-file filename))
+              (setq hunk-count 0))
+            (forward-line 1))
+           ;; "+++ b/foo" header: resets the current file (used when no "diff --git" is present)
+           ((string-match "^\\+\\+\\+ b/\\(.*\\)$" line)
+            (setq current-file (match-string 1 line))
+            (setq in-target (string= current-file filename))
+            (forward-line 1))
+           ;; Hunk header inside the target file
+           ((and in-target (string-prefix-p "@@ " line))
+            (if (= hunk-count hunk-index)
+                (progn
+                  ;; Replace this header with the new one from the server
+                  (delete-region (line-beginning-position) (line-end-position))
+                  (insert new-header)
+                  (forward-line 1)
+                  (cond
+                   ((string= direction "before")
+                    (dolist (nl new-lines)
+                      (insert " " nl "\n")))
+                   ((string= direction "after")
+                    ;; Walk past the body of this hunk, stopping at the next
+                    ;; hunk header or file header (or EOF).
+                    (while (and (not (eobp))
+                                (let ((l (buffer-substring-no-properties
+                                          (line-beginning-position)
+                                          (line-end-position))))
+                                  (not (or (string-prefix-p "@@ " l)
+                                           (string-prefix-p "diff --git" l)))))
+                      (forward-line 1))
+                    (dolist (nl new-lines)
+                      (insert " " nl "\n"))))
+                  (setq done t))
+              (setq hunk-count (1+ hunk-count))
+              (forward-line 1)))
+           (t
+            (forward-line 1))))))
+    (buffer-string)))
+
+(defun crs--expand-hunk (direction count)
+  "Expand the hunk at point by COUNT lines in DIRECTION.
+DIRECTION must be \"before\" or \"after\"."
+  (unless crs--buffer-diff
+    (user-error "No PR diff loaded in this buffer"))
+  (let* ((info (crs--get-current-review-info))
+         (owner (nth 0 info))
+         (repo (nth 1 info))
+         (number (nth 2 info))
+         (hunk (crs--find-current-hunk-info))
+         (filename (plist-get hunk :filename))
+         (hunk-index (plist-get hunk :hunk-index))
+         (header-line (plist-get hunk :header-line))
+         (new-start (plist-get hunk :new-start))
+         (new-length (plist-get hunk :new-length))
+         (orig-start (plist-get hunk :orig-start))
+         (orig-length (plist-get hunk :orig-length))
+         (suffix (string-trim (or (plist-get hunk :suffix) "")))
+         (anchor (if (string= direction "before")
+                     new-start
+                   (+ new-start (max 0 (1- new-length)))))
+         (current-line (line-number-at-pos))
+         (buffer (current-buffer)))
+    (when (< anchor 1)
+      (user-error "Cannot expand: hunk anchor out of range"))
+    (message "Fetching %d lines %s hunk %d of %s..." count direction (1+ hunk-index) filename)
+    (crs--send-request
+     "RPCHandler.GetHunkContext"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)
+                   (cons 'Filename filename)
+                   (cons 'Side "new")
+                   (cons 'AnchorLine anchor)
+                   (cons 'Direction direction)
+                   (cons 'Count count)
+                   (cons 'OrigStart orig-start)
+                   (cons 'OrigLength orig-length)
+                   (cons 'NewStart new-start)
+                   (cons 'NewLength new-length)
+                   (cons 'HunkHeader suffix)))
+     (lambda (result)
+       (let* ((err (cdr (assq 'error result)))
+              (raw-lines (cdr (assq 'lines result)))
+              (lines (if (vectorp raw-lines) (append raw-lines nil) raw-lines))
+              (new-range (cdr (assq 'range_header result))))
+         (cond
+          (err
+           (message "Error expanding hunk: %s"
+                    (if (stringp err) err (cdr (assq 'message err)))))
+          ((or (null lines) (zerop (length lines)))
+           (message "No more context %s this hunk" direction))
+          (t
+           (let* ((added (length lines))
+                  (new-diff (crs--expand-hunk-in-diff
+                             (buffer-local-value 'crs--buffer-diff buffer)
+                             filename hunk-index direction lines new-range))
+                  (target-line (if (and (string= direction "before")
+                                        (> current-line header-line))
+                                   (+ current-line added)
+                                 current-line)))
+             (with-current-buffer buffer
+               (setq crs--buffer-diff new-diff)
+               (crs--render-and-update buffer nil target-line))
+             (message "Expanded hunk %s by %d line%s"
+                      direction added
+                      (if (= added 1) "" "s"))))))))))
+
+(defun crs-expand-hunk-before (&optional count)
+  "Expand the hunk at point upward with more context lines.
+With a numeric prefix, fetch COUNT lines (default 20, max 100)."
+  (interactive "P")
+  (crs--expand-hunk "before"
+                    (if count (prefix-numeric-value count) 20)))
+
+(defun crs-expand-hunk-after (&optional count)
+  "Expand the hunk at point downward with more context lines.
+With a numeric prefix, fetch COUNT lines (default 20, max 100)."
+  (interactive "P")
+  (crs--expand-hunk "after"
+                    (if count (prefix-numeric-value count) 20)))
 
 (defun crs-sync-pr ()
   "Sync the PR in the current buffer with the server."

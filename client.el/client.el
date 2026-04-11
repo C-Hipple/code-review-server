@@ -652,6 +652,7 @@ Re-renders the buffer with or without comments based on the toggle state."
   "p" #'crs-get-plugin-output
   "P" #'crs-get-single-plugin-output
   "D" #'crs-run-on-demand-plugin
+  "R" #'crs-rerun-plugin
   "H" #'crs-toggle-comments
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
@@ -722,6 +723,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
     "D" #'crs-run-on-demand-plugin
+    "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
@@ -746,6 +748,7 @@ Re-renders the buffer with or without comments based on the toggle state."
     "p" #'crs-get-plugin-output
     "P" #'crs-get-single-plugin-output
     "D" #'crs-run-on-demand-plugin
+    "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
@@ -1867,7 +1870,8 @@ Temporarily disables read-only mode (required when called from
   "r" #'crs-refresh-plugin-output
   "q" #'crs-quit-plugin-output
   "w" #'crs-wash-plugin-output
-  "D" #'crs-run-on-demand-plugin)
+  "D" #'crs-run-on-demand-plugin
+  "R" #'crs-rerun-plugin)
 
 (define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
   "Major mode for viewing plugin output.
@@ -1880,6 +1884,7 @@ Temporarily disables read-only mode (required when called from
     "r" #'crs-refresh-plugin-output
     "q" #'crs-quit-plugin-output
     "D" #'crs-run-on-demand-plugin
+    "R" #'crs-rerun-plugin
     "w" #'crs-wash-plugin-output))
 
 (defun crs--find-first-hunk-line ()
@@ -2407,6 +2412,34 @@ async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see re
            (lambda (result)
              (let ((msg (cdr (assq 'message result))))
                (message "%s" (or msg "On-demand plugin triggered."))))))))))
+
+(defun crs-rerun-plugin ()
+  "Rerun any plugin for the current PR.
+Presents a selection of all configured plugins and triggers
+async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see results."
+  (interactive)
+  (if (null crs-plugins-full)
+      (progn
+        (message "No plugins loaded. Refreshing list... please try again in a moment.")
+        (crs-list-plugins))
+    (let* ((candidates (mapcar (lambda (p) (cdr (assq 'Name p))) crs-plugins-full)))
+      (if (null candidates)
+          (message "No plugins configured.")
+        (let* ((plugin (completing-read "Rerun plugin: " candidates nil t))
+               (info (crs--get-current-review-info))
+               (owner (nth 0 info))
+               (repo (nth 1 info))
+               (number (nth 2 info)))
+          (message "Rerunning plugin '%s' for %s/%s #%d..." plugin owner repo number)
+          (crs--send-request
+           "RPCHandler.RerunPlugins"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)
+                         (cons 'Plugins (vector plugin))))
+           (lambda (result)
+             (let ((msg (cdr (assq 'message result))))
+               (message "%s" (or msg "Plugin rerun triggered."))))))))))
 
 (defun crs--switch-and-fetch (project-name branch-name)
   "Switch to the project directory, fetch, and checkout the branch.

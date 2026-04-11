@@ -22,7 +22,35 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetAllReviews': '/api/reviews',
     'RPCHandler.ListPlugins': '/api/list-plugins',
     'RPCHandler.GetPluginOutput': '/api/get-plugin-output',
+    'RPCHandler.GetHunkContext': '/api/get-hunk-context',
 };
+
+export interface GetHunkContextArgs {
+    Owner: string;
+    Repo: string;
+    Number: number;
+    Filename: string;
+    Side: 'old' | 'new';
+    AnchorLine: number;
+    Direction: 'before' | 'after';
+    Count: number;
+    OrigStart: number;
+    OrigLength: number;
+    NewStart: number;
+    NewLength: number;
+    HunkHeader: string;
+}
+
+export interface GetHunkContextReply {
+    lines: string[];
+    start_line: number;
+    end_line: number;
+    range_header: string;
+}
+
+export async function getHunkContext(args: GetHunkContextArgs): Promise<GetHunkContextReply> {
+    return rpcCall<GetHunkContextReply>('RPCHandler.GetHunkContext', [args]);
+}
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
     const id = Date.now();

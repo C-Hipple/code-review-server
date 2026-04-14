@@ -37,6 +37,16 @@
   "Face for PR summary items."
   :group 'my-custom-highlights)
 
+(defface washer-approved-face
+  '((t (:foreground "#86c386" :weight bold :height 1.3)))
+  "Face for PR summary items."
+  :group 'my-custom-highlights)
+
+(defface washer-requested-changes-face
+  '((t (:foreground "#a84848" :weight bold :height 1.3)))
+  "Face for PR summary items."
+  :group 'my-custom-highlights)
+
 (defface washer-section-heading-face
   '((t (:foreground "#cb4b16" :weight bold :height 1.3)))
   "Face for major section headings."
@@ -63,7 +73,10 @@
                             ("\\[OUTDATED\\]\\([─ ]*\\)$" 1 'washer-review-comment-seperator-face t)
                             ("^    │ .*" 0 'washer-review-comment-face t)
                             ("^\\(modified\\|deleted\\|new file\\|renamed\\).*" 0 'washer-file-header-face t)
-                            ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|URL\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\|Approved-By\\|CI\\ Status\\):.*" 0 'washer-summary-face t)
+                            ("^\\(Title\\|Project\\|Author\\|State\\|Reviewers\\|Refs\\|URL\\|Milestone\\|Labels\\|Projects\\|Draft\\|Assignees\\|Suggested-Reviewers\\|CI\\ Status\\):.*" 0 'washer-summary-face t)
+                            ("^\\(Approved-By\\):.*" 0 'washer-approved-face t)
+                            ("^\\(Changes-Requested-By\\):.*" 0 'washer-requested-changes-face t)
+
                             ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)
                             ("^Commit by .*$" 0 'washer-commit-face t)
                             ("^PR contains [0-9]+ \\(outdated comments\\)$" 1 'washer-outdated-face t)

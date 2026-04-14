@@ -657,7 +657,8 @@ Re-renders the buffer with or without comments based on the toggle state."
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
-  "O" #'crs-show-outdated-comments
+  "O" #'crs-expand-hunk-before
+  "o" #'crs-expand-hunk-after
   "q" #'quit-window
   "]" #'crs-next-pr
   "[" #'crs-prev-pr
@@ -729,7 +730,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
-    "O" #'crs-show-outdated-comments
+    "O" #'crs-expand-hunk-before
+    "o" #'crs-expand-hunk-after
     "q" #'quit-window
     "]" #'crs-next-pr
     "[" #'crs-prev-pr
@@ -754,7 +756,8 @@ Re-renders the buffer with or without comments based on the toggle state."
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
     "RET" #'crs-visit-file
-    "O" #'crs-show-outdated-comments
+    "O" #'crs-expand-hunk-before
+    "o" #'crs-expand-hunk-after
     "q" #'quit-window
     "]" #'crs-next-pr
     "[" #'crs-prev-pr

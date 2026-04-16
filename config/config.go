@@ -51,7 +51,8 @@ type Config struct {
 	JiraDomain     string
 	GithubUsername string
 	RepoLocation   string
-	AutoWorktree   bool
+	AutoWorktree         bool
+	DesktopNotifications bool              // Send desktop notifications when a PR is added to a section
 	SectionPriority map[string]int    // Map of section title to priority (lower is better)
 	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins         []Plugin
@@ -124,17 +125,18 @@ func ParseConfigForTest(data []byte) (*Config, error) {
 // It does NOT initialize the database.
 func parseConfig(data []byte) (*Config, error) {
 	var intermediate_config struct {
-		Repos           []string
-		JiraDomain      string
-		SleepDuration   int64
-		Workflows       []RawWorkflow
-		GithubUsername  string
-		RepoLocation    string
-		AutoWorktree    bool
-		SectionPriority map[string]int
-		SectionSorting  map[string]string
-		Plugins         []Plugin
-		RepoConfigs     map[string]RepoConfig
+		Repos               []string
+		JiraDomain          string
+		SleepDuration       int64
+		Workflows           []RawWorkflow
+		GithubUsername      string
+		RepoLocation        string
+		AutoWorktree         bool
+		DesktopNotifications bool
+		SectionPriority      map[string]int
+		SectionSorting      map[string]string
+		Plugins             []Plugin
+		RepoConfigs         map[string]RepoConfig
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -172,17 +174,18 @@ func parseConfig(data []byte) (*Config, error) {
 	}
 
 	return &Config{
-		Repos:           intermediate_config.Repos,
-		RawWorkflows:    intermediate_config.Workflows,
-		SleepDuration:   parsed_sleep_duration,
-		JiraDomain:      intermediate_config.JiraDomain,
-		GithubUsername:  intermediate_config.GithubUsername,
-		RepoLocation:    repoLocation,
-		AutoWorktree:    intermediate_config.AutoWorktree,
-		SectionPriority: intermediate_config.SectionPriority,
-		SectionSorting:  intermediate_config.SectionSorting,
-		Plugins:         intermediate_config.Plugins,
-		RepoConfigs:     repoConfigs,
+		Repos:              intermediate_config.Repos,
+		RawWorkflows:       intermediate_config.Workflows,
+		SleepDuration:      parsed_sleep_duration,
+		JiraDomain:         intermediate_config.JiraDomain,
+		GithubUsername:     intermediate_config.GithubUsername,
+		RepoLocation:       repoLocation,
+		AutoWorktree:         intermediate_config.AutoWorktree,
+		DesktopNotifications: intermediate_config.DesktopNotifications,
+		SectionPriority:    intermediate_config.SectionPriority,
+		SectionSorting:     intermediate_config.SectionSorting,
+		Plugins:            intermediate_config.Plugins,
+		RepoConfigs:        repoConfigs,
 	}, nil
 }
 

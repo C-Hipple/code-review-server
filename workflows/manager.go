@@ -183,6 +183,9 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 			if err != nil {
 				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
 			}
+			if deserializedChange.FileChange.ChangeType == "Addition" {
+				notifyPRAdded(log, deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
+			}
 		case "Delete":
 			err := db.DeleteItem(deserializedChange.FileChange.SectionID, deserializedChange.FileChange.Identifier)
 			if err != nil {

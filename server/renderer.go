@@ -652,7 +652,9 @@ func writeCacheMissLog(state cacheMissState) {
 	localCommentCount := len(localComments)
 
 	// Gather workflow info: when was this PR first added by the workflow?
-	identifier := fmt.Sprintf("%s-%d", state.repo, state.number)
+	// Workflow items are keyed by "{owner}/{repo}-{number}" (see PRToOrgBridge.Identifier),
+	// NOT the short "{repo}-{number}" form used for cache table lookups.
+	identifier := fmt.Sprintf("%s/%s-%d", state.owner, state.repo, state.number)
 	workflowAddedAt, sectionName, _ := db.GetItemWorkflowInfo(identifier)
 
 	now := time.Now().UTC()

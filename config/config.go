@@ -51,8 +51,8 @@ type Config struct {
 	JiraDomain     string
 	GithubUsername string
 	RepoLocation   string
-	AutoWorktree        bool
-	MacOSNotifications  bool              // Send macOS desktop notifications when a PR is added to a section
+	AutoWorktree         bool
+	DesktopNotifications bool              // Send desktop notifications when a PR is added to a section
 	SectionPriority map[string]int    // Map of section title to priority (lower is better)
 	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins         []Plugin
@@ -131,9 +131,9 @@ func parseConfig(data []byte) (*Config, error) {
 		Workflows           []RawWorkflow
 		GithubUsername      string
 		RepoLocation        string
-		AutoWorktree        bool
-		MacOSNotifications  bool
-		SectionPriority     map[string]int
+		AutoWorktree         bool
+		DesktopNotifications bool
+		SectionPriority      map[string]int
 		SectionSorting      map[string]string
 		Plugins             []Plugin
 		RepoConfigs         map[string]RepoConfig
@@ -180,8 +180,8 @@ func parseConfig(data []byte) (*Config, error) {
 		JiraDomain:         intermediate_config.JiraDomain,
 		GithubUsername:     intermediate_config.GithubUsername,
 		RepoLocation:       repoLocation,
-		AutoWorktree:       intermediate_config.AutoWorktree,
-		MacOSNotifications: intermediate_config.MacOSNotifications,
+		AutoWorktree:         intermediate_config.AutoWorktree,
+		DesktopNotifications: intermediate_config.DesktopNotifications,
 		SectionPriority:    intermediate_config.SectionPriority,
 		SectionSorting:     intermediate_config.SectionSorting,
 		Plugins:            intermediate_config.Plugins,

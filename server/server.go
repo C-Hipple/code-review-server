@@ -98,6 +98,30 @@ func prStatusOrder(item ReviewItem) int {
 	}
 }
 
+// reviewItemLess is the canonical ordering used for review items across the
+// RPC surface: primary key is status, then most-recently-created first, with
+// repo and PR number as tie-breakers.
+func reviewItemLess(a, b ReviewItem) bool {
+	si, sj := prStatusOrder(a), prStatusOrder(b)
+	if si != sj {
+		return si < sj
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	if a.Repo != b.Repo {
+		return a.Repo < b.Repo
+	}
+	return a.Number < b.Number
+}
+
+// sortReviewItems sorts items in-place using reviewItemLess.
+func sortReviewItems(items []ReviewItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return reviewItemLess(items[i], items[j])
+	})
+}
+
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	if err := config.Reload(); err != nil {
 		h.Log.Error("Error reloading config", "error", err)
@@ -113,19 +137,7 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	if items == nil {
 		reply.Items = []ReviewItem{}
 	} else {
-		sort.SliceStable(items, func(i, j int) bool {
-			si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
-			if si != sj {
-				return si < sj
-			}
-			if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
-				return items[i].CreatedAt.After(items[j].CreatedAt)
-			}
-			if items[i].Repo != items[j].Repo {
-				return items[i].Repo < items[j].Repo
-			}
-			return items[i].Number < items[j].Number
-		})
+		sortReviewItems(items)
 		reply.Items = items
 	}
 	return nil
@@ -224,19 +236,7 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 	}
 
 	// Sort the same way as GetAllReviews
-	sort.SliceStable(items, func(i, j int) bool {
-		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
-		if si != sj {
-			return si < sj
-		}
-		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
-			return items[i].CreatedAt.After(items[j].CreatedAt)
-		}
-		if items[i].Repo != items[j].Repo {
-			return items[i].Repo < items[j].Repo
-		}
-		return items[i].Number < items[j].Number
-	})
+	sortReviewItems(items)
 
 	// Find the current PR in the sorted list
 	currentIdx := -1

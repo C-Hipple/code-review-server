@@ -141,10 +141,41 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		// Get items for this section
 		items := itemsBySection[section.ID]
 
-		// Apply per-section sorting if configured
-		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			sortItems(items, sortMethod)
+		// Parse review items up-front so content and the items reply share a
+		// single ordering.
+		parsed := make([]ReviewItem, len(items))
+		for i, item := range items {
+			parsed[i] = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 		}
+
+		indices := make([]int, len(items))
+		for i := range indices {
+			indices[i] = i
+		}
+		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
+			switch sortMethod {
+			case SortNewestFirst:
+				sort.SliceStable(indices, func(a, b int) bool {
+					return items[indices[a]].CreatedAt.After(items[indices[b]].CreatedAt)
+				})
+			case SortOldestFirst:
+				sort.SliceStable(indices, func(a, b int) bool {
+					return items[indices[a]].CreatedAt.Before(items[indices[b]].CreatedAt)
+				})
+			}
+		} else {
+			sort.SliceStable(indices, func(a, b int) bool {
+				return reviewItemLess(parsed[indices[a]], parsed[indices[b]])
+			})
+		}
+		sortedItems := make([]*database.Item, len(items))
+		sortedParsed := make([]ReviewItem, len(parsed))
+		for i, idx := range indices {
+			sortedItems[i] = items[idx]
+			sortedParsed[i] = parsed[idx]
+		}
+		items = sortedItems
+		parsed = sortedParsed
 
 		// Build section header
 		sectionHeader := r.buildSectionHeader(section, items)
@@ -152,7 +183,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		content.WriteString("\n")
 
 		// Build items
-		for _, item := range items {
+		for i, item := range items {
 			// String representation
 			itemLines := r.buildItemLines(item, 2)
 			for _, line := range itemLines {
@@ -163,8 +194,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 			}
 
 			// Structured representation
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-			reviewItems = append(reviewItems, reviewItem)
+			reviewItems = append(reviewItems, parsed[i])
 		}
 		// Add blank line between sections
 		content.WriteString("\n")

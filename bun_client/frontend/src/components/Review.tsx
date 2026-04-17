@@ -260,22 +260,6 @@ export default function Review({
         loadPluginOutputs();
     }, [owner, repo, number]);
 
-    // Refresh plugin outputs whenever the panel is opened so users see current results
-    // even if plugins finished running after the initial component mount.
-    useEffect(() => {
-        if (showPlugins) {
-            loadPluginOutputs();
-        }
-    }, [showPlugins]);
-
-    // Poll while any plugin is still pending so results appear automatically.
-    useEffect(() => {
-        const hasPending = Object.values(pluginOutputs).some(p => p.status === 'pending');
-        if (!hasPending) return;
-        const id = setTimeout(() => loadPluginOutputs(), 3000);
-        return () => clearTimeout(id);
-    }, [pluginOutputs]);
-
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
@@ -2791,7 +2775,7 @@ export default function Review({
                     Submit Review
                 </Button>
                 <Button
-                    onClick={() => setShowPlugins(!showPlugins)}
+                    onClick={() => { setShowPlugins(!showPlugins); if (!showPlugins) loadPluginOutputs(); }}
                     variant={showPlugins ? 'primary' : 'secondary'}
                 >
                     Plugins{' '}

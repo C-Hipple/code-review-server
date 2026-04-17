@@ -35,14 +35,6 @@ export default function PluginOutput({
         loadPluginOutput();
     }, [owner, repo, number]);
 
-    // Poll while any plugin is still pending so results appear automatically.
-    useEffect(() => {
-        const hasPending = Object.values(pluginOutput).some(p => p.status === 'pending');
-        if (!hasPending) return;
-        const id = setTimeout(() => loadPluginOutput(), 3000);
-        return () => clearTimeout(id);
-    }, [pluginOutput]);
-
     useEffect(() => {
         if (!onClose) return;
         const handleKeyDown = (e: KeyboardEvent) => {

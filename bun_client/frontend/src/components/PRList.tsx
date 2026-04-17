@@ -207,6 +207,16 @@ export default function PRList({
             }
 
             setSections(sectionList);
+
+            // Warm up plugin output for every visible PR so execution is already
+            // underway by the time the user opens a PR or its plugin panel.
+            for (const item of items) {
+                if (item.owner && item.repo && item.number) {
+                    rpcCall('RPCHandler.GetPluginOutput', [
+                        { Owner: item.owner, Repo: item.repo, Number: item.number },
+                    ]).catch(() => {});
+                }
+            }
         } catch (e) {
             console.error(e);
             setSections([]);

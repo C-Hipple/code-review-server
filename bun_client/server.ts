@@ -2,12 +2,12 @@ import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
 
-let assets: Record<string, any> = {};
+let assets: Record<string, string> = {};
 try {
     // @ts-expect-error
     const assetsModule = await import('./embedded_assets');
     assets = assetsModule.assets;
-} catch (e) {
+} catch (_e) {
     console.log('[Server] Embedded assets not found or broken, skipping...');
 }
 
@@ -497,7 +497,7 @@ Type: ${type}
                         headers: response.headers,
                     });
                 }
-            } catch (e) {
+            } catch (_e) {
                 // Vite might not be up yet, continue to other fallback routes
             }
         }

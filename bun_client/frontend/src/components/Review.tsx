@@ -2775,7 +2775,10 @@ export default function Review({
                     Submit Review
                 </Button>
                 <Button
-                    onClick={() => setShowPlugins(!showPlugins)}
+                    onClick={() => {
+                        setShowPlugins(!showPlugins);
+                        if (!showPlugins) loadPluginOutputs();
+                    }}
                     variant={showPlugins ? 'primary' : 'secondary'}
                 >
                     Plugins{' '}
@@ -3377,13 +3380,18 @@ export default function Review({
                             <h2 style={{ fontSize: '18px', margin: 0, color: 'var(--accent)' }}>
                                 Plugin Analysis
                             </h2>
-                            <Button
-                                onClick={() => setShowPlugins(false)}
-                                variant="secondary"
-                                size="sm"
-                            >
-                                Close (Esc)
-                            </Button>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <Button onClick={loadPluginOutputs} variant="secondary" size="sm">
+                                    Refresh
+                                </Button>
+                                <Button
+                                    onClick={() => setShowPlugins(false)}
+                                    variant="secondary"
+                                    size="sm"
+                                >
+                                    Close (Esc)
+                                </Button>
+                            </div>
                         </div>
                         <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
                             {Object.keys(pluginOutputs).length === 0 ? (

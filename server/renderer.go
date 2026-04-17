@@ -141,19 +141,18 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		// Get items for this section
 		items := itemsBySection[section.ID]
 
-		// Parse review items up-front so we can sort items and content the
-		// same way the GetAllReviews handler sorts the items reply.
+		// Parse review items up-front so content and the items reply share a
+		// single ordering.
 		parsed := make([]ReviewItem, len(items))
 		for i, item := range items {
 			parsed[i] = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
 		}
 
+		indices := make([]int, len(items))
+		for i := range indices {
+			indices[i] = i
+		}
 		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			// Per-section sort override: keep items and parsed entries aligned.
-			indices := make([]int, len(items))
-			for i := range indices {
-				indices[i] = i
-			}
 			switch sortMethod {
 			case SortNewestFirst:
 				sort.SliceStable(indices, func(a, b int) bool {
@@ -164,39 +163,19 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 					return items[indices[a]].CreatedAt.Before(items[indices[b]].CreatedAt)
 				})
 			}
-			sortedItems := make([]*database.Item, len(items))
-			sortedParsed := make([]ReviewItem, len(parsed))
-			for i, idx := range indices {
-				sortedItems[i] = items[idx]
-				sortedParsed[i] = parsed[idx]
-			}
-			items = sortedItems
-			parsed = sortedParsed
 		} else {
-			// Default: same order as GetAllReviews — status, then repo, then number.
-			indices := make([]int, len(items))
-			for i := range indices {
-				indices[i] = i
-			}
 			sort.SliceStable(indices, func(a, b int) bool {
-				si, sj := prStatusOrder(parsed[indices[a]]), prStatusOrder(parsed[indices[b]])
-				if si != sj {
-					return si < sj
-				}
-				if parsed[indices[a]].Repo != parsed[indices[b]].Repo {
-					return parsed[indices[a]].Repo < parsed[indices[b]].Repo
-				}
-				return parsed[indices[a]].Number < parsed[indices[b]].Number
+				return reviewItemLess(parsed[indices[a]], parsed[indices[b]])
 			})
-			sortedItems := make([]*database.Item, len(items))
-			sortedParsed := make([]ReviewItem, len(parsed))
-			for i, idx := range indices {
-				sortedItems[i] = items[idx]
-				sortedParsed[i] = parsed[idx]
-			}
-			items = sortedItems
-			parsed = sortedParsed
 		}
+		sortedItems := make([]*database.Item, len(items))
+		sortedParsed := make([]ReviewItem, len(parsed))
+		for i, idx := range indices {
+			sortedItems[i] = items[idx]
+			sortedParsed[i] = parsed[idx]
+		}
+		items = sortedItems
+		parsed = sortedParsed
 
 		// Build section header
 		sectionHeader := r.buildSectionHeader(section, items)

@@ -66,6 +66,10 @@ type FileChanges struct {
 	SectionID   int64
 	SectionName string
 	TTL         int64
+	// NotifyOnAdd is the effective desktop-notification decision for the
+	// workflow that produced this change. When true and ChangeType is
+	// "Addition", a desktop notification will be sent.
+	NotifyOnAdd bool
 }
 
 type SerializedFileChange struct {
@@ -400,7 +404,7 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool) RunResult {
+func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
 	pr_identifiers := []string{}
@@ -412,6 +416,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 		pr_identifiers = append(pr_identifiers, bridge.Identifier())
 		fc := SyncTODOToSectionDB(db, pr, section, includeDiff)
 		fc.TTL = ttl
+		fc.NotifyOnAdd = notifyOnAdd
 		changes = append(changes, fc)
 	}
 

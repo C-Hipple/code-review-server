@@ -141,9 +141,61 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		// Get items for this section
 		items := itemsBySection[section.ID]
 
-		// Apply per-section sorting if configured
+		// Parse review items up-front so we can sort items and content the
+		// same way the GetAllReviews handler sorts the items reply.
+		parsed := make([]ReviewItem, len(items))
+		for i, item := range items {
+			parsed[i] = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
+		}
+
 		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			sortItems(items, sortMethod)
+			// Per-section sort override: keep items and parsed entries aligned.
+			indices := make([]int, len(items))
+			for i := range indices {
+				indices[i] = i
+			}
+			switch sortMethod {
+			case SortNewestFirst:
+				sort.SliceStable(indices, func(a, b int) bool {
+					return items[indices[a]].CreatedAt.After(items[indices[b]].CreatedAt)
+				})
+			case SortOldestFirst:
+				sort.SliceStable(indices, func(a, b int) bool {
+					return items[indices[a]].CreatedAt.Before(items[indices[b]].CreatedAt)
+				})
+			}
+			sortedItems := make([]*database.Item, len(items))
+			sortedParsed := make([]ReviewItem, len(parsed))
+			for i, idx := range indices {
+				sortedItems[i] = items[idx]
+				sortedParsed[i] = parsed[idx]
+			}
+			items = sortedItems
+			parsed = sortedParsed
+		} else {
+			// Default: same order as GetAllReviews — status, then repo, then number.
+			indices := make([]int, len(items))
+			for i := range indices {
+				indices[i] = i
+			}
+			sort.SliceStable(indices, func(a, b int) bool {
+				si, sj := prStatusOrder(parsed[indices[a]]), prStatusOrder(parsed[indices[b]])
+				if si != sj {
+					return si < sj
+				}
+				if parsed[indices[a]].Repo != parsed[indices[b]].Repo {
+					return parsed[indices[a]].Repo < parsed[indices[b]].Repo
+				}
+				return parsed[indices[a]].Number < parsed[indices[b]].Number
+			})
+			sortedItems := make([]*database.Item, len(items))
+			sortedParsed := make([]ReviewItem, len(parsed))
+			for i, idx := range indices {
+				sortedItems[i] = items[idx]
+				sortedParsed[i] = parsed[idx]
+			}
+			items = sortedItems
+			parsed = sortedParsed
 		}
 
 		// Build section header
@@ -152,7 +204,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 		content.WriteString("\n")
 
 		// Build items
-		for _, item := range items {
+		for i, item := range items {
 			// String representation
 			itemLines := r.buildItemLines(item, 2)
 			for _, line := range itemLines {
@@ -163,8 +215,7 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 			}
 
 			// Structured representation
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-			reviewItems = append(reviewItems, reviewItem)
+			reviewItems = append(reviewItems, parsed[i])
 		}
 		// Add blank line between sections
 		content.WriteString("\n")

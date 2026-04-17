@@ -118,6 +118,9 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 			if si != sj {
 				return si < sj
 			}
+			if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].CreatedAt.After(items[j].CreatedAt)
+			}
 			if items[i].Repo != items[j].Repo {
 				return items[i].Repo < items[j].Repo
 			}
@@ -225,6 +228,9 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 		si, sj := prStatusOrder(items[i]), prStatusOrder(items[j])
 		if si != sj {
 			return si < sj
+		}
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
 		}
 		if items[i].Repo != items[j].Repo {
 			return items[i].Repo < items[j].Repo

@@ -175,17 +175,18 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
-	Section       string `json:"section"`
-	Priority      int    `json:"section_priority"`
-	Status        string `json:"status"`
-	Tags          string `json:"tags"`
-	Title         string `json:"title"`
-	Owner         string `json:"owner"`
-	Repo          string `json:"repo"`
-	Number        int    `json:"number"`
-	Author        string `json:"author"`
-	URL           string `json:"url"`
-	ReleaseStatus string `json:"release_status"`
+	Section       string    `json:"section"`
+	Priority      int       `json:"section_priority"`
+	Status        string    `json:"status"`
+	Tags          string    `json:"tags"`
+	Title         string    `json:"title"`
+	Owner         string    `json:"owner"`
+	Repo          string    `json:"repo"`
+	Number        int       `json:"number"`
+	Author        string    `json:"author"`
+	URL           string    `json:"url"`
+	ReleaseStatus string    `json:"release_status"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -226,11 +227,12 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 	}
 
 	reviewItem := ReviewItem{
-		Section:  sectionName,
-		Priority: priority,
-		Status:   item.Status,
-		Tags:     item.Tags,
-		Title:    item.Title,
+		Section:   sectionName,
+		Priority:  priority,
+		Status:    item.Status,
+		Tags:      item.Tags,
+		Title:     item.Title,
+		CreatedAt: item.CreatedAt,
 	}
 
 	for _, line := range details {

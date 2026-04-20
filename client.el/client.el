@@ -1947,34 +1947,54 @@ If on a local comment, local-comment-id and local-comment-body will be set."
                     (when (string-match " : \\([0-9]+\\)$" id-line)
                       (setq reply-to-id (string-to-number (match-string 1 id-line)))
                       (message "Found Reply-To ID: %d" reply-to-id)))
-                  ;; Check if this is a local comment by looking for [local]:
+                  ;; Check if this is a local comment or local reply
                   (goto-char block-start)
                   (let ((block-end (save-excursion
                                      (if (re-search-forward "^    └" nil t)
                                          (point)
                                        (point-max)))))
-                    (when (re-search-forward "^    │ \\[local\\]:" block-end t)
-                      ;; This is a local comment - extract its ID from line 3
-                      (goto-char block-start)
-                      (forward-line 2)
-                      (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-                        (when (string-match " : \\([0-9]+\\)$" header-line)
-                          (setq local-comment-id (string-to-number (match-string 1 header-line)))
-                          (message "Found local comment ID: %d" local-comment-id)
-                          ;; Clear reply-to-id since we're editing, not replying
-                          (setq reply-to-id nil)))
-                      ;; Extract the body - lines after [local]: until end of block or next reply
-                      (goto-char block-start)
-                      (when (re-search-forward "^    │ \\[local\\]:" block-end t)
-                        (forward-line 1)
-                        (let ((body-lines nil))
-                          (while (and (< (point) block-end)
-                                      (looking-at "^    │   \\(.*\\)$"))
-                            (push (match-string 1) body-lines)
-                            (forward-line 1))
-                          (when body-lines
-                            (setq local-comment-body
-                                  (string-join (nreverse body-lines) "\n"))))))))
+                    (let ((local-reply-match
+                           (save-excursion
+                             (goto-char block-start)
+                             (re-search-forward "^    │ Reply by \\[local\\]:\\([0-9]+\\)" block-end t))))
+                      (if local-reply-match
+                          ;; Local reply - ID is embedded in the "Reply by [local]:[ID]" line
+                          (progn
+                            (setq local-comment-id (string-to-number (match-string 1)))
+                            (message "Found local reply ID: %d" local-comment-id)
+                            (setq reply-to-id nil)
+                            ;; Extract the body - lines after "Reply by [local]:[ID]"
+                            (goto-char local-reply-match)
+                            (forward-line 1)
+                            (let ((body-lines nil))
+                              (while (and (< (point) block-end)
+                                          (looking-at "^    │   \\(.*\\)$"))
+                                (push (match-string 1) body-lines)
+                                (forward-line 1))
+                              (when body-lines
+                                (setq local-comment-body
+                                      (string-join (nreverse body-lines) "\n")))))
+                        ;; Local root comment - ID is on line 3 of the block
+                        (when (re-search-forward "^    │ \\[local\\]:" block-end t)
+                          (goto-char block-start)
+                          (forward-line 2)
+                          (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+                            (when (string-match " : \\([0-9]+\\)$" header-line)
+                              (setq local-comment-id (string-to-number (match-string 1 header-line)))
+                              (message "Found local comment ID: %d" local-comment-id)
+                              (setq reply-to-id nil)))
+                          ;; Extract the body - lines after [local]:
+                          (goto-char block-start)
+                          (when (re-search-forward "^    │ \\[local\\]:" block-end t)
+                            (forward-line 1)
+                            (let ((body-lines nil))
+                              (while (and (< (point) block-end)
+                                          (looking-at "^    │   \\(.*\\)$"))
+                                (push (match-string 1) body-lines)
+                                (forward-line 1))
+                              (when body-lines
+                                (setq local-comment-body
+                                      (string-join (nreverse body-lines) "\n")))))))))
               (message "Could not find start of comment block"))))))
 
     ;; 2. Parse Owner, Repo, Number

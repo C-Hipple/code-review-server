@@ -30,7 +30,17 @@ func (rr *RunResult) Process(output *FileChanges, c chan FileChanges, wg *sync.W
 			rr.Deleted += 1
 		}
 		wg.Add(1)
-		c <- *output
+		func() {
+			defer func() {
+				if recover() != nil {
+					// Channel closed (workflow goroutine outlived its cycle due to
+					// the 240 s timeout in RunOnce). Undo the wg.Add so the
+					// WaitGroup can still reach zero.
+					wg.Done()
+				}
+			}()
+			c <- *output
+		}()
 	} else {
 		rr.Skipped += 1
 	}

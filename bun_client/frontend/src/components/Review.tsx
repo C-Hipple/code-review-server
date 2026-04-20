@@ -30,6 +30,37 @@ import LspPopover from './LspPopover';
 import CodeViewerModal from './CodeViewerModal';
 
 // Strip HTML comments from text (e.g., <!-- comment -->)
+function CopyUrlButton({ url }: { url: string }) {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(url).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    };
+
+    return (
+        <button
+            onClick={handleCopy}
+            style={{
+                background: 'transparent',
+                color: copied ? 'var(--accent)' : 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+                padding: '8px 16px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '13px',
+            }}
+        >
+            <span>{copied ? '✓' : '⎘'}</span> {copied ? 'Copied!' : 'Copy URL'}
+        </button>
+    );
+}
+
 const stripHtmlComments = (text: string): string => {
     return text.replace(/<!--[\s\S]*?-->/g, '');
 };
@@ -2144,26 +2175,29 @@ export default function Review({
                                     {metadata.title}
                                 </h1>
                             </div>
-                            <a
-                                href={metadata.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={{
-                                    background: 'transparent',
-                                    color: 'var(--text-secondary)',
-                                    border: '1px solid var(--border)',
-                                    padding: '8px 16px',
-                                    borderRadius: '6px',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    textDecoration: 'none',
-                                    fontSize: '13px',
-                                }}
-                            >
-                                <span>↗</span> GitHub
-                            </a>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <a
+                                    href={metadata.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                        background: 'transparent',
+                                        color: 'var(--text-secondary)',
+                                        border: '1px solid var(--border)',
+                                        padding: '8px 16px',
+                                        borderRadius: '6px',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        textDecoration: 'none',
+                                        fontSize: '13px',
+                                    }}
+                                >
+                                    <span>↗</span> GitHub
+                                </a>
+                                <CopyUrlButton url={metadata.url} />
+                            </div>
                         </div>
                     </div>
 

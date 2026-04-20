@@ -31,6 +31,7 @@ type Item struct {
 	Tags        string // Comma-separated tags
 	TTL         int64
 	CreatedAt   time.Time
+	Workflows   string // JSON array of workflow names that maintain this item
 }
 
 type LocalComment struct {
@@ -100,6 +101,7 @@ func (db *DB) initSchema() error {
 		details_json TEXT NOT NULL,
 		tags TEXT DEFAULT '',
 		ttl INTEGER DEFAULT 0,
+		workflows TEXT NOT NULL DEFAULT '[]',
 		UNIQUE(section_id, identifier),
 		FOREIGN KEY(section_id) REFERENCES sections(id) ON DELETE CASCADE
 	);
@@ -328,6 +330,15 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add workflows column to items if it doesn't exist
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='workflows'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE items ADD COLUMN workflows TEXT NOT NULL DEFAULT '[]'")
+		if err != nil {
+			slog.Warn("Error adding workflows column to items", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -523,6 +534,13 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 }
 
 func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, details []string, tags []string, ttl int64) (*Item, error) {
+	return db.UpsertItemWithWorkflow(sectionID, identifier, status, title, details, tags, ttl, "")
+}
+
+// UpsertItemWithWorkflow upserts an item and merges workflowName into the
+// item's `workflows` ownership list. Pass an empty string to leave ownership
+// unchanged (compatibility with callers that don't track workflow ownership).
+func (db *DB) UpsertItemWithWorkflow(sectionID int64, identifier, status, title string, details []string, tags []string, ttl int64, workflowName string) (*Item, error) {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return nil, err
@@ -537,28 +555,51 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		tagsStr = string(tagsBytes)
 	}
 
-	result, err := db.conn.Exec(
-		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Read current workflows list (if any) so we can merge in workflowName.
+	var existingWorkflowsJSON string
+	err = tx.QueryRow(
+		"SELECT workflows FROM items WHERE section_id = ? AND identifier = ?",
+		sectionID, identifier,
+	).Scan(&existingWorkflowsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	workflows := decodeWorkflowList(existingWorkflowsJSON)
+	if workflowName != "" && !containsString(workflows, workflowName) {
+		workflows = append(workflows, workflowName)
+	}
+	workflowsJSON, err := json.Marshal(workflows)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := tx.Exec(
+		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, ttl, workflows)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(section_id, identifier) DO UPDATE SET
 			status = excluded.status,
 			title = excluded.title,
 			details_json = excluded.details_json,
 			tags = excluded.tags,
-			ttl = excluded.ttl`,
-		sectionID, identifier, status, title, string(detailsJSON), tagsStr, ttl,
+			ttl = excluded.ttl,
+			workflows = excluded.workflows`,
+		sectionID, identifier, status, title, string(detailsJSON), tagsStr, ttl, string(workflowsJSON),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Try to get the last inserted ID.
-	// In SQLite with ON CONFLICT DO UPDATE, LastInsertId() might be 0 if no row was inserted.
 	id, err := result.LastInsertId()
 	if err != nil || id == 0 {
-		// Get the existing ID
 		var existingID int64
-		err := db.conn.QueryRow(
+		err := tx.QueryRow(
 			"SELECT id FROM items WHERE section_id = ? AND identifier = ?",
 			sectionID, identifier,
 		).Scan(&existingID)
@@ -566,6 +607,10 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 			return nil, err
 		}
 		id = existingID
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	item := &Item{
@@ -577,17 +622,92 @@ func (db *DB) UpsertItem(sectionID int64, identifier, status, title string, deta
 		DetailsJSON: string(detailsJSON),
 		Tags:        tagsStr,
 		TTL:         ttl,
+		Workflows:   string(workflowsJSON),
 	}
 
 	return item, nil
 }
 
+// RemoveWorkflowFromItem removes workflowName from the item's ownership list.
+// The row is left in place even if the list becomes empty; PruneOrphanedItems
+// is responsible for deleting items that no workflow maintains.
+func (db *DB) RemoveWorkflowFromItem(sectionID int64, identifier, workflowName string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var workflowsJSON string
+	err = tx.QueryRow(
+		"SELECT workflows FROM items WHERE section_id = ? AND identifier = ?",
+		sectionID, identifier,
+	).Scan(&workflowsJSON)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	workflows := decodeWorkflowList(workflowsJSON)
+	updated := workflows[:0]
+	for _, w := range workflows {
+		if w != workflowName {
+			updated = append(updated, w)
+		}
+	}
+	encoded, err := json.Marshal(updated)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		"UPDATE items SET workflows = ? WHERE section_id = ? AND identifier = ?",
+		string(encoded), sectionID, identifier,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PruneOrphanedItems deletes every item whose workflow ownership list is
+// empty. Returns the number of rows deleted.
+func (db *DB) PruneOrphanedItems() (int64, error) {
+	res, err := db.conn.Exec(
+		`DELETE FROM items WHERE workflows = '' OR workflows = '[]' OR workflows IS NULL`,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func decodeWorkflowList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 	var item Item
 	err := db.conn.QueryRow(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? AND identifier = ?",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(workflows, '[]') FROM items WHERE section_id = ? AND identifier = ?",
 		sectionID, identifier,
-	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL)
+	).Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &item.Workflows)
 
 	if err != nil {
 		return nil, err
@@ -597,7 +717,7 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items WHERE section_id = ? ORDER BY id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP), COALESCE(workflows, '[]') FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
 	if err != nil {
@@ -609,7 +729,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 	for rows.Next() {
 		var item Item
 		var createdAtStr string
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr, &item.Workflows); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
@@ -620,7 +740,7 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 
 func (db *DB) GetAllItems() ([]*Item, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP) FROM items ORDER BY section_id, id",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP), COALESCE(workflows, '[]') FROM items ORDER BY section_id, id",
 	)
 	if err != nil {
 		return nil, err
@@ -631,7 +751,7 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 	for rows.Next() {
 		var item Item
 		var createdAtStr string
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr, &item.Workflows); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
@@ -643,7 +763,7 @@ func (db *DB) GetAllItems() ([]*Item, error) {
 func (db *DB) GetExpiredItems(sectionID int64) ([]*Item, error) {
 	now := time.Now().Unix()
 	rows, err := db.conn.Query(
-		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl FROM items WHERE section_id = ? AND ttl > 0 AND ttl < ?",
+		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(workflows, '[]') FROM items WHERE section_id = ? AND ttl > 0 AND ttl < ?",
 		sectionID, now,
 	)
 	if err != nil {
@@ -654,7 +774,7 @@ func (db *DB) GetExpiredItems(sectionID int64) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL); err != nil {
+		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &item.Workflows); err != nil {
 			return nil, err
 		}
 		items = append(items, &item)
@@ -1060,6 +1180,11 @@ func (item *Item) GetDetails() ([]string, error) {
 		return nil, err
 	}
 	return details, nil
+}
+
+// GetWorkflows returns the list of workflow names that maintain this item.
+func (item *Item) GetWorkflows() []string {
+	return decodeWorkflowList(item.Workflows)
 }
 
 func (item *Item) GetTags() ([]string, error) {

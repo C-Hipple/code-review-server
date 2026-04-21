@@ -26,6 +26,9 @@ type RawWorkflow struct {
 	GithubUsername      string
 	IncludeDiff         bool
 	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
+	// DesktopNotifications overrides the global DesktopNotifications setting
+	// for this workflow only. If nil, the global setting is used.
+	DesktopNotifications *bool
 }
 
 // RepoConfig holds per-repository configuration settings.

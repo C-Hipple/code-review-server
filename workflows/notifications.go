@@ -1,7 +1,6 @@
 package workflows
 
 import (
-	"crs/config"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -9,13 +8,9 @@ import (
 )
 
 // notifyPRAdded sends a desktop notification when a PR is added to a section.
-// Currently only macOS (osascript) is supported. If DesktopNotifications is
-// enabled on an unsupported OS, an error is logged.
+// Currently only macOS (osascript) is supported. The caller is responsible for
+// deciding whether notifications should fire (global or per-workflow override).
 func notifyPRAdded(log *slog.Logger, sectionName, prTitle string) {
-	if !config.C().DesktopNotifications {
-		return
-	}
-
 	switch runtime.GOOS {
 	case "darwin":
 		message := fmt.Sprintf("PR Added to Section %s - %s", sectionName, prTitle)

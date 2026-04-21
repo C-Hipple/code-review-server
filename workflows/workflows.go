@@ -62,6 +62,10 @@ type SyncReviewRequestsWorkflow struct {
 
 	// org output info
 	SectionTitle string
+
+	// DesktopNotifications overrides the global setting for this workflow.
+	// nil means inherit the global config.
+	DesktopNotifications *bool
 }
 
 func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
@@ -98,10 +102,19 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequ
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
+}
+
+// ShouldNotify resolves the effective desktop-notification setting for this
+// workflow: the per-workflow override if set, otherwise the global config.
+func (w SyncReviewRequestsWorkflow) ShouldNotify() bool {
+	if w.DesktopNotifications != nil {
+		return *w.DesktopNotifications
+	}
+	return config.C().DesktopNotifications
 }
 
 func (w SyncReviewRequestsWorkflow) GetName() string {
@@ -121,6 +134,19 @@ type ProjectListWorkflow struct {
 	JiraDomain   string
 	JiraEpic     string
 	IncludeDiff  bool
+
+	// DesktopNotifications overrides the global setting for this workflow.
+	// nil means inherit the global config.
+	DesktopNotifications *bool
+}
+
+// ShouldNotify resolves the effective desktop-notification setting for this
+// workflow: the per-workflow override if set, otherwise the global config.
+func (w ProjectListWorkflow) ShouldNotify() bool {
+	if w.DesktopNotifications != nil {
+		return *w.DesktopNotifications
+	}
+	return config.C().DesktopNotifications
 }
 
 func (w ProjectListWorkflow) GetName() string {
@@ -157,7 +183,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff)
+	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil

@@ -1143,7 +1143,7 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       ;; (setq sb (concat sb "Suggested-Reviewers: No suggestions\n"))
 
       (let* ((reviewers-list (append reviewers nil))
-             (teams-list (mapcar (lambda (t) (concat "team:" t)) (append teams nil)))
+             (teams-list (mapcar (lambda (team) (concat "team:" team)) (append teams nil)))
              (all-reviewers (append reviewers-list teams-list))
              (rev-str (string-join all-reviewers ", ")))
         (setq sb (concat sb (format "Reviewers: \t%s\n" rev-str))))

@@ -407,16 +407,28 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
-	pr_identifiers := []string{}
-	changes := []FileChanges{}
 	ttl := time.Now().Add(2 * time.Hour).Unix()
 
-	for _, pr := range prs {
-		bridge := PRToOrgBridge{PR: pr, IncludeDiff: includeDiff}
-		pr_identifiers = append(pr_identifiers, bridge.Identifier())
-		fc := SyncTODOToSectionDB(db, pr, section, includeDiff)
-		fc.TTL = ttl
-		fc.NotifyOnAdd = notifyOnAdd
+	// Build FileChanges for each PR in parallel; each goroutine writes to its
+	// own index so no mutex is needed.
+	prChanges := make([]FileChanges, len(prs))
+	var buildWg sync.WaitGroup
+	for i, pr := range prs {
+		buildWg.Add(1)
+		go func(i int, pr *github.PullRequest) {
+			defer buildWg.Done()
+			fc := SyncTODOToSectionDB(db, pr, section, includeDiff)
+			fc.TTL = ttl
+			fc.NotifyOnAdd = notifyOnAdd
+			prChanges[i] = fc
+		}(i, pr)
+	}
+	buildWg.Wait()
+
+	pr_identifiers := make([]string, 0, len(prs))
+	changes := make([]FileChanges, 0, len(prs))
+	for _, fc := range prChanges {
+		pr_identifiers = append(pr_identifiers, fc.Identifier)
 		changes = append(changes, fc)
 	}
 

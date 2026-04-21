@@ -1994,7 +1994,7 @@ If on a local comment, local-comment-id and local-comment-body will be set."
                                 (forward-line 1))
                               (when body-lines
                                 (setq local-comment-body
-                                      (string-join (nreverse body-lines) "\n")))))))))
+                                      (string-join (nreverse body-lines) "\n"))))))))))
               (message "Could not find start of comment block"))))))
 
     ;; 2. Parse Owner, Repo, Number

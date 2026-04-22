@@ -476,6 +476,21 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		log.Info("Completed RunOnce Waitgroup")
 	}
 	apiCalls.log(log)
+	db := config.C().DB
+	if err := db.LogAPICallStats(
+		apiCalls.PRList.Load(),
+		apiCalls.PRSpecific.Load(),
+		apiCalls.Comments.Load(),
+		apiCalls.IssueComments.Load(),
+		apiCalls.CIStatus.Load(),
+		apiCalls.Diff.Load(),
+		apiCalls.Reviews.Load(),
+		apiCalls.CombinedStatus.Load(),
+		apiCalls.CheckRuns.Load(),
+		apiCalls.Commits.Load(),
+	); err != nil {
+		log.Error("Failed to save API call stats to database", "error", err)
+	}
 }
 
 func (ms *ManagerService) Run(log *slog.Logger) {

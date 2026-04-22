@@ -127,8 +127,7 @@ func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 
 type ProjectListWorkflow struct {
 	Name         string
-	Owner        string
-	Repo         string
+	Repos        []string
 	Filters      []git_tools.PRFilter
 	SectionTitle string
 	JiraDomain   string
@@ -173,17 +172,50 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 		// I used to let just define []int for PR #s in config, could easily bring that back
 		return RunResult{}, errors.New("ProjectList requires Jira Epic")
 	}
-	projectPRs := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, w.Repo)
-
-	prs, err = git_tools.GetSpecificPRs(client, w.Owner, w.Repo, projectPRs)
-	if err != nil {
-		log.Error("Error getting specific PRs", "error", err)
-		return RunResult{}, err
+	if len(w.Repos) == 0 {
+		return RunResult{}, errors.New("ProjectList requires at least one repo")
 	}
+
+	// Resolve each configured "owner/repo" to its short name so the JIRA filter
+	// (which only sees the repo short name in PR URLs) can match and we can map
+	// results back to the correct owner when fetching from GitHub.
+	type repoRef struct{ owner, repo string }
+	shortToRef := make(map[string]repoRef, len(w.Repos))
+	shortRepos := make([]string, 0, len(w.Repos))
+	for _, entry := range w.Repos {
+		owner, repo, err := git_tools.ParseRepoName(entry)
+		if err != nil {
+			log.Error("Skipping invalid repo entry", "entry", entry, "error", err)
+			continue
+		}
+		shortToRef[repo] = repoRef{owner: owner, repo: repo}
+		shortRepos = append(shortRepos, repo)
+	}
+	if len(shortRepos) == 0 {
+		return RunResult{}, errors.New("ProjectList has no valid repos")
+	}
+
+	prsByRepo := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, shortRepos)
+
+	var allPRs []*github.PullRequest
+	for short, nums := range prsByRepo {
+		if len(nums) == 0 {
+			continue
+		}
+		ref := shortToRef[short]
+		repoPRs, err := git_tools.GetSpecificPRs(client, ref.owner, ref.repo, nums)
+		if err != nil {
+			log.Error("Error getting specific PRs", "owner", ref.owner, "repo", ref.repo, "error", err)
+			continue
+		}
+		allPRs = append(allPRs, repoPRs...)
+	}
+
+	allPRs = git_tools.ApplyPRFilters(allPRs, w.Filters)
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(log, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil

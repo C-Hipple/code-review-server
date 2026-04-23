@@ -159,6 +159,8 @@ func (w ProjectListWorkflow) GetOrgSectionName() string {
 
 func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
 	// Reverted to manual fetching to avoid long-running Jira lookups in the manager collection phase.
+	// PRs for this workflow are fetched in Run() and aux data (including the
+	// diff) is pre-fetched and persisted there via prefetchAuxDataForPRs.
 	return nil
 }
 
@@ -181,10 +183,55 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 		return RunResult{}, err
 	}
 
+	// Because GetPRRequirements returns nil, the manager's prefetch pass skips
+	// these PRs entirely — leaving the diff (and other aux) caches unpopulated
+	// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
+	// here so it lands in the DB caches and the global AuxDataStore.
+	prefetchAuxDataForPRs(log, client, w.Owner, w.Repo, prs)
+
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
 	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
+}
+
+// prefetchAuxDataForPRs fetches all auxiliary data (diff, comments, reviews,
+// commits, CI status) for the given PRs and persists it to the DB caches and
+// the current global AuxDataStore. Used by workflows whose PR set isn't known
+// during the manager's collection phase (e.g. ProjectListWorkflow, which
+// resolves PR numbers via Jira at run time).
+func prefetchAuxDataForPRs(log *slog.Logger, client *github.Client, owner, repo string, prs []*github.PullRequest) {
+	if len(prs) == 0 {
+		return
+	}
+	store := GetCurrentAuxDataStore()
+	if store == nil {
+		store = NewAuxDataStore()
+		SetCurrentAuxDataStore(store)
+	}
+	auxReq := AuxDataRequirement{
+		Comments: true,
+		CIStatus: true,
+		Diff:     true,
+		Reviews:  true,
+		Commits:  true,
+	}
+	apiCalls := &apiCallCounter{}
+	var wg sync.WaitGroup
+	for _, pr := range prs {
+		if pr == nil || pr.Number == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(pr *github.PullRequest) {
+			defer wg.Done()
+			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
+			data := fetchAuxDataForPR(log, client, apiCalls, key, auxReq, pr)
+			store.Set(key, data)
+		}(pr)
+	}
+	wg.Wait()
+	log.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs))
 }

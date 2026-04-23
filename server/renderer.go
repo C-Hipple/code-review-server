@@ -376,7 +376,11 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	}
 
 	lines := []string{titleLine + "\n"}
-	lines = append(lines, details...)
+	for _, d := range details {
+		if !strings.HasPrefix(d, "*** BODY") {
+			lines = append(lines, d)
+		}
+	}
 
 	return lines
 }

@@ -216,6 +216,22 @@ func (db *DB) initSchema() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS APICallStats (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		pr_list INTEGER NOT NULL DEFAULT 0,
+		pr_specific INTEGER NOT NULL DEFAULT 0,
+		comments INTEGER NOT NULL DEFAULT 0,
+		issue_comments INTEGER NOT NULL DEFAULT 0,
+		ci_status INTEGER NOT NULL DEFAULT 0,
+		diff INTEGER NOT NULL DEFAULT 0,
+		reviews INTEGER NOT NULL DEFAULT 0,
+		combined_status INTEGER NOT NULL DEFAULT 0,
+		check_runs INTEGER NOT NULL DEFAULT 0,
+		commits INTEGER NOT NULL DEFAULT 0,
+		total INTEGER NOT NULL DEFAULT 0
+	);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -1284,6 +1300,18 @@ func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 
 func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	return db.conn.QueryRow(query, args...)
+}
+
+// LogAPICallStats persists per-type GitHub API call counts for a completed workflow cycle.
+func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits int64) error {
+	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits
+	_, err := db.conn.Exec(
+		`INSERT INTO APICallStats
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, total)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, total,
+	)
+	return err
 }
 
 // LogWorkflowCycle records a completed workflow cycle in the DB.

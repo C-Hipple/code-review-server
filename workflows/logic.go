@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,8 +46,9 @@ type PRAuxData struct {
 	CIStatus          *git_tools.CIStatusInfo
 	Diff              string
 	DiffLines         []string
-	HeadSHA           string // SHA of the PR head for DB storage
-	BaseSHA           string // SHA of the PR base for DB storage
+	Reviews           []*github.PullRequestReview // PR reviews (for approved_by / changes_requested_by / commented_by)
+	HeadSHA           string                      // SHA of the PR head for DB storage
+	BaseSHA           string                      // SHA of the PR base for DB storage
 }
 
 type Workflow interface {
@@ -67,6 +69,10 @@ type FileChanges struct {
 	SectionName  string
 	TTL          int64
 	WorkflowName string
+	// NotifyOnAdd is the effective desktop-notification decision for the
+	// workflow that produced this change. When true and ChangeType is
+	// "Addition", a desktop notification will be sent.
+	NotifyOnAdd bool
 }
 
 type SerializedFileChange struct {
@@ -211,6 +217,17 @@ func (prb PRToOrgBridge) Details() []string {
 		auxData, _ = store.Get(key)
 	}
 
+	// For open non-draft PRs, surface who has already reviewed so the dashboard
+	// reflects current review state alongside the pending-reviewer list.
+	isOpen := prb.PR.State != nil && *prb.PR.State == "open"
+	isDraft := prb.PR.Draft != nil && *prb.PR.Draft
+	if isOpen && !isDraft {
+		approvedBy, changesRequestedBy, commentedBy := summarizeReviewers(auxData)
+		details = append(details, fmt.Sprintf("Approved By: %s\n", strings.Join(approvedBy, ", ")))
+		details = append(details, fmt.Sprintf("Changes Requested By: %s\n", strings.Join(changesRequestedBy, ", ")))
+		details = append(details, fmt.Sprintf("Commented By: %s\n", strings.Join(commentedBy, ", ")))
+	}
+
 	// TODO: Consider putting these in subsection?
 	if prb.PR.MergedAt != nil {
 		details = append(details, fmt.Sprintf("Merged at: %s\n", *prb.PR.MergedAt))
@@ -289,6 +306,45 @@ func (prb PRToOrgBridge) Details() []string {
 
 func getReviewerName(reviewer *github.User) string {
 	return *reviewer.Login
+}
+
+// summarizeReviewers reduces a PR's review list down to the latest state per
+// reviewer and partitions them into approved / changes-requested / commented
+// buckets. Returns empty slices when auxData or its Reviews field is nil.
+func summarizeReviewers(auxData *PRAuxData) (approvedBy, changesRequestedBy, commentedBy []string) {
+	approvedBy = []string{}
+	changesRequestedBy = []string{}
+	commentedBy = []string{}
+	if auxData == nil || auxData.Reviews == nil {
+		return
+	}
+	latest := make(map[string]string)
+	for _, r := range auxData.Reviews {
+		if r == nil || r.User == nil {
+			continue
+		}
+		state := r.GetState()
+		// Ignore non-terminal states like PENDING / DISMISSED so they don't
+		// clobber a reviewer's actual APPROVED / CHANGES_REQUESTED verdict.
+		if state != "APPROVED" && state != "CHANGES_REQUESTED" && state != "COMMENTED" {
+			continue
+		}
+		latest[r.User.GetLogin()] = state
+	}
+	for user, state := range latest {
+		switch state {
+		case "APPROVED":
+			approvedBy = append(approvedBy, user)
+		case "CHANGES_REQUESTED":
+			changesRequestedBy = append(changesRequestedBy, user)
+		case "COMMENTED":
+			commentedBy = append(commentedBy, user)
+		}
+	}
+	sort.Strings(approvedBy)
+	sort.Strings(changesRequestedBy)
+	sort.Strings(commentedBy)
+	return
 }
 
 func getTeamName(reviewer *github.Team) string {
@@ -401,7 +457,7 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool) RunResult {
+func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
 	ttl := time.Now().Add(2 * time.Hour).Unix()
@@ -416,6 +472,7 @@ func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullReque
 			defer buildWg.Done()
 			fc := SyncTODOToSectionDB(db, workflowName, pr, section, includeDiff)
 			fc.TTL = ttl
+			fc.NotifyOnAdd = notifyOnAdd
 			prChanges[i] = fc
 		}(i, pr)
 	}
@@ -524,12 +581,18 @@ func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRe
 	if found {
 		newStatus := pr_as_org.GetStatus()
 		newTags := pr_as_org.GetTags()
+		isOpen := pr.State != nil && *pr.State == "open"
+		isDraft := pr.Draft != nil && *pr.Draft
 		// Always update if status or tags changed (e.g. draft → non-draft)
 		if dbItem.Status != newStatus || dbItem.Tags != strings.Join(newTags, ",") {
 			changeType = "Update"
 		} else if workflowName != "" && !slices.Contains(dbItem.GetWorkflows(), workflowName) {
 			// Item exists but this workflow doesn't yet claim it; we need an
 			// upsert so the workflow gets added to the ownership list.
+			changeType = "Update"
+		} else if isOpen && !isDraft {
+			// Refresh reviewer status (approved / changes-requested / commented)
+			// on every cycle for open non-draft PRs.
 			changeType = "Update"
 		} else {
 			// After a week we stop updating old merged PRs

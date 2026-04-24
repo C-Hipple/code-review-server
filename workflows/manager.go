@@ -189,7 +189,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 			if err != nil {
 				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
 			}
-			if deserializedChange.FileChange.ChangeType == "Addition" {
+			if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
 				notifyPRAdded(log, deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
 			}
 		case "Delete":
@@ -489,6 +489,21 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		log.Info("Completed RunOnce Waitgroup")
 	}
 	apiCalls.log(log)
+	db := config.C().DB
+	if err := db.LogAPICallStats(
+		apiCalls.PRList.Load(),
+		apiCalls.PRSpecific.Load(),
+		apiCalls.Comments.Load(),
+		apiCalls.IssueComments.Load(),
+		apiCalls.CIStatus.Load(),
+		apiCalls.Diff.Load(),
+		apiCalls.Reviews.Load(),
+		apiCalls.CombinedStatus.Load(),
+		apiCalls.CheckRuns.Load(),
+		apiCalls.Commits.Load(),
+	); err != nil {
+		log.Error("Failed to save API call stats to database", "error", err)
+	}
 }
 
 func (ms *ManagerService) Run(log *slog.Logger) {
@@ -659,6 +674,13 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 				existing.Comments = existing.Comments || req.AuxData.Comments
 				existing.CIStatus = existing.CIStatus || req.AuxData.CIStatus
 				existing.Diff = existing.Diff || req.AuxData.Diff
+				existing.Reviews = existing.Reviews || req.AuxData.Reviews
+				existing.Commits = existing.Commits || req.AuxData.Commits
+				// Always fetch reviews for open non-draft PRs so Details() can
+				// display who has approved / requested changes / commented.
+				if pr.State != nil && *pr.State == "open" && (pr.Draft == nil || !*pr.Draft) {
+					existing.Reviews = true
+				}
 				prRequirements[key] = existing
 			}
 		}
@@ -795,6 +817,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 				return
 			}
 			ghReviews = reviews
+			auxData.Reviews = reviews
 		}()
 	}
 

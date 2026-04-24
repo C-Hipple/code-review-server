@@ -36,6 +36,9 @@ go.work.sum
 *.swo
 .DS_Store
 
+# Emacs byte-compiled
+*.elc
+
 # built binary
 codereviewserver
 crs

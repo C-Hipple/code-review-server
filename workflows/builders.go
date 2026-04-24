@@ -23,7 +23,7 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 		case "ListMyPRsWorkflow":
 			wf, err = BuildListMyPRsWorkflow(&raw_workflow, repos)
 		case "ProjectListWorkflow":
-			wf, err = BuildProjectListWorkflow(&raw_workflow, jiraDomain)
+			wf, err = BuildProjectListWorkflow(&raw_workflow, repos, jiraDomain)
 		default:
 			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "type", raw_workflow.WorkflowType)
 			continue
@@ -44,13 +44,14 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 		return nil, err
 	}
 	wf := SyncReviewRequestsWorkflow{
-		Name:         raw.Name,
-		Owner:        raw.Owner,
-		Repos:        []string{raw.Repo},
-		Filters:      filters,
-		SectionTitle: raw.SectionTitle,
-		IncludeDiff:  raw.IncludeDiff,
-		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		Name:                 raw.Name,
+		Owner:                raw.Owner,
+		Repos:                []string{raw.Repo},
+		Filters:              filters,
+		SectionTitle:         raw.SectionTitle,
+		IncludeDiff:          raw.IncludeDiff,
+		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
 }
@@ -66,14 +67,15 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		return nil, err
 	}
 	wf := SyncReviewRequestsWorkflow{
-		Name:         raw.Name,
-		Owner:        raw.Owner,
-		Repos:        workflowRepos,
-		Filters:      filters,
-		PRState:      raw.PRState,
-		SectionTitle: raw.SectionTitle,
-		IncludeDiff:  raw.IncludeDiff,
-		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		Name:                 raw.Name,
+		Owner:                raw.Owner,
+		Repos:                workflowRepos,
+		Filters:              filters,
+		PRState:              raw.PRState,
+		SectionTitle:         raw.SectionTitle,
+		IncludeDiff:          raw.IncludeDiff,
+		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
 }
@@ -93,32 +95,41 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	// Prepend it so user-supplied filters further narrow the result.
 	filters = append([]git_tools.PRFilter{git_tools.FilterMyPRs}, filters...)
 	wf := SyncReviewRequestsWorkflow{
-		Name:         raw.Name,
-		Owner:        raw.Owner,
-		Repos:        workflowRepos,
-		Filters:      filters,
-		PRState:      raw.PRState,
-		SectionTitle: raw.SectionTitle,
-		IncludeDiff:  raw.IncludeDiff,
-		AuxDataReq:   computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		Name:                 raw.Name,
+		Owner:                raw.Owner,
+		Repos:                workflowRepos,
+		Filters:              filters,
+		PRState:              raw.PRState,
+		SectionTitle:         raw.SectionTitle,
+		IncludeDiff:          raw.IncludeDiff,
+		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
 }
 
-func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workflow, error) {
+func BuildProjectListWorkflow(raw *config.RawWorkflow, repos *[]string, jiraDomain string) (Workflow, error) {
+	workflowRepos := *repos
+	if len(raw.Repos) > 0 {
+		workflowRepos = raw.Repos
+	} else if raw.Owner != "" && raw.Repo != "" {
+		// Backward compat for configs using singular Owner/Repo.
+		workflowRepos = []string{fmt.Sprintf("%s/%s", raw.Owner, raw.Repo)}
+	}
+
 	filters, err := BuildFiltersList(raw)
 	if err != nil {
 		return nil, err
 	}
 	wf := ProjectListWorkflow{
-		Name:         raw.Name,
-		Owner:        raw.Owner,
-		Repo:         raw.Repo,
-		JiraDomain:   jiraDomain,
-		JiraEpic:     raw.JiraEpic,
-		Filters:      filters,
-		SectionTitle: raw.SectionTitle,
-		IncludeDiff:  raw.IncludeDiff,
+		Name:                 raw.Name,
+		Repos:                workflowRepos,
+		JiraDomain:           jiraDomain,
+		JiraEpic:             raw.JiraEpic,
+		Filters:              filters,
+		SectionTitle:         raw.SectionTitle,
+		IncludeDiff:          raw.IncludeDiff,
+		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
 }

@@ -18,6 +18,7 @@ jobs:
       bun: ${{ steps.filter.outputs.bun }}
       rust: ${{ steps.filter.outputs.rust }}
       zig: ${{ steps.filter.outputs.zig }}
+      elisp: ${{ steps.filter.outputs.elisp }}
       docker: ${{ steps.filter.outputs.docker }}
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +43,9 @@ jobs:
             zig:
               - 'cmd/claude_review/**'
               - '.github/workflows/zig.yml'
+              - '.github/workflows/all-checks.yml'
+            elisp:
+              - 'client.el/**'
               - '.github/workflows/all-checks.yml'
             docker:
               - 'Dockerfile'
@@ -166,6 +170,44 @@ jobs:
         run: zig build
         working-directory: cmd/claude_review
 
+  elisp:
+    needs: changes
+    if: needs.changes.outputs.elisp == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client.el
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@master
+        with:
+          version: '29.4'
+
+      - name: Install Emacs package dependencies
+        run: |
+          emacs --batch \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'markdown-mode)"
+
+      - name: Byte-compile
+        run: |
+          set -o pipefail
+          emacs --batch \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+            --eval "(package-initialize)" \
+            --eval "(add-to-list 'load-path default-directory)" \
+            -f batch-byte-compile washer.el client.el 2>&1 | tee compile.log
+          if grep -E ':[0-9]+:[0-9]+:Error:' compile.log; then
+            echo "Byte-compile errors found."
+            exit 1
+          fi
+
   docker:
     needs: changes
     if: needs.changes.outputs.docker == 'true'
@@ -187,7 +229,7 @@ jobs:
   # It succeeds when all language checks either passed or were skipped (no relevant changes).
   # It fails if any language check that ran returned a failure or was cancelled.
   all-checks-passed:
-    needs: [go, bun-client, rust, zig, docker]
+    needs: [go, bun-client, rust, zig, elisp, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -198,6 +240,7 @@ jobs:
           echo "  bun-client: ${{ needs.bun-client.result }}"
           echo "  rust:       ${{ needs.rust.result }}"
           echo "  zig:        ${{ needs.zig.result }}"
+          echo "  elisp:      ${{ needs.elisp.result }}"
           echo "  docker:     ${{ needs.docker.result }}"
 
           for result in \
@@ -205,6 +248,7 @@ jobs:
             "${{ needs.bun-client.result }}" \
             "${{ needs.rust.result }}" \
             "${{ needs.zig.result }}" \
+            "${{ needs.elisp.result }}" \
             "${{ needs.docker.result }}"; do
             if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
               echo "One or more language checks failed or were cancelled."

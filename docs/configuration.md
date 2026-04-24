@@ -40,9 +40,12 @@ Filters: list[str]
 SectionTitle: str
 IncludeDiff: bool
 Teams: list[str]
+DesktopNotifications: bool [optional]
 ```
 
 The `GithubUsername` can be set at the top level of the config file. If a workflow does not have a `GithubUsername` set, it will inherit the top-level setting. This is useful for setting a default user for all workflows.
+
+`DesktopNotifications` on a workflow overrides the top-level `DesktopNotifications` setting for that workflow only. Omit it to inherit the global value; set it to `true` or `false` to force notifications on or off for this workflow. This lets you keep notifications globally off but opt in on a specific workflow (e.g. review requests) — or vice versa.
 
 ### Workflow Types
 

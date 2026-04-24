@@ -644,6 +644,13 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 				existing.Comments = existing.Comments || req.AuxData.Comments
 				existing.CIStatus = existing.CIStatus || req.AuxData.CIStatus
 				existing.Diff = existing.Diff || req.AuxData.Diff
+				existing.Reviews = existing.Reviews || req.AuxData.Reviews
+				existing.Commits = existing.Commits || req.AuxData.Commits
+				// Always fetch reviews for open non-draft PRs so Details() can
+				// display who has approved / requested changes / commented.
+				if pr.State != nil && *pr.State == "open" && (pr.Draft == nil || !*pr.Draft) {
+					existing.Reviews = true
+				}
 				prRequirements[key] = existing
 			}
 		}
@@ -780,6 +787,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 				return
 			}
 			ghReviews = reviews
+			auxData.Reviews = reviews
 		}()
 	}
 

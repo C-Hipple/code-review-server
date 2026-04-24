@@ -81,9 +81,14 @@ type ManagerService struct {
 }
 
 func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []SerializedFileChange {
+	// Dedup is per (identifier, workflow): a single workflow may emit at most
+	// one canonical change per item per cycle, but different workflows that
+	// touch the same item must each contribute (e.g. one Update from workflow
+	// A and one Delete from workflow B both need to land so ownership is
+	// tracked correctly).
 	changesByIdentifier := make(map[string][]SerializedFileChange)
 	for _, change := range changes {
-		identifier := change.FileChange.Identifier
+		identifier := change.FileChange.Identifier + "\x00" + change.FileChange.WorkflowName
 		changesByIdentifier[identifier] = append(changesByIdentifier[identifier], change)
 	}
 
@@ -171,7 +176,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 
 		switch deserializedChange.FileChange.ChangeType {
 		case "Addition", "Update":
-			_, err := db.UpsertItem(
+			_, err := db.UpsertItemWithWorkflow(
 				deserializedChange.FileChange.SectionID,
 				deserializedChange.FileChange.Identifier,
 				deserializedChange.FileChange.Status,
@@ -179,6 +184,7 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 				deserializedChange.FileChange.Details,
 				deserializedChange.FileChange.Tags,
 				deserializedChange.FileChange.TTL,
+				deserializedChange.FileChange.WorkflowName,
 			)
 			if err != nil {
 				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
@@ -187,9 +193,16 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 				notifyPRAdded(log, deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
 			}
 		case "Delete":
-			err := db.DeleteItem(deserializedChange.FileChange.SectionID, deserializedChange.FileChange.Identifier)
+			// "Delete" now means "this workflow no longer claims this item".
+			// The row stays in place; PruneOrphanedItems removes anything
+			// left with no remaining owners after the cycle completes.
+			err := db.RemoveWorkflowFromItem(
+				deserializedChange.FileChange.SectionID,
+				deserializedChange.FileChange.Identifier,
+				deserializedChange.FileChange.WorkflowName,
+			)
 			if err != nil {
-				log.Error("Error deleting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+				log.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
 			}
 		}
 		changeCount++
@@ -531,6 +544,7 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 		if waitTimeout(&listener_wg, 240*time.Second) {
 			log.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
+		pruneOrphanedItems(log)
 	} else {
 		cycle_count := 0
 		for {
@@ -579,6 +593,8 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 
+			pruneOrphanedItems(log)
+
 			// Log cycle completion so the throttle check works on next server start.
 			if err := db.LogWorkflowCycle(); err != nil {
 				log.Error("Failed to log workflow cycle completion", "error", err)
@@ -589,6 +605,20 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 		}
 	}
 	log.Info("Exiting Service")
+}
+
+// pruneOrphanedItems deletes any items that are no longer claimed by any
+// workflow. Run after every cycle once all per-workflow ownership updates have
+// been applied.
+func pruneOrphanedItems(log *slog.Logger) {
+	deleted, err := config.C().DB.PruneOrphanedItems()
+	if err != nil {
+		log.Error("Failed to prune orphaned items", "error", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("Pruned orphaned items", "count", deleted)
+	}
 }
 
 func (ms *ManagerService) Initialize() {

@@ -102,7 +102,7 @@ func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequ
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(log, w.Name, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -222,7 +222,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 
 	beforeCount, _ := db.GetItemCount()
 	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(log, w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	log.Info("Finished workflow", "items_after", afterCount)
 	return result, nil

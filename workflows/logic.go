@@ -59,15 +59,16 @@ type Workflow interface {
 }
 
 type FileChanges struct {
-	ChangeType  string
-	Identifier  string
-	Status      string
-	Title       string
-	Details     []string
-	Tags        []string
-	SectionID   int64
-	SectionName string
-	TTL         int64
+	ChangeType   string
+	Identifier   string
+	Status       string
+	Title        string
+	Details      []string
+	Tags         []string
+	SectionID    int64
+	SectionName  string
+	TTL          int64
+	WorkflowName string
 	// NotifyOnAdd is the effective desktop-notification decision for the
 	// workflow that produced this change. When true and ChangeType is
 	// "Addition", a desktop notification will be sent.
@@ -456,7 +457,7 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
+func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
 	ttl := time.Now().Add(2 * time.Hour).Unix()
@@ -469,7 +470,7 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 		buildWg.Add(1)
 		go func(i int, pr *github.PullRequest) {
 			defer buildWg.Done()
-			fc := SyncTODOToSectionDB(db, pr, section, includeDiff)
+			fc := SyncTODOToSectionDB(db, workflowName, pr, section, includeDiff)
 			fc.TTL = ttl
 			fc.NotifyOnAdd = notifyOnAdd
 			prChanges[i] = fc
@@ -492,29 +493,35 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 			for _, item := range items {
 				if slices.Contains(pr_identifiers, item.Identifier) {
 					continue
-				} else {
-					var details []string
-					json.Unmarshal([]byte(item.DetailsJSON), &details)
-					var tags []string
-					json.Unmarshal([]byte(item.Tags), &tags)
-
-					fileChange := FileChanges{
-						ChangeType:  "Delete",
-						Identifier:  item.Identifier,
-						Status:      item.Status,
-						Title:       item.Title,
-						Details:     details,
-						Tags:        tags,
-						SectionID:   section.ID,
-						SectionName: section.SectionName,
-						TTL:         0,
-					}
-					changes = append(changes, fileChange)
 				}
+				// Only release ownership for items this workflow actually
+				// claims. Items maintained by other workflows are left alone
+				// here; cycle-end pruning removes anything with no owners.
+				if !slices.Contains(item.GetWorkflows(), workflowName) {
+					continue
+				}
+				var details []string
+				json.Unmarshal([]byte(item.DetailsJSON), &details)
+				var tags []string
+				json.Unmarshal([]byte(item.Tags), &tags)
+
+				fileChange := FileChanges{
+					ChangeType:   "Delete",
+					Identifier:   item.Identifier,
+					Status:       item.Status,
+					Title:        item.Title,
+					Details:      details,
+					Tags:         tags,
+					SectionID:    section.ID,
+					SectionName:  section.SectionName,
+					TTL:          0,
+					WorkflowName: workflowName,
+				}
+				changes = append(changes, fileChange)
 			}
 		}
 	}
-	
+
 	// Cleanup expired items
 	expiredItems, err := db.GetExpiredItems(section.ID)
 	if err == nil {
@@ -526,26 +533,31 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 					break
 				}
 			}
-			
-			if !isBeingProcessed {
-				var details []string
-				json.Unmarshal([]byte(item.DetailsJSON), &details)
-				var tags []string
-				json.Unmarshal([]byte(item.Tags), &tags)
 
-				fileChange := FileChanges{
-					ChangeType:  "Delete",
-					Identifier:  item.Identifier,
-					Status:      item.Status,
-					Title:       item.Title,
-					Details:     details,
-					Tags:        tags,
-					SectionID:   section.ID,
-					SectionName: section.SectionName,
-					TTL:         0,
-				}
-				changes = append(changes, fileChange)
+			if isBeingProcessed {
+				continue
 			}
+			if !slices.Contains(item.GetWorkflows(), workflowName) {
+				continue
+			}
+			var details []string
+			json.Unmarshal([]byte(item.DetailsJSON), &details)
+			var tags []string
+			json.Unmarshal([]byte(item.Tags), &tags)
+
+			fileChange := FileChanges{
+				ChangeType:   "Delete",
+				Identifier:   item.Identifier,
+				Status:       item.Status,
+				Title:        item.Title,
+				Details:      details,
+				Tags:         tags,
+				SectionID:    section.ID,
+				SectionName:  section.SectionName,
+				TTL:          0,
+				WorkflowName: workflowName,
+			}
+			changes = append(changes, fileChange)
 		}
 	} else {
 		log.Error("Error getting expired items", "error", err)
@@ -558,12 +570,12 @@ func ProcessPRsDB(log *slog.Logger, prs []*github.PullRequest, changes_channel c
 	return result
 }
 
-func SyncTODOToSectionDB(db *database.DB, pr *github.PullRequest, section *database.Section, includeDiff bool) FileChanges {
+func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRequest, section *database.Section, includeDiff bool) FileChanges {
 	pr_as_org := PRToOrgBridge{PR: pr, IncludeDiff: includeDiff}
-	
+
 	identifier := pr_as_org.Identifier()
 	dbItem, err := db.GetItem(section.ID, identifier)
-	
+
 	found := err == nil && dbItem != nil
 	changeType := "Addition"
 	if found {
@@ -573,6 +585,10 @@ func SyncTODOToSectionDB(db *database.DB, pr *github.PullRequest, section *datab
 		isDraft := pr.Draft != nil && *pr.Draft
 		// Always update if status or tags changed (e.g. draft → non-draft)
 		if dbItem.Status != newStatus || dbItem.Tags != strings.Join(newTags, ",") {
+			changeType = "Update"
+		} else if workflowName != "" && !slices.Contains(dbItem.GetWorkflows(), workflowName) {
+			// Item exists but this workflow doesn't yet claim it; we need an
+			// upsert so the workflow gets added to the ownership list.
 			changeType = "Update"
 		} else if isOpen && !isDraft {
 			// Refresh reviewer status (approved / changes-requested / commented)
@@ -588,17 +604,18 @@ func SyncTODOToSectionDB(db *database.DB, pr *github.PullRequest, section *datab
 			}
 		}
 	}
-	
+
 	return FileChanges{
-		ChangeType:  changeType,
-		Identifier:  identifier,
-		Status:      pr_as_org.GetStatus(),
-		Title:       pr_as_org.Title(),
-		Details:     pr_as_org.Details(),
-		Tags:        pr_as_org.GetTags(),
-		SectionID:   section.ID,
-		SectionName: section.SectionName,
-		TTL:         0, // Set by caller
+		ChangeType:   changeType,
+		Identifier:   identifier,
+		Status:       pr_as_org.GetStatus(),
+		Title:        pr_as_org.Title(),
+		Details:      pr_as_org.Details(),
+		Tags:         pr_as_org.GetTags(),
+		SectionID:    section.ID,
+		SectionName:  section.SectionName,
+		TTL:          0, // Set by caller
+		WorkflowName: workflowName,
 	}
 }
 

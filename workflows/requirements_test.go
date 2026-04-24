@@ -66,8 +66,7 @@ func TestGetPRRequirements(t *testing.T) {
 		{
 			name: "ProjectListWorkflow",
 			workflow: ProjectListWorkflow{
-				Owner:      "owner",
-				Repo:       "repo",
+				Repos:      []string{"owner/repo"},
 				JiraEpic:   "EPIC-123",
 				JiraDomain: "domain.atlassian.net",
 			},

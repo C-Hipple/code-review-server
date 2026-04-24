@@ -43,9 +43,9 @@ func getAuth() (string, string) {
 	return jiraEmail, token
 }
 
-// / Get all of the PRs #s for a repo under a JIRA epic
-func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
-	// fmt.Printf("Searching for project shas for project: `%s`\n", epicKey)
+// GetProjectPRKeys returns the PR numbers for every target repo under a JIRA epic,
+// keyed by the repo short name (e.g. "code-review-server").
+func GetProjectPRKeys(domain string, epicKey string, repo_names []string) map[string][]int {
 	if !strings.HasSuffix(domain, "/") {
 		domain += "/"
 	}
@@ -60,7 +60,7 @@ func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		slog.Error("Error creating request", "error", err)
-		return []int{}
+		return map[string][]int{}
 	}
 	req.URL.RawQuery = params.Encode()
 
@@ -71,7 +71,7 @@ func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("Error making request", "error", err)
-		return []int{}
+		return map[string][]int{}
 	}
 	defer resp.Body.Close()
 
@@ -81,31 +81,36 @@ func GetProjectPRKeys(domain string, epicKey string, repo_name string) []int {
 		body := make([]byte, 1024)
 		n, _ := resp.Body.Read(body) // We ignore the error here.
 		slog.Error("JIRA response body", "content", string(body[:n]))
-		return []int{}
+		return map[string][]int{}
 	}
 
 	var data JiraSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		slog.Error("Error decoding JSON", "error", err)
-		return []int{}
+		return map[string][]int{}
 	}
 
-	return processIssues(domain, data, repo_name)
+	return processIssues(domain, data, repo_names)
 
 }
 
-func processIssues(domain string, data JiraSearchResponse, target_repo string) []int {
-	// this function right now only works for a single repo.
-	// Returns a list of the PR numbers.
+type issuePR struct {
+	repo string
+	num  int
+}
 
-	var (
-		PRNumbers []int
-		mu        sync.Mutex
-		wg        sync.WaitGroup
-	)
+func processIssues(domain string, data JiraSearchResponse, target_repos []string) map[string][]int {
+	// Returns a map of repo short name -> list of PR numbers for that repo.
 
-	errChan := make(chan error, len(data.Issues))   // Buffered channel for errors
-	resultsChan := make(chan int, len(data.Issues)) // Buffered channel for merge SHAs
+	targets := make(map[string]struct{}, len(target_repos))
+	for _, r := range target_repos {
+		targets[r] = struct{}{}
+	}
+
+	var wg sync.WaitGroup
+
+	errChan := make(chan error, len(data.Issues))
+	resultsChan := make(chan issuePR, len(data.Issues))
 
 	for _, issue := range data.Issues {
 		wg.Add(1)
@@ -128,19 +133,19 @@ func processIssues(domain string, data JiraSearchResponse, target_repo string) [
 				return
 			}
 
-			// fmt.Println("checking the url: " + pr.URL)
-			prNumber := strings.Split(pr.URL, "/")
-			repo := prNumber[len(prNumber)-3]
-			if repo != target_repo {
+			urlParts := strings.Split(pr.URL, "/")
+			repo := urlParts[len(urlParts)-3]
+			if _, ok := targets[repo]; !ok {
 				errChan <- fmt.Errorf("Issue PR is for a separate repo: %s", repo)
 				return
 			}
-			prNum := prNumber[len(prNumber)-1]
+			prNum := urlParts[len(urlParts)-1]
 			num, err := strconv.Atoi(prNum)
 			if err != nil {
 				errChan <- fmt.Errorf("Failed to convert prNum %s to int", prNum)
+				return
 			}
-			resultsChan <- num
+			resultsChan <- issuePR{repo: repo, num: num}
 		}(issue)
 	}
 
@@ -148,19 +153,11 @@ func processIssues(domain string, data JiraSearchResponse, target_repo string) [
 	close(errChan)
 	close(resultsChan)
 
-	// Collect errors
-	// for err := range errChan {
-	//	fmt.Println(err)
-	// }
-
-	// Collect merge SHAs
-	for PRNumber := range resultsChan {
-		mu.Lock()
-		PRNumbers = append(PRNumbers, PRNumber)
-		mu.Unlock()
+	out := make(map[string][]int)
+	for r := range resultsChan {
+		out[r.repo] = append(out[r.repo], r.num)
 	}
-
-	return PRNumbers
+	return out
 }
 
 func getPRLinkForIssue(domain string, issueID string) (*JiraPullRequestIdentifier, error) {

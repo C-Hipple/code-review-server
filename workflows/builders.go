@@ -23,7 +23,7 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 		case "ListMyPRsWorkflow":
 			wf, err = BuildListMyPRsWorkflow(&raw_workflow, repos)
 		case "ProjectListWorkflow":
-			wf, err = BuildProjectListWorkflow(&raw_workflow, jiraDomain)
+			wf, err = BuildProjectListWorkflow(&raw_workflow, repos, jiraDomain)
 		default:
 			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "type", raw_workflow.WorkflowType)
 			continue
@@ -108,15 +108,22 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	return wf, nil
 }
 
-func BuildProjectListWorkflow(raw *config.RawWorkflow, jiraDomain string) (Workflow, error) {
+func BuildProjectListWorkflow(raw *config.RawWorkflow, repos *[]string, jiraDomain string) (Workflow, error) {
+	workflowRepos := *repos
+	if len(raw.Repos) > 0 {
+		workflowRepos = raw.Repos
+	} else if raw.Owner != "" && raw.Repo != "" {
+		// Backward compat for configs using singular Owner/Repo.
+		workflowRepos = []string{fmt.Sprintf("%s/%s", raw.Owner, raw.Repo)}
+	}
+
 	filters, err := BuildFiltersList(raw)
 	if err != nil {
 		return nil, err
 	}
 	wf := ProjectListWorkflow{
 		Name:                 raw.Name,
-		Owner:                raw.Owner,
-		Repo:                 raw.Repo,
+		Repos:                workflowRepos,
 		JiraDomain:           jiraDomain,
 		JiraEpic:             raw.JiraEpic,
 		Filters:              filters,

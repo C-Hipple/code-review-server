@@ -574,6 +574,16 @@ func SubmitReview(client *github.Client, owner string, repo string, number int, 
 	return err
 }
 
+// SquashMergePR asks GitHub to perform a squash merge of the given PR.
+// We pass through whatever GitHub returns; the caller is responsible for
+// interpreting Merged / Message fields rather than inferring success locally.
+func SquashMergePR(client *github.Client, owner string, repo string, number int) (*github.PullRequestMergeResult, error) {
+	ctx := context.Background()
+	opts := &github.PullRequestOptions{MergeMethod: "squash"}
+	result, _, err := client.PullRequests.Merge(ctx, owner, repo, number, "", opts)
+	return result, err
+}
+
 func SubmitReply(client *github.Client, owner string, repo string, number int, body string, replyToID int64) error {
 	ctx := context.Background()
 	comment := &github.PullRequestComment{

@@ -597,6 +597,40 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	return nil
 }
 
+type MergePRArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+}
+
+type MergePRReply struct {
+	Merged  bool   `json:"merged"`
+	SHA     string `json:"sha"`
+	Message string `json:"message"`
+}
+
+// MergePR asks GitHub to squash-merge the given pull request and returns
+// GitHub's verdict verbatim. We deliberately do not second-guess merge state
+// here: clients should rely on `merged` and `message` from the response.
+func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
+	client := git_tools.GetGithubClient()
+	result, err := git_tools.SquashMergePR(client, args.Owner, args.Repo, args.Number)
+	if err != nil {
+		h.Log.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "error", err)
+		if result != nil {
+			reply.Merged = result.GetMerged()
+			reply.SHA = result.GetSHA()
+			reply.Message = result.GetMessage()
+		}
+		return err
+	}
+
+	reply.Merged = result.GetMerged()
+	reply.SHA = result.GetSHA()
+	reply.Message = result.GetMessage()
+	return nil
+}
+
 type SyncPRArgs struct {
 	Owner  string `json:"Owner"`
 	Repo   string `json:"Repo"`

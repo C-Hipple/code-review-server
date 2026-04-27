@@ -385,16 +385,17 @@ Submits a review to GitHub. This will:
 
 ### `RPCHandler.MergePR`
 
-Asks GitHub to squash-merge the given pull request. The merge method is always **squash**; this endpoint does not accept a merge-method override.
+Asks GitHub to merge the given pull request. The merge method defaults to **squash** when `MergeMethod` is omitted or empty; callers may override it with any value GitHub accepts (`"merge"`, `"squash"`, or `"rebase"`).
 
 The server passes through GitHub's response verbatim — clients should rely on the `merged` and `message` fields to determine whether the merge succeeded rather than inferring success from the absence of an error. A non-error response with `merged: false` (e.g. due to a protected branch, failing checks, or a dirty mergeable state) is still a meaningful answer from GitHub.
 
 **Arguments** (`MergePRArgs`):
-| Field    | Type   | Required | Description                          |
-|----------|--------|----------|--------------------------------------|
-| `Owner`  | string | Yes      | Repository owner                     |
-| `Repo`   | string | Yes      | Repository name                      |
-| `Number` | int    | Yes      | Pull request number                  |
+| Field         | Type   | Required | Description                                                                 |
+|---------------|--------|----------|-----------------------------------------------------------------------------|
+| `Owner`       | string | Yes      | Repository owner                                                            |
+| `Repo`        | string | Yes      | Repository name                                                             |
+| `Number`      | int    | Yes      | Pull request number                                                         |
+| `MergeMethod` | string | No       | One of `"merge"`, `"squash"`, or `"rebase"`. Defaults to `"squash"` if empty |
 
 **Reply** (`MergePRReply`):
 | Field     | Type   | Description                                                        |
@@ -403,11 +404,20 @@ The server passes through GitHub's response verbatim — clients should rely on 
 | `sha`     | string | SHA of the merge commit produced by GitHub (empty if not merged)   |
 | `message` | string | Human-readable message returned by GitHub describing the outcome   |
 
-**Example Request**:
+**Example Request** (squash merge — default):
 ```json
 {
   "method": "RPCHandler.MergePR",
   "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42}],
+  "id": 7
+}
+```
+
+**Example Request** (rebase merge):
+```json
+{
+  "method": "RPCHandler.MergePR",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "MergeMethod": "rebase"}],
   "id": 7
 }
 ```

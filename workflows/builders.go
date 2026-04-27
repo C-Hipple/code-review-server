@@ -156,7 +156,7 @@ func computeAuxRequirements(filterNames []string, includeDiff bool) AuxDataRequi
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{
-	"FilterMyReviewRequested": git_tools.FilterMyReviewRequested,
+	"FilterMyReviewRequested": filterMyReviewRequested,
 	"FilterNotDraft":          git_tools.FilterNotDraft,
 	"FilterIsDraft":           git_tools.FilterIsDraft,
 	"FilterNotMyPRs":          git_tools.FilterNotMyPRs,

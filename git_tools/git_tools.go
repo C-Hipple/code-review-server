@@ -213,19 +213,6 @@ func MakeTeamFilters(teams []string) func([]*github.PullRequest) []*github.PullR
 	}
 }
 
-func FilterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
-	filtered := []*github.PullRequest{}
-	for _, pr := range prs {
-		for _, reviewer := range pr.RequestedReviewers {
-			if strings.EqualFold(*reviewer.Login, config.C().GithubUsername) {
-				filtered = append(filtered, pr)
-				break
-			}
-		}
-	}
-	return filtered
-}
-
 // githubSemaphore limits concurrent in-flight GitHub API requests to 50
 // to avoid hitting GitHub's secondary rate limits.
 var githubSemaphore = make(chan struct{}, 50)

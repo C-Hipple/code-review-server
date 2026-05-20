@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/google/go-github/v48/github"
@@ -115,13 +114,6 @@ func reviewItemLess(a, b ReviewItem) bool {
 	return a.Number < b.Number
 }
 
-// sortReviewItems sorts items in-place using reviewItemLess.
-func sortReviewItems(items []ReviewItem) {
-	sort.SliceStable(items, func(i, j int) bool {
-		return reviewItemLess(items[i], items[j])
-	})
-}
-
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	if err := config.Reload(); err != nil {
 		h.Log.Error("Error reloading config", "error", err)
@@ -137,7 +129,6 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	if items == nil {
 		reply.Items = []ReviewItem{}
 	} else {
-		sortReviewItems(items)
 		reply.Items = items
 	}
 	return nil
@@ -235,10 +226,7 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 		return err
 	}
 
-	// Sort the same way as GetAllReviews
-	sortReviewItems(items)
-
-	// Find the current PR in the sorted list
+	// Find the current PR in the review list
 	currentIdx := -1
 	for i, item := range items {
 		if item.Owner == args.Owner && item.Repo == args.Repo && item.Number == args.Number {

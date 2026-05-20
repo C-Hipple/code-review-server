@@ -415,14 +415,14 @@ export default function PRList({
                                             >
                                                 ▼
                                             </span>
-                                            {section.name}
                                             <Badge
                                                 size="sm"
                                                 variant="neutral"
-                                                style={{ marginLeft: 'auto', opacity: 0.7 }}
+                                                style={{ opacity: 0.7 }}
                                             >
                                                 {section.items.length}
                                             </Badge>
+                                            {section.name}
                                         </h3>
                                         {!isCollapsed && (
                                             <div

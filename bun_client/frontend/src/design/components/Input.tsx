@@ -143,6 +143,7 @@ export function TextArea({ label, error, style, ...props }: TextAreaProps) {
             <textarea
                 style={{
                     width: '100%',
+                    boxSizing: 'border-box',
                     background: colors.bgPrimary,
                     border: `1px solid ${colors.border}`,
                     color: colors.textPrimary,

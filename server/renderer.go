@@ -1672,9 +1672,27 @@ func buildCommentTree(tree []PRComment, filePath string, forceOutdated bool) str
 	return strings.Join(result, "\n")
 }
 
+// isTestFile reports whether a diff file looks like a test file, based on a
+// simple case-insensitive substring match of "test" against either path.
+func isTestFile(file *utils.DiffFile) bool {
+	return strings.Contains(strings.ToLower(file.NewName), "test") ||
+		strings.Contains(strings.ToLower(file.OrigName), "test")
+}
+
+// sortFilesTestsLast returns a copy of files with test files ordered after
+// non-test files, preserving the original relative order within each group.
+func sortFilesTestsLast(files []*utils.DiffFile) []*utils.DiffFile {
+	sorted := make([]*utils.DiffFile, len(files))
+	copy(sorted, files)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return !isTestFile(sorted[i]) && isTestFile(sorted[j])
+	})
+	return sorted
+}
+
 func formatDiff(diff *utils.Diff) string {
 	var builder strings.Builder
-	for _, file := range diff.Files {
+	for _, file := range sortFilesTestsLast(diff.Files) {
 		builder.WriteString(file.DiffHeader + "\n")
 
 		// The diff parser's lookahead misses ---/+++ lines for new/deleted files

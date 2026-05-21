@@ -383,6 +383,60 @@ Submits a review to GitHub. This will:
 
 ---
 
+### `RPCHandler.MergePR`
+
+Asks GitHub to merge the given pull request. The merge method defaults to **squash** when `MergeMethod` is omitted or empty; callers may override it with any value GitHub accepts (`"merge"`, `"squash"`, or `"rebase"`).
+
+The server passes through GitHub's response verbatim — clients should rely on the `merged` and `message` fields to determine whether the merge succeeded rather than inferring success from the absence of an error. A non-error response with `merged: false` (e.g. due to a protected branch, failing checks, or a dirty mergeable state) is still a meaningful answer from GitHub.
+
+**Arguments** (`MergePRArgs`):
+| Field         | Type   | Required | Description                                                                 |
+|---------------|--------|----------|-----------------------------------------------------------------------------|
+| `Owner`       | string | Yes      | Repository owner                                                            |
+| `Repo`        | string | Yes      | Repository name                                                             |
+| `Number`      | int    | Yes      | Pull request number                                                         |
+| `MergeMethod` | string | No       | One of `"merge"`, `"squash"`, or `"rebase"`. Defaults to `"squash"` if empty |
+
+**Reply** (`MergePRReply`):
+| Field     | Type   | Description                                                        |
+|-----------|--------|--------------------------------------------------------------------|
+| `merged`  | bool   | `true` if GitHub reports the PR was successfully merged            |
+| `sha`     | string | SHA of the merge commit produced by GitHub (empty if not merged)   |
+| `message` | string | Human-readable message returned by GitHub describing the outcome   |
+
+**Example Request** (squash merge — default):
+```json
+{
+  "method": "RPCHandler.MergePR",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42}],
+  "id": 7
+}
+```
+
+**Example Request** (rebase merge):
+```json
+{
+  "method": "RPCHandler.MergePR",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "MergeMethod": "rebase"}],
+  "id": 7
+}
+```
+
+**Example Response**:
+```json
+{
+  "result": {
+    "merged": true,
+    "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "message": "Pull Request successfully merged"
+  },
+  "error": null,
+  "id": 7
+}
+```
+
+---
+
 ### `RPCHandler.ListPlugins`
 
 Lists all installed and configured plugins.

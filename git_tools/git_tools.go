@@ -561,6 +561,17 @@ func SubmitReview(client *github.Client, owner string, repo string, number int, 
 	return err
 }
 
+// MergePR asks GitHub to merge the given PR using the supplied merge method
+// ("merge", "squash", or "rebase"). We pass through whatever GitHub returns;
+// the caller is responsible for interpreting Merged / Message fields rather
+// than inferring success locally.
+func MergePR(client *github.Client, owner string, repo string, number int, method string) (*github.PullRequestMergeResult, error) {
+	ctx := context.Background()
+	opts := &github.PullRequestOptions{MergeMethod: method}
+	result, _, err := client.PullRequests.Merge(ctx, owner, repo, number, "", opts)
+	return result, err
+}
+
 func SubmitReply(client *github.Client, owner string, repo string, number int, body string, replyToID int64) error {
 	ctx := context.Background()
 	comment := &github.PullRequestComment{

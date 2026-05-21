@@ -585,6 +585,47 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	return nil
 }
 
+type MergePRArgs struct {
+	Owner       string `json:"Owner"`
+	Repo        string `json:"Repo"`
+	Number      int    `json:"Number"`
+	MergeMethod string `json:"MergeMethod"` // Optional: "merge", "squash", or "rebase". Defaults to "squash" if empty.
+}
+
+type MergePRReply struct {
+	Merged  bool   `json:"merged"`
+	SHA     string `json:"sha"`
+	Message string `json:"message"`
+}
+
+// MergePR asks GitHub to merge the given pull request and returns GitHub's
+// verdict verbatim. The merge method defaults to "squash" if the caller does
+// not specify one. We deliberately do not second-guess merge state here:
+// clients should rely on `merged` and `message` from the response.
+func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
+	method := args.MergeMethod
+	if method == "" {
+		method = "squash"
+	}
+
+	client := git_tools.GetGithubClient()
+	result, err := git_tools.MergePR(client, args.Owner, args.Repo, args.Number, method)
+	if err != nil {
+		h.Log.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
+		if result != nil {
+			reply.Merged = result.GetMerged()
+			reply.SHA = result.GetSHA()
+			reply.Message = result.GetMessage()
+		}
+		return err
+	}
+
+	reply.Merged = result.GetMerged()
+	reply.SHA = result.GetSHA()
+	reply.Message = result.GetMessage()
+	return nil
+}
+
 type SyncPRArgs struct {
 	Owner  string `json:"Owner"`
 	Repo   string `json:"Repo"`

@@ -22,6 +22,7 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetAllReviews': '/api/reviews',
     'RPCHandler.ListPlugins': '/api/list-plugins',
     'RPCHandler.GetPluginOutput': '/api/get-plugin-output',
+    'RPCHandler.RerunPlugins': '/api/rerun-plugins',
     'RPCHandler.GetHunkContext': '/api/get-hunk-context',
 };
 

@@ -3357,22 +3357,41 @@ export default function Review({
                 size="sm"
             >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <select
-                        value={reviewEvent}
-                        onChange={e => setReviewEvent(e.target.value)}
-                        disabled={isSubmittingReview}
-                        style={{
-                            padding: '8px',
-                            background: 'var(--bg-primary)',
-                            border: '1px solid var(--border)',
-                            color: 'var(--text-primary)',
-                            borderRadius: '4px',
-                        }}
-                    >
-                        <option value="COMMENT">Comment</option>
-                        <option value="APPROVE">Approve</option>
-                        <option value="REQUEST_CHANGES">Request Changes</option>
-                    </select>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        {[
+                            { value: 'COMMENT', label: 'Comment' },
+                            { value: 'APPROVE', label: 'Approve' },
+                            { value: 'REQUEST_CHANGES', label: 'Request Changes' },
+                        ].map(option => {
+                            const selected = reviewEvent === option.value;
+                            return (
+                                <button
+                                    key={option.value}
+                                    type="button"
+                                    onClick={() => setReviewEvent(option.value)}
+                                    disabled={isSubmittingReview}
+                                    style={{
+                                        flex: 1,
+                                        padding: '8px',
+                                        background: selected
+                                            ? 'var(--accent)'
+                                            : 'var(--bg-primary)',
+                                        border: `1px solid ${
+                                            selected ? 'var(--accent)' : 'var(--border)'
+                                        }`,
+                                        color: selected ? 'white' : 'var(--text-primary)',
+                                        borderRadius: '4px',
+                                        cursor: isSubmittingReview ? 'default' : 'pointer',
+                                        fontFamily: 'inherit',
+                                        fontSize: '14px',
+                                        fontWeight: 500,
+                                    }}
+                                >
+                                    {option.label}
+                                </button>
+                            );
+                        })}
+                    </div>
                     <TextArea
                         placeholder="Review Body (Optional)"
                         value={reviewBody}

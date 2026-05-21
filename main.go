@@ -86,8 +86,8 @@ func main() {
 
 	if *serverFlag {
 		go func() {
-			slog.Info("Starting pprof server", "addr", "localhost:6060")
-			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			slog.Info("Starting pprof server", "addr", "localhost:6061")
+			if err := http.ListenAndServe("localhost:6061", nil); err != nil {
 				slog.Error("pprof server exited", "error", err)
 			}
 		}()

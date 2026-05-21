@@ -65,6 +65,9 @@ func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, e
 
 	prompt := fmt.Sprintf(`Analyze the following PR diff for potential security issues, specifically focusing on endpoints.
 
+
+If the code is not relevant to the tasks below, simply respond with "no security changes found."  Do not try to infer risks beyond the scope of the current changes.
+
 Tasks:
 1. Identify any new or modified API endpoints.
 2. Check if these endpoints expose sensitive or critical information.

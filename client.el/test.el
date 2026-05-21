@@ -37,7 +37,7 @@ http://localhost:5172/?owner=C-Hipple&repo=code-review-server&number=83  ;; For 
   "Close all open review buffers and restart the server."
   (interactive)
   (dolist (buffer (buffer-list))
-    (when (string-match-p "^\\* Review" (buffer-name buffer))
+    (when (string-match-p "^\\* \\(CRS:\\|Reviews\\)" (buffer-name buffer))
       (kill-buffer buffer)))
   (crs-restart-server))
 

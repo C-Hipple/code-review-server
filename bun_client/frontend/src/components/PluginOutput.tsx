@@ -30,6 +30,7 @@ export default function PluginOutput({
 }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
+    const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
 
     useEffect(() => {
         loadPluginOutput();
@@ -62,6 +63,29 @@ export default function PluginOutput({
             setPluginOutput({});
         } finally {
             setLoading(false);
+        }
+    };
+
+    const executePlugin = async (pluginName: string) => {
+        setExecutingPlugins((prev: Set<string>) => new Set(prev).add(pluginName));
+        try {
+            await rpcCall('RPCHandler.RerunPlugins', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Plugins: [pluginName],
+                },
+            ]);
+            await loadPluginOutput();
+        } catch (e) {
+            console.error('Failed to execute plugin:', e);
+        } finally {
+            setExecutingPlugins((prev: Set<string>) => {
+                const next = new Set(prev);
+                next.delete(pluginName);
+                return next;
+            });
         }
     };
 
@@ -143,10 +167,21 @@ export default function PluginOutput({
                                                 fontWeight: 600,
                                                 fontSize: '15px',
                                                 fontFamily: 'var(--font-mono)',
+                                                flex: 1,
                                             }}
                                         >
                                             {pluginName}
                                         </span>
+                                        {plugin.status.toLowerCase() === 'deferred' && (
+                                            <Button
+                                                onClick={() => executePlugin(pluginName)}
+                                                loading={executingPlugins.has(pluginName)}
+                                                variant="secondary"
+                                                size="sm"
+                                            >
+                                                Execute
+                                            </Button>
+                                        )}
                                     </div>
                                     <div
                                         style={{

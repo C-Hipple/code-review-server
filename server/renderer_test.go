@@ -2,6 +2,7 @@ package server
 
 import (
 	"crs/database"
+	"crs/utils"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -848,6 +849,56 @@ func TestGetAllReviewsSorting(t *testing.T) {
 		if got.Status != w.status || got.Repo != w.repo || got.Number != w.number {
 			t.Errorf("[%d] got {%s %s #%d}, want {%s %s #%d}",
 				i, got.Status, got.Repo, got.Number, w.status, w.repo, w.number)
+		}
+	}
+}
+
+func TestSortFilesTestsLast(t *testing.T) {
+	files := []*utils.DiffFile{
+		{NewName: "server/server.go"},
+		{NewName: "server/server_test.go"},
+		{NewName: "config/config.go"},
+		{NewName: "utils/diff_parser_test.go"},
+		{NewName: "client.el/test.el"},
+		{NewName: "README.md"},
+	}
+
+	got := sortFilesTestsLast(files)
+
+	wantOrder := []string{
+		"server/server.go",
+		"config/config.go",
+		"README.md",
+		"server/server_test.go",
+		"utils/diff_parser_test.go",
+		"client.el/test.el",
+	}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+
+	// Original slice must not be mutated.
+	if files[1].NewName != "server/server_test.go" {
+		t.Errorf("input slice was mutated: %q", files[1].NewName)
+	}
+}
+
+func TestIsTestFile(t *testing.T) {
+	tests := []struct {
+		file *utils.DiffFile
+		want bool
+	}{
+		{&utils.DiffFile{NewName: "server/server_test.go"}, true},
+		{&utils.DiffFile{NewName: "server/server.go"}, false},
+		{&utils.DiffFile{NewName: "tests/integration.go"}, true},
+		{&utils.DiffFile{NewName: "FooTest.java"}, true},
+		{&utils.DiffFile{NewName: "", OrigName: "old_test.go"}, true},
+	}
+	for i, tc := range tests {
+		if got := isTestFile(tc.file); got != tc.want {
+			t.Errorf("[%d] isTestFile(%+v) = %v, want %v", i, tc.file, got, tc.want)
 		}
 	}
 }

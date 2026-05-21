@@ -1133,8 +1133,35 @@ export default function Review({
         }
     };
 
+    const isTestFile = (filename: string): boolean =>
+        /\.(test|spec)\.[jt]sx?$/.test(filename) ||
+        /_test\.[jt]sx?$/.test(filename) ||
+        /_test\.go$/.test(filename) ||
+        /\/__tests__\//.test(filename);
+
+    const sortParsedLinesTestsLast = (lines: ParsedLine[]): ParsedLine[] => {
+        const groups: ParsedLine[][] = [];
+        let currentGroup: ParsedLine[] = [];
+        for (const line of lines) {
+            if (line.lineType === 'file-header') {
+                if (currentGroup.length > 0) groups.push(currentGroup);
+                currentGroup = [line];
+            } else {
+                currentGroup.push(line);
+            }
+        }
+        if (currentGroup.length > 0) groups.push(currentGroup);
+        groups.sort((a, b) => {
+            const aIsTest = a[0].file ? isTestFile(a[0].file) : false;
+            const bIsTest = b[0].file ? isTestFile(b[0].file) : false;
+            if (aIsTest === bIsTest) return 0;
+            return aIsTest ? 1 : -1;
+        });
+        return groups.flat();
+    };
+
     const renderDiff = (filterFile?: string) => {
-        const lines = parseDiff();
+        const lines = sortParsedLinesTestsLast(parseDiff());
         if (lines.length === 0) return null;
 
         let currentFile: string | null = null;

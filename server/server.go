@@ -1024,17 +1024,73 @@ type geminiResponse struct {
 
 // orderDiffFiles returns the diff files in display order. It dispatches to the
 // experimental LLM ordering when enabled, otherwise to the default sort that
-// places test files last.
-func orderDiffFiles(files []*utils.DiffFile) []*utils.DiffFile {
+// places test files last. LLM orderings are cached per PR SHA so the LLM is
+// queried at most once per revision.
+func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha string) []*utils.DiffFile {
 	if !config.C().ExperimentalLLMFileOrdering {
 		return sortFilesTestsLast(files)
 	}
-	ordered, err := orderFilesWithLLM(files)
+	if len(files) < 2 {
+		return files
+	}
+
+	if names := cachedFileOrdering(repo, prNumber, sha); names != nil {
+		return reorderFilesByNames(files, names)
+	}
+
+	names, err := llmFileOrdering(files)
 	if err != nil {
 		slog.Warn("LLM diff file ordering failed, falling back to default sort", "error", err)
 		return sortFilesTestsLast(files)
 	}
-	return ordered
+
+	storeFileOrdering(repo, prNumber, sha, names)
+	return reorderFilesByNames(files, names)
+}
+
+// cachedFileOrdering returns a previously cached LLM file ordering for the
+// given PR SHA, or nil when there is no usable cache entry.
+func cachedFileOrdering(repo string, prNumber int, sha string) []string {
+	if sha == "" {
+		return nil
+	}
+	db := config.C().DB
+	if db == nil {
+		return nil
+	}
+	stored, err := db.GetDiffFileOrdering(prNumber, repo, sha)
+	if err != nil {
+		slog.Warn("failed to read diff file ordering cache", "error", err)
+		return nil
+	}
+	if stored == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(stored), &names); err != nil {
+		slog.Warn("failed to decode cached diff file ordering", "error", err)
+		return nil
+	}
+	return names
+}
+
+// storeFileOrdering persists an LLM file ordering keyed by PR SHA.
+func storeFileOrdering(repo string, prNumber int, sha string, names []string) {
+	if sha == "" {
+		return
+	}
+	db := config.C().DB
+	if db == nil {
+		return
+	}
+	encoded, err := json.Marshal(names)
+	if err != nil {
+		slog.Warn("failed to encode diff file ordering for cache", "error", err)
+		return
+	}
+	if err := db.UpsertDiffFileOrdering(prNumber, repo, sha, string(encoded)); err != nil {
+		slog.Warn("failed to write diff file ordering cache", "error", err)
+	}
 }
 
 // diffFileName returns the path used to identify a diff file, preferring the
@@ -1046,23 +1102,14 @@ func diffFileName(file *utils.DiffFile) string {
 	return file.OrigName
 }
 
-// orderFilesWithLLM asks an LLM to order the diff files so the PR reads
+// llmFileOrdering asks an LLM to order the diff files so the PR reads
 // top-to-bottom from integration points through implementation to tests.
-func orderFilesWithLLM(files []*utils.DiffFile) ([]*utils.DiffFile, error) {
-	if len(files) < 2 {
-		return files, nil
-	}
-
+func llmFileOrdering(files []*utils.DiffFile) ([]string, error) {
 	token := os.Getenv("GEMINI_API_KEY")
 	if token == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
 	}
-
-	names, err := requestFileOrdering(files, token)
-	if err != nil {
-		return nil, err
-	}
-	return reorderFilesByNames(files, names), nil
+	return requestFileOrdering(files, token)
 }
 
 // requestFileOrdering sends the diff to the LLM and returns the ordered list of

@@ -1485,6 +1485,10 @@ for more robust position restoration."
           (set-window-point win final-pos)))
       (setq buffer-read-only t))))
 
+(defun crs--review-buffer-name (owner repo number)
+  "Return the review buffer name for OWNER/REPO PR NUMBER."
+  (format "* CRS: #%d - %s - %s *" number repo owner))
+
 (defun crs-get-review (owner repo number)
   "Call the GetPR RPC method for OWNER/REPO PR NUMBER and display the result."
   (interactive "sOwner: \nsRepo: \nnPR Number: ")
@@ -1500,7 +1504,7 @@ for more robust position restoration."
                  (cons 'Number number)))
    (lambda (result)
      (message "DEBUG GetPR result: %S" result)
-     (let* ((buffer (get-buffer-create (format "* Review %s #%d *" repo number)))
+     (let* ((buffer (get-buffer-create (crs--review-buffer-name owner repo number)))
             (project-path (expand-file-name (concat "~/" repo)))
             (error-info (cdr (assq 'error result))))
        (with-current-buffer buffer
@@ -1552,8 +1556,8 @@ If PREVIOUS is non-nil, navigate to the previous PR; otherwise navigate to the n
                   (adj-owner (or (nth 0 pr-info) owner))
                   (adj-repo (or (nth 1 pr-info) repo))
                   (adj-number (or (nth 2 pr-info) (cdr (assq 'number metadata))))
-                  (buffer (get-buffer-create (format "* Review %s/%s #%d *"
-                                                     adj-owner adj-repo adj-number)))
+                  (buffer (get-buffer-create (crs--review-buffer-name
+                                              adj-owner adj-repo adj-number)))
                   (project-path (expand-file-name (concat "~/" adj-repo))))
              (with-current-buffer buffer
                (when (file-directory-p project-path)
@@ -1667,21 +1671,16 @@ If point is on a URL: line, open the URL in the browser instead."
     "q" #'crs-quit-outdated-comments))
 
 (defun crs--get-current-review-info ()
-  "Extract (owner repo number) from the current buffer.
-Returns a list (owner repo number) or signals an error if not in a review buffer.
-The owner is extracted from the URL: field in the buffer header."
+  "Extract (owner repo number) from the current review buffer's name.
+Returns a list (owner repo number) or signals an error if not in a
+review buffer."
   (let ((name (buffer-name)))
-    (if (string-match "\\* Review \\([^[:space:]]+\\) #\\([0-9]+\\) .*\\*" name)
-        (let ((repo (match-string 1 name))
-              (number (string-to-number (match-string 2 name)))
-              (owner (save-excursion
-                       (goto-char (point-min))
-                       (when (re-search-forward
-                              "^URL:[ \t]+.*github\\.com/\\([^/]+\\)/" nil t)
-                         (match-string 1)))))
-          (unless owner
-            (error "Could not extract owner from URL in buffer: %s" name))
-          (list owner repo number))
+    (if (string-match
+         "\\* CRS: #\\([0-9]+\\) - \\([^[:space:]]+\\) - \\([^[:space:]]+\\) \\*"
+         name)
+        (list (match-string 3 name)
+              (match-string 2 name)
+              (string-to-number (match-string 1 name)))
       (error "Not in a valid review buffer: %s" name))))
 
 (defvar-local crs--comment-owner nil)
@@ -1749,7 +1748,7 @@ The owner is extracted from the URL: field in the buffer header."
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error updating comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
+                 (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result original-line original-context))
                    (message "Comment updated successfully")
@@ -1768,7 +1767,7 @@ The owner is extracted from the URL: field in the buffer header."
            (let ((err (cdr (assq 'error result))))
              (if err
                  (message "Error adding comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-               (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
+               (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
                  (when review-buffer
                    (crs--render-and-update review-buffer result original-line original-context))
                  (message "Comment added successfully")
@@ -2155,7 +2154,7 @@ If not on a local comment, displays a warning message."
              (let ((err (cdr (assq 'error result))))
                (if err
                    (message "Error deleting comment: %s" (if (stringp err) err (cdr (assq 'message err))))
-                 (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
+                 (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
                    (when review-buffer
                      (crs--render-and-update review-buffer result))
                    (message "Local comment deleted")))))))))))
@@ -2190,7 +2189,7 @@ If the body is empty, prompts the user."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error submitting review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
+           (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
              (when review-buffer
                (with-current-buffer review-buffer
                  (setq crs--buffer-review-feedback nil)
@@ -2478,7 +2477,7 @@ With a numeric prefix, fetch COUNT lines (default 20, max 100)."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (format "* Review %s #%d *" repo number))))
+           (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
              (when review-buffer
                (crs--render-and-update review-buffer result))
              (message "Review synced successfully!"))))))))

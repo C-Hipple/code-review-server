@@ -1692,7 +1692,7 @@ func sortFilesTestsLast(files []*utils.DiffFile) []*utils.DiffFile {
 
 func formatDiff(diff *utils.Diff) string {
 	var builder strings.Builder
-	for _, file := range sortFilesTestsLast(diff.Files) {
+	for _, file := range orderDiffFiles(diff.Files) {
 		builder.WriteString(file.DiffHeader + "\n")
 
 		// The diff parser's lookahead misses ---/+++ lines for new/deleted files

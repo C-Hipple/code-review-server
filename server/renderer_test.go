@@ -902,3 +902,86 @@ func TestIsTestFile(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanLLMFileName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"server/server.go", "server/server.go"},
+		{"  server/server.go  ", "server/server.go"},
+		{"- server/server.go", "server/server.go"},
+		{"* server/server.go", "server/server.go"},
+		{"`server/server.go`", "server/server.go"},
+		{"\"server/server.go\"", "server/server.go"},
+		{"a/server/server.go", "server/server.go"},
+		{"b/server/server.go", "server/server.go"},
+		{"", ""},
+		{"```", ""},
+	}
+	for i, tc := range tests {
+		if got := cleanLLMFileName(tc.in); got != tc.want {
+			t.Errorf("[%d] cleanLLMFileName(%q) = %q, want %q", i, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestReorderFilesByNames(t *testing.T) {
+	files := []*utils.DiffFile{
+		{NewName: "server/server_test.go"},
+		{NewName: "server/server.go"},
+		{NewName: "config/config.go"},
+		{NewName: "styles/app.css"},
+	}
+
+	// LLM returns the desired reading order; basename-only and a/ prefix
+	// variants must still match.
+	names := []string{"server/server.go", "config.go", "a/styles/app.css", "server/server_test.go"}
+	got := reorderFilesByNames(files, names)
+
+	wantOrder := []string{
+		"server/server.go",
+		"config/config.go",
+		"styles/app.css",
+		"server/server_test.go",
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("got %d files, want %d", len(got), len(wantOrder))
+	}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+}
+
+func TestReorderFilesByNamesUnmentionedAppended(t *testing.T) {
+	files := []*utils.DiffFile{
+		{NewName: "a.go"},
+		{NewName: "b.go"},
+		{NewName: "c.go"},
+	}
+	// LLM only mentions one file; the rest keep original relative order.
+	got := reorderFilesByNames(files, []string{"c.go"})
+
+	wantOrder := []string{"c.go", "a.go", "b.go"}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+}
+
+func TestOrderDiffFilesDefaultsToTestsLast(t *testing.T) {
+	// With the experimental flag off (the default), ordering must match
+	// sortFilesTestsLast and make no network calls.
+	files := []*utils.DiffFile{
+		{NewName: "server/server_test.go"},
+		{NewName: "server/server.go"},
+	}
+	got := orderDiffFiles(files)
+	if got[0].NewName != "server/server.go" || got[1].NewName != "server/server_test.go" {
+		t.Errorf("orderDiffFiles did not fall back to tests-last sort: got %q, %q",
+			got[0].NewName, got[1].NewName)
+	}
+}

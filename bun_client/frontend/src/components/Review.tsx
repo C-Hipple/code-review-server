@@ -3364,6 +3364,26 @@ export default function Review({
                             { value: 'REQUEST_CHANGES', label: 'Request Changes' },
                         ].map(option => {
                             const selected = reviewEvent === option.value;
+                            let bgColor = 'var(--bg-primary)';
+                            let borderColor = 'var(--border)';
+                            let textColor = 'var(--text-primary)';
+
+                            if (selected) {
+                                if (option.value === 'APPROVE') {
+                                    bgColor = colors.success;
+                                    borderColor = colors.success;
+                                    textColor = 'white';
+                                } else if (option.value === 'REQUEST_CHANGES') {
+                                    bgColor = colors.danger;
+                                    borderColor = colors.danger;
+                                    textColor = 'white';
+                                } else {
+                                    bgColor = 'var(--accent)';
+                                    borderColor = 'var(--accent)';
+                                    textColor = 'white';
+                                }
+                            }
+
                             return (
                                 <button
                                     key={option.value}
@@ -3373,13 +3393,9 @@ export default function Review({
                                     style={{
                                         flex: 1,
                                         padding: '8px',
-                                        background: selected
-                                            ? 'var(--accent)'
-                                            : 'var(--bg-primary)',
-                                        border: `1px solid ${
-                                            selected ? 'var(--accent)' : 'var(--border)'
-                                        }`,
-                                        color: selected ? 'white' : 'var(--text-primary)',
+                                        background: bgColor,
+                                        border: `1px solid ${borderColor}`,
+                                        color: textColor,
                                         borderRadius: '4px',
                                         cursor: isSubmittingReview ? 'default' : 'pointer',
                                         fontFamily: 'inherit',

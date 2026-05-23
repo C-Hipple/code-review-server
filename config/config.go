@@ -60,6 +60,10 @@ type Config struct {
 	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins         []Plugin
 	RepoConfigs     map[string]RepoConfig // Keyed by "owner/repo"
+	// ExperimentalLLMFileOrdering, when true, orders the files in a PR diff via
+	// an LLM (integration first, then implementation, then styling, then tests)
+	// instead of the default test-files-last sort. Off by default.
+	ExperimentalLLMFileOrdering bool
 	DB              *database.DB
 }
 
@@ -140,6 +144,7 @@ func parseConfig(data []byte) (*Config, error) {
 		SectionSorting      map[string]string
 		Plugins             []Plugin
 		RepoConfigs         map[string]RepoConfig
+		ExperimentalLLMFileOrdering bool
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -189,6 +194,7 @@ func parseConfig(data []byte) (*Config, error) {
 		SectionSorting:     intermediate_config.SectionSorting,
 		Plugins:            intermediate_config.Plugins,
 		RepoConfigs:        repoConfigs,
+		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
 	}, nil
 }
 

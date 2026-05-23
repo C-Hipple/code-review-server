@@ -985,7 +985,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	parsedDiff, _ := utils.Parse(diff)
 	formattedDiff := diff
 	if parsedDiff != nil {
-		formattedDiff = formatDiff(parsedDiff)
+		formattedDiff = formatDiff(parsedDiff, repo, number, headSHA)
 	}
 
 	// 4. Fetch Comments (GitHub + Local)
@@ -1432,7 +1432,8 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// I will just format the diff.
 	
 	if parsedDiff != nil {
-		sb.WriteString(formatDiff(parsedDiff))
+		headSHA, _, _ := config.C().DB.GetPullRequestSHAs(number, repo)
+		sb.WriteString(formatDiff(parsedDiff, repo, number, headSHA))
 	} else {
 		sb.WriteString(diff) // Fallback if parse failed but we have raw string
 	}
@@ -1615,7 +1616,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
-	result := formatDiff(parsedDiff)
+	result := formatDiff(parsedDiff, repo, number, latestSha)
 	// Insert any remaining comments (general file comments or comments we couldn't match)
 	// for key, trees := range commentsByFileAndLine {
 	//	parts := strings.Split(key, ":")
@@ -1690,9 +1691,9 @@ func sortFilesTestsLast(files []*utils.DiffFile) []*utils.DiffFile {
 	return sorted
 }
 
-func formatDiff(diff *utils.Diff) string {
+func formatDiff(diff *utils.Diff, repo string, prNumber int, sha string) string {
 	var builder strings.Builder
-	for _, file := range sortFilesTestsLast(diff.Files) {
+	for _, file := range orderDiffFiles(diff.Files, repo, prNumber, sha) {
 		builder.WriteString(file.DiffHeader + "\n")
 
 		// The diff parser's lookahead misses ---/+++ lines for new/deleted files

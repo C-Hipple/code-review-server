@@ -192,6 +192,15 @@ func (db *DB) initSchema() error {
 		UNIQUE(owner, repo, pr_number, plugin_name)
 	);
 
+	CREATE TABLE IF NOT EXISTS DiffFileOrderingCache (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		sha TEXT NOT NULL,
+		ordering_json TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo, sha)
+	);
+
 	CREATE TABLE IF NOT EXISTS Worktrees (
 		id INTEGER PRIMARY KEY,
 		pr_number INTEGER NOT NULL,
@@ -471,6 +480,36 @@ func (db *DB) DeletePluginResultsForPR(owner, repo string, prNumber int, pluginN
 	_, err := db.conn.Exec(
 		"DELETE FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
 		owner, repo, prNumber, pluginName,
+	)
+	return err
+}
+
+// GetDiffFileOrdering retrieves a cached LLM diff file ordering for a PR SHA.
+// It returns an empty string (no error) when there is no cached entry.
+func (db *DB) GetDiffFileOrdering(prNumber int, repo, sha string) (string, error) {
+	var orderingJSON string
+	err := db.conn.QueryRow(
+		"SELECT ordering_json FROM DiffFileOrderingCache WHERE pr_number = ? AND repo = ? AND sha = ?",
+		prNumber, repo, sha,
+	).Scan(&orderingJSON)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return orderingJSON, nil
+}
+
+// UpsertDiffFileOrdering stores an LLM diff file ordering keyed by PR SHA.
+func (db *DB) UpsertDiffFileOrdering(prNumber int, repo, sha, orderingJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO DiffFileOrderingCache (pr_number, repo, sha, ordering_json, updated_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+			ordering_json = excluded.ordering_json,
+			updated_at = excluded.updated_at`,
+		prNumber, repo, sha, orderingJSON,
 	)
 	return err
 }

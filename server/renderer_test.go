@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crs/config"
 	"crs/database"
 	"crs/utils"
 	"encoding/json"
@@ -900,5 +901,148 @@ func TestIsTestFile(t *testing.T) {
 		if got := isTestFile(tc.file); got != tc.want {
 			t.Errorf("[%d] isTestFile(%+v) = %v, want %v", i, tc.file, got, tc.want)
 		}
+	}
+}
+
+func TestCleanLLMFileName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"server/server.go", "server/server.go"},
+		{"  server/server.go  ", "server/server.go"},
+		{"- server/server.go", "server/server.go"},
+		{"* server/server.go", "server/server.go"},
+		{"`server/server.go`", "server/server.go"},
+		{"\"server/server.go\"", "server/server.go"},
+		{"a/server/server.go", "server/server.go"},
+		{"b/server/server.go", "server/server.go"},
+		{"", ""},
+		{"```", ""},
+	}
+	for i, tc := range tests {
+		if got := cleanLLMFileName(tc.in); got != tc.want {
+			t.Errorf("[%d] cleanLLMFileName(%q) = %q, want %q", i, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestReorderFilesByNames(t *testing.T) {
+	files := []*utils.DiffFile{
+		{NewName: "server/server_test.go"},
+		{NewName: "server/server.go"},
+		{NewName: "config/config.go"},
+		{NewName: "styles/app.css"},
+	}
+
+	// LLM returns the desired reading order; basename-only and a/ prefix
+	// variants must still match.
+	names := []string{"server/server.go", "config.go", "a/styles/app.css", "server/server_test.go"}
+	got := reorderFilesByNames(files, names)
+
+	wantOrder := []string{
+		"server/server.go",
+		"config/config.go",
+		"styles/app.css",
+		"server/server_test.go",
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("got %d files, want %d", len(got), len(wantOrder))
+	}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+}
+
+func TestReorderFilesByNamesUnmentionedAppended(t *testing.T) {
+	files := []*utils.DiffFile{
+		{NewName: "a.go"},
+		{NewName: "b.go"},
+		{NewName: "c.go"},
+	}
+	// LLM only mentions one file; the rest keep original relative order.
+	got := reorderFilesByNames(files, []string{"c.go"})
+
+	wantOrder := []string{"c.go", "a.go", "b.go"}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+}
+
+func TestOrderDiffFilesDefaultsToTestsLast(t *testing.T) {
+	// With the experimental flag off, ordering must match sortFilesTestsLast
+	// and make no network calls.
+	config.SetC(config.Config{})
+	files := []*utils.DiffFile{
+		{NewName: "server/server_test.go"},
+		{NewName: "server/server.go"},
+	}
+	got := orderDiffFiles(files, "code-review-server", 1, "")
+	if got[0].NewName != "server/server.go" || got[1].NewName != "server/server_test.go" {
+		t.Errorf("orderDiffFiles did not fall back to tests-last sort: got %q, %q",
+			got[0].NewName, got[1].NewName)
+	}
+}
+
+func TestOrderDiffFilesUsesCachedOrdering(t *testing.T) {
+	// With the flag on and a cache entry for the PR SHA, orderDiffFiles must
+	// apply the cached ordering without contacting the LLM.
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db, ExperimentalLLMFileOrdering: true})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	files := []*utils.DiffFile{
+		{NewName: "a_test.go"},
+		{NewName: "main.go"},
+		{NewName: "helper.go"},
+	}
+
+	cached, _ := json.Marshal([]string{"main.go", "helper.go", "a_test.go"})
+	if err := db.UpsertDiffFileOrdering(7, "code-review-server", "sha-abc", string(cached)); err != nil {
+		t.Fatalf("failed to seed cache: %v", err)
+	}
+
+	got := orderDiffFiles(files, "code-review-server", 7, "sha-abc")
+
+	wantOrder := []string{"main.go", "helper.go", "a_test.go"}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("got %d files, want %d", len(got), len(wantOrder))
+	}
+	for i, w := range wantOrder {
+		if got[i].NewName != w {
+			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
+		}
+	}
+}
+
+func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Missing entry returns empty string, no error.
+	got, err := db.GetDiffFileOrdering(1, "code-review-server", "sha1")
+	if err != nil {
+		t.Fatalf("unexpected error on cache miss: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty result on cache miss, got %q", got)
+	}
+
+	// Stored entry round-trips, and a re-upsert for the same SHA overwrites.
+	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["a","b"]`); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["b","a"]`); err != nil {
+		t.Fatalf("re-upsert failed: %v", err)
+	}
+	got, err = db.GetDiffFileOrdering(1, "code-review-server", "sha1")
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got != `["b","a"]` {
+		t.Errorf("got %q, want %q", got, `["b","a"]`)
 	}
 }

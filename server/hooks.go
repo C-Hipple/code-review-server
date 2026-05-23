@@ -8,14 +8,15 @@ import (
 
 // RunPostUpdatePRHooks runs the side-effecting work that should happen after a
 // PR is fetched or updated: configured plugins, plus the experimental LLM diff
-// file ordering when enabled. It is intended to run asynchronously.
+// file ordering when enabled. Each hook is dispatched in its own goroutine so
+// they run in parallel and the call returns immediately.
 //
 // This is the central post-update hook. Callers that just need to trigger
 // plugins should still go through here so any new side effects (like the
 // ordering) stay in lockstep with plugin runs.
 func RunPostUpdatePRHooks(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
-	RunPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON)
-	ensureDiffFileOrdering(repo, number, sha, diff)
+	go RunPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON)
+	go ensureDiffFileOrdering(repo, number, sha, diff)
 }
 
 // ensureDiffFileOrdering pre-computes and caches the LLM diff file ordering

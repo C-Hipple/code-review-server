@@ -196,9 +196,10 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	// Extract SHA from DB
 	_, sha, _ := config.C().DB.GetPullRequest(number, repo)
 
-	// Run post-update hooks in background (plugins + experimental file ordering)
+	// Dispatch post-update hooks (plugins + experimental file ordering); each
+	// hook runs in its own goroutine so this returns immediately.
 	metadataJSON, _ := json.Marshal(details.Metadata)
-	go RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON))
+	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON))
 
 	// Get the full formatted response for the UI.
 	// We pass the already fetched details to avoid redundant API calls.

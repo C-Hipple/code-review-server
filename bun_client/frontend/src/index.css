@@ -4,6 +4,13 @@
     --font-mono:
         'JetBrains Mono', 'Fira Code', source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
         monospace;
+
+    /* Cross-theme fallbacks; individual themes can override these */
+    --diff-line-no-bg: rgba(127, 127, 127, 0.04);
+    --diff-line-no-color: rgba(127, 127, 127, 0.85);
+    --review-toolbar-top: 10px;
+    --review-file-sticky-top: 64px;
+    --review-hunk-sticky-top: 108px;
 }
 
 /* Default Theme (Dark) */
@@ -43,12 +50,14 @@
     --border-info-dim: rgba(56, 139, 253, 0.2);
     --border-merged-dim: rgba(130, 80, 223, 0.3);
 
-    /* Diff Colors */
-    --diff-add-bg: rgba(35, 134, 54, 0.12);
-    --diff-add-gutter-bg: rgba(35, 134, 54, 0.2);
-    --diff-del-bg: rgba(218, 54, 51, 0.12);
-    --diff-del-gutter-bg: rgba(218, 54, 51, 0.2);
-    --diff-hunk-bg: rgba(56, 139, 253, 0.1);
+    /* Diff Colors — line fills are subtle; gutters carry the signal */
+    --diff-add-bg: rgba(35, 134, 54, 0.06);
+    --diff-add-gutter-bg: rgba(35, 134, 54, 0.28);
+    --diff-del-bg: rgba(218, 54, 51, 0.06);
+    --diff-del-gutter-bg: rgba(218, 54, 51, 0.28);
+    --diff-hunk-bg: rgba(56, 139, 253, 0.08);
+    --diff-line-no-bg: rgba(255, 255, 255, 0.02);
+    --diff-line-no-color: #6e7681;
 
     /* Shadows */
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
@@ -94,12 +103,14 @@
     --border-info-dim: rgba(9, 105, 218, 0.2);
     --border-merged-dim: rgba(130, 80, 223, 0.2);
 
-    /* Diff Colors */
-    --diff-add-bg: #dafbe1;
-    --diff-add-gutter-bg: #ccffd8;
-    --diff-del-bg: #ffebe9;
-    --diff-del-gutter-bg: #ffd7d5;
+    /* Diff Colors — line fills muted; gutters carry the signal */
+    --diff-add-bg: #ecfdf3;
+    --diff-add-gutter-bg: #aceebb;
+    --diff-del-bg: #fef2f2;
+    --diff-del-gutter-bg: #fcb8b8;
     --diff-hunk-bg: #ddf4ff;
+    --diff-line-no-bg: rgba(0, 0, 0, 0.025);
+    --diff-line-no-color: #6e7781;
 
     /* Shadows */
     --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.075);
@@ -678,6 +689,92 @@ body {
 .hover-thread:hover {
     border-color: var(--accent) !important;
     box-shadow: var(--shadow-glow);
+}
+
+/* Diff line-number gutters */
+.diff-line-no {
+    width: 44px;
+    min-width: 44px;
+    padding: 0 6px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--diff-line-no-color);
+    background: var(--diff-line-no-bg);
+    border-right: 1px solid var(--border);
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+/* Sticky hunk headers — slide under the toolbar */
+.diff-hunk-row {
+    position: sticky;
+    top: var(--review-hunk-sticky-top);
+    z-index: 4;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 1px 0 var(--border);
+}
+
+/* File-index strip */
+.file-index {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.file-index-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+        color 0.12s ease,
+        border-color 0.12s ease,
+        background 0.12s ease;
+}
+
+.file-index-item:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+    background: var(--bg-tertiary);
+}
+
+.file-index-item .delta-add {
+    color: var(--text-success);
+    font-size: 11px;
+}
+
+.file-index-item .delta-del {
+    color: var(--text-danger);
+    font-size: 11px;
+}
+
+/* Pulse the target file briefly when scrolled-to */
+@keyframes fileFlash {
+    0% {
+        box-shadow: 0 0 0 2px var(--accent);
+    }
+    100% {
+        box-shadow: 0 0 0 0 transparent;
+    }
+}
+
+.file-flash {
+    animation: fileFlash 1.2s ease-out;
 }
 
 pre {

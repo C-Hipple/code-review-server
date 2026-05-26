@@ -3278,7 +3278,10 @@ export default function Review({
                                 borderRadius: inPanel ? '0 0 8px 8px' : '8px',
                                 border: '1px solid var(--border)',
                                 borderTop: inPanel ? 'none' : undefined,
-                                overflow: 'hidden',
+                                // No `overflow: hidden/auto/scroll` — those make this a
+                                // scroll container, which would re-anchor descendant
+                                // `position: sticky` rows (hunk + file headers) to this
+                                // box instead of the viewport.
                             }}
                         >
                             <div
@@ -3335,7 +3338,10 @@ export default function Review({
                                     padding: '16px',
                                     fontFamily: 'var(--font-mono)',
                                     fontSize: '13px',
-                                    overflowX: 'auto',
+                                    // No overflow:auto here — it would create a scroll
+                                    // container and break sticky positioning of hunk
+                                    // headers. Long lines are handled by per-line
+                                    // overflow handling instead.
                                 }}
                             >
                                 {renderDiff()}

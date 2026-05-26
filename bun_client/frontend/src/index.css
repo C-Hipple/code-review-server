@@ -710,19 +710,27 @@ body {
 }
 
 /* Sticky hunk headers — slide under the toolbar.
-   Background is layered (solid base + tint on top) so the row stays
-   opaque while sticky and content scrolling underneath isn't visible
-   through it. !important overrides the inline `background` shorthand
-   that the renderer sets for non-sticky styling parity. */
+   - Layered background (solid base + tint) keeps the row fully opaque
+     so scrolling content can't ghost through.
+   - min-height + extra bottom padding give a small buffer that
+     swallows any sub-pixel bleed from the next row pinning beneath.
+   - transform: translateZ(0) forces the row onto its own compositor
+     layer; without it, sticky rows can leave a 1px sliver of the
+     next row visible during smooth-scroll on hi-dpi displays.
+   - !important wins against the inline `background` shorthand that
+     the renderer applies in parallel for non-sticky styling. */
 .diff-hunk-row {
     position: sticky;
     top: var(--review-hunk-sticky-top);
     z-index: 4;
+    min-height: 28px !important;
+    padding-bottom: 4px;
     background-color: var(--bg-secondary) !important;
     background-image: linear-gradient(var(--diff-hunk-bg), var(--diff-hunk-bg)) !important;
-    box-shadow:
-        inset 0 1px 0 var(--border),
-        0 1px 0 var(--border);
+    box-shadow: inset 0 1px 0 var(--border);
+    border-bottom: 1px solid var(--border);
+    transform: translateZ(0);
+    will-change: transform;
 }
 
 /* File-index strip */

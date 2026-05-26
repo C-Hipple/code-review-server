@@ -255,8 +255,10 @@ export default function Review({
         const el = toolbarRef.current;
         if (!el) return;
         const sync = () => {
-            // Toolbar `top` offset (10px) + its rendered height + 1px breathing room.
-            const top = 10 + el.offsetHeight + 1;
+            // Toolbar `top` offset (10px) + rendered height. No extra gap — any
+            // pixel between the toolbar's bottom and the hunk row's top would
+            // expose scrolling content through the seam.
+            const top = 10 + el.offsetHeight;
             document.documentElement.style.setProperty('--review-hunk-sticky-top', `${top}px`);
         };
         sync();

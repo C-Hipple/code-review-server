@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import {
@@ -246,6 +246,28 @@ export default function Review({
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
     // Description starts collapsed so the diff dominates the viewport.
     const [descCollapsed, setDescCollapsed] = useState(true);
+
+    // Measure the sticky toolbar's actual rendered height and publish it as a
+    // CSS variable so sticky hunk headers can pin directly below the toolbar
+    // regardless of font size, button padding, or wrap.
+    const toolbarRef = useRef<HTMLDivElement | null>(null);
+    useLayoutEffect(() => {
+        const el = toolbarRef.current;
+        if (!el) return;
+        const sync = () => {
+            // Toolbar `top` offset (10px) + its rendered height + 1px breathing room.
+            const top = 10 + el.offsetHeight + 1;
+            document.documentElement.style.setProperty('--review-hunk-sticky-top', `${top}px`);
+        };
+        sync();
+        const ro = new ResizeObserver(sync);
+        ro.observe(el);
+        window.addEventListener('resize', sync);
+        return () => {
+            ro.disconnect();
+            window.removeEventListener('resize', sync);
+        };
+    }, []);
     // Inline review feedback drafting is hidden behind a toggle; the body is also
     // editable in the Submit Review modal.
     const [feedbackCollapsed, setFeedbackCollapsed] = useState(true);
@@ -1268,9 +1290,7 @@ export default function Review({
                                 borderLeft: isInlineActive
                                     ? '3px solid var(--accent)'
                                     : '3px solid transparent',
-                                position: 'sticky',
-                                top: 'var(--review-file-sticky-top)',
-                                zIndex: 6,
+                                position: 'relative',
                             }}
                             onClick={() =>
                                 item.file &&
@@ -2880,6 +2900,7 @@ export default function Review({
 
             {/* Toolbar */}
             <div
+                ref={toolbarRef}
                 className="toolbar"
                 style={{
                     display: 'flex',

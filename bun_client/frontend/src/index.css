@@ -9,8 +9,9 @@
     --diff-line-no-bg: rgba(127, 127, 127, 0.04);
     --diff-line-no-color: rgba(127, 127, 127, 0.85);
     --review-toolbar-top: 10px;
-    --review-file-sticky-top: 64px;
-    --review-hunk-sticky-top: 108px;
+    /* Fallback only — Review.tsx measures the toolbar at runtime and
+       overrides this so the hunk header pins flush below the toolbar. */
+    --review-hunk-sticky-top: 72px;
 }
 
 /* Default Theme (Dark) */

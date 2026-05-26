@@ -708,13 +708,20 @@ body {
     justify-content: flex-end;
 }
 
-/* Sticky hunk headers — slide under the toolbar */
+/* Sticky hunk headers — slide under the toolbar.
+   Background is layered (solid base + tint on top) so the row stays
+   opaque while sticky and content scrolling underneath isn't visible
+   through it. !important overrides the inline `background` shorthand
+   that the renderer sets for non-sticky styling parity. */
 .diff-hunk-row {
     position: sticky;
     top: var(--review-hunk-sticky-top);
     z-index: 4;
-    backdrop-filter: blur(6px);
-    box-shadow: 0 1px 0 var(--border);
+    background-color: var(--bg-secondary) !important;
+    background-image: linear-gradient(var(--diff-hunk-bg), var(--diff-hunk-bg)) !important;
+    box-shadow:
+        inset 0 1px 0 var(--border),
+        0 1px 0 var(--border);
 }
 
 /* File-index strip */

@@ -292,6 +292,12 @@ export default function Review({
     }, [owner, repo, number]);
 
     useEffect(() => {
+        if (metadata?.title) {
+            document.title = `${metadata.title} (#${number})`;
+        }
+    }, [metadata?.title, number]);
+
+    useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 setShowPlugins(false);

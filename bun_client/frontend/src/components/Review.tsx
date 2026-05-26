@@ -714,7 +714,13 @@ export default function Review({
                 let clickable = false;
                 let pos: number | null = null;
                 let file: string | null = null;
-                let lineType: LineType = 'code';
+                // Default to 'skip' — only lines that match a known diff
+                // pattern (file header, hunk header, +/- /context) are
+                // emitted. Without this, the trailing empty element from
+                // split('\n'), "\ No newline at end of file" markers, and
+                // any unrecognized line would silently become phantom
+                // 'code' rows with empty line-number gutters.
+                let lineType: LineType = 'skip';
                 let lineOldNo: number | null = null;
                 let lineNewNo: number | null = null;
 

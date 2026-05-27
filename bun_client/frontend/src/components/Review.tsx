@@ -232,6 +232,7 @@ export default function Review({
     const [reviews, setReviews] = useState<ReviewData[]>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
+    const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
 
     // UI State
@@ -328,6 +329,29 @@ export default function Review({
             setPluginOutputs(res.output || {});
         } catch (e) {
             console.error('Failed to load plugin outputs:', e);
+        }
+    };
+
+    const executePlugin = async (pluginName: string) => {
+        setExecutingPlugins((prev: Set<string>) => new Set(prev).add(pluginName));
+        try {
+            await rpcCall('RPCHandler.RerunPlugins', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Plugins: [pluginName],
+                },
+            ]);
+            await loadPluginOutputs();
+        } catch (e) {
+            console.error('Failed to execute plugin:', e);
+        } finally {
+            setExecutingPlugins((prev: Set<string>) => {
+                const next = new Set(prev);
+                next.delete(pluginName);
+                return next;
+            });
         }
     };
 
@@ -3561,6 +3585,16 @@ export default function Review({
                                                 >
                                                     {data.status.toUpperCase()}
                                                 </span>
+                                                {data.status.toLowerCase() === 'deferred' && (
+                                                    <Button
+                                                        onClick={() => executePlugin(name)}
+                                                        loading={executingPlugins.has(name)}
+                                                        variant="secondary"
+                                                        size="sm"
+                                                    >
+                                                        Execute
+                                                    </Button>
+                                                )}
                                             </div>
                                             <div
                                                 className="plugin-output markdown-content"

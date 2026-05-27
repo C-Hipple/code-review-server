@@ -43,6 +43,7 @@ type Plugin struct {
 	IncludeDiff     bool
 	IncludeHeaders  bool
 	IncludeComments bool
+	IncludeBranch   bool
 	OnlyOnDemand    bool
 }
 

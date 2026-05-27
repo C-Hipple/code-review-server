@@ -14,8 +14,8 @@ import (
 // This is the central post-update hook. Callers that just need to trigger
 // plugins should still go through here so any new side effects (like the
 // ordering) stay in lockstep with plugin runs.
-func RunPostUpdatePRHooks(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
-	go RunPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON)
+func RunPostUpdatePRHooks(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
+	go RunPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch)
 	go ensureDiffFileOrdering(repo, number, sha, diff)
 }
 

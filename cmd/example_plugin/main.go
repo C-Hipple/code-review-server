@@ -12,6 +12,7 @@ func main() {
 	diff := flag.String("diff", "", "PR diff content")
 	comments := flag.String("comments", "", "PR comments JSON")
 	headers := flag.String("headers", "", "PR metadata JSON")
+	branch := flag.String("branch", "", "PR head branch name")
 
 	flag.Parse()
 
@@ -23,6 +24,9 @@ func main() {
 	}
 	if *number != 0 {
 		fmt.Printf("Number: %d\n", *number)
+	}
+	if *branch != "" {
+		fmt.Printf("Branch: %s\n", *branch)
 	}
 	if *diff != "" {
 		fmt.Printf("Diff Content Length: %d\n", len(*diff))

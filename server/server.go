@@ -199,7 +199,7 @@ func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCa
 	// Dispatch post-update hooks (plugins + experimental file ordering); each
 	// hook runs in its own goroutine so this returns immediately.
 	metadataJSON, _ := json.Marshal(details.Metadata)
-	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON))
+	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef)
 
 	// Get the full formatted response for the UI.
 	// We pass the already fetched details to avoid redundant API calls.
@@ -972,7 +972,7 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 
 	// Run plugins with force flag
 	metadataJSON, _ := json.Marshal(details.Metadata)
-	go RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), true, args.Plugins)
+	go RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, true, args.Plugins)
 
 	reply.Okay = true
 	if len(args.Plugins) == 0 {

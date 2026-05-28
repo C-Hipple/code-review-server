@@ -32,6 +32,7 @@ Command = "claude_review"
 IncludeDiff = false
 IncludeHeaders = false
 IncludeComments = false
+IncludeBranch = true   # Passes --branch flag (PR head branch name)
 
 [[Plugins]]
 Name = "Expensive Analysis"
@@ -45,9 +46,12 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 - `Name` (string, required): Display name for the plugin
 - `Command` (string, required): Executable name on your `$PATH`
 - `IncludeDiff` (bool, optional): Pass the PR diff via `--diff` flag
-- `IncludeHeaders` (bool, optional): Pass PR metadata via `--headers` flag
+- `IncludeHeaders` (bool, optional): Pass PR metadata via `--headers` flag (includes `head_ref` among other fields)
 - `IncludeComments` (bool, optional): Pass PR comments via `--comments` flag
+- `IncludeBranch` (bool, optional): Pass the PR's head branch name via `--branch` flag
 - `OnlyOnDemand` (bool, optional, default: false): If true, plugin only runs when explicitly requested via RerunPlugins
+
+> **Note:** The branch name is also available in the `--headers` JSON as the `head_ref` field. Use `IncludeBranch` when you want the branch as a simple standalone argument without parsing the full metadata JSON.
 
 ## Included Plugins
 
@@ -56,7 +60,7 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 - **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
-Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above.
+Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
 
 ## Writing a Plugin
 

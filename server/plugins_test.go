@@ -40,7 +40,7 @@ func TestRunPlugins_SkipsOnlyOnDemandPlugins(t *testing.T) {
 	})
 
 	// Normal run (no specific plugins requested) should skip on-demand plugins
-	RunPlugins("owner", "repo", 1, "sha123", "", "", "")
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
 
 	if _, err := os.Stat(normalMarker); os.IsNotExist(err) {
 		t.Error("expected normal plugin to run, but it did not")
@@ -77,7 +77,7 @@ func TestRunPluginsForce_RunsOnDemandPluginWhenExplicitlyRequested(t *testing.T)
 	})
 
 	// Explicitly request the on-demand plugin by name
-	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", true, []string{"expensive-plugin"})
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "feature-branch", true, []string{"expensive-plugin"})
 
 	if _, err := os.Stat(onDemandMarker); os.IsNotExist(err) {
 		t.Error("expected on-demand plugin to run when explicitly requested, but it did not")
@@ -104,7 +104,7 @@ func TestRunPluginsForce_EmptyListSkipsOnDemandPlugins(t *testing.T) {
 	})
 
 	// Force rerun with empty plugin list should still skip on-demand plugins
-	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", true, nil)
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "main", true, nil)
 
 	if _, err := os.Stat(normalMarker); os.IsNotExist(err) {
 		t.Error("expected normal plugin to run, but it did not")

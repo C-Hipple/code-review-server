@@ -16,14 +16,14 @@ const pluginTimeout = 5 * time.Minute
 // RunPlugins executes all configured plugins for a given PR.
 // It is intended to run asynchronously.
 // Plugins are only executed if the current SHA differs from the SHA for which they were last run.
-func RunPlugins(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
-	RunPluginsForce(owner, repo, number, sha, diff, commentsJSON, metadataJSON, false, nil)
+func RunPlugins(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
+	RunPluginsForce(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false, nil)
 }
 
 // RunPluginsForce executes plugins with optional force rerun and specific plugin selection.
 // force=true bypasses the SHA check and reruns plugins even if SHA hasn't changed.
 // plugins=nil or empty means run all configured plugins; otherwise run only the specified ones.
-func RunPluginsForce(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, force bool, plugins []string) {
+func RunPluginsForce(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool, plugins []string) {
 	var wg sync.WaitGroup
 	pluginMap := make(map[string]bool)
 	if len(plugins) > 0 {
@@ -51,18 +51,18 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 					slog.Error("Plugin runner panicked", "plugin", p.Name, "panic", r)
 				}
 			}()
-			executePluginForce(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, force)
+			executePluginForce(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, force)
 		}(plugin)
 	}
 
 	wg.Wait()
 }
 
-func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string) {
-	executePluginForce(plugin, owner, repo, number, sha, diff, commentsJSON, metadataJSON, false)
+func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
+	executePluginForce(plugin, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false)
 }
 
-func executePluginForce(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, force bool) {
+func executePluginForce(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool) {
 	// Check if we need to rerun this plugin
 	storedSHA, err := config.C().DB.GetPluginResultSHA(owner, repo, number, plugin.Name)
 	if err != nil {
@@ -101,6 +101,9 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 	}
 	if plugin.IncludeHeaders {
 		args = append(args, "--headers", metadataJSON)
+	}
+	if plugin.IncludeBranch {
+		args = append(args, "--branch", branch)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pluginTimeout)

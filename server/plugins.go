@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crs/config"
 	"fmt"
@@ -106,11 +107,17 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 	defer cancel()
 	cmd := exec.CommandContext(ctx, plugin.Command, args...)
 
-	output, err := cmd.CombinedOutput()
-	resultStr := string(output)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	err = cmd.Run()
+	resultStr := stdoutBuf.String()
+	if stderrBuf.Len() > 0 {
+		slog.Warn("Plugin stderr", "plugin", plugin.Name, "stderr", stderrBuf.String())
+	}
 	if err != nil {
-		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "output", resultStr)
-		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nOutput: %s", err, resultStr), "error", sha)
+		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "stderr", stderrBuf.String())
+		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, stderrBuf.String(), resultStr), "error", sha)
 		return
 	}
 

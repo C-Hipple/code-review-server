@@ -74,7 +74,6 @@ interface ReviewProps {
     number: number;
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
-    onNavigate?: (owner: string, repo: string, number: number) => void;
 }
 
 interface Comment {
@@ -226,7 +225,6 @@ export default function Review({
     number,
     theme,
     onThemeChange: _onThemeChange,
-    onNavigate,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
@@ -506,41 +504,6 @@ export default function Review({
             setDiff(newLines.join('\n'));
         } catch (e) {
             console.error('Failed to expand hunk context:', e);
-        }
-    };
-
-    const handleNavigate = async (previous: boolean) => {
-        setLoading(true);
-        try {
-            const res = await rpcCall<
-                PRResponse & {
-                    adjacent_owner: string;
-                    adjacent_repo: string;
-                    adjacent_number: number;
-                }
-            >('RPCHandler.GetAdjacentPR', [
-                { Owner: owner, Repo: repo, Number: number, Previous: previous },
-            ]);
-            if (onNavigate) {
-                onNavigate(
-                    res.adjacent_owner || owner,
-                    res.adjacent_repo || repo,
-                    res.adjacent_number
-                );
-            }
-        } catch (e: any) {
-            console.error(e);
-            const msg = e?.message || String(e);
-            const parsed = (() => {
-                try {
-                    return JSON.parse(msg);
-                } catch {
-                    return null;
-                }
-            })();
-            alert(parsed?.message ?? msg);
-        } finally {
-            setLoading(false);
         }
     };
 
@@ -2953,22 +2916,6 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
-                <Button
-                    onClick={() => handleNavigate(true)}
-                    variant="secondary"
-                    disabled={loading}
-                    title="Previous PR"
-                >
-                    ← Prev PR
-                </Button>
-                <Button
-                    onClick={() => handleNavigate(false)}
-                    variant="secondary"
-                    disabled={loading}
-                    title="Next PR"
-                >
-                    Next PR →
-                </Button>
                 <Button onClick={handleSync} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>

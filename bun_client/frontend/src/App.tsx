@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
+import { rpcCall } from './api';
 import {
     Modal,
     Select,
@@ -22,6 +23,7 @@ function App() {
     const [view, setView] = useState<'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT'>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
+    const [navigating, setNavigating] = useState(false);
     const [theme, setTheme] = useState<Theme>(() => {
         const saved = localStorage.getItem('theme') as Theme;
         if (saved && VALID_THEMES.includes(saved)) return saved;
@@ -126,6 +128,31 @@ function App() {
         setCurrentPR(null);
     };
 
+    const handleNavigatePR = async (previous: boolean) => {
+        if (!currentPR) return;
+        setNavigating(true);
+        try {
+            const res = await rpcCall<{
+                adjacent_owner: string;
+                adjacent_repo: string;
+                adjacent_number: number;
+            }>('RPCHandler.GetAdjacentPR', [
+                { Owner: currentPR.owner, Repo: currentPR.repo, Number: currentPR.number, Previous: previous },
+            ]);
+            handleOpenReview(
+                res.adjacent_owner || currentPR.owner,
+                res.adjacent_repo || currentPR.repo,
+                res.adjacent_number
+            );
+        } catch (e: any) {
+            const msg = e?.message || String(e);
+            const parsed = (() => { try { return JSON.parse(msg); } catch { return null; } })();
+            alert(parsed?.message ?? msg);
+        } finally {
+            setNavigating(false);
+        }
+    };
+
     return (
         <div className="app-container" style={{ minHeight: '100vh', padding: '20px' }}>
             <header
@@ -184,20 +211,58 @@ function App() {
                     </button>
                 </div>
                 {(view === 'REVIEW' || view === 'PLUGIN_OUTPUT') && (
-                    <button
-                        onClick={handleBack}
-                        style={{
-                            background: 'transparent',
-                            border: '1px solid var(--border)',
-                            color: 'var(--text-secondary)',
-                            padding: '8px 16px',
-                            borderRadius: '6px',
-                            fontSize: '14px',
-                            cursor: 'pointer',
-                        }}
-                    >
-                        ← Back to List
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {view === 'REVIEW' && (
+                            <>
+                                <button
+                                    onClick={() => handleNavigatePR(true)}
+                                    disabled={navigating}
+                                    style={{
+                                        background: 'transparent',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-secondary)',
+                                        padding: '8px 16px',
+                                        borderRadius: '6px',
+                                        fontSize: '14px',
+                                        cursor: navigating ? 'not-allowed' : 'pointer',
+                                        opacity: navigating ? 0.5 : 1,
+                                    }}
+                                >
+                                    ← Prev PR
+                                </button>
+                                <button
+                                    onClick={() => handleNavigatePR(false)}
+                                    disabled={navigating}
+                                    style={{
+                                        background: 'transparent',
+                                        border: '1px solid var(--border)',
+                                        color: 'var(--text-secondary)',
+                                        padding: '8px 16px',
+                                        borderRadius: '6px',
+                                        fontSize: '14px',
+                                        cursor: navigating ? 'not-allowed' : 'pointer',
+                                        opacity: navigating ? 0.5 : 1,
+                                    }}
+                                >
+                                    Next PR →
+                                </button>
+                            </>
+                        )}
+                        <button
+                            onClick={handleBack}
+                            style={{
+                                background: 'transparent',
+                                border: '1px solid var(--border)',
+                                color: 'var(--text-secondary)',
+                                padding: '8px 16px',
+                                borderRadius: '6px',
+                                fontSize: '14px',
+                                cursor: 'pointer',
+                            }}
+                        >
+                            ← Back to List
+                        </button>
+                    </div>
                 )}
             </header>
 
@@ -218,7 +283,6 @@ function App() {
                         number={currentPR.number}
                         theme={theme}
                         onThemeChange={setTheme}
-                        onNavigate={handleOpenReview}
                     />
                 )}
                 {view === 'PLUGIN_OUTPUT' && currentPR && (

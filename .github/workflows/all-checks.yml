@@ -17,7 +17,6 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       bun: ${{ steps.filter.outputs.bun }}
       rust: ${{ steps.filter.outputs.rust }}
-      zig: ${{ steps.filter.outputs.zig }}
       elisp: ${{ steps.filter.outputs.elisp }}
       docker: ${{ steps.filter.outputs.docker }}
     steps:
@@ -30,6 +29,7 @@ jobs:
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
+              - 'cmd/claude_review/**'
               - '.github/workflows/go.yml'
               - '.github/workflows/all-checks.yml'
             bun:
@@ -39,10 +39,6 @@ jobs:
             rust:
               - 'tui_client/**'
               - '.github/workflows/rust.yml'
-              - '.github/workflows/all-checks.yml'
-            zig:
-              - 'cmd/claude_review/**'
-              - '.github/workflows/zig.yml'
               - '.github/workflows/all-checks.yml'
             elisp:
               - 'client.el/**'
@@ -154,22 +150,6 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-  zig:
-    needs: changes
-    if: needs.changes.outputs.zig == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: '0.14.0'
-
-      - name: Build claude_review plugin
-        run: zig build
-        working-directory: cmd/claude_review
-
   elisp:
     needs: changes
     if: needs.changes.outputs.elisp == 'true'
@@ -229,7 +209,7 @@ jobs:
   # It succeeds when all language checks either passed or were skipped (no relevant changes).
   # It fails if any language check that ran returned a failure or was cancelled.
   all-checks-passed:
-    needs: [go, bun-client, rust, zig, elisp, docker]
+    needs: [go, bun-client, rust, elisp, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -239,7 +219,6 @@ jobs:
           echo "  go:         ${{ needs.go.result }}"
           echo "  bun-client: ${{ needs.bun-client.result }}"
           echo "  rust:       ${{ needs.rust.result }}"
-          echo "  zig:        ${{ needs.zig.result }}"
           echo "  elisp:      ${{ needs.elisp.result }}"
           echo "  docker:     ${{ needs.docker.result }}"
 
@@ -247,7 +226,6 @@ jobs:
             "${{ needs.go.result }}" \
             "${{ needs.bun-client.result }}" \
             "${{ needs.rust.result }}" \
-            "${{ needs.zig.result }}" \
             "${{ needs.elisp.result }}" \
             "${{ needs.docker.result }}"; do
             if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then

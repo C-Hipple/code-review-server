@@ -9,11 +9,12 @@ asks for a strict structured output.
 ## Building and Installation
 
 ```bash
-cd cmd/claude_review
-zig build-exe -O ReleaseSafe -femit-bin=$HOME/.local/bin/claude_review main.zig
+go install crs/cmd/claude_review@latest
+# or from the repo root:
+go install ./cmd/claude_review
 ```
 
-The binary is installed to `~/.local/bin/claude_review`.
+The binary is installed to `$GOPATH/bin/claude_review` (or `$(go env GOPATH)/bin`).
 
 ## Configuration
 

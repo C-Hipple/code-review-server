@@ -489,6 +489,28 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		log.Info("Completed RunOnce Waitgroup")
 	}
 	apiCalls.log(log)
+
+	// Fetch authoritative rate limit status from GitHub's /rate_limit endpoint.
+	rlLimit, rlRemaining, rlResetAt, rlErr := git_tools.GetRateLimitFromAPI(client)
+	if rlErr != nil {
+		log.Warn("Failed to fetch rate limit from GitHub API, using header-based estimate", "error", rlErr)
+		rlStatus := git_tools.GetRateLimitStatus()
+		rlLimit = rlStatus.Limit
+		rlRemaining = rlStatus.Remaining
+		rlResetAt = rlStatus.ResetAt
+	}
+	log.Info("GitHub rate limit post-cycle",
+		"remaining", rlRemaining,
+		"limit", rlLimit,
+		"used_this_cycle", apiCalls.total(),
+		"reset_at", rlResetAt,
+	)
+
+	rlResetAtStr := ""
+	if !rlResetAt.IsZero() {
+		rlResetAtStr = rlResetAt.UTC().Format(time.RFC3339)
+	}
+
 	db := config.C().DB
 	if err := db.LogAPICallStats(
 		apiCalls.PRList.Load(),
@@ -501,6 +523,9 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		apiCalls.CombinedStatus.Load(),
 		apiCalls.CheckRuns.Load(),
 		apiCalls.Commits.Load(),
+		rlRemaining,
+		rlLimit,
+		rlResetAtStr,
 	); err != nil {
 		log.Error("Failed to save API call stats to database", "error", err)
 	}

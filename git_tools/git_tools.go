@@ -506,6 +506,22 @@ func GetRateLimitStatus() RateLimitStatus {
 	return globalRateLimitManager.GetStatus()
 }
 
+// GetRateLimitFromAPI fetches the authoritative rate limit status from GitHub's
+// /rate_limit endpoint. Returns limit, remaining, and reset time for the core API.
+func GetRateLimitFromAPI(client *github.Client) (limit, remaining int, resetAt time.Time, err error) {
+	ctx := context.Background()
+	rateLimits, _, apiErr := client.RateLimits(ctx)
+	if apiErr != nil {
+		return 0, 0, time.Time{}, apiErr
+	}
+	if rateLimits != nil && rateLimits.Core != nil {
+		limit = rateLimits.Core.Limit
+		remaining = rateLimits.Core.Remaining
+		resetAt = rateLimits.Core.Reset.Time
+	}
+	return limit, remaining, resetAt, nil
+}
+
 func GetLeankitCardTitle(pr PullRequest) string {
 	return "abc"
 }

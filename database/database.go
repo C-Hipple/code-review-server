@@ -364,6 +364,23 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: Add rate limit columns to APICallStats
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='rate_limit_remaining'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN rate_limit_remaining INTEGER NOT NULL DEFAULT -1")
+		if err != nil {
+			slog.Warn("Error adding rate_limit_remaining column to APICallStats", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN rate_limit_limit INTEGER NOT NULL DEFAULT -1")
+		if err != nil {
+			slog.Warn("Error adding rate_limit_limit column to APICallStats", "error", err)
+		}
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN rate_limit_reset_at TEXT NOT NULL DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding rate_limit_reset_at column to APICallStats", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1341,14 +1358,16 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	return db.conn.QueryRow(query, args...)
 }
 
-// LogAPICallStats persists per-type GitHub API call counts for a completed workflow cycle.
-func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits int64) error {
+// LogAPICallStats persists per-type GitHub API call counts and post-cycle rate limit
+// status for a completed workflow cycle.
+func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
 	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits
 	_, err := db.conn.Exec(
 		`INSERT INTO APICallStats
-			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, total)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, total,
+		rateLimitRemaining, rateLimitLimit, rateLimitResetAt,
 	)
 	return err
 }

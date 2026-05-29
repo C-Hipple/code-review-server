@@ -137,7 +137,12 @@ function App() {
                 adjacent_repo: string;
                 adjacent_number: number;
             }>('RPCHandler.GetAdjacentPR', [
-                { Owner: currentPR.owner, Repo: currentPR.repo, Number: currentPR.number, Previous: previous },
+                {
+                    Owner: currentPR.owner,
+                    Repo: currentPR.repo,
+                    Number: currentPR.number,
+                    Previous: previous,
+                },
             ]);
             handleOpenReview(
                 res.adjacent_owner || currentPR.owner,
@@ -146,7 +151,13 @@ function App() {
             );
         } catch (e: any) {
             const msg = e?.message || String(e);
-            const parsed = (() => { try { return JSON.parse(msg); } catch { return null; } })();
+            const parsed = (() => {
+                try {
+                    return JSON.parse(msg);
+                } catch {
+                    return null;
+                }
+            })();
             alert(parsed?.message ?? msg);
         } finally {
             setNavigating(false);

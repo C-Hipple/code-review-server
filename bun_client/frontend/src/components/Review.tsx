@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import {
@@ -60,6 +60,9 @@ function CopyUrlButton({ url }: { url: string }) {
         </button>
     );
 }
+
+// Stable slug for in-page anchor IDs from file paths.
+const slugify = (s: string): string => s.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
 
 const stripHtmlComments = (text: string): string => {
     return text.replace(/<!--[\s\S]*?-->/g, '');
@@ -242,6 +245,35 @@ export default function Review({
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
+    // Description starts collapsed so the diff dominates the viewport.
+    const [descCollapsed, setDescCollapsed] = useState(true);
+
+    // Measure the sticky toolbar's actual rendered height and publish it as a
+    // CSS variable so sticky hunk headers can pin directly below the toolbar
+    // regardless of font size, button padding, or wrap.
+    const toolbarRef = useRef<HTMLDivElement | null>(null);
+    useLayoutEffect(() => {
+        const el = toolbarRef.current;
+        if (!el) return;
+        const sync = () => {
+            // Toolbar `top` offset (10px) + rendered height. No extra gap — any
+            // pixel between the toolbar's bottom and the hunk row's top would
+            // expose scrolling content through the seam.
+            const top = 10 + el.offsetHeight;
+            document.documentElement.style.setProperty('--review-hunk-sticky-top', `${top}px`);
+        };
+        sync();
+        const ro = new ResizeObserver(sync);
+        ro.observe(el);
+        window.addEventListener('resize', sync);
+        return () => {
+            ro.disconnect();
+            window.removeEventListener('resize', sync);
+        };
+    }, []);
+    // Inline review feedback drafting is hidden behind a toggle; the body is also
+    // editable in the Submit Review modal.
+    const [feedbackCollapsed, setFeedbackCollapsed] = useState(true);
 
     const [submitting, setSubmitting] = useState(false);
     const [isSubmittingReview, setIsSubmittingReview] = useState(false);
@@ -677,6 +709,11 @@ export default function Review({
         fileStatus?: 'modified' | 'new' | 'deleted' | 'renamed';
         origName?: string;
         originalLineIndex: number;
+        // Source-side line numbers (old = base, new = head). null when N/A.
+        oldLineNo?: number | null;
+        newLineNo?: number | null;
+        // For hunk headers: parsed function/context that appears after "@@".
+        hunkContext?: string;
     }
 
     // Parse diff to identify clickable lines (metadata is now rendered separately)
@@ -697,12 +734,25 @@ export default function Review({
             let fallbackFileIndex: number | null = null;
             let hasEmittedHeader = false;
 
+            // Per-hunk line-number cursors (old = base side, new = head side).
+            let oldLineCursor = 0;
+            let newLineCursor = 0;
+            let currentHunkContext = '';
+
             lines.forEach((rawLine, index) => {
                 const line = rawLine.replace(/\r$/, '');
                 let clickable = false;
                 let pos: number | null = null;
                 let file: string | null = null;
-                let lineType: LineType = 'code';
+                // Default to 'skip' — only lines that match a known diff
+                // pattern (file header, hunk header, +/- /context) are
+                // emitted. Without this, the trailing empty element from
+                // split('\n'), "\ No newline at end of file" markers, and
+                // any unrecognized line would silently become phantom
+                // 'code' rows with empty line-number gutters.
+                let lineType: LineType = 'skip';
+                let lineOldNo: number | null = null;
+                let lineNewNo: number | null = null;
 
                 // Check for diff --git header to determine file status
                 if (line.startsWith('diff --git')) {
@@ -855,12 +905,32 @@ export default function Review({
                             // Hunk headers are not valid GitHub comment positions
                             clickable = false;
                             lineType = 'hunk';
+
+                            // Seed per-side line cursors from the hunk header so we can
+                            // render real line numbers alongside the diff.
+                            const m = line.match(
+                                /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
+                            );
+                            if (m) {
+                                oldLineCursor = parseInt(m[1], 10);
+                                newLineCursor = parseInt(m[3], 10);
+                                currentHunkContext = (m[5] || '').replace(/^\s+/, '');
+                            }
                         } else if (isAddition || isDeletion || isContextLine) {
                             currentPos++;
                             pos = currentPos;
                             file = currentFile;
                             clickable = true;
                             lineType = isAddition ? 'addition' : isDeletion ? 'deletion' : 'code';
+
+                            if (isAddition) {
+                                lineNewNo = newLineCursor++;
+                            } else if (isDeletion) {
+                                lineOldNo = oldLineCursor++;
+                            } else {
+                                lineOldNo = oldLineCursor++;
+                                lineNewNo = newLineCursor++;
+                            }
                         }
                     }
                 }
@@ -873,6 +943,9 @@ export default function Review({
                         clickable,
                         lineType,
                         originalLineIndex: index,
+                        oldLineNo: lineOldNo,
+                        newLineNo: lineNewNo,
+                        hunkContext: lineType === 'hunk' ? currentHunkContext : undefined,
                     });
                 }
             });
@@ -1239,7 +1312,7 @@ export default function Review({
                 const hasOutdated = fileOutdatedComments.length > 0;
 
                 return (
-                    <div key={idx}>
+                    <div key={idx} id={item.file ? `file-${slugify(item.file)}` : undefined}>
                         <div
                             style={{
                                 display: 'flex',
@@ -1750,6 +1823,10 @@ export default function Review({
             return (
                 <div key={idx}>
                     <div
+                        className={
+                            (item.clickable ? 'hover-line' : '') +
+                            (isHunkHeader ? ' diff-hunk-row' : '')
+                        }
                         style={{
                             ...containerStyle,
                             borderLeft:
@@ -1758,9 +1835,34 @@ export default function Review({
                                     : '3px solid transparent',
                             marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
                         }}
-                        className={item.clickable ? 'hover-line' : ''}
                         title={undefined}
                     >
+                        {isCodeLine && !isHunkHeader && (
+                            <>
+                                <span
+                                    className="diff-line-no"
+                                    aria-hidden="true"
+                                    style={{
+                                        background: isDeletion
+                                            ? colors.diffDelGutterBg
+                                            : isAddition
+                                              ? undefined
+                                              : undefined,
+                                    }}
+                                >
+                                    {item.oldLineNo ?? ''}
+                                </span>
+                                <span
+                                    className="diff-line-no"
+                                    aria-hidden="true"
+                                    style={{
+                                        background: isAddition ? colors.diffAddGutterBg : undefined,
+                                    }}
+                                >
+                                    {item.newLineNo ?? ''}
+                                </span>
+                            </>
+                        )}
                         {isCodeLine && !isHunkHeader && (
                             <span
                                 style={prefixStyle}
@@ -2595,38 +2697,76 @@ export default function Review({
                         </div>
                     )}
 
-                    {/* Description */}
+                    {/* Description (collapsible — diff is the focus) */}
                     {metadata.body && (
                         <div
                             style={{
-                                padding: '16px 20px',
                                 borderTop: '1px solid var(--border)',
                                 background: 'var(--bg-primary)',
                             }}
                         >
-                            <div
+                            <button
+                                type="button"
+                                onClick={() => setDescCollapsed(c => !c)}
                                 style={{
-                                    fontSize: '11px',
+                                    width: '100%',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    padding: '10px 20px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    cursor: 'pointer',
                                     color: 'var(--text-secondary)',
-                                    marginBottom: '10px',
+                                    fontSize: '11px',
                                     textTransform: 'uppercase',
                                     letterSpacing: '0.5px',
+                                    textAlign: 'left',
                                 }}
+                                aria-expanded={!descCollapsed}
                             >
+                                <span
+                                    style={{
+                                        display: 'inline-block',
+                                        transform: descCollapsed
+                                            ? 'rotate(-90deg)'
+                                            : 'rotate(0deg)',
+                                        transition: 'transform 0.15s ease',
+                                        fontSize: '10px',
+                                    }}
+                                >
+                                    ▼
+                                </span>
                                 Description
-                            </div>
-                            <div
-                                className="pr-description"
-                                style={{
-                                    fontSize: '14px',
-                                    lineHeight: 1.6,
-                                    color: 'var(--text-primary)',
-                                    maxHeight: '300px',
-                                    overflow: 'auto',
-                                }}
-                            >
-                                <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
-                            </div>
+                                {descCollapsed && (
+                                    <span
+                                        style={{
+                                            marginLeft: '8px',
+                                            fontSize: '11px',
+                                            color: 'var(--text-tertiary)',
+                                            textTransform: 'none',
+                                            letterSpacing: 0,
+                                        }}
+                                    >
+                                        — click to expand
+                                    </span>
+                                )}
+                            </button>
+                            {!descCollapsed && (
+                                <div
+                                    className="pr-description"
+                                    style={{
+                                        fontSize: '14px',
+                                        lineHeight: 1.6,
+                                        color: 'var(--text-primary)',
+                                        maxHeight: '300px',
+                                        overflow: 'auto',
+                                        padding: '0 20px 16px',
+                                    }}
+                                >
+                                    <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -2798,6 +2938,7 @@ export default function Review({
 
             {/* Toolbar */}
             <div
+                ref={toolbarRef}
                 className="toolbar"
                 style={{
                     display: 'flex',
@@ -2879,17 +3020,107 @@ export default function Review({
                 </Button>
 
                 <span
+                    title="Click any line of code to comment. Click a file pill below to jump to that file."
                     style={{
                         marginLeft: 'auto',
-                        display: 'flex',
+                        display: 'inline-flex',
                         alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        border: '1px solid var(--border)',
                         color: 'var(--text-secondary)',
-                        fontSize: '13px',
+                        fontSize: '12px',
+                        cursor: 'help',
+                        userSelect: 'none',
                     }}
                 >
-                    💡 Click on any line of code to add a comment
+                    ?
                 </span>
             </div>
+
+            {/* File index — jump to any file in the diff */}
+            {(() => {
+                const parsed = parseDiff();
+                const fileHeaders = parsed.filter(p => p.lineType === 'file-header' && p.file);
+                if (fileHeaders.length === 0) return null;
+
+                // Tally additions/deletions per file from the parsed lines.
+                const counts = new Map<string, { add: number; del: number }>();
+                let curFile: string | null = null;
+                for (const p of parsed) {
+                    if (p.lineType === 'file-header') {
+                        curFile = p.file;
+                        if (curFile && !counts.has(curFile)) {
+                            counts.set(curFile, { add: 0, del: 0 });
+                        }
+                    } else if (curFile && counts.has(curFile)) {
+                        const c = counts.get(curFile)!;
+                        if (p.lineType === 'addition') c.add++;
+                        else if (p.lineType === 'deletion') c.del++;
+                    }
+                }
+
+                const scrollToFile = (file: string) => {
+                    // Expand the file if it was collapsed so the diff is visible.
+                    if (collapsedFiles.has(file)) {
+                        setCollapsedFiles(prev => {
+                            const next = new Set(prev);
+                            next.delete(file);
+                            return next;
+                        });
+                    }
+                    requestAnimationFrame(() => {
+                        const el = document.getElementById(`file-${slugify(file)}`);
+                        if (!el) return;
+                        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        el.classList.remove('file-flash');
+                        // Re-trigger the CSS animation.
+                        void el.offsetWidth;
+                        el.classList.add('file-flash');
+                    });
+                };
+
+                return (
+                    <div className="file-index" aria-label="Files changed">
+                        <span
+                            style={{
+                                fontSize: '11px',
+                                color: 'var(--text-tertiary)',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                                marginRight: '4px',
+                                alignSelf: 'center',
+                            }}
+                        >
+                            {fileHeaders.length} file{fileHeaders.length === 1 ? '' : 's'}
+                        </span>
+                        {fileHeaders.map(p => {
+                            if (!p.file) return null;
+                            const info = getFileStatusInfo(p.fileStatus);
+                            const c = counts.get(p.file) || { add: 0, del: 0 };
+                            const shortName = p.file.length > 40 ? '…' + p.file.slice(-39) : p.file;
+                            return (
+                                <button
+                                    key={p.file}
+                                    type="button"
+                                    onClick={() => scrollToFile(p.file!)}
+                                    className="file-index-item"
+                                    title={p.file}
+                                >
+                                    <span style={{ color: info.color, fontWeight: 600 }}>
+                                        {info.icon}
+                                    </span>
+                                    <span>{shortName}</span>
+                                    {c.add > 0 && <span className="delta-add">+{c.add}</span>}
+                                    {c.del > 0 && <span className="delta-del">−{c.del}</span>}
+                                </button>
+                            );
+                        })}
+                    </div>
+                );
+            })()}
 
             {/* Dock zone for floating modal drag-to-dock */}
             {dockedTabs.length > 0 ? (
@@ -3106,7 +3337,10 @@ export default function Review({
                                 borderRadius: inPanel ? '0 0 8px 8px' : '8px',
                                 border: '1px solid var(--border)',
                                 borderTop: inPanel ? 'none' : undefined,
-                                overflow: 'hidden',
+                                // No `overflow: hidden/auto/scroll` — those make this a
+                                // scroll container, which would re-anchor descendant
+                                // `position: sticky` rows (hunk + file headers) to this
+                                // box instead of the viewport.
                             }}
                         >
                             <div
@@ -3163,14 +3397,17 @@ export default function Review({
                                     padding: '16px',
                                     fontFamily: 'var(--font-mono)',
                                     fontSize: '13px',
-                                    overflowX: 'auto',
+                                    // No overflow:auto here — it would create a scroll
+                                    // container and break sticky positioning of hunk
+                                    // headers. Long lines are handled by per-line
+                                    // overflow handling instead.
                                 }}
                             >
                                 {renderDiff()}
                             </div>
                         </div>
 
-                        {/* Review Feedback Section */}
+                        {/* Review Feedback Section (collapsed by default) */}
                         <div
                             style={{
                                 background: 'var(--bg-secondary)',
@@ -3180,70 +3417,109 @@ export default function Review({
                                 marginTop: '16px',
                             }}
                         >
-                            <div
+                            <button
+                                type="button"
+                                onClick={() => setFeedbackCollapsed(c => !c)}
+                                aria-expanded={!feedbackCollapsed}
                                 style={{
-                                    padding: '12px 16px',
-                                    borderBottom: '1px solid var(--border)',
+                                    width: '100%',
                                     background: 'var(--bg-primary)',
-                                    fontSize: '13px',
-                                    fontWeight: 500,
-                                    color: 'var(--text-secondary)',
+                                    borderTop: 'none',
+                                    borderLeft: 'none',
+                                    borderRight: 'none',
+                                    borderBottom: feedbackCollapsed
+                                        ? 'none'
+                                        : '1px solid var(--border)',
+                                    padding: '12px 16px',
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: '8px',
+                                    cursor: 'pointer',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '13px',
+                                    fontWeight: 500,
+                                    textAlign: 'left',
                                 }}
                             >
-                                <span style={{ color: 'var(--accent)' }}>✎</span>
-                                Review Feedback
                                 <span
                                     style={{
-                                        marginLeft: '8px',
+                                        display: 'inline-block',
+                                        transform: feedbackCollapsed
+                                            ? 'rotate(-90deg)'
+                                            : 'rotate(0deg)',
+                                        transition: 'transform 0.15s ease',
+                                        fontSize: '10px',
+                                    }}
+                                >
+                                    ▼
+                                </span>
+                                <span style={{ color: 'var(--accent)' }}>✎</span>
+                                Review Feedback Draft
+                                {feedbackBody.trim().length > 0 && (
+                                    <span
+                                        style={{
+                                            fontSize: '11px',
+                                            color: 'var(--accent)',
+                                            background: 'var(--bg-info-dim)',
+                                            border: '1px solid var(--border-info-dim)',
+                                            borderRadius: '10px',
+                                            padding: '1px 8px',
+                                        }}
+                                    >
+                                        {feedbackBody.trim().length} chars
+                                    </span>
+                                )}
+                                <span
+                                    style={{
+                                        marginLeft: 'auto',
                                         fontSize: '11px',
                                         color: 'var(--text-tertiary)',
                                         fontWeight: 400,
                                     }}
                                 >
-                                    PR-level comment body — used when you submit a review
+                                    pre-fills the Submit Review body
                                 </span>
-                            </div>
-                            <div style={{ padding: '16px' }}>
-                                <textarea
-                                    placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
-                                    value={feedbackBody}
-                                    onChange={e => setFeedbackBody(e.target.value)}
-                                    disabled={isSavingFeedback}
-                                    style={{
-                                        width: '100%',
-                                        minHeight: '120px',
-                                        padding: '10px',
-                                        background: 'var(--bg-primary)',
-                                        border: '1px solid var(--border)',
-                                        color: 'var(--text-primary)',
-                                        borderRadius: '6px',
-                                        fontFamily: 'inherit',
-                                        fontSize: '13px',
-                                        resize: 'vertical',
-                                        boxSizing: 'border-box',
-                                    }}
-                                />
-                                <div
-                                    style={{
-                                        display: 'flex',
-                                        gap: '10px',
-                                        justifyContent: 'flex-end',
-                                        marginTop: '10px',
-                                    }}
-                                >
-                                    <Button
-                                        onClick={handleSaveFeedback}
-                                        size="sm"
-                                        loading={isSavingFeedback}
+                            </button>
+                            {!feedbackCollapsed && (
+                                <div style={{ padding: '16px' }}>
+                                    <textarea
+                                        placeholder="Write your overall review feedback here... This will be pre-filled in the Submit Review body."
+                                        value={feedbackBody}
+                                        onChange={e => setFeedbackBody(e.target.value)}
                                         disabled={isSavingFeedback}
+                                        style={{
+                                            width: '100%',
+                                            minHeight: '120px',
+                                            padding: '10px',
+                                            background: 'var(--bg-primary)',
+                                            border: '1px solid var(--border)',
+                                            color: 'var(--text-primary)',
+                                            borderRadius: '6px',
+                                            fontFamily: 'inherit',
+                                            fontSize: '13px',
+                                            resize: 'vertical',
+                                            boxSizing: 'border-box',
+                                        }}
+                                    />
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            gap: '10px',
+                                            justifyContent: 'flex-end',
+                                            marginTop: '10px',
+                                        }}
                                     >
-                                        Save Feedback
-                                    </Button>
+                                        <Button
+                                            onClick={handleSaveFeedback}
+                                            size="sm"
+                                            loading={isSavingFeedback}
+                                            disabled={isSavingFeedback}
+                                        >
+                                            Save Draft
+                                        </Button>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
                         </div>
                     </>
                 );

@@ -182,7 +182,10 @@ jobs:
             --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
             --eval "(package-initialize)" \
             --eval "(add-to-list 'load-path default-directory)" \
-            -f batch-byte-compile washer.el client.el 2>&1 | tee compile.log
+            -f batch-byte-compile \
+              washer.el crs-vars.el crs-html.el crs-rpc.el crs-render.el \
+              crs-list-mode.el crs-review.el crs-comments.el \
+              crs-review-actions.el crs-plugins.el crs-client.el 2>&1 | tee compile.log
           if grep -E ':[0-9]+:[0-9]+:Error:' compile.log; then
             echo "Byte-compile errors found."
             exit 1

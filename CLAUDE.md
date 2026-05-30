@@ -48,7 +48,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 
 ### Clients
 - `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio
-- `client.el` — Emacs client
+- `client.el/` — Emacs client, split into modules with `crs-client.el` as the entry point (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`)
 
 ## Key Data Flow
 

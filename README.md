@@ -85,4 +85,4 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     ```
 
     **Emacs Client (Brief):**
-    Evaluate `client.el` and run `(crs-start-server)`.
+    Evaluate `client.el/crs-client.el` and run `(crs-start-server)`.

@@ -15,6 +15,7 @@ import {
 import { rpcCall, getHunkContext } from '../api';
 import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
+import { useIsMobile } from '../hooks/useMediaQuery';
 import { getClickColumn } from '../utils/dom';
 import {
     dockViewer as dockViewerState,
@@ -249,6 +250,11 @@ export default function Review({
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
     // Description starts collapsed so the diff dominates the viewport.
     const [descCollapsed, setDescCollapsed] = useState(true);
+    // On phones, wrap long diff lines by default so they read without
+    // horizontal scrolling; keep `pre` (scroll) as the default on desktop where
+    // column alignment matters more.
+    const isMobile = useIsMobile();
+    const [wrapLines, setWrapLines] = useState<boolean>(() => isMobile);
 
     // Measure the sticky toolbar's actual rendered height and publish it as a
     // CSS variable so sticky hunk headers can pin directly below the toolbar
@@ -1733,10 +1739,12 @@ export default function Review({
 
             let lineStyle: React.CSSProperties = {
                 flex: 1,
+                minWidth: 0,
                 padding: '0 8px',
-                whiteSpace: 'pre',
+                whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
+                overflowWrap: wrapLines ? 'anywhere' : 'normal',
                 display: 'flex',
-                alignItems: 'center',
+                alignItems: wrapLines ? 'flex-start' : 'center',
             };
 
             if (isAddition) {
@@ -2914,6 +2922,7 @@ export default function Review({
                 className="toolbar"
                 style={{
                     display: 'flex',
+                    flexWrap: 'wrap',
                     gap: '10px',
                     marginBottom: '16px',
                     padding: '12px 16px',
@@ -2941,6 +2950,15 @@ export default function Review({
                     disabled={loading}
                 >
                     {collapsedFiles.size > 0 ? '▼ Expand All' : '◀ Collapse All'}
+                </Button>
+                <Button
+                    onClick={() => setWrapLines(w => !w)}
+                    variant={wrapLines ? 'primary' : 'secondary'}
+                    size="sm"
+                    disabled={loading}
+                    title={wrapLines ? 'Wrapping long lines' : 'Long lines scroll horizontally'}
+                >
+                    ↩ Wrap
                 </Button>
                 <Button
                     onClick={() => {
@@ -3252,7 +3270,7 @@ export default function Review({
                                 </div>
                             );
                         })}
-                        {showSplitBtn && (
+                        {showSplitBtn && !isMobile && (
                             <button
                                 onClick={handleToggleSplit}
                                 style={{
@@ -3531,8 +3549,10 @@ export default function Review({
                     return renderReviewContent(false);
                 }
 
-                // Tabs docked, not split — single panel
-                if (!dockState.split) {
+                // Tabs docked, not split — single panel. Split view is also
+                // forced off on phones, where two side-by-side panels are too
+                // narrow to read.
+                if (!dockState.split || isMobile) {
                     return (
                         <div>
                             {renderTabBar('left', dockState.left, true)}

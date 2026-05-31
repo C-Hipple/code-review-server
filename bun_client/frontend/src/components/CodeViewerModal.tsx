@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import {
     oneDark,
     oneLight,
@@ -15,8 +14,8 @@ import { colors, shadows } from '../design';
 import { readFile, listFiles } from '../api';
 import type { Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
-import { getClickColumn } from '../utils/dom';
 import LspPopover from './LspPopover';
+import VirtualizedCodeBlock, { CODE_LINE_HEIGHT } from './VirtualizedCodeBlock';
 
 interface CodeViewerModalProps {
     isOpen: boolean;
@@ -234,7 +233,6 @@ export default function CodeViewerModal({
     }, [currentFilePath]);
 
     const modalRef = useRef<HTMLDivElement>(null);
-    const contentRef = useRef<HTMLDivElement>(null);
     const animationFrameId = useRef<number | null>(null);
     const resizeFrameId = useRef<number | null>(null);
 
@@ -279,6 +277,7 @@ export default function CodeViewerModal({
 
     // Sync currentFilePath when prop changes (if user clicks another file link in Review.tsx)
     useEffect(() => {
+        setScrollToLine(null);
         setCurrentFilePath(filePath);
     }, [filePath]);
 
@@ -313,23 +312,6 @@ export default function CodeViewerModal({
 
         fetchContent();
     }, [isOpen, currentFilePath, repoPath]);
-
-    // Scroll to target line when content loads
-    useEffect(() => {
-        const targetLine = scrollToLine ?? (currentFilePath === filePath ? initialLine : null);
-        if (content && contentRef.current && targetLine) {
-            setTimeout(() => {
-                const lineElement = contentRef.current?.querySelector(
-                    `code > span:nth-child(${targetLine})`
-                );
-                if (lineElement) {
-                    lineElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-                // Clear scrollToLine after scrolling so it doesn't re-trigger
-                if (scrollToLine) setScrollToLine(null);
-            }, 100);
-        }
-    }, [content, initialLine, currentFilePath, filePath, scrollToLine]);
 
     // Handle ESC key
     useEffect(() => {
@@ -521,6 +503,73 @@ export default function CodeViewerModal({
         [expandedDirs]
     );
 
+    // Toggle an LSP query for the clicked line/column.
+    const handleLspLineClick = useCallback(
+        (line: number, column: number) => {
+            if (!lsp.available) return;
+            if (activeLspLine === line) {
+                setActiveLspLine(null);
+                lsp.clearData();
+                return;
+            }
+            lsp.query(line - 1, column).then(result => {
+                if (result) setActiveLspLine(line);
+            });
+        },
+        [lsp, activeLspLine]
+    );
+
+    const targetLine = scrollToLine ?? (currentFilePath === filePath ? initialLine : null);
+
+    // Single highlighted, virtualization-aware file view shared by both the
+    // docked and floating layouts.
+    const codeViewer =
+        !loading && !error && content ? (
+            <VirtualizedCodeBlock
+                content={content}
+                language={language}
+                syntaxStyle={syntaxTheme}
+                activeLine={activeLspLine}
+                targetLine={targetLine}
+                scrollToLine={targetLine}
+                clickable={!!lsp.available}
+                onLineClick={handleLspLineClick}
+            >
+                {activeLspLine !== null && lsp.lspData && (
+                    <div
+                        style={{
+                            position: 'absolute',
+                            top: `${activeLspLine * CODE_LINE_HEIGHT + CODE_LINE_HEIGHT}px`,
+                            left: '60px',
+                            zIndex: 100,
+                        }}
+                    >
+                        <LspPopover
+                            hover={lsp.lspData.hover}
+                            refs={lsp.lspData.refs}
+                            definitions={lsp.lspData.definitions}
+                            typeDefinitions={lsp.lspData.typeDefinitions}
+                            variant="floating"
+                            onRefClick={r => {
+                                const refPath = r.uri.replace('file://', '');
+                                const relativePath = refPath.startsWith(repoPath + '/')
+                                    ? refPath.slice(repoPath.length + 1)
+                                    : refPath;
+                                setCurrentFilePath(relativePath);
+                                setScrollToLine(r.range.start.line + 1);
+                                setActiveLspLine(null);
+                                lsp.clearData();
+                            }}
+                            onClose={() => {
+                                setActiveLspLine(null);
+                                lsp.clearData();
+                            }}
+                        />
+                    </div>
+                )}
+            </VirtualizedCodeBlock>
+        ) : null;
+
     const renderFileTree = useCallback(
         (nodes: FileNode[], depth: number = 0): React.ReactNode => {
             return nodes.map(node => (
@@ -551,6 +600,7 @@ export default function CodeViewerModal({
                             if (node.isDirectory) {
                                 toggleDir(node.path);
                             } else {
+                                setScrollToLine(null);
                                 setCurrentFilePath(node.path);
                             }
                         }}
@@ -811,11 +861,9 @@ export default function CodeViewerModal({
 
                     {/* Main Content */}
                     <div
-                        ref={contentRef}
-                        className="custom-scrollbar"
                         style={{
                             flex: 1,
-                            overflow: 'auto',
+                            overflow: 'hidden',
                             background: 'var(--bg-primary)',
                         }}
                     >
@@ -829,114 +877,7 @@ export default function CodeViewerModal({
                                 Error: {error}
                             </div>
                         )}
-                        {!loading && !error && content && (
-                            <div style={{ position: 'relative' }}>
-                                <SyntaxHighlighter
-                                    language={language}
-                                    style={syntaxTheme}
-                                    showLineNumbers={true}
-                                    wrapLines={true}
-                                    lineProps={(lineNumber: number) => {
-                                        const isInitialTarget =
-                                            currentFilePath === filePath &&
-                                            lineNumber === initialLine;
-                                        const isScrollTarget =
-                                            scrollToLine !== null && lineNumber === scrollToLine;
-                                        const isTargetLine = isInitialTarget || isScrollTarget;
-                                        const isLspActive = activeLspLine === lineNumber;
-                                        return {
-                                            style: {
-                                                display: 'block',
-                                                position: 'relative' as const,
-                                                background: isLspActive
-                                                    ? colors.bgInfoDim
-                                                    : isTargetLine
-                                                      ? colors.bgWarningDim
-                                                      : 'transparent',
-                                                borderLeft: isLspActive
-                                                    ? `3px solid var(--accent)`
-                                                    : isTargetLine
-                                                      ? `3px solid ${colors.warning}`
-                                                      : '3px solid transparent',
-                                                paddingLeft: '8px',
-                                                cursor: lsp.available ? 'pointer' : 'default',
-                                            },
-                                            onClick: (e: React.MouseEvent) => {
-                                                if (!lsp.available) return;
-                                                const col = getClickColumn(
-                                                    e,
-                                                    e.currentTarget as HTMLElement
-                                                );
-                                                const lspLine = lineNumber - 1; // 0-indexed for LSP
-                                                if (activeLspLine === lineNumber) {
-                                                    setActiveLspLine(null);
-                                                    lsp.clearData();
-                                                } else {
-                                                    lsp.query(lspLine, col).then(result => {
-                                                        if (result) {
-                                                            setActiveLspLine(lineNumber);
-                                                        }
-                                                    });
-                                                }
-                                            },
-                                        };
-                                    }}
-                                    lineNumberStyle={{
-                                        minWidth: '50px',
-                                        paddingRight: '8px',
-                                        textAlign: 'right',
-                                        color: 'var(--text-tertiary)',
-                                        background: 'var(--bg-secondary)',
-                                        borderRight: '1px solid var(--border)',
-                                        userSelect: 'none',
-                                    }}
-                                    customStyle={{
-                                        margin: 0,
-                                        padding: 0,
-                                        background: 'transparent',
-                                        fontFamily: 'var(--font-mono)',
-                                        fontSize: '13px',
-                                    }}
-                                >
-                                    {content}
-                                </SyntaxHighlighter>
-                                {activeLspLine !== null && lsp.lspData && (
-                                    <div
-                                        style={{
-                                            position: 'absolute',
-                                            top: `${activeLspLine * 20 + 20}px`,
-                                            left: '60px',
-                                            zIndex: 100,
-                                        }}
-                                    >
-                                        <LspPopover
-                                            hover={lsp.lspData.hover}
-                                            refs={lsp.lspData.refs}
-                                            definitions={lsp.lspData.definitions}
-                                            typeDefinitions={lsp.lspData.typeDefinitions}
-                                            variant="floating"
-                                            onRefClick={r => {
-                                                const refPath = r.uri.replace('file://', '');
-                                                const relativePath = refPath.startsWith(
-                                                    repoPath + '/'
-                                                )
-                                                    ? refPath.slice(repoPath.length + 1)
-                                                    : refPath;
-                                                const targetLine = r.range.start.line + 1;
-                                                setCurrentFilePath(relativePath);
-                                                setScrollToLine(targetLine);
-                                                setActiveLspLine(null);
-                                                lsp.clearData();
-                                            }}
-                                            onClose={() => {
-                                                setActiveLspLine(null);
-                                                lsp.clearData();
-                                            }}
-                                        />
-                                    </div>
-                                )}
-                            </div>
-                        )}
+                        {codeViewer}
                     </div>
                 </div>
             </div>
@@ -1020,11 +961,9 @@ export default function CodeViewerModal({
 
                     {/* Main Content */}
                     <div
-                        ref={contentRef}
-                        className="custom-scrollbar"
                         style={{
                             flex: 1,
-                            overflow: 'auto',
+                            overflow: 'hidden',
                             background: 'var(--bg-primary)',
                         }}
                     >
@@ -1038,114 +977,7 @@ export default function CodeViewerModal({
                                 Error: {error}
                             </div>
                         )}
-                        {!loading && !error && content && (
-                            <div style={{ position: 'relative' }}>
-                                <SyntaxHighlighter
-                                    language={language}
-                                    style={syntaxTheme}
-                                    showLineNumbers={true}
-                                    wrapLines={true}
-                                    lineProps={(lineNumber: number) => {
-                                        const isInitialTarget =
-                                            currentFilePath === filePath &&
-                                            lineNumber === initialLine;
-                                        const isScrollTarget =
-                                            scrollToLine !== null && lineNumber === scrollToLine;
-                                        const isTargetLine = isInitialTarget || isScrollTarget;
-                                        const isLspActive = activeLspLine === lineNumber;
-                                        return {
-                                            style: {
-                                                display: 'block',
-                                                position: 'relative' as const,
-                                                background: isLspActive
-                                                    ? colors.bgInfoDim
-                                                    : isTargetLine
-                                                      ? colors.bgWarningDim
-                                                      : 'transparent',
-                                                borderLeft: isLspActive
-                                                    ? `3px solid var(--accent)`
-                                                    : isTargetLine
-                                                      ? `3px solid ${colors.warning}`
-                                                      : '3px solid transparent',
-                                                paddingLeft: '8px',
-                                                cursor: lsp.available ? 'pointer' : 'default',
-                                            },
-                                            onClick: (e: React.MouseEvent) => {
-                                                if (!lsp.available) return;
-                                                const col = getClickColumn(
-                                                    e,
-                                                    e.currentTarget as HTMLElement
-                                                );
-                                                const lspLine = lineNumber - 1; // 0-indexed for LSP
-                                                if (activeLspLine === lineNumber) {
-                                                    setActiveLspLine(null);
-                                                    lsp.clearData();
-                                                } else {
-                                                    lsp.query(lspLine, col).then(result => {
-                                                        if (result) {
-                                                            setActiveLspLine(lineNumber);
-                                                        }
-                                                    });
-                                                }
-                                            },
-                                        };
-                                    }}
-                                    lineNumberStyle={{
-                                        minWidth: '50px',
-                                        paddingRight: '8px',
-                                        textAlign: 'right',
-                                        color: 'var(--text-tertiary)',
-                                        background: 'var(--bg-secondary)',
-                                        borderRight: '1px solid var(--border)',
-                                        userSelect: 'none',
-                                    }}
-                                    customStyle={{
-                                        margin: 0,
-                                        padding: 0,
-                                        background: 'transparent',
-                                        fontFamily: 'var(--font-mono)',
-                                        fontSize: '13px',
-                                    }}
-                                >
-                                    {content}
-                                </SyntaxHighlighter>
-                                {activeLspLine !== null && lsp.lspData && (
-                                    <div
-                                        style={{
-                                            position: 'absolute',
-                                            top: `${activeLspLine * 20 + 20}px`,
-                                            left: '60px',
-                                            zIndex: 100,
-                                        }}
-                                    >
-                                        <LspPopover
-                                            hover={lsp.lspData.hover}
-                                            refs={lsp.lspData.refs}
-                                            definitions={lsp.lspData.definitions}
-                                            typeDefinitions={lsp.lspData.typeDefinitions}
-                                            variant="floating"
-                                            onRefClick={r => {
-                                                const refPath = r.uri.replace('file://', '');
-                                                const relativePath = refPath.startsWith(
-                                                    repoPath + '/'
-                                                )
-                                                    ? refPath.slice(repoPath.length + 1)
-                                                    : refPath;
-                                                const targetLine = r.range.start.line + 1;
-                                                setCurrentFilePath(relativePath);
-                                                setScrollToLine(targetLine);
-                                                setActiveLspLine(null);
-                                                lsp.clearData();
-                                            }}
-                                            onClose={() => {
-                                                setActiveLspLine(null);
-                                                lsp.clearData();
-                                            }}
-                                        />
-                                    </div>
-                                )}
-                            </div>
-                        )}
+                        {codeViewer}
                     </div>
                 </div>
 

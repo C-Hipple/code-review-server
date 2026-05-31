@@ -61,6 +61,10 @@ function CopyUrlButton({ url }: { url: string }) {
     );
 }
 
+// Above this many changed lines in a single file, the diff renders that file
+// without per-line syntax highlighting to avoid thousands of Prism instances.
+const MAX_HIGHLIGHT_LINES_PER_FILE = 2000;
+
 // Stable slug for in-page anchor IDs from file paths.
 const slugify = (s: string): string => s.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
 
@@ -1103,6 +1107,11 @@ export default function Review({
 
         const processFileSection = (file: string, linesData: typeof fileLines) => {
             if (linesData.length === 0) return;
+
+            // Each highlighted line spins up its own Prism instance, so very large
+            // file sections are left unhighlighted to keep big diffs responsive.
+            // The renderer falls back to plain text when no entry exists for a line.
+            if (linesData.length > MAX_HIGHLIGHT_LINES_PER_FILE) return;
 
             const language = getLanguageFromFilename(file);
 

@@ -14,6 +14,7 @@ import { colors, shadows } from '../design';
 import { readFile, listFiles } from '../api';
 import type { Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
+import { useIsMobile } from '../hooks/useMediaQuery';
 import LspPopover from './LspPopover';
 import VirtualizedCodeBlock, { CODE_LINE_HEIGHT } from './VirtualizedCodeBlock';
 
@@ -201,6 +202,10 @@ export default function CodeViewerModal({
     const [allFiles, setAllFiles] = useState<string[]>([]);
     const [showFileTree, setShowFileTree] = useState(false);
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+
+    // On phones the floating/draggable layout can't fit, so we render the
+    // viewer full-screen and disable dragging/resizing.
+    const isMobile = useIsMobile();
 
     // Modal position and size
     const [position, setPosition] = useState(initialPosition || { x: 100, y: 100 });
@@ -655,10 +660,10 @@ export default function CodeViewerModal({
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    cursor: docked ? 'default' : 'move',
+                    cursor: docked || isMobile ? 'default' : 'move',
                     userSelect: 'none',
                 }}
-                onMouseDown={docked ? undefined : startDrag}
+                onMouseDown={docked || isMobile ? undefined : startDrag}
             >
                 <div
                     style={{
@@ -903,13 +908,15 @@ export default function CodeViewerModal({
                     position: 'absolute',
                     top: 0,
                     left: 0,
-                    transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
-                    width: size.width,
-                    height: size.height,
+                    transform: isMobile
+                        ? 'none'
+                        : `translate3d(${position.x}px, ${position.y}px, 0)`,
+                    width: isMobile ? '100%' : size.width,
+                    height: isMobile ? '100%' : size.height,
                     background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    boxShadow: shadows.lg,
+                    border: isMobile ? 'none' : '1px solid var(--border)',
+                    borderRadius: isMobile ? 0 : '8px',
+                    boxShadow: isMobile ? 'none' : shadows.lg,
                     display: 'flex',
                     flexDirection: 'column',
                     pointerEvents: 'auto',
@@ -981,67 +988,71 @@ export default function CodeViewerModal({
                     </div>
                 </div>
 
-                {/* Resize handles */}
-                {/* Right edge */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        top: 0,
-                        right: 0,
-                        width: '5px',
-                        height: '100%',
-                        cursor: 'ew-resize',
-                    }}
-                    onMouseDown={() => setIsResizing('e')}
-                />
-                {/* Bottom edge */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        bottom: 0,
-                        left: 0,
-                        width: '100%',
-                        height: '5px',
-                        cursor: 'ns-resize',
-                    }}
-                    onMouseDown={() => setIsResizing('s')}
-                />
-                {/* Bottom-right corner */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        bottom: 0,
-                        right: 0,
-                        width: '15px',
-                        height: '15px',
-                        cursor: 'nwse-resize',
-                    }}
-                    onMouseDown={() => setIsResizing('se')}
-                />
-                {/* Left edge */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '5px',
-                        height: '100%',
-                        cursor: 'ew-resize',
-                    }}
-                    onMouseDown={() => setIsResizing('w')}
-                />
-                {/* Top edge */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: '5px',
-                        cursor: 'ns-resize',
-                    }}
-                    onMouseDown={() => setIsResizing('n')}
-                />
+                {/* Resize handles — hidden on mobile (full-screen, no resize) */}
+                {!isMobile && (
+                    <>
+                        {/* Right edge */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                right: 0,
+                                width: '5px',
+                                height: '100%',
+                                cursor: 'ew-resize',
+                            }}
+                            onMouseDown={() => setIsResizing('e')}
+                        />
+                        {/* Bottom edge */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                width: '100%',
+                                height: '5px',
+                                cursor: 'ns-resize',
+                            }}
+                            onMouseDown={() => setIsResizing('s')}
+                        />
+                        {/* Bottom-right corner */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                right: 0,
+                                width: '15px',
+                                height: '15px',
+                                cursor: 'nwse-resize',
+                            }}
+                            onMouseDown={() => setIsResizing('se')}
+                        />
+                        {/* Left edge */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '5px',
+                                height: '100%',
+                                cursor: 'ew-resize',
+                            }}
+                            onMouseDown={() => setIsResizing('w')}
+                        />
+                        {/* Top edge */}
+                        <div
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '100%',
+                                height: '5px',
+                                cursor: 'ns-resize',
+                            }}
+                            onMouseDown={() => setIsResizing('n')}
+                        />
+                    </>
+                )}
             </div>
         </div>
     );

@@ -89,7 +89,10 @@ See [Configuration](configuration.md) for `WorkflowInterval` and other schedulin
 
 ## Emacs Client
 
-The emacs client is in `client.el`.
+The emacs client lives in the `client.el/` directory. It is split into
+several modules; `crs-client.el` is the entry point that loads them all
+(`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`,
+`crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`).
 
 ### Installation
 
@@ -105,7 +108,7 @@ The emacs client is in `client.el`.
 
 ### Usage
 
-1. Open `client.el` && evaluate the buffer
+1. Open `client.el/crs-client.el` && evaluate the buffer (it `require`s the other modules)
 2. Run commands:
 
 ```elisp

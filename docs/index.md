@@ -86,4 +86,4 @@ code-review-server is a service which runs highly configurable workflows to load
     ```
 
     **Emacs Client (Brief):**
-    Evaluate `client.el` and run `(crs-start-server)`.
+    Evaluate `client.el/crs-client.el` and run `(crs-start-server)`.

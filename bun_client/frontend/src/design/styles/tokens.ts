@@ -78,3 +78,24 @@ export const shadows = {
     lg: 'var(--shadow-lg)',
     glow: 'var(--shadow-glow)',
 };
+
+/**
+ * Responsive breakpoints (max-width oriented).
+ * `sm` ≈ phones, `md` ≈ large phones / small tablets, `lg` ≈ tablets.
+ * Use with the `useIsMobile` hook or the `media.*` query strings below.
+ */
+export const breakpoints = {
+    sm: 480,
+    md: 768,
+    lg: 1024,
+};
+
+/** Minimum recommended touch target size per WCAG / platform guidelines. */
+export const touchTarget = '44px';
+
+/** Ready-made media query strings keyed by breakpoint. */
+export const media = {
+    sm: `(max-width: ${breakpoints.sm}px)`,
+    md: `(max-width: ${breakpoints.md}px)`,
+    lg: `(max-width: ${breakpoints.lg}px)`,
+};

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
+import { useIsMobile } from '../hooks/useMediaQuery';
 import {
     Button,
     Badge,
@@ -79,6 +80,7 @@ export default function PRList({
     reviewLocation,
     onThemeChange: _onThemeChange,
 }: PRListProps) {
+    const isMobile = useIsMobile();
     const [sections, setSections] = useState<Section[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterText, setFilterText] = useState('');
@@ -453,8 +455,13 @@ export default function PRList({
                                                             className="pr-item-card"
                                                             style={{
                                                                 display: 'flex',
+                                                                flexDirection: isMobile
+                                                                    ? 'column'
+                                                                    : 'row',
                                                                 justifyContent: 'space-between',
-                                                                alignItems: 'center',
+                                                                alignItems: isMobile
+                                                                    ? 'stretch'
+                                                                    : 'center',
                                                                 padding: 0, // Remove padding from card to allow <a> to fill area
                                                                 overflow: 'hidden',
                                                             }}
@@ -582,9 +589,16 @@ export default function PRList({
                                                                     style={{
                                                                         display: 'flex',
                                                                         gap: '12px',
-                                                                        marginLeft: 'auto',
+                                                                        marginLeft: isMobile
+                                                                            ? 0
+                                                                            : 'auto',
                                                                         padding: '16px',
-                                                                        paddingLeft: 0,
+                                                                        paddingTop: isMobile
+                                                                            ? 0
+                                                                            : '16px',
+                                                                        paddingLeft: isMobile
+                                                                            ? '16px'
+                                                                            : 0,
                                                                     }}
                                                                 >
                                                                     <Button
@@ -648,8 +662,9 @@ export default function PRList({
                     onSubmit={handleSubmit}
                     style={{
                         display: 'flex',
+                        flexDirection: isMobile ? 'column' : 'row',
                         gap: '12px',
-                        alignItems: 'flex-end',
+                        alignItems: isMobile ? 'stretch' : 'flex-end',
                         flexWrap: 'wrap',
                     }}
                 >
@@ -658,23 +673,25 @@ export default function PRList({
                         type="text"
                         value={owner}
                         onChange={e => setOwner(e.target.value)}
-                        style={{ width: '150px' }}
+                        style={{ width: isMobile ? '100%' : '150px' }}
                     />
                     <Input
                         label="Repo"
                         type="text"
                         value={repo}
                         onChange={e => setRepo(e.target.value)}
-                        style={{ width: '150px' }}
+                        style={{ width: isMobile ? '100%' : '150px' }}
                     />
                     <Input
                         label="PR #"
                         type="number"
                         value={prNumber}
                         onChange={e => setPrNumber(e.target.value)}
-                        style={{ width: '150px' }}
+                        style={{ width: isMobile ? '100%' : '150px' }}
                     />
-                    <Button type="submit">Go</Button>
+                    <Button type="submit" style={isMobile ? { width: '100%' } : undefined}>
+                        Go
+                    </Button>
                 </form>
             </Card>
         </div>

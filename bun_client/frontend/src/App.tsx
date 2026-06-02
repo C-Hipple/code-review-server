@@ -3,6 +3,7 @@ import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
 import { rpcCall } from './api';
+import { useIsMobile } from './hooks/useMediaQuery';
 import {
     Modal,
     Select,
@@ -24,6 +25,7 @@ function App() {
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
     const [navigating, setNavigating] = useState(false);
+    const isMobile = useIsMobile();
     const [theme, setTheme] = useState<Theme>(() => {
         const saved = localStorage.getItem('theme') as Theme;
         if (saved && VALID_THEMES.includes(saved)) return saved;
@@ -165,13 +167,18 @@ function App() {
     };
 
     return (
-        <div className="app-container" style={{ minHeight: '100vh', padding: '20px' }}>
+        <div
+            className="app-container"
+            style={{ minHeight: '100vh', padding: isMobile ? '12px' : '20px' }}
+        >
             <header
                 style={{
-                    marginBottom: '30px',
+                    marginBottom: isMobile ? '16px' : '30px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
+                    gap: '8px',
+                    flexWrap: 'wrap',
                 }}
             >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -238,8 +245,9 @@ function App() {
                                         cursor: navigating ? 'not-allowed' : 'pointer',
                                         opacity: navigating ? 0.5 : 1,
                                     }}
+                                    title="Previous PR"
                                 >
-                                    ← Prev PR
+                                    {isMobile ? '←' : '← Prev PR'}
                                 </button>
                                 <button
                                     onClick={() => handleNavigatePR(false)}
@@ -254,8 +262,9 @@ function App() {
                                         cursor: navigating ? 'not-allowed' : 'pointer',
                                         opacity: navigating ? 0.5 : 1,
                                     }}
+                                    title="Next PR"
                                 >
-                                    Next PR →
+                                    {isMobile ? '→' : 'Next PR →'}
                                 </button>
                             </>
                         )}
@@ -270,8 +279,9 @@ function App() {
                                 fontSize: '14px',
                                 cursor: 'pointer',
                             }}
+                            title="Back to list"
                         >
-                            ← Back to List
+                            {isMobile ? '☰ List' : '← Back to List'}
                         </button>
                     </div>
                 )}

@@ -733,6 +733,16 @@ body {
     will-change: transform;
 }
 
+/* On phones the diff scrolls horizontally inside its own container, which
+   re-anchors `position: sticky` to that scroller and would pin hunk headers
+   to the wrong box. Fall back to static positioning so they scroll inline. */
+@media (max-width: 768px) {
+    .diff-hunk-row {
+        position: static;
+        top: auto;
+    }
+}
+
 /* File-index strip */
 .file-index {
     display: flex;

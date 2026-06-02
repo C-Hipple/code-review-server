@@ -1261,7 +1261,7 @@ export default function Review({
 
         let currentFile: string | null = null;
 
-        return lines.map((item, idx) => {
+        const rows = lines.map((item, idx) => {
             const line = item.text;
             const isAddition = item.lineType === 'addition';
             const isDeletion = item.lineType === 'deletion';
@@ -1785,9 +1785,13 @@ export default function Review({
                 fontSize: '12px',
             };
 
+            // On mobile, unwrapped lines scroll horizontally as a unit (see the
+            // max-content wrapper in renderDiff). The code span must size to its
+            // content and never shrink so the row grows wider than the viewport.
+            const mobileScroll = isMobile && !wrapLines;
             let lineStyle: React.CSSProperties = {
-                flex: 1,
-                minWidth: 0,
+                flex: mobileScroll ? '1 0 auto' : 1,
+                minWidth: mobileScroll ? 'auto' : 0,
                 padding: '0 8px',
                 whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
                 overflowWrap: wrapLines ? 'anywhere' : 'normal',
@@ -1865,7 +1869,7 @@ export default function Review({
                         }}
                         title={undefined}
                     >
-                        {isCodeLine && !isHunkHeader && (
+                        {isCodeLine && !isHunkHeader && !isMobile && (
                             <>
                                 <span
                                     className="diff-line-no"
@@ -2036,6 +2040,15 @@ export default function Review({
                                 key={rc.id}
                                 style={{
                                     margin: '10px 20px',
+                                    // Stay pinned to the visible left edge while the
+                                    // code scrolls horizontally on mobile.
+                                    ...(isMobile
+                                        ? {
+                                              position: 'sticky',
+                                              left: 0,
+                                              maxWidth: 'calc(100vw - 48px)',
+                                          }
+                                        : {}),
                                     border: isReplyingToThread
                                         ? '2px solid var(--accent)'
                                         : '1px solid var(--border)',
@@ -2170,6 +2183,15 @@ export default function Review({
                                 borderBottom: '1px solid var(--border)',
                                 borderTop: '1px solid var(--border)',
                                 marginBottom: '10px',
+                                // Keep the comment editor in view while the code
+                                // scrolls horizontally on mobile.
+                                ...(isMobile
+                                    ? {
+                                          position: 'sticky',
+                                          left: 0,
+                                          maxWidth: 'calc(100vw - 16px)',
+                                      }
+                                    : {}),
                             }}
                         >
                             <div
@@ -2251,6 +2273,31 @@ export default function Review({
                 </div>
             );
         });
+
+        // On phones, let the whole diff slide horizontally so long lines can be
+        // read in full. `max-content` makes every row as wide as the longest
+        // line (so add/del backgrounds extend across the full scroll width),
+        // while `minWidth: 100%` keeps short diffs filling the viewport. Inline
+        // comments are pinned back to the left edge (see their sticky styles) so
+        // they stay readable regardless of the horizontal scroll position.
+        if (isMobile) {
+            return (
+                <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                    <div
+                        style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            width: 'max-content',
+                            minWidth: '100%',
+                        }}
+                    >
+                        {rows}
+                    </div>
+                </div>
+            );
+        }
+
+        return rows;
     };
 
     if (loading && !content) return <div style={{ padding: '20px' }}>Loading PR...</div>;

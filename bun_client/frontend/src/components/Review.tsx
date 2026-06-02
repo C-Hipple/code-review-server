@@ -2186,7 +2186,11 @@ export default function Review({
                                 // Keep the comment editor in view while the code
                                 // scrolls horizontally on mobile.
                                 ...(isMobile
-                                    ? { position: 'sticky', left: 0, maxWidth: 'calc(100vw - 16px)' }
+                                    ? {
+                                          position: 'sticky',
+                                          left: 0,
+                                          maxWidth: 'calc(100vw - 16px)',
+                                      }
                                     : {}),
                             }}
                         >

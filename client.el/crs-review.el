@@ -64,15 +64,15 @@
   (add-hook 'post-command-hook #'crs--maybe-show-collapsed-comments nil t))
 
 
-(when (fboundp 'evil-define-key)
+(with-eval-after-load 'evil
   ;; Define keys for normal state
   (evil-define-key 'normal my-code-review-mode-map
-    "TAB" #'crs-toggle-section
-    "<tab>" #'crs-toggle-section
-    "<backtab>" #'crs-collapse-all-sections
+    (kbd "TAB") #'crs-toggle-section
+    (kbd "<tab>") #'crs-toggle-section
+    (kbd "<backtab>") #'crs-collapse-all-sections
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
-    "C-c C-c" #'crs-submit-review
+    (kbd "C-c C-c") #'crs-submit-review
     "ra" #'crs-approve-review
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
@@ -84,7 +84,7 @@
     "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
-    "RET" #'crs-visit-file
+    (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before
     "o" #'crs-expand-hunk-after
     "q" #'quit-window
@@ -93,12 +93,12 @@
     (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for visual state
   (evil-define-key 'visual my-code-review-mode-map
-    "TAB" #'crs-toggle-section
-    "<tab>" #'crs-toggle-section
-    "<backtab>" #'crs-collapse-all-sections
+    (kbd "TAB") #'crs-toggle-section
+    (kbd "<tab>") #'crs-toggle-section
+    (kbd "<backtab>") #'crs-collapse-all-sections
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
-    "C-c C-c" #'crs-submit-review
+    (kbd "C-c C-c") #'crs-submit-review
     "ra" #'crs-approve-review
     "rc" #'crs-comment-review
     "rr" #'crs-request-changes-review
@@ -110,7 +110,7 @@
     "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
     "f" #'crs-set-review-feedback
-    "RET" #'crs-visit-file
+    (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before
     "o" #'crs-expand-hunk-after
     "q" #'quit-window
@@ -119,7 +119,7 @@
     (kbd "SPC C-R") #'crs-get-rate-limit-status)
   ;; Define keys for insert state
   (evil-define-key 'insert my-code-review-mode-map
-    "C-c C-c" #'crs-submit-review))
+    (kbd "C-c C-c") #'crs-submit-review))
 
 
 (defun crs--review-buffer-name (owner repo number)
@@ -303,7 +303,7 @@ If point is on a URL: line, open the URL in the browser instead."
   \\{crs-outdated-comments-mode-map}"
   (setq buffer-read-only t))
 
-(when (fboundp 'evil-define-key)
+(with-eval-after-load 'evil
   (evil-define-key 'normal crs-outdated-comments-mode-map
     "q" #'crs-quit-outdated-comments))
 

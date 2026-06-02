@@ -26,7 +26,10 @@
       "Bash(/home/chris/.bun/bin/bun run:*)",
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
-      "Bash(bun run:*)"
+      "Bash(bun run:*)",
+      "Bash(gh pr *)",
+      "Bash(gh run *)",
+      "Bash(bunx prettier *)"
     ]
   }
 }

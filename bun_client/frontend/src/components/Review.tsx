@@ -1245,6 +1245,20 @@ export default function Review({
         const lines = sortParsedLinesTestsLast(parseDiff());
         if (lines.length === 0) return null;
 
+        // Pre-compute per-file add/del counts for display in file headers.
+        const fileCounts = new Map<string, { add: number; del: number }>();
+        let fcFile: string | null = null;
+        for (const p of lines) {
+            if (p.lineType === 'file-header') {
+                fcFile = p.file;
+                if (fcFile && !fileCounts.has(fcFile)) fileCounts.set(fcFile, { add: 0, del: 0 });
+            } else if (fcFile && fileCounts.has(fcFile)) {
+                const fc = fileCounts.get(fcFile)!;
+                if (p.lineType === 'addition') fc.add++;
+                else if (p.lineType === 'deletion') fc.del++;
+            }
+        }
+
         let currentFile: string | null = null;
 
         return lines.map((item, idx) => {
@@ -1379,6 +1393,40 @@ export default function Review({
                                     ? `${item.origName} → ${item.text}`
                                     : item.text}
                             </span>
+                            {(() => {
+                                const fc = item.file ? fileCounts.get(item.file) : null;
+                                if (!fc || (fc.add === 0 && fc.del === 0)) return null;
+                                return (
+                                    <span
+                                        style={{
+                                            display: 'inline-flex',
+                                            gap: '4px',
+                                            marginLeft: '4px',
+                                        }}
+                                    >
+                                        {fc.add > 0 && (
+                                            <span
+                                                style={{
+                                                    color: 'var(--text-success)',
+                                                    fontSize: '12px',
+                                                }}
+                                            >
+                                                +{fc.add}
+                                            </span>
+                                        )}
+                                        {fc.del > 0 && (
+                                            <span
+                                                style={{
+                                                    color: 'var(--text-danger)',
+                                                    fontSize: '12px',
+                                                }}
+                                            >
+                                                −{fc.del}
+                                            </span>
+                                        )}
+                                    </span>
+                                );
+                            })()}
                             {hasOutdated && (
                                 <button
                                     onClick={e => {
@@ -3036,6 +3084,9 @@ export default function Review({
                     }
                 }
 
+                const totalAdd = [...counts.values()].reduce((s, c) => s + c.add, 0);
+                const totalDel = [...counts.values()].reduce((s, c) => s + c.del, 0);
+
                 const scrollToFile = (file: string) => {
                     // Expand the file if it was collapsed so the diff is visible.
                     if (collapsedFiles.has(file)) {
@@ -3070,6 +3121,28 @@ export default function Review({
                         >
                             {fileHeaders.length} file{fileHeaders.length === 1 ? '' : 's'}
                         </span>
+                        {totalAdd > 0 && (
+                            <span
+                                style={{
+                                    color: 'var(--text-success)',
+                                    fontSize: '11px',
+                                    alignSelf: 'center',
+                                }}
+                            >
+                                +{totalAdd}
+                            </span>
+                        )}
+                        {totalDel > 0 && (
+                            <span
+                                style={{
+                                    color: 'var(--text-danger)',
+                                    fontSize: '11px',
+                                    alignSelf: 'center',
+                                }}
+                            >
+                                −{totalDel}
+                            </span>
+                        )}
                         {fileHeaders.map(p => {
                             if (!p.file) return null;
                             const info = getFileStatusInfo(p.fileStatus);

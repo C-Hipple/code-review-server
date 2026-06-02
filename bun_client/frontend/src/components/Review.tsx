@@ -233,6 +233,12 @@ export default function Review({
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
+    // Indices (into diff.split('\n')) of context lines fetched on demand via
+    // hunk expansion. These lines are NOT part of the PR's canonical diff, so
+    // they must not consume a GitHub comment "position" — otherwise every line
+    // below an expansion shifts and comments created while expanded are stored
+    // at a position that no longer exists once the canonical diff is restored.
+    const [expandedLineIndices, setExpandedLineIndices] = useState<Set<number>>(new Set());
     const [comments, setComments] = useState<Comment[]>([]);
     const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
     const [reviews, setReviews] = useState<ReviewData[]>([]);
@@ -407,6 +413,7 @@ export default function Review({
             ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
+            setExpandedLineIndices(new Set());
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -432,6 +439,7 @@ export default function Review({
             ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
+            setExpandedLineIndices(new Set());
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -498,8 +506,9 @@ export default function Review({
                 newLines[hunkLineIndex] = res.range_header;
             }
 
+            let insertAt: number;
             if (direction === 'before') {
-                newLines.splice(hunkLineIndex + 1, 0, ...contextLines);
+                insertAt = hunkLineIndex + 1;
             } else {
                 // Find the end of this hunk: next hunk header, next file, or EOF.
                 let endIdx = hunkLineIndex + 1;
@@ -508,8 +517,25 @@ export default function Review({
                     if (l.startsWith('@@ ') || l.startsWith('diff --git ')) break;
                     endIdx++;
                 }
-                newLines.splice(endIdx, 0, ...contextLines);
+                insertAt = endIdx;
             }
+            newLines.splice(insertAt, 0, ...contextLines);
+
+            // Record the newly inserted lines as expanded context, shifting any
+            // previously expanded indices at/after the insertion point. Keeping
+            // this in sync with the diff string lets parseDiff exclude these
+            // lines from comment-position counting.
+            const expandedCount = contextLines.length;
+            setExpandedLineIndices(prev => {
+                const next = new Set<number>();
+                for (const i of prev) {
+                    next.add(i >= insertAt ? i + expandedCount : i);
+                }
+                for (let k = 0; k < expandedCount; k++) {
+                    next.add(insertAt + k);
+                }
+                return next;
+            });
 
             setDiff(newLines.join('\n'));
         } catch (e) {
@@ -547,6 +573,7 @@ export default function Review({
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [params]);
             setContent(res.content || '');
             setDiff(res.diff || '');
+            setExpandedLineIndices(new Set());
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -588,6 +615,7 @@ export default function Review({
             ]);
             setContent(res.content || '');
             setDiff(res.diff || '');
+            setExpandedLineIndices(new Set());
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -890,19 +918,35 @@ export default function Review({
                                 currentHunkContext = (m[5] || '').replace(/^\s+/, '');
                             }
                         } else if (isAddition || isDeletion || isContextLine) {
-                            currentPos++;
-                            pos = currentPos;
                             file = currentFile;
-                            clickable = true;
-                            lineType = isAddition ? 'addition' : isDeletion ? 'deletion' : 'code';
 
-                            if (isAddition) {
-                                lineNewNo = newLineCursor++;
-                            } else if (isDeletion) {
+                            if (expandedLineIndices.has(index)) {
+                                // On-demand expanded context: render it and keep
+                                // the gutter line numbers advancing, but do NOT
+                                // consume a comment position or allow commenting,
+                                // since it has no position in the canonical diff.
+                                clickable = false;
+                                lineType = 'code';
                                 lineOldNo = oldLineCursor++;
+                                lineNewNo = newLineCursor++;
                             } else {
-                                lineOldNo = oldLineCursor++;
-                                lineNewNo = newLineCursor++;
+                                currentPos++;
+                                pos = currentPos;
+                                clickable = true;
+                                lineType = isAddition
+                                    ? 'addition'
+                                    : isDeletion
+                                      ? 'deletion'
+                                      : 'code';
+
+                                if (isAddition) {
+                                    lineNewNo = newLineCursor++;
+                                } else if (isDeletion) {
+                                    lineOldNo = oldLineCursor++;
+                                } else {
+                                    lineOldNo = oldLineCursor++;
+                                    lineNewNo = newLineCursor++;
+                                }
                             }
                         }
                     }

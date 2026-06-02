@@ -10,7 +10,21 @@ export interface ParsedLine {
     originalLineIndex: number;
 }
 
-export const parseDiff = (diff: string): ParsedLine[] => {
+/**
+ * Parse a unified diff into renderable lines, tracking each line's GitHub
+ * comment "position".
+ *
+ * `expandedLineIndices` holds indices (into `diff.split('\n')`) of context lines
+ * that were fetched on demand via hunk expansion. They are displayed but are NOT
+ * part of the PR's canonical diff, so they must not consume a comment position —
+ * otherwise every line below an expansion shifts and comments created while a
+ * hunk is expanded are stored at a position that no longer exists once the
+ * canonical diff is restored.
+ */
+export const parseDiff = (
+    diff: string,
+    expandedLineIndices?: ReadonlySet<number>
+): ParsedLine[] => {
     const parsedLines: ParsedLine[] = [];
 
     // Add Diff lines and track positions for comments
@@ -137,11 +151,18 @@ export const parseDiff = (diff: string): ParsedLine[] => {
                         clickable = false;
                         lineType = 'hunk';
                     } else if (isAddition || isDeletion || isContextLine) {
-                        currentPos++;
-                        pos = currentPos;
                         file = currentFile;
-                        clickable = true;
-                        lineType = isAddition ? 'addition' : isDeletion ? 'deletion' : 'code';
+                        if (expandedLineIndices?.has(index)) {
+                            // On-demand expanded context: render it but don't
+                            // consume a comment position or allow commenting.
+                            clickable = false;
+                            lineType = 'code';
+                        } else {
+                            currentPos++;
+                            pos = currentPos;
+                            clickable = true;
+                            lineType = isAddition ? 'addition' : isDeletion ? 'deletion' : 'code';
+                        }
                     }
                 }
             }

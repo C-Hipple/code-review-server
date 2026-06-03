@@ -14,6 +14,7 @@
 (declare-function crs--get-current-review-info "crs-review")
 (declare-function crs--render-and-update "crs-render")
 (declare-function crs--review-buffer-name "crs-review")
+(declare-function crs--diff-line-marker "crs-render")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -106,20 +107,12 @@
                            (if (re-search-forward "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+" nil t)
                                (match-beginning 0)
                              (point-max)))))
-      (message "Searching for hunk between line %d and %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound))
-      ;; Diagnostic: Log the start of each line
-      (save-excursion
-        (goto-char start-pos)
-        (while (< (point) search-bound)
-          (message "Line %d start: [%S]" (line-number-at-pos) (buffer-substring-no-properties (line-beginning-position) (min (line-end-position) (+ (line-beginning-position) 15))))
-          (forward-line 1)))
       (goto-char start-pos)
       (if (search-forward "@@" search-bound t)
-          (let ((hunk-line (line-number-at-pos)))
-            (message "Found hunk header at line %d" hunk-line)
-            hunk-line)
+          (line-number-at-pos)
         (progn
-          (message "Failed to find hunk header between line %d and %d. Bound pos: %d" (line-number-at-pos start-pos) (line-number-at-pos search-bound) search-bound)
+          (message "Failed to find hunk header between line %d and %d"
+                   (line-number-at-pos start-pos) (line-number-at-pos search-bound))
           nil)))))
 
 (defun crs--get-comment-context ()
@@ -229,29 +222,44 @@ If on a local comment, local-comment-id and local-comment-body will be set."
               (file-line nil)
               (first-hunk-counted nil))
           (while (<= (line-number-at-pos) target-line)
-            (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+            (let* ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                   ;; MARKER is ?+, ?-, ?\s, or nil.  It classifies the line the
+                   ;; same way the renderer does, and crucially handles both raw
+                   ;; diff lines and lines washed by git-delta (which prefixes
+                   ;; each line with an "old ⋮ new │" line-number gutter).
+                   (marker (crs--diff-line-marker line-content)))
+              ;; The position computed here is sent verbatim to GitHub and is
+              ;; also what the renderer uses to place comments, so this MUST
+              ;; agree line-for-line with `crs--insert-comments-into-buffer'
+              ;; and `crs--find-position-in-diff'.
               (cond
-               ((string-match "^@@ -[0-9]+,[0-9]+ \\+\\([0-9]+\\),[0-9]+ @@" line-content)
+               ;; Hunk header.  Lengths are optional for single-line hunks
+               ;; (e.g. "@@ -3 +4 @@"), matching `crs--parse-hunk-header'.  The
+               ;; first hunk header anchors position 0; every later hunk header
+               ;; advances the position by 1, as GitHub counts them.  (delta
+               ;; leaves hunk headers ungutted, so this matches either layout.)
+               ((string-match "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,[0-9]+\\)? @@" line-content)
                 (if (not first-hunk-counted)
                     (setq first-hunk-counted t)
                   (setq count (1+ count)))
                 (setq file-line (string-to-number (match-string 1 line-content)))
                 (setq target-file-line file-line))
+               ;; Skip interleaved review-comment blocks (drawn with "│┌└" but
+               ;; no "⋮", so they never look like a gutter content line).
                ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
-                ;; Skip comment blocks
                 nil)
-               ;; Skip empty separator lines between hunks (emitted by formatDiff).
-               ;; Diff content lines always have a prefix char (+, -, or space)
-               ;; so they are never zero-length, even for blank source lines.
-               ((= (length line-content) 0)
-                nil)
-               (t
-                ;; Content line
-                (unless (string-match-p "^@@" line-content)
-                  (setq count (1+ count))
-                  (setq target-file-line file-line)
-                  (when (and file-line (not (string-prefix-p "-" line-content)))
-                    (setq file-line (1+ file-line)))))))
+               ;; Content line.  Only added/removed/context lines advance the
+               ;; position; this excludes blank separators and markers such as
+               ;; "\ No newline at end of file", neither of which GitHub counts.
+               (marker
+                (setq count (1+ count))
+                (setq target-file-line file-line)
+                ;; Removed lines do not exist in the new file, so do not advance
+                ;; the file-line counter for them.
+                (when (and file-line (not (eq marker ?-)))
+                  (setq file-line (1+ file-line))))
+               ;; Anything else is not part of the diff position; skip it.
+               (t nil)))
             (forward-line 1))
           (setq position count))))
 

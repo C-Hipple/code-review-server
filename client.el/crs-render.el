@@ -15,6 +15,34 @@
 (declare-function delta-wash "washer")
 (declare-function my-code-review-mode "crs-review")
 
+(defun crs--diff-line-marker (line)
+  "Return the unified-diff marker for a diff content LINE, or nil.
+The marker is one of the characters ?+, ?-, or ?\\s (space), identifying an
+added, removed, or context line.  Returns nil when LINE is not a diff
+content line (hunk header, file header, comment block, blank separator…).
+
+Two layouts are recognised so position counting stays correct whether or
+not the buffer has been washed by git-delta:
+- raw unified diff, where the marker is the first character of the line; and
+- delta with `line-numbers' enabled, where the line carries an old/new
+  line-number gutter and looks like \"  4 ⋮  4 │<marker> content\".  In that
+  layout the marker is the first character after the box-drawing \"│\"
+  separator, so the leading column (which may be a digit or blank depending
+  on the line number) can no longer be used to classify the line."
+  (cond
+   ;; git-delta line-numbers gutter: <old> ⋮ <new> │<marker>
+   ((string-match "⋮[^│\n]*│\\(.?\\)" line)
+    (let* ((m (match-string 1 line))
+           (ch (if (> (length m) 0) (aref m 0) ?\s)))
+      (cond ((eq ch ?+) ?+)
+            ((eq ch ?-) ?-)
+            (t ?\s))))
+   ;; Raw unified-diff line.
+   ((string-prefix-p "+" line) ?+)
+   ((string-prefix-p "-" line) ?-)
+   ((string-prefix-p " " line) ?\s)
+   (t nil)))
+
 (defun crs-toggle-section ()
   "Toggle visibility of the section under the current header."
   (interactive)
@@ -431,11 +459,9 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                           (push (cons line-end (list 'append (crs--format-compact-comment-indicator file-comments))) insertions))))))
               (setq position (1+ position))))
 
-           ;; Content Line
+           ;; Content Line (raw or delta-washed)
            ((and first-hunk-seen
-                 (or (string-prefix-p "+" line)
-                     (string-prefix-p "-" line)
-                     (string-prefix-p " " line)))
+                 (crs--diff-line-marker line))
             (setq position (1+ position))
             (let* ((key (when current-file (format "%s:%d" current-file position)))
                    (line-comments (when key (gethash key comment-map))))
@@ -661,12 +687,10 @@ Returns the line number, or nil if not found."
              ((string-match-p "^[[:space:]]*[│┌└]" line)
               nil)
 
-             ;; Content line
+             ;; Content line (raw or delta-washed)
              ((and first-hunk-seen
                    (string= target-file filename)
-                   (or (string-prefix-p "+" line)
-                       (string-prefix-p "-" line)
-                       (string-prefix-p " " line)))
+                   (crs--diff-line-marker line))
               (setq current-position (1+ current-position))
               (when (= current-position position)
                 (setq found-line (line-number-at-pos))))))

@@ -14,6 +14,7 @@
 (declare-function crs--get-current-review-info "crs-review")
 (declare-function crs--render-and-update "crs-render")
 (declare-function crs--review-buffer-name "crs-review")
+(declare-function crs--diff-line-marker "crs-render")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -221,35 +222,41 @@ If on a local comment, local-comment-id and local-comment-body will be set."
               (file-line nil)
               (first-hunk-counted nil))
           (while (<= (line-number-at-pos) target-line)
-            (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+            (let* ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                   ;; MARKER is ?+, ?-, ?\s, or nil.  It classifies the line the
+                   ;; same way the renderer does, and crucially handles both raw
+                   ;; diff lines and lines washed by git-delta (which prefixes
+                   ;; each line with an "old ⋮ new │" line-number gutter).
+                   (marker (crs--diff-line-marker line-content)))
               ;; The position computed here is sent verbatim to GitHub and is
               ;; also what the renderer uses to place comments, so this MUST
-              ;; agree line-for-line with `crs--render-diff' and
-              ;; `crs--find-position-in-diff'.
+              ;; agree line-for-line with `crs--insert-comments-into-buffer'
+              ;; and `crs--find-position-in-diff'.
               (cond
                ;; Hunk header.  Lengths are optional for single-line hunks
                ;; (e.g. "@@ -3 +4 @@"), matching `crs--parse-hunk-header'.  The
                ;; first hunk header anchors position 0; every later hunk header
-               ;; advances the position by 1, as GitHub counts them.
+               ;; advances the position by 1, as GitHub counts them.  (delta
+               ;; leaves hunk headers ungutted, so this matches either layout.)
                ((string-match "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,[0-9]+\\)? @@" line-content)
                 (if (not first-hunk-counted)
                     (setq first-hunk-counted t)
                   (setq count (1+ count)))
                 (setq file-line (string-to-number (match-string 1 line-content)))
                 (setq target-file-line file-line))
-               ;; Skip interleaved review-comment blocks.
+               ;; Skip interleaved review-comment blocks (drawn with "│┌└" but
+               ;; no "⋮", so they never look like a gutter content line).
                ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
                 nil)
-               ;; Content line.  Only lines carrying a diff prefix (+, -, or
-               ;; space) advance the position.  This excludes the blank
-               ;; separator lines emitted by formatDiff and markers such as
+               ;; Content line.  Only added/removed/context lines advance the
+               ;; position; this excludes blank separators and markers such as
                ;; "\ No newline at end of file", neither of which GitHub counts.
-               ((or (string-prefix-p "+" line-content)
-                    (string-prefix-p "-" line-content)
-                    (string-prefix-p " " line-content))
+               (marker
                 (setq count (1+ count))
                 (setq target-file-line file-line)
-                (when (and file-line (not (string-prefix-p "-" line-content)))
+                ;; Removed lines do not exist in the new file, so do not advance
+                ;; the file-line counter for them.
+                (when (and file-line (not (eq marker ?-)))
                   (setq file-line (1+ file-line))))
                ;; Anything else is not part of the diff position; skip it.
                (t nil)))

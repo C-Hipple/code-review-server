@@ -871,7 +871,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
 			continue
 		}
-		if *r.User.Login == myLogin {
+		if strings.EqualFold(*r.User.Login, myLogin) {
 			if r.SubmittedAt.After(state.LastMeTime) {
 				state.LastMeTime = *r.SubmittedAt
 			}
@@ -899,7 +899,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 
 		threads[rootID] = *c.User.Login
 
-		if *c.User.Login == myLogin {
+		if strings.EqualFold(*c.User.Login, myLogin) {
 			participation[rootID] = true
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
 				state.LastMeTime = *c.CreatedAt
@@ -912,7 +912,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	}
 
 	for rootID, lastCommenter := range threads {
-		if participation[rootID] && lastCommenter != myLogin {
+		if participation[rootID] && !strings.EqualFold(lastCommenter, myLogin) {
 			state.HasUnrespondedComments = true
 			break
 		}
@@ -924,7 +924,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if c == nil || c.User == nil || c.User.Login == nil {
 			continue
 		}
-		if *c.User.Login == myLogin {
+		if strings.EqualFold(*c.User.Login, myLogin) {
 			iParticipated = true
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
 				state.LastMeTime = *c.CreatedAt
@@ -1105,7 +1105,11 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 			// Is Personally Requested?
 			isRequested := false
 			for _, r := range pr.RequestedReviewers {
-				if r != nil && r.Login != nil && *r.Login == myLogin {
+				// GitHub logins are case-insensitive, so compare with EqualFold:
+				// a casing mismatch between the configured GithubUsername and the
+				// login returned by the API would otherwise make isRequested
+				// always false and the filter would match nothing.
+				if r != nil && r.Login != nil && strings.EqualFold(*r.Login, myLogin) {
 					isRequested = true
 					break
 				}

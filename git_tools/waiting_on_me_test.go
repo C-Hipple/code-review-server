@@ -133,6 +133,43 @@ func TestFilterWaitingOnMe(t *testing.T) {
 	}
 }
 
+// TestFilterWaitingOnMeUsernameCaseInsensitive guards against a regression where
+// a casing difference between the configured GithubUsername and the login
+// returned by the GitHub API caused the filter to recognize no one as "me",
+// silently matching zero PRs. GitHub logins are case-insensitive.
+func TestFilterWaitingOnMeUsernameCaseInsensitive(t *testing.T) {
+	cfg := config.C()
+	cfg.GithubUsername = "MyUser" // configured with different casing than the PR data
+	config.SetC(cfg)
+
+	owner := "owner"
+	repo := "repo"
+	number := 500
+
+	pr := &github.PullRequest{
+		Number: &number,
+		User:   &github.User{Login: github.String("author")},
+		Base: &github.PullRequestBranch{
+			Repo: &github.Repository{
+				Owner: &github.User{Login: &owner},
+				Name:  &repo,
+			},
+		},
+		// API returns the login in lowercase; config has "MyUser".
+		RequestedReviewers: []*github.User{{Login: github.String("myuser")}},
+	}
+
+	// Fresh request: no prior interaction, so the only reason to include is the
+	// requested-reviewer check, which must match case-insensitively.
+	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, number)
+	GlobalCache.Set(cacheKey, InteractionState{}, 1*time.Hour)
+
+	result := FilterWaitingOnMe([]*github.PullRequest{pr})
+	if len(result) != 1 {
+		t.Errorf("expected PR to be included despite username casing mismatch, got %d results", len(result))
+	}
+}
+
 func TestCalculateInteractionState(t *testing.T) {
 	myLogin := "myself"
 	other := "other"

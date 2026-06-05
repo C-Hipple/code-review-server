@@ -78,23 +78,7 @@
   (message "Comment aborted."))
 
 (define-derived-mode comment-edit-mode markdown-mode "Code Review Comment"
-  "Major mode for editing code review comments."
-  (local-set-key (kbd "C-c C-c") 'crs-submit-comment)
-  (local-set-key (kbd "C-c C-k") 'crs-abort-comment))
-
-(when (fboundp 'evil-define-key)
-  (evil-define-key 'normal comment-edit-mode-map
-    "C-c C-c" #'crs-submit-comment
-    "C-c C-k" #'crs-abort-comment
-    ", c" #'crs-submit-comment
-    ", k" #'crs-abort-comment
-    )
-  (evil-define-key 'insert comment-edit-mode-map
-    "C-c C-c" #'crs-submit-comment
-    "C-c C-k" #'crs-abort-comment)
-  (evil-define-key 'visual comment-edit-mode-map
-    "C-c C-c" #'crs-submit-comment
-    "C-c C-k" #'crs-abort-comment))
+  "Major mode for editing code review comments.")
 
 ;; Buffer-local variables for plugin output mode
 

@@ -29,32 +29,7 @@
 (declare-function crs-rerun-plugin "crs-plugins")
 
 (defvar-keymap my-code-review-mode-map
-  "TAB" #'crs-toggle-section
-  "<tab>" #'crs-toggle-section
-  "<backtab>" #'crs-collapse-all-sections
-  "c" #'crs-add-or-edit-comment
-  "d" #'crs-delete-local-comment
-  "C-c C-c" #'crs-submit-review
-  ;; "ra" #'crs-approve-review
-  ;; "rc" #'crs-comment-review
-  ;; "rr" #'crs-request-changes-review
-  "g" #'crs-sync-pr
-  "p" #'crs-get-plugin-output
-  "P" #'crs-get-single-plugin-output
-  "D" #'crs-run-on-demand-plugin
-  "R" #'crs-rerun-plugin
-  "H" #'crs-toggle-comments
-  "f" #'crs-set-review-feedback
-  "RET" #'crs-visit-file
-  "<return>" #'crs-visit-file
-  "O" #'crs-expand-hunk-before
-  "o" #'crs-expand-hunk-after
-  "q" #'quit-window
-  "]" #'crs-next-pr
-  "[" #'crs-prev-pr
-  "<" #'crs-expand-hunk-before
-  ">" #'crs-expand-hunk-after
-  )
+  :doc "Keymap for `my-code-review-mode'.  Bindings are defined in crs-client.el.")
 
 (define-derived-mode my-code-review-mode fundamental-mode "Code Review"
   "Major mode for viewing code reviews."
@@ -62,64 +37,6 @@
   (highlight-review-comments)
   (add-to-invisibility-spec '(codereview-hide . t))
   (add-hook 'post-command-hook #'crs--maybe-show-collapsed-comments nil t))
-
-
-(with-eval-after-load 'evil
-  ;; Define keys for normal state
-  (evil-define-key 'normal my-code-review-mode-map
-    (kbd "TAB") #'crs-toggle-section
-    (kbd "<tab>") #'crs-toggle-section
-    (kbd "<backtab>") #'crs-collapse-all-sections
-    "c" #'crs-add-or-edit-comment
-    "d" #'crs-delete-local-comment
-    (kbd "C-c C-c") #'crs-submit-review
-    "ra" #'crs-approve-review
-    "rc" #'crs-comment-review
-    "rr" #'crs-request-changes-review
-    "rg" #'crs-sync-pr
-    "rf" #'crs-set-review-feedback
-    "p" #'crs-get-plugin-output
-    "P" #'crs-get-single-plugin-output
-    "D" #'crs-run-on-demand-plugin
-    "R" #'crs-rerun-plugin
-    "H" #'crs-toggle-comments
-    "f" #'crs-set-review-feedback
-    (kbd "RET") #'crs-visit-file
-    "O" #'crs-expand-hunk-before
-    "o" #'crs-expand-hunk-after
-    "q" #'quit-window
-    "]" #'crs-next-pr
-    "[" #'crs-prev-pr
-    (kbd "SPC C-R") #'crs-get-rate-limit-status)
-  ;; Define keys for visual state
-  (evil-define-key 'visual my-code-review-mode-map
-    (kbd "TAB") #'crs-toggle-section
-    (kbd "<tab>") #'crs-toggle-section
-    (kbd "<backtab>") #'crs-collapse-all-sections
-    "c" #'crs-add-or-edit-comment
-    "d" #'crs-delete-local-comment
-    (kbd "C-c C-c") #'crs-submit-review
-    "ra" #'crs-approve-review
-    "rc" #'crs-comment-review
-    "rr" #'crs-request-changes-review
-    "rg" #'crs-sync-pr
-    "rf" #'crs-set-review-feedback
-    "p" #'crs-get-plugin-output
-    "P" #'crs-get-single-plugin-output
-    "D" #'crs-run-on-demand-plugin
-    "R" #'crs-rerun-plugin
-    "H" #'crs-toggle-comments
-    "f" #'crs-set-review-feedback
-    (kbd "RET") #'crs-visit-file
-    "O" #'crs-expand-hunk-before
-    "o" #'crs-expand-hunk-after
-    "q" #'quit-window
-    "]" #'crs-next-pr
-    "[" #'crs-prev-pr
-    (kbd "SPC C-R") #'crs-get-rate-limit-status)
-  ;; Define keys for insert state
-  (evil-define-key 'insert my-code-review-mode-map
-    (kbd "C-c C-c") #'crs-submit-review))
 
 
 (defun crs--review-buffer-name (owner repo number)
@@ -295,17 +212,13 @@ If point is on a URL: line, open the URL in the browser instead."
   (quit-window t))
 
 (defvar-keymap crs-outdated-comments-mode-map
-  "q" #'crs-quit-outdated-comments)
+  :doc "Keymap for `crs-outdated-comments-mode'.  Bindings are defined in crs-client.el.")
 
 (define-derived-mode crs-outdated-comments-mode markdown-mode "Outdated Comments"
   "Major mode for viewing outdated comments.
   Inherits from markdown-mode and is read-only.
   \\{crs-outdated-comments-mode-map}"
   (setq buffer-read-only t))
-
-(with-eval-after-load 'evil
-  (evil-define-key 'normal crs-outdated-comments-mode-map
-    "q" #'crs-quit-outdated-comments))
 
 (defun crs--get-current-review-info ()
   "Extract (owner repo number) from the current review buffer's name.

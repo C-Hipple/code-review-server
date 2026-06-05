@@ -190,13 +190,7 @@ its children still collapsed."
       (message "All collapsed"))))
 
 (defvar-keymap crs-list-mode-map
-  "TAB" #'crs-list-toggle-heading
-  "<tab>" #'crs-list-toggle-heading
-  "<backtab>" #'crs-list-cycle-global
-  "RET" #'crs-start-review-at-point
-  "<return>" #'crs-start-review-at-point
-  "g" #'crs-refresh-reviews
-  "q" #'quit-window)
+  :doc "Keymap for `crs-list-mode'.  Bindings are defined in crs-client.el.")
 
 (define-derived-mode crs-list-mode fundamental-mode "CRS-List"
   "Major mode for viewing the code review PR list.

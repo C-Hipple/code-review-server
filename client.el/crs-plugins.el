@@ -73,25 +73,13 @@ Temporarily disables read-only mode (required when called from
         (setq buffer-read-only t)))))
 
 (defvar-keymap crs-plugin-output-mode-map
-  "r" #'crs-refresh-plugin-output
-  "q" #'crs-quit-plugin-output
-  "w" #'crs-wash-plugin-output
-  "D" #'crs-run-on-demand-plugin
-  "R" #'crs-rerun-plugin)
+  :doc "Keymap for `crs-plugin-output-mode'.  Bindings are defined in crs-client.el.")
 
 (define-derived-mode crs-plugin-output-mode markdown-mode "Plugin Output"
   "Major mode for viewing plugin output.
   Inherits from markdown-mode and is read-only.
   \\{crs-plugin-output-mode-map}"
   (setq buffer-read-only t))
-
-(when (fboundp 'evil-define-key)
-  (evil-define-key 'normal crs-plugin-output-mode-map
-    "r" #'crs-refresh-plugin-output
-    "q" #'crs-quit-plugin-output
-    "D" #'crs-run-on-demand-plugin
-    "R" #'crs-rerun-plugin
-    "w" #'crs-wash-plugin-output))
 
 
 (defun crs-get-plugin-output ()

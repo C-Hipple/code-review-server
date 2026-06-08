@@ -88,6 +88,17 @@
   (evil-define-key 'normal 'global
     (kbd ", r s") #'crs-start-review-at-point
     (kbd ", r b") #'crs-get-reviews)
+  ;; crs-list-mode: normal state.  Without these, evil's normal-state
+  ;; bindings shadow the plain `crs-list-mode-map' bindings, so the PR
+  ;; list keys silently do nothing for evil users.
+  (evil-define-key 'normal crs-list-mode-map
+    (kbd "TAB") #'crs-list-toggle-heading
+    (kbd "<tab>") #'crs-list-toggle-heading
+    (kbd "<backtab>") #'crs-list-cycle-global
+    (kbd "RET") #'crs-start-review-at-point
+    (kbd "<return>") #'crs-start-review-at-point
+    "g" #'crs-refresh-reviews
+    "q" #'quit-window)
   ;; my-code-review-mode: normal state
   (evil-define-key 'normal my-code-review-mode-map
     (kbd "TAB") #'crs-toggle-section

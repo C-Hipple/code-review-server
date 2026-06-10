@@ -1046,3 +1046,90 @@ func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
 		t.Errorf("got %q, want %q", got, `["b","a"]`)
 	}
 }
+
+func TestParseReviewEase(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"easy", "easy"},
+		{"medium", "medium"},
+		{"hard", "hard"},
+		{" Easy ", "easy"},
+		{"`medium`", "medium"},
+		{"\"HARD\"", "hard"},
+		{"hard.", "hard"},
+		{"very hard", ""},
+		{"", ""},
+		{"unknown", ""},
+	}
+	for _, c := range cases {
+		if got := parseReviewEase(c.in); got != c.want {
+			t.Errorf("parseReviewEase(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestReviewEaseCacheRoundtrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Missing entry returns empty strings, no error.
+	ease, sha, err := db.GetReviewEase(1, "code-review-server")
+	if err != nil {
+		t.Fatalf("unexpected error on cache miss: %v", err)
+	}
+	if ease != "" || sha != "" {
+		t.Errorf("expected empty result on cache miss, got %q / %q", ease, sha)
+	}
+
+	// Stored rating round-trips; a rating for a newer SHA replaces it.
+	if err := db.UpsertReviewEase(1, "code-review-server", "sha1", "medium"); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	if err := db.UpsertReviewEase(1, "code-review-server", "sha2", "hard"); err != nil {
+		t.Fatalf("re-upsert failed: %v", err)
+	}
+	ease, sha, err = db.GetReviewEase(1, "code-review-server")
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if ease != "hard" || sha != "sha2" {
+		t.Errorf("got %q / %q, want %q / %q", ease, sha, "hard", "sha2")
+	}
+}
+
+func TestNeedsReviewEase(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	// Flag off: never needed.
+	config.SetC(config.Config{DB: db})
+	if needsReviewEase("code-review-server", 1, "sha1") {
+		t.Error("expected false when ExperimentalLLMReviewEase is disabled")
+	}
+
+	config.SetC(config.Config{DB: db, ExperimentalLLMReviewEase: true})
+
+	// No SHA: cannot key the cache, so nothing to compute.
+	if needsReviewEase("code-review-server", 1, "") {
+		t.Error("expected false for empty SHA")
+	}
+
+	// Flag on, nothing cached yet: needed.
+	if !needsReviewEase("code-review-server", 1, "sha1") {
+		t.Error("expected true when no rating is cached")
+	}
+
+	// Cached for the same SHA: not needed.
+	if err := db.UpsertReviewEase(1, "code-review-server", "sha1", "easy"); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	if needsReviewEase("code-review-server", 1, "sha1") {
+		t.Error("expected false when rating is cached for the same SHA")
+	}
+
+	// Cached for an older SHA: needs recomputing.
+	if !needsReviewEase("code-review-server", 1, "sha2") {
+		t.Error("expected true when cached rating is for a different SHA")
+	}
+}

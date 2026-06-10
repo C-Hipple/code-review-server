@@ -11,6 +11,10 @@ SleepDuration = 10 # Time to wait between updates (in minutes)
 GithubUsername = "your-github-username"
 RepoLocation = "~/" # Base directory where repos are cloned
 AutoWorktree = false # Automatically manage worktrees for PRs
+
+# Experimental LLM features (both require GEMINI_API_KEY in the environment)
+ExperimentalLLMFileOrdering = false # Order diff files for top-to-bottom review flow using an LLM
+ExperimentalLLMReviewEase = false   # Rate each PR easy/medium/hard to review using an LLM (returned as review_ease in PR metadata)
 [SectionPriority]
 "My Open PRs" = 10
 "Needs My Team's Review" = 20

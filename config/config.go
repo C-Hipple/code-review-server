@@ -65,6 +65,11 @@ type Config struct {
 	// an LLM (integration first, then implementation, then styling, then tests)
 	// instead of the default test-files-last sort. Off by default.
 	ExperimentalLLMFileOrdering bool
+	// ExperimentalLLMReviewEase, when true, rates every PR via an LLM on how
+	// difficult it is to review (easy, medium, or hard). The rating is computed
+	// alongside the LLM diff file ordering and surfaced as `review_ease` in PR
+	// metadata and review list items. Off by default.
+	ExperimentalLLMReviewEase bool
 	DB              *database.DB
 }
 
@@ -146,6 +151,7 @@ func parseConfig(data []byte) (*Config, error) {
 		Plugins             []Plugin
 		RepoConfigs         map[string]RepoConfig
 		ExperimentalLLMFileOrdering bool
+		ExperimentalLLMReviewEase   bool
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -196,6 +202,7 @@ func parseConfig(data []byte) (*Config, error) {
 		Plugins:            intermediate_config.Plugins,
 		RepoConfigs:        repoConfigs,
 		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
+		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
 	}, nil
 }
 

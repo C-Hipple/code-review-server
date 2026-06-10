@@ -216,6 +216,7 @@ type ReviewItem struct {
 	Author        string    `json:"author"`
 	URL           string    `json:"url"`
 	ReleaseStatus string    `json:"release_status"`
+	ReviewEase    string    `json:"review_ease"` // LLM review difficulty rating: easy, medium, or hard ("" when disabled or not yet computed)
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -303,10 +304,13 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		}
 	}
 
-	// Look up release status from DB if we have owner/repo/number
+	// Look up release status and review ease from DB if we have owner/repo/number
 	if reviewItem.Owner != "" && reviewItem.Repo != "" && reviewItem.Number > 0 {
 		if status, err := r.db.GetReleaseStatus(reviewItem.Owner, reviewItem.Repo, reviewItem.Number); err == nil && status != "" {
 			reviewItem.ReleaseStatus = status
+		}
+		if ease, _, err := r.db.GetReviewEase(reviewItem.Number, reviewItem.Repo); err == nil && ease != "" {
+			reviewItem.ReviewEase = ease
 		}
 	}
 
@@ -469,6 +473,7 @@ type PRMetadata struct {
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
 	ReleaseStatus      string   `json:"release_status"`
+	ReviewEase         string   `json:"review_ease"` // LLM review difficulty rating: easy, medium, or hard ("" when disabled or not yet computed)
 	ChangedFiles       int      `json:"changed_files"`
 	Additions          int      `json:"additions"`
 	Deletions          int      `json:"deletions"`
@@ -960,6 +965,11 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// Load release status from DB
 	if releaseStatus, err := config.C().DB.GetReleaseStatus(owner, repo, number); err == nil && releaseStatus != "" {
 		metadata.ReleaseStatus = releaseStatus
+	}
+
+	// Load the LLM review-ease rating from DB (computed by post-update hooks)
+	if ease, _, err := config.C().DB.GetReviewEase(number, repo); err == nil && ease != "" {
+		metadata.ReviewEase = ease
 	}
 
 	// 3. Fetch Diff (with caching)

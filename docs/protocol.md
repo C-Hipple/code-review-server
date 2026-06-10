@@ -51,9 +51,28 @@ Fetches all review sections from the local database, rendered as org-mode format
 ```
 
 **Reply** (`GetReviewsReply`):
-| Field     | Type   | Description                                      |
-|-----------|--------|--------------------------------------------------|
-| `Content` | string | Org-mode formatted string of all review sections |
+| Field     | Type         | Description                                          |
+|-----------|--------------|------------------------------------------------------|
+| `content` | string       | Org-mode formatted string of all review sections     |
+| `items`   | []ReviewItem | Structured metadata for every PR in the review list  |
+
+#### ReviewItem Object
+
+| Field              | Type   | Description                                                        |
+|--------------------|--------|--------------------------------------------------------------------|
+| `section`          | string | Title of the section the PR belongs to                             |
+| `section_priority` | int    | Priority of the section (lower is better)                          |
+| `status`           | string | Org status of the item (`TODO`, `WAITING`, `DONE`)                 |
+| `tags`             | string | Comma-separated tags (e.g. repo name, `merged`)                    |
+| `title`            | string | PR title line                                                      |
+| `owner`            | string | Repository owner                                                   |
+| `repo`             | string | Repository name                                                    |
+| `number`           | int    | Pull request number                                                |
+| `author`           | string | PR author login                                                    |
+| `url`              | string | GitHub HTML URL                                                    |
+| `release_status`   | string | Release status of the PR (if computed)                             |
+| `review_ease`      | string | AI rating of how difficult the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the server config and the rating has been computed |
+| `created_at`       | Time   | When the PR was created                                            |
 
 ---
 
@@ -103,6 +122,12 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `body`                 | string   | PR description body                                       |
 | `url`                  | string   | GitHub HTML URL                                           |
 | `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
+| `release_status`       | string   | Release status of the PR (if computed)                    |
+| `review_ease`          | string   | AI rating of how difficult the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the server config and the rating has been computed |
+
+#### Review Ease Rating
+
+When `ExperimentalLLMReviewEase = true` is set in the server config (and `GEMINI_API_KEY` is set), each PR is rated by an LLM on how difficult it is to review. The rating is one of `easy`, `medium`, or `hard` and is returned in the `review_ease` field of both `PRMetadata` (single PR) and `ReviewItem` (review list). The rating is computed asynchronously after a PR is fetched or updated — in the same LLM request as the experimental diff file ordering when that feature is also enabled — and is cached per PR head SHA. Until a rating has been computed (or when the feature is disabled), `review_ease` is the empty string; clients should treat an empty value as "no rating".
 
 #### Using the Worktree
 

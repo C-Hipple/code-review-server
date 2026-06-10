@@ -1039,13 +1039,14 @@ func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha stri
 		return reorderFilesByNames(files, names)
 	}
 
-	names, err := llmFileOrdering(files)
+	names, ease, err := llmFileOrdering(files, needsReviewEase(repo, prNumber, sha))
 	if err != nil {
 		slog.Warn("LLM diff file ordering failed, falling back to default sort", "error", err)
 		return sortFilesTestsLast(files)
 	}
 
 	storeFileOrdering(repo, prNumber, sha, names)
+	storeReviewEase(repo, prNumber, sha, ease)
 	return reorderFilesByNames(files, names)
 }
 
@@ -1104,18 +1105,20 @@ func diffFileName(file *utils.DiffFile) string {
 }
 
 // llmFileOrdering asks an LLM to order the diff files so the PR reads
-// top-to-bottom from integration points through implementation to tests.
-func llmFileOrdering(files []*utils.DiffFile) ([]string, error) {
+// top-to-bottom from integration points through implementation to tests. When
+// includeEase is true, the same request also asks for a review-ease rating;
+// the returned ease is "" when not requested or not usable.
+func llmFileOrdering(files []*utils.DiffFile, includeEase bool) ([]string, string, error) {
 	token := os.Getenv("GEMINI_API_KEY")
 	if token == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY not set")
+		return nil, "", fmt.Errorf("GEMINI_API_KEY not set")
 	}
-	return requestFileOrdering(files, token)
+	return requestFileOrdering(files, token, includeEase)
 }
 
-// requestFileOrdering sends the diff to the LLM and returns the ordered list of
-// file paths it responds with.
-func requestFileOrdering(files []*utils.DiffFile, token string) ([]string, error) {
+// requestFileOrdering sends the diff to the LLM and returns the ordered list
+// of file paths it responds with, plus the review-ease rating when requested.
+func requestFileOrdering(files []*utils.DiffFile, token string, includeEase bool) ([]string, string, error) {
 	var fileList strings.Builder
 	for _, f := range files {
 		fileList.WriteString("- " + diffFileName(f) + "\n")
@@ -1124,6 +1127,13 @@ func requestFileOrdering(files []*utils.DiffFile, token string) ([]string, error
 	diffText := buildDiffForLLM(files)
 	if len(diffText) > llmOrderingMaxDiffSize {
 		diffText = diffText[:llmOrderingMaxDiffSize] + "\n... (diff truncated)\n"
+	}
+
+	easeTask := ""
+	responseFormat := "Respond with ONLY the file paths, one per line, in the order they should be displayed."
+	if includeEase {
+		easeTask = "\nAdditionally:\n" + reviewEaseCriteria + "\n"
+		responseFormat = "Respond with ONLY the file paths, one per line, in the order they should be displayed, followed by a final line of the form `EASE: <rating>` with your difficulty rating."
 	}
 
 	prompt := fmt.Sprintf(`You are ordering the files of a pull request diff so a reviewer can read the PR from top to bottom and understand it.
@@ -1135,14 +1145,40 @@ Order the files by this priority:
 4. Then test files, last.
 
 A reviewer should be able to read top to bottom: starting where the change is integrated, then into how it works, then the tests.
-
+%s
 Files in this diff:
 %s
 Full diff:
 %s
 
-Respond with ONLY the file paths, one per line, in the order they should be displayed. Use the exact file paths listed above. Do not include numbering, bullets, commentary, or code fences.`, fileList.String(), diffText)
+%s Use the exact file paths listed above. Do not include numbering, bullets, commentary, or code fences.`, easeTask, fileList.String(), diffText, responseFormat)
 
+	text, err := geminiGenerate(prompt, token)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var names []string
+	var ease string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(trimmed), reviewEasePrefix) {
+			ease = parseReviewEase(trimmed[len(reviewEasePrefix):])
+			continue
+		}
+		if cleaned := cleanLLMFileName(line); cleaned != "" {
+			names = append(names, cleaned)
+		}
+	}
+	if len(names) == 0 {
+		return nil, "", fmt.Errorf("Gemini response contained no file paths")
+	}
+	return names, ease, nil
+}
+
+// geminiGenerate sends a single-prompt generateContent request to the Gemini
+// API and returns the text of the first candidate.
+func geminiGenerate(prompt, token string) (string, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
@@ -1150,40 +1186,155 @@ Respond with ONLY the file paths, one per line, in the order they should be disp
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	url := "https://generativelanguage.googleapis.com/v1beta/models/" + llmOrderingModel + ":generateContent?key=" + token
 	client := &http.Client{Timeout: llmOrderingTimeout}
 	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Gemini API request failed with status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("Gemini API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var geminiResp geminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("no content in Gemini response")
+		return "", fmt.Errorf("no content in Gemini response")
+	}
+	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+}
+
+// Experimental: LLM-based PR review-ease rating.
+//
+// When config.ExperimentalLLMReviewEase is enabled, every PR is rated by an
+// LLM on how difficult it is to review: easy, medium, or hard. The rating is
+// computed in the same LLM request as the experimental diff file ordering
+// when that flag is also enabled, and in a standalone request otherwise. It
+// is cached per PR head SHA and surfaced as `review_ease` in PR metadata and
+// review list items.
+
+// reviewEasePrefix marks the rating line in LLM responses (`EASE: <rating>`).
+const reviewEasePrefix = "EASE:"
+
+// reviewEaseCriteria is the rating scale shared by the combined
+// ordering-plus-ease prompt and the standalone ease prompt.
+const reviewEaseCriteria = `Rate how difficult this pull request is to review, as exactly one of: easy, medium, hard.
+- easy: small, focused, or mechanical changes that can be reviewed quickly.
+- medium: moderate size or complexity; requires some careful reading.
+- hard: large, complex, or risky changes touching many concerns; requires significant reviewer effort.`
+
+// needsReviewEase reports whether a review-ease rating still has to be
+// computed for the given PR head SHA.
+func needsReviewEase(repo string, prNumber int, sha string) bool {
+	if !config.C().ExperimentalLLMReviewEase || sha == "" {
+		return false
+	}
+	db := config.C().DB
+	if db == nil {
+		return false
+	}
+	ease, cachedSHA, err := db.GetReviewEase(prNumber, repo)
+	if err != nil {
+		slog.Warn("failed to read review ease cache", "error", err)
+		return false
+	}
+	return ease == "" || cachedSHA != sha
+}
+
+// storeReviewEase persists a review-ease rating keyed to the PR's head SHA.
+// Empty ratings (rating disabled, or the LLM did not produce one) are ignored.
+func storeReviewEase(repo string, prNumber int, sha, ease string) {
+	if sha == "" || ease == "" {
+		return
+	}
+	db := config.C().DB
+	if db == nil {
+		return
+	}
+	if err := db.UpsertReviewEase(prNumber, repo, sha, ease); err != nil {
+		slog.Warn("failed to write review ease cache", "error", err)
+	}
+}
+
+// ensureReviewEase computes and caches the review-ease rating for a PR head
+// SHA via a standalone LLM request, unless the feature is disabled or a
+// rating for this SHA is already cached. It covers the cases the combined
+// ordering request cannot: file ordering disabled, ordering already cached,
+// or the combined response missing a usable rating.
+func ensureReviewEase(files []*utils.DiffFile, repo string, prNumber int, sha string) {
+	if !needsReviewEase(repo, prNumber, sha) {
+		return
+	}
+	ease, err := llmReviewEase(files)
+	if err != nil {
+		slog.Warn("LLM review ease rating failed", "error", err)
+		return
+	}
+	storeReviewEase(repo, prNumber, sha, ease)
+}
+
+// llmReviewEase asks the LLM to rate how difficult the PR diff is to review.
+func llmReviewEase(files []*utils.DiffFile) (string, error) {
+	token := os.Getenv("GEMINI_API_KEY")
+	if token == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY not set")
+	}
+	return requestReviewEase(files, token)
+}
+
+// requestReviewEase sends the diff to the LLM and returns the review-ease
+// rating it responds with.
+func requestReviewEase(files []*utils.DiffFile, token string) (string, error) {
+	diffText := buildDiffForLLM(files)
+	if len(diffText) > llmOrderingMaxDiffSize {
+		diffText = diffText[:llmOrderingMaxDiffSize] + "\n... (diff truncated)\n"
 	}
 
-	var names []string
-	for _, line := range strings.Split(geminiResp.Candidates[0].Content.Parts[0].Text, "\n") {
-		if cleaned := cleanLLMFileName(line); cleaned != "" {
-			names = append(names, cleaned)
+	prompt := fmt.Sprintf(`You are rating how difficult a pull request will be to review.
+
+%s
+
+Full diff:
+%s
+
+Respond with ONLY a single line of the form:
+EASE: <rating>`, reviewEaseCriteria, diffText)
+
+	text, err := geminiGenerate(prompt, token)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(trimmed), reviewEasePrefix) {
+			trimmed = trimmed[len(reviewEasePrefix):]
+		}
+		if ease := parseReviewEase(trimmed); ease != "" {
+			return ease, nil
 		}
 	}
-	if len(names) == 0 {
-		return nil, fmt.Errorf("Gemini response contained no file paths")
+	return "", fmt.Errorf("Gemini response contained no review ease rating")
+}
+
+// parseReviewEase normalizes an LLM ease answer to one of easy/medium/hard,
+// returning "" for anything else.
+func parseReviewEase(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "`\"'*.")
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "easy", "medium", "hard":
+		return s
 	}
-	return names, nil
+	return ""
 }
 
 // buildDiffForLLM renders the diff files into a plain-text form for the LLM,

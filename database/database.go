@@ -201,6 +201,15 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo, sha)
 	);
 
+	CREATE TABLE IF NOT EXISTS ReviewEaseCache (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		sha TEXT NOT NULL,
+		ease TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS Worktrees (
 		id INTEGER PRIMARY KEY,
 		pr_number INTEGER NOT NULL,
@@ -527,6 +536,40 @@ func (db *DB) UpsertDiffFileOrdering(prNumber int, repo, sha, orderingJSON strin
 			ordering_json = excluded.ordering_json,
 			updated_at = excluded.updated_at`,
 		prNumber, repo, sha, orderingJSON,
+	)
+	return err
+}
+
+// GetReviewEase retrieves the cached LLM review-ease rating for a PR along
+// with the head SHA it was computed for. It returns empty strings (no error)
+// when there is no cached entry.
+func (db *DB) GetReviewEase(prNumber int, repo string) (string, string, error) {
+	var ease, sha string
+	err := db.conn.QueryRow(
+		"SELECT ease, sha FROM ReviewEaseCache WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&ease, &sha)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return ease, sha, nil
+}
+
+// UpsertReviewEase stores the LLM review-ease rating for a PR, recording the
+// head SHA it was computed for. One rating is kept per PR; a rating for a new
+// SHA replaces the previous one.
+func (db *DB) UpsertReviewEase(prNumber int, repo, sha, ease string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO ReviewEaseCache (pr_number, repo, sha, ease, updated_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			sha = excluded.sha,
+			ease = excluded.ease,
+			updated_at = excluded.updated_at`,
+		prNumber, repo, sha, ease,
 	)
 	return err
 }

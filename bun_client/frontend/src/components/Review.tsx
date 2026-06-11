@@ -13,7 +13,7 @@ import {
     nightOwl,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { rpcCall, getHunkContext } from '../api';
-import { Button, Modal, TextArea, colors, shadows, Theme } from '../design';
+import { Button, Modal, TextArea, Toast, colors, shadows, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { getClickColumn } from '../utils/dom';
@@ -139,6 +139,8 @@ interface PRResponse {
     reviews: ReviewData[];
     metadata: PRMetadata;
     feedback: string;
+    // Only set by SyncPR: true when the sync pulled in a new head SHA or new comments.
+    updated?: boolean;
 }
 
 // Map file extensions to Prism language identifiers
@@ -246,6 +248,14 @@ export default function Review({
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
     const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
+    // Transient toast notification; keyed by id so a new message restarts the timer.
+    const [toast, setToast] = useState<{
+        id: number;
+        message: string;
+        variant: StatusVariant;
+    } | null>(null);
+    const showToast = (message: string, variant: StatusVariant = 'info') =>
+        setToast({ id: Date.now(), message, variant });
 
     // UI State
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
@@ -446,8 +456,14 @@ export default function Review({
             setMetadata(res.metadata || null);
             setFeedbackBody(res.feedback || '');
             loadPluginOutputs();
+            if (res.updated) {
+                showToast('Synced — new commits or comments pulled in', 'success');
+            } else {
+                showToast('Synced — already up to date', 'info');
+            }
         } catch (e) {
             console.error(e);
+            showToast('Sync failed — see console for details', 'danger');
         } finally {
             setLoading(false);
         }
@@ -4290,6 +4306,17 @@ export default function Review({
                         </button>
                     ))}
                 </div>
+            )}
+
+            {/* Transient notifications (e.g., sync result) */}
+            {toast && (
+                <Toast
+                    key={toast.id}
+                    message={toast.message}
+                    variant={toast.variant}
+                    bottomOffset={isMobile ? 84 : 24}
+                    onDismiss={() => setToast(null)}
+                />
             )}
         </div>
     );

@@ -237,6 +237,7 @@ Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
 | Field      | Type         | Description                                     |
 |------------|--------------|-------------------------------------------------|
 | `Okay`     | bool         | `true` if the request succeeded                 |
+| `updated`  | bool         | `true` if the sync pulled in a new head SHA or new comments compared to the previously cached state |
 | `Content`  | string       | Formatted PR response (freshly fetched)         |
 | `metadata` | PRMetadata   | Structured PR metadata                          |
 | `diff`     | string       | Raw diff content                                |

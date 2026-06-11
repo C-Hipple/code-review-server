@@ -640,6 +640,7 @@ type SyncPRArgs struct {
 
 type SyncPRReply struct {
 	Okay             bool          `json:"okay"`
+	Updated          bool          `json:"updated"`
 	Content          string        `json:"content"`
 	Metadata         *PRMetadata   `json:"metadata"`
 	Diff             string        `json:"diff"`
@@ -651,10 +652,20 @@ type SyncPRReply struct {
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
+	// Snapshot the cached state so we can tell the client whether the sync
+	// actually pulled in anything new. The fresh fetch below overwrites these
+	// cache entries.
+	_, oldSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+	oldCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+
 	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
+
+	_, newSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+	newCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+	reply.Updated = syncDetectedChanges(oldSHA, newSHA, oldCommentsJSON, newCommentsJSON)
 
 	reply.Content = content
 	reply.Metadata = &details.Metadata
@@ -668,6 +679,40 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
 	reply.Feedback = feedback
 	return nil
+}
+
+// syncDetectedChanges reports whether a sync brought in a new head SHA or new
+// comments compared to the previously cached state.
+func syncDetectedChanges(oldSHA, newSHA, oldCommentsJSON, newCommentsJSON string) bool {
+	if oldSHA != newSHA {
+		return true
+	}
+	oldIDs := cachedCommentIDs(oldCommentsJSON)
+	for id := range cachedCommentIDs(newCommentsJSON) {
+		if _, ok := oldIDs[id]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cachedCommentIDs extracts the GitHub comment IDs from a raw PRComments cache
+// entry. Returns an empty set for empty or malformed JSON.
+func cachedCommentIDs(commentsJSON string) map[int64]struct{} {
+	ids := make(map[int64]struct{})
+	if commentsJSON == "" {
+		return ids
+	}
+	var comments []*github.PullRequestComment
+	if err := json.Unmarshal([]byte(commentsJSON), &comments); err != nil {
+		return ids
+	}
+	for _, c := range comments {
+		if c != nil {
+			ids[c.GetID()] = struct{}{}
+		}
+	}
+	return ids
 }
 
 type ListPluginsArgs struct{}

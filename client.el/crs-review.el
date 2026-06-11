@@ -255,10 +255,15 @@ review buffer."
        (let ((err (cdr (assq 'error result))))
          (if err
              (message "Error syncing review: %s" (if (stringp err) err (cdr (assq 'message err))))
-           (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
+           (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number)))
+                 ;; `updated' is t when the sync pulled in a new head SHA or
+                 ;; new comments; json.el decodes false as :json-false.
+                 (updated (eq (cdr (assq 'updated result)) t)))
              (when review-buffer
                (crs--render-and-update review-buffer result))
-             (message "Review synced successfully!"))))))))
+             (message (if updated
+                          "PR synced: new commits or comments pulled in"
+                        "PR synced: already up to date")))))))))
 
 
 (defun crs--switch-and-fetch (project-name branch-name)

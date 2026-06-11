@@ -1019,6 +1019,191 @@ func TestOrderDiffFilesUsesCachedOrdering(t *testing.T) {
 	}
 }
 
+func TestParseDiffAnalysisText(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		wantEase string
+		wantOrd  []string
+	}{
+		{
+			name:     "ordering only",
+			text:     "main.go\nhelper.go\nmain_test.go\n",
+			wantEase: "",
+			wantOrd:  []string{"main.go", "helper.go", "main_test.go"},
+		},
+		{
+			name:     "ease line first",
+			text:     "REVIEW_EASE: medium\nmain.go\nmain_test.go\n",
+			wantEase: "medium",
+			wantOrd:  []string{"main.go", "main_test.go"},
+		},
+		{
+			name:     "ease line with decoration",
+			text:     "  **REVIEW_EASE: Easy**  \nmain.go\n",
+			wantEase: "easy",
+			wantOrd:  []string{"main.go"},
+		},
+		{
+			name:     "invalid rating dropped",
+			text:     "REVIEW_EASE: trivial\nmain.go\n",
+			wantEase: "",
+			wantOrd:  []string{"main.go"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDiffAnalysisText(tt.text)
+			if got.reviewEase != tt.wantEase {
+				t.Errorf("reviewEase = %q, want %q", got.reviewEase, tt.wantEase)
+			}
+			if len(got.ordering) != len(tt.wantOrd) {
+				t.Fatalf("ordering = %v, want %v", got.ordering, tt.wantOrd)
+			}
+			for i, w := range tt.wantOrd {
+				if got.ordering[i] != w {
+					t.Errorf("ordering[%d] = %q, want %q", i, got.ordering[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildAnalysisPromptEaseInstruction(t *testing.T) {
+	orderingOnly := buildAnalysisPrompt("- main.go\n", "diff text", true, false)
+	if strings.Contains(orderingOnly, "REVIEW_EASE") {
+		t.Error("ordering-only prompt must not mention REVIEW_EASE")
+	}
+	if !strings.Contains(orderingOnly, "ordering the files") {
+		t.Error("ordering-only prompt must include the ordering instructions")
+	}
+
+	both := buildAnalysisPrompt("- main.go\n", "diff text", true, true)
+	if !strings.Contains(both, "REVIEW_EASE: <rating>") {
+		t.Error("combined prompt must instruct the REVIEW_EASE response line")
+	}
+	if !strings.Contains(both, "ordering the files") {
+		t.Error("combined prompt must include the ordering instructions")
+	}
+
+	easeOnly := buildAnalysisPrompt("- main.go\n", "diff text", false, true)
+	if !strings.Contains(easeOnly, "REVIEW_EASE: <rating>") {
+		t.Error("ease-only prompt must instruct the REVIEW_EASE response line")
+	}
+	if strings.Contains(easeOnly, "ordering the files") || strings.Contains(easeOnly, "file paths") {
+		t.Error("ease-only prompt must not ask for a file ordering")
+	}
+}
+
+func TestReviewEaseCacheRoundtrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Missing entry returns empty string, no error.
+	got, err := db.GetReviewEase(1, "code-review-server", "sha1")
+	if err != nil {
+		t.Fatalf("unexpected error on cache miss: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty result on cache miss, got %q", got)
+	}
+
+	// Storing an ease rating must not clobber an existing ordering, and
+	// vice versa.
+	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["a","b"]`); err != nil {
+		t.Fatalf("ordering upsert failed: %v", err)
+	}
+	if err := db.UpsertReviewEase(1, "code-review-server", "sha1", "hard"); err != nil {
+		t.Fatalf("ease upsert failed: %v", err)
+	}
+	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["b","a"]`); err != nil {
+		t.Fatalf("ordering re-upsert failed: %v", err)
+	}
+
+	gotEase, err := db.GetReviewEase(1, "code-review-server", "sha1")
+	if err != nil {
+		t.Fatalf("get ease failed: %v", err)
+	}
+	if gotEase != "hard" {
+		t.Errorf("got ease %q, want %q", gotEase, "hard")
+	}
+	gotOrdering, err := db.GetDiffFileOrdering(1, "code-review-server", "sha1")
+	if err != nil {
+		t.Fatalf("get ordering failed: %v", err)
+	}
+	if gotOrdering != `["b","a"]` {
+		t.Errorf("got ordering %q, want %q", gotOrdering, `["b","a"]`)
+	}
+}
+
+func TestGetLatestReviewEaseSkipsUnratedRows(t *testing.T) {
+	db := setupTestDB(t)
+
+	// No rows at all: empty, no error.
+	got, err := db.GetLatestReviewEase(9, "code-review-server")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty rating, got %q", got)
+	}
+
+	// A newer ordering-only row must not shadow the rated row.
+	if err := db.UpsertReviewEase(9, "code-review-server", "sha-old", "easy"); err != nil {
+		t.Fatalf("ease upsert failed: %v", err)
+	}
+	if err := db.UpsertDiffFileOrdering(9, "code-review-server", "sha-new", `["a"]`); err != nil {
+		t.Fatalf("ordering upsert failed: %v", err)
+	}
+
+	got, err = db.GetLatestReviewEase(9, "code-review-server")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "easy" {
+		t.Errorf("got rating %q, want %q", got, "easy")
+	}
+}
+
+func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db, ExperimentalLLMReviewEase: true})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	section, err := db.GetOrCreateSection("Test Section", 0)
+	if err != nil {
+		t.Fatalf("failed to create section: %v", err)
+	}
+	details := []string{
+		"83",
+		"Repo: C-Hipple/code-review-server",
+		"https://github.com/C-Hipple/code-review-server/pull/83",
+	}
+	item, err := db.UpsertItem(section.ID, "83", "TODO", "Debug PR", details, []string{"code-review-server"}, 0)
+	if err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+	if err := db.UpsertReviewEase(83, "code-review-server", "sha-1", "medium"); err != nil {
+		t.Fatalf("failed to seed review ease: %v", err)
+	}
+
+	r := NewOrgRenderer(db)
+	lines := r.buildItemLines(item, 2)
+	if len(lines) == 0 {
+		t.Fatal("no lines rendered")
+	}
+	if !strings.Contains(lines[0], ":code-review-server:medium:") {
+		t.Errorf("title line %q missing review-ease tag", lines[0])
+	}
+
+	// With the flag off, the headline keeps only the stored tags.
+	config.SetC(config.Config{DB: db})
+	lines = r.buildItemLines(item, 2)
+	if !strings.Contains(lines[0], ":code-review-server:") || strings.Contains(lines[0], "medium") {
+		t.Errorf("title line %q should not include review-ease tag when disabled", lines[0])
+	}
+}
+
 func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
 	db := setupTestDB(t)
 

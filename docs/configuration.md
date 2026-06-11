@@ -149,6 +149,24 @@ merged
 
 The returned string is stored and exposed as the `release_status` field in PR metadata.
 
+## Experimental LLM Features
+
+These root-level flags enable LLM-powered helpers. Both are off by default and require a Gemini API key:
+
+```bash
+export GEMINI_API_KEY="Gemini API Key"
+```
+
+```toml
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+```
+
+- **ExperimentalLLMFileOrdering**: Orders the files in a PR diff via an LLM so the PR reads top-to-bottom (integration points first, then implementation, then styling, then tests) instead of the default test-files-last sort.
+- **ExperimentalLLMReviewEase**: Rates how easy each PR is to review — `easy`, `medium`, or `hard` — in the same LLM call used for the file ordering. The rating is exposed as the `review_ease` field in PR metadata (`GetPR`) and in review list items (`GetAllReviews`), and is appended as a tag (e.g. `:easy:`) on PR headlines in the rendered org content.
+
+Results are cached in the database per PR head SHA, so the LLM is queried at most once per PR revision.
+
 ## Example Config
 
 ```toml

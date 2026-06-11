@@ -154,6 +154,20 @@ Repos = ["owner/repo"]
 			wantErr: false,
 		},
 		{
+			name: "Experimental LLM flags",
+			content: `
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+`,
+			want: &Config{
+				RepoLocation:                "~/",
+				SleepDuration:               10 * time.Minute,
+				ExperimentalLLMFileOrdering: true,
+				ExperimentalLLMReviewEase:   true,
+			},
+			wantErr: false,
+		},
+		{
 			name: "Custom Sleep and Repo Location",
 			content: `
 RepoLocation = "/custom/path"

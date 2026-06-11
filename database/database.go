@@ -197,6 +197,7 @@ func (db *DB) initSchema() error {
 		repo TEXT NOT NULL,
 		sha TEXT NOT NULL,
 		ordering_json TEXT NOT NULL,
+		review_ease TEXT NOT NULL DEFAULT '',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(pr_number, repo, sha)
 	);
@@ -307,6 +308,19 @@ func (db *DB) initSchema() error {
 			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
 			if err != nil {
 				slog.Warn("Error adding sha column to PluginResults", "error", err)
+			}
+		}
+	}
+	// Migration: Add review_ease column to DiffFileOrderingCache if it doesn't
+	// exist. Same table-existence guard as the PluginResults migration above.
+	var orderingCacheExists int
+	_ = db.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='DiffFileOrderingCache'").Scan(&orderingCacheExists)
+	if orderingCacheExists > 0 {
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('DiffFileOrderingCache') WHERE name='review_ease'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE DiffFileOrderingCache ADD COLUMN review_ease TEXT NOT NULL DEFAULT ''")
+			if err != nil {
+				slog.Warn("Error adding review_ease column to DiffFileOrderingCache", "error", err)
 			}
 		}
 	}
@@ -527,6 +541,58 @@ func (db *DB) UpsertDiffFileOrdering(prNumber int, repo, sha, orderingJSON strin
 			ordering_json = excluded.ordering_json,
 			updated_at = excluded.updated_at`,
 		prNumber, repo, sha, orderingJSON,
+	)
+	return err
+}
+
+// GetReviewEase retrieves a cached LLM review-ease rating for a PR SHA.
+// It returns an empty string (no error) when there is no cached entry.
+func (db *DB) GetReviewEase(prNumber int, repo, sha string) (string, error) {
+	var ease string
+	err := db.conn.QueryRow(
+		"SELECT review_ease FROM DiffFileOrderingCache WHERE pr_number = ? AND repo = ? AND sha = ?",
+		prNumber, repo, sha,
+	).Scan(&ease)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return ease, nil
+}
+
+// GetLatestReviewEase returns the most recently stored review-ease rating for
+// a PR across all of its SHAs, so callers that don't know the current head SHA
+// (and PRs whose newest revision hasn't been rated yet) still get the latest
+// known rating. Returns an empty string (no error) when no rating is stored.
+func (db *DB) GetLatestReviewEase(prNumber int, repo string) (string, error) {
+	var ease string
+	err := db.conn.QueryRow(
+		`SELECT review_ease FROM DiffFileOrderingCache
+		 WHERE pr_number = ? AND repo = ? AND review_ease != ''
+		 ORDER BY updated_at DESC LIMIT 1`,
+		prNumber, repo,
+	).Scan(&ease)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return ease, nil
+}
+
+// UpsertReviewEase stores an LLM review-ease rating keyed by PR SHA, leaving
+// any cached file ordering for the same SHA untouched.
+func (db *DB) UpsertReviewEase(prNumber int, repo, sha, ease string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO DiffFileOrderingCache (pr_number, repo, sha, ordering_json, review_ease, updated_at)
+		 VALUES (?, ?, ?, '', ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+			review_ease = excluded.review_ease,
+			updated_at = excluded.updated_at`,
+		prNumber, repo, sha, ease,
 	)
 	return err
 }

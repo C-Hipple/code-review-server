@@ -216,7 +216,11 @@ type ReviewItem struct {
 	Author        string    `json:"author"`
 	URL           string    `json:"url"`
 	ReleaseStatus string    `json:"release_status"`
-	CreatedAt     time.Time `json:"created_at"`
+	// ReviewEase is the LLM rating of how easy the PR is to review ("easy",
+	// "medium", or "hard"). Empty unless ExperimentalLLMReviewEase is enabled
+	// and a rating has been computed.
+	ReviewEase string    `json:"review_ease"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -310,6 +314,13 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		}
 	}
 
+	// Look up the LLM review-ease rating when the feature is enabled
+	if config.C().ExperimentalLLMReviewEase && reviewItem.Repo != "" && reviewItem.Number > 0 {
+		if ease, err := r.db.GetLatestReviewEase(reviewItem.Number, reviewItem.Repo); err == nil && ease != "" {
+			reviewItem.ReviewEase = ease
+		}
+	}
+
 	return reviewItem
 }
 
@@ -365,6 +376,17 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 		tags = []string{}
 	}
 
+	// Append the LLM review-ease rating as a headline tag when enabled
+	if config.C().ExperimentalLLMReviewEase {
+		if repo, number := itemPRRef(item); repo != "" && number > 0 {
+			if ease, err := r.db.GetLatestReviewEase(number, repo); err == nil {
+				if tag := reviewEaseOrgTag(ease); tag != "" {
+					tags = append(tags, tag)
+				}
+			}
+		}
+	}
+
 	// Build the title line
 	indentStars := strings.Repeat("*", indentLevel)
 	titleLine := fmt.Sprintf("%s %s %s", indentStars, item.Status, item.Title)
@@ -383,6 +405,45 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 	}
 
 	return lines
+}
+
+// itemPRRef extracts the PR number and short repo name from an item's detail
+// lines (the same encoding parseItemToReviewItem reads). It returns ("", 0)
+// when the item does not reference a PR.
+func itemPRRef(item *database.Item) (repo string, number int) {
+	details, err := item.GetDetails()
+	if err != nil {
+		return "", 0
+	}
+	for _, line := range details {
+		line = strings.TrimSpace(line)
+		if number == 0 {
+			var num int
+			if _, err := fmt.Sscanf(line, "%d", &num); err == nil && num > 0 {
+				number = num
+				continue
+			}
+		}
+		if strings.HasPrefix(line, "Repo:") {
+			repoStr := strings.TrimSpace(strings.TrimPrefix(line, "Repo:"))
+			parts := strings.Split(repoStr, "/")
+			repo = parts[len(parts)-1]
+		}
+	}
+	return repo, number
+}
+
+// reviewEaseOrgTag converts a stored review-ease rating into an org headline
+// tag. It centralizes the rating -> tag mapping so a future change to the
+// rating scheme (e.g. a numeric score) only needs to be handled here. It
+// returns an empty string when there is no usable rating, in which case no
+// tag should be added.
+func reviewEaseOrgTag(ease string) string {
+	switch ease {
+	case "easy", "medium", "hard":
+		return ease
+	}
+	return ""
 }
 
 func renderPullRequest(diff string, comments []PRComment) string {
@@ -469,9 +530,13 @@ type PRMetadata struct {
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
 	ReleaseStatus      string   `json:"release_status"`
-	ChangedFiles       int      `json:"changed_files"`
-	Additions          int      `json:"additions"`
-	Deletions          int      `json:"deletions"`
+	// ReviewEase is the LLM rating of how easy the PR is to review ("easy",
+	// "medium", or "hard"). Empty unless ExperimentalLLMReviewEase is enabled
+	// and a rating has been computed.
+	ReviewEase   string `json:"review_ease"`
+	ChangedFiles int    `json:"changed_files"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
 }
 
 type PRDetails struct {
@@ -960,6 +1025,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// Load release status from DB
 	if releaseStatus, err := config.C().DB.GetReleaseStatus(owner, repo, number); err == nil && releaseStatus != "" {
 		metadata.ReleaseStatus = releaseStatus
+	}
+
+	// Load the LLM review-ease rating from DB when the feature is enabled
+	if config.C().ExperimentalLLMReviewEase {
+		if ease, err := config.C().DB.GetLatestReviewEase(number, repo); err == nil && ease != "" {
+			metadata.ReviewEase = ease
+		}
 	}
 
 	// 3. Fetch Diff (with caching)

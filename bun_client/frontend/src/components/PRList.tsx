@@ -8,6 +8,7 @@ import {
     Input,
     Select,
     mapStatusToVariant,
+    mapReviewEase,
     Theme,
     ReviewLocation,
 } from '../design';
@@ -30,6 +31,7 @@ interface ReviewItem {
     number: number;
     author: string;
     url: string;
+    review_ease: string; // LLM review-ease rating: "easy", "medium", "hard", or ""
 }
 
 interface GetReviewsResponse {
@@ -446,205 +448,231 @@ export default function PRList({
                                                         No items in this section
                                                     </div>
                                                 ) : (
-                                                    section.items.map((item, iIdx) => (
-                                                        <Card
-                                                            key={iIdx}
-                                                            variant="outlined"
-                                                            padding="md"
-                                                            hover
-                                                            className="pr-item-card"
-                                                            style={{
-                                                                display: 'flex',
-                                                                flexDirection: isMobile
-                                                                    ? 'column'
-                                                                    : 'row',
-                                                                justifyContent: 'space-between',
-                                                                alignItems: isMobile
-                                                                    ? 'stretch'
-                                                                    : 'center',
-                                                                padding: 0, // Remove padding from card to allow <a> to fill area
-                                                                overflow: 'hidden',
-                                                            }}
-                                                        >
-                                                            <a
-                                                                href={
-                                                                    reviewLocation === 'github'
-                                                                        ? item.url
-                                                                        : `/?owner=${item.owner}&repo=${item.repo}&number=${item.number}`
-                                                                }
-                                                                onClick={e => {
-                                                                    if (item.number <= 0) {
-                                                                        e.preventDefault();
-                                                                        return;
-                                                                    }
-                                                                    // Only handle standard left-click without modifiers for SPA navigation
-                                                                    if (
-                                                                        e.button === 0 &&
-                                                                        !e.ctrlKey &&
-                                                                        !e.metaKey &&
-                                                                        !e.shiftKey &&
-                                                                        !e.altKey
-                                                                    ) {
-                                                                        e.preventDefault();
-                                                                        if (
-                                                                            reviewLocation ===
-                                                                            'github'
-                                                                        ) {
-                                                                            window.open(
-                                                                                item.url,
-                                                                                '_blank'
-                                                                            );
-                                                                        } else {
-                                                                            onOpenReview(
-                                                                                item.owner,
-                                                                                item.repo,
-                                                                                item.number
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }}
+                                                    section.items.map((item, iIdx) => {
+                                                        const easeDisplay = mapReviewEase(
+                                                            item.review_ease
+                                                        );
+                                                        return (
+                                                            <Card
+                                                                key={iIdx}
+                                                                variant="outlined"
+                                                                padding="md"
+                                                                hover
+                                                                className="pr-item-card"
                                                                 style={{
-                                                                    flex: 1,
-                                                                    textDecoration: 'none',
-                                                                    color: 'inherit',
-                                                                    padding: '16px',
-                                                                    display: 'block',
+                                                                    display: 'flex',
+                                                                    flexDirection: isMobile
+                                                                        ? 'column'
+                                                                        : 'row',
+                                                                    justifyContent: 'space-between',
+                                                                    alignItems: isMobile
+                                                                        ? 'stretch'
+                                                                        : 'center',
+                                                                    padding: 0, // Remove padding from card to allow <a> to fill area
+                                                                    overflow: 'hidden',
                                                                 }}
                                                             >
-                                                                <div style={{ flex: 1 }}>
+                                                                <a
+                                                                    href={
+                                                                        reviewLocation === 'github'
+                                                                            ? item.url
+                                                                            : `/?owner=${item.owner}&repo=${item.repo}&number=${item.number}`
+                                                                    }
+                                                                    onClick={e => {
+                                                                        if (item.number <= 0) {
+                                                                            e.preventDefault();
+                                                                            return;
+                                                                        }
+                                                                        // Only handle standard left-click without modifiers for SPA navigation
+                                                                        if (
+                                                                            e.button === 0 &&
+                                                                            !e.ctrlKey &&
+                                                                            !e.metaKey &&
+                                                                            !e.shiftKey &&
+                                                                            !e.altKey
+                                                                        ) {
+                                                                            e.preventDefault();
+                                                                            if (
+                                                                                reviewLocation ===
+                                                                                'github'
+                                                                            ) {
+                                                                                window.open(
+                                                                                    item.url,
+                                                                                    '_blank'
+                                                                                );
+                                                                            } else {
+                                                                                onOpenReview(
+                                                                                    item.owner,
+                                                                                    item.repo,
+                                                                                    item.number
+                                                                                );
+                                                                            }
+                                                                        }
+                                                                    }}
+                                                                    style={{
+                                                                        flex: 1,
+                                                                        textDecoration: 'none',
+                                                                        color: 'inherit',
+                                                                        padding: '16px',
+                                                                        display: 'block',
+                                                                    }}
+                                                                >
+                                                                    <div style={{ flex: 1 }}>
+                                                                        <div
+                                                                            style={{
+                                                                                display: 'flex',
+                                                                                alignItems:
+                                                                                    'center',
+                                                                                gap: '10px',
+                                                                                marginBottom: '4px',
+                                                                            }}
+                                                                        >
+                                                                            {easeDisplay && (
+                                                                                <Badge
+                                                                                    variant={
+                                                                                        easeDisplay.variant
+                                                                                    }
+                                                                                    size="sm"
+                                                                                >
+                                                                                    {
+                                                                                        easeDisplay.label
+                                                                                    }
+                                                                                </Badge>
+                                                                            )}
+                                                                            <Badge
+                                                                                variant={mapStatusToVariant(
+                                                                                    item.status
+                                                                                )}
+                                                                                size="sm"
+                                                                            >
+                                                                                {item.status}
+                                                                            </Badge>
+                                                                            <span
+                                                                                className={
+                                                                                    item.number > 0
+                                                                                        ? 'pr-title'
+                                                                                        : ''
+                                                                                }
+                                                                                style={{
+                                                                                    fontWeight: 500,
+                                                                                    fontSize:
+                                                                                        '15px',
+                                                                                }}
+                                                                            >
+                                                                                {item.title}
+                                                                            </span>
+                                                                        </div>
+                                                                        {item.number ? (
+                                                                            <div
+                                                                                style={{
+                                                                                    fontSize:
+                                                                                        '13px',
+                                                                                    color: 'var(--text-secondary)',
+                                                                                    fontFamily:
+                                                                                        'var(--font-mono)',
+                                                                                }}
+                                                                            >
+                                                                                {item.owner}/
+                                                                                {item.repo}{' '}
+                                                                                <span
+                                                                                    style={{
+                                                                                        color: 'var(--accent)',
+                                                                                    }}
+                                                                                >
+                                                                                    #{item.number}
+                                                                                </span>
+                                                                                {item.author && (
+                                                                                    <span
+                                                                                        style={{
+                                                                                            marginLeft:
+                                                                                                '8px',
+                                                                                            color: 'var(--text-secondary)',
+                                                                                        }}
+                                                                                    >
+                                                                                        by{' '}
+                                                                                        {
+                                                                                            item.author
+                                                                                        }
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div
+                                                                                style={{
+                                                                                    fontSize:
+                                                                                        '12px',
+                                                                                    color: 'var(--text-secondary)',
+                                                                                    fontStyle:
+                                                                                        'italic',
+                                                                                }}
+                                                                            >
+                                                                                Non-PR item
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                </a>
+                                                                {item.number > 0 && (
                                                                     <div
                                                                         style={{
                                                                             display: 'flex',
-                                                                            alignItems: 'center',
-                                                                            gap: '10px',
-                                                                            marginBottom: '4px',
+                                                                            gap: '12px',
+                                                                            marginLeft: isMobile
+                                                                                ? 0
+                                                                                : 'auto',
+                                                                            padding: '16px',
+                                                                            paddingTop: isMobile
+                                                                                ? 0
+                                                                                : '16px',
+                                                                            paddingLeft: isMobile
+                                                                                ? '16px'
+                                                                                : 0,
                                                                         }}
                                                                     >
-                                                                        <Badge
-                                                                            variant={mapStatusToVariant(
-                                                                                item.status
-                                                                            )}
+                                                                        <Button
+                                                                            onClick={e => {
+                                                                                e.stopPropagation();
+                                                                                onOpenPluginOutput(
+                                                                                    item.owner,
+                                                                                    item.repo,
+                                                                                    item.number
+                                                                                );
+                                                                            }}
+                                                                            variant="ghost"
                                                                             size="sm"
                                                                         >
-                                                                            {item.status}
-                                                                        </Badge>
-                                                                        <span
-                                                                            className={
-                                                                                item.number > 0
-                                                                                    ? 'pr-title'
-                                                                                    : ''
-                                                                            }
-                                                                            style={{
-                                                                                fontWeight: 500,
-                                                                                fontSize: '15px',
+                                                                            Plugins
+                                                                        </Button>
+                                                                        <Button
+                                                                            onClick={e => {
+                                                                                e.stopPropagation();
+                                                                                window.open(
+                                                                                    item.url,
+                                                                                    '_blank'
+                                                                                );
                                                                             }}
+                                                                            variant="secondary"
+                                                                            size="sm"
                                                                         >
-                                                                            {item.title}
-                                                                        </span>
+                                                                            GitHub
+                                                                        </Button>
+                                                                        <Button
+                                                                            onClick={e => {
+                                                                                e.stopPropagation();
+                                                                                onOpenReview(
+                                                                                    item.owner,
+                                                                                    item.repo,
+                                                                                    item.number
+                                                                                );
+                                                                            }}
+                                                                            size="sm"
+                                                                        >
+                                                                            Review
+                                                                        </Button>
                                                                     </div>
-                                                                    {item.number ? (
-                                                                        <div
-                                                                            style={{
-                                                                                fontSize: '13px',
-                                                                                color: 'var(--text-secondary)',
-                                                                                fontFamily:
-                                                                                    'var(--font-mono)',
-                                                                            }}
-                                                                        >
-                                                                            {item.owner}/{item.repo}{' '}
-                                                                            <span
-                                                                                style={{
-                                                                                    color: 'var(--accent)',
-                                                                                }}
-                                                                            >
-                                                                                #{item.number}
-                                                                            </span>
-                                                                            {item.author && (
-                                                                                <span
-                                                                                    style={{
-                                                                                        marginLeft:
-                                                                                            '8px',
-                                                                                        color: 'var(--text-secondary)',
-                                                                                    }}
-                                                                                >
-                                                                                    by {item.author}
-                                                                                </span>
-                                                                            )}
-                                                                        </div>
-                                                                    ) : (
-                                                                        <div
-                                                                            style={{
-                                                                                fontSize: '12px',
-                                                                                color: 'var(--text-secondary)',
-                                                                                fontStyle: 'italic',
-                                                                            }}
-                                                                        >
-                                                                            Non-PR item
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            </a>
-                                                            {item.number > 0 && (
-                                                                <div
-                                                                    style={{
-                                                                        display: 'flex',
-                                                                        gap: '12px',
-                                                                        marginLeft: isMobile
-                                                                            ? 0
-                                                                            : 'auto',
-                                                                        padding: '16px',
-                                                                        paddingTop: isMobile
-                                                                            ? 0
-                                                                            : '16px',
-                                                                        paddingLeft: isMobile
-                                                                            ? '16px'
-                                                                            : 0,
-                                                                    }}
-                                                                >
-                                                                    <Button
-                                                                        onClick={e => {
-                                                                            e.stopPropagation();
-                                                                            onOpenPluginOutput(
-                                                                                item.owner,
-                                                                                item.repo,
-                                                                                item.number
-                                                                            );
-                                                                        }}
-                                                                        variant="ghost"
-                                                                        size="sm"
-                                                                    >
-                                                                        Plugins
-                                                                    </Button>
-                                                                    <Button
-                                                                        onClick={e => {
-                                                                            e.stopPropagation();
-                                                                            window.open(
-                                                                                item.url,
-                                                                                '_blank'
-                                                                            );
-                                                                        }}
-                                                                        variant="secondary"
-                                                                        size="sm"
-                                                                    >
-                                                                        GitHub
-                                                                    </Button>
-                                                                    <Button
-                                                                        onClick={e => {
-                                                                            e.stopPropagation();
-                                                                            onOpenReview(
-                                                                                item.owner,
-                                                                                item.repo,
-                                                                                item.number
-                                                                            );
-                                                                        }}
-                                                                        size="sm"
-                                                                    >
-                                                                        Review
-                                                                    </Button>
-                                                                </div>
-                                                            )}
-                                                        </Card>
-                                                    ))
+                                                                )}
+                                                            </Card>
+                                                        );
+                                                    })
                                                 )}
                                             </div>
                                         )}

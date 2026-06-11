@@ -80,6 +80,21 @@
   "Face for :tag: markers in the PR list."
   :group 'crs)
 
+(defface crs-list-ease-easy-face
+  '((t (:foreground "#859900" :weight bold)))
+  "Face for the :easy: review-ease tag in the PR list."
+  :group 'crs)
+
+(defface crs-list-ease-medium-face
+  '((t (:foreground "#b58900" :weight bold)))
+  "Face for the :medium: review-ease tag in the PR list."
+  :group 'crs)
+
+(defface crs-list-ease-hard-face
+  '((t (:foreground "#dc322f" :weight bold)))
+  "Face for the :hard: review-ease tag in the PR list."
+  :group 'crs)
+
 (defvar crs-list--heading-regexp "^\\(\\*+\\) "
   "Regexp matching org-style heading lines by leading stars.")
 
@@ -100,7 +115,13 @@
     ;; [n/m] progress ratio
     ("\\[\\([0-9]+/[0-9]+\\)\\]" 0 'crs-list-ratio-face t)
     ;; :tag: markers
-    ("\\(:[a-zA-Z0-9_@-]+:\\)+" 0 'crs-list-tag-face t))
+    ("\\(:[a-zA-Z0-9_@-]+:\\)+" 0 'crs-list-tag-face t)
+    ;; Review-ease tags — listed after the generic tag rule so they win.
+    ;; Only the word inside the colons is re-fontified, so the colons keep
+    ;; the generic tag face (tags share colons, e.g. :repo:easy:).
+    (":\\(easy\\):" 1 'crs-list-ease-easy-face t)
+    (":\\(medium\\):" 1 'crs-list-ease-medium-face t)
+    (":\\(hard\\):" 1 'crs-list-ease-hard-face t))
   "Font-lock keywords for `crs-list-mode'.")
 
 (defun crs-list--heading-level ()

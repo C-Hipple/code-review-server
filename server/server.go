@@ -986,7 +986,7 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 	return nil
 }
 
-// Experimental: LLM-based diff file ordering.
+// Experimental: LLM-based diff analysis (file ordering + review ease).
 //
 // When config.ExperimentalLLMFileOrdering is enabled, the files in a PR diff
 // are ordered by an LLM so a reviewer can read the PR top-to-bottom: the
@@ -994,12 +994,27 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 // then styling changes, then tests last. When the flag is off (the default),
 // or if the LLM call fails for any reason, ordering falls back to
 // sortFilesTestsLast.
+//
+// When config.ExperimentalLLMReviewEase is enabled, the same LLM call also
+// rates how easy the PR is to review ("easy", "medium", or "hard"). The
+// rating is cached alongside the file ordering and exposed as the
+// review_ease field in PR metadata and review list items.
 
 const (
 	llmOrderingModel       = "gemini-2.5-flash"
 	llmOrderingMaxDiffSize = 200000
 	llmOrderingTimeout     = 30 * time.Second
+
+	reviewEaseLinePrefix = "REVIEW_EASE:"
 )
+
+// llmDiffAnalysis holds the results of the single LLM call made per PR SHA:
+// the display ordering of the diff files and, when enabled, the review-ease
+// rating.
+type llmDiffAnalysis struct {
+	ordering   []string
+	reviewEase string
+}
 
 type geminiPart struct {
 	Text string `json:"text"`
@@ -1039,14 +1054,40 @@ func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha stri
 		return reorderFilesByNames(files, names)
 	}
 
-	names, err := llmFileOrdering(files)
+	analysis, err := llmAnalyzeDiff(files, true, config.C().ExperimentalLLMReviewEase)
 	if err != nil {
-		slog.Warn("LLM diff file ordering failed, falling back to default sort", "error", err)
+		slog.Warn("LLM diff analysis failed, falling back to default sort", "error", err)
 		return sortFilesTestsLast(files)
 	}
 
-	storeFileOrdering(repo, prNumber, sha, names)
-	return reorderFilesByNames(files, names)
+	storeDiffAnalysis(repo, prNumber, sha, analysis)
+	return reorderFilesByNames(files, analysis.ordering)
+}
+
+// ensureLLMDiffAnalysis makes sure the LLM-derived values enabled in config
+// (the diff file ordering and the review-ease rating) are cached for the PR
+// SHA, calling the LLM at most once if anything is missing.
+func ensureLLMDiffAnalysis(files []*utils.DiffFile, repo string, prNumber int, sha string) {
+	cfg := config.C()
+	needOrdering := cfg.ExperimentalLLMFileOrdering && len(files) >= 2 &&
+		cachedFileOrdering(repo, prNumber, sha) == nil
+	needEase := cfg.ExperimentalLLMReviewEase && cachedReviewEase(repo, prNumber, sha) == ""
+	if !needOrdering && !needEase {
+		return
+	}
+
+	analysis, err := llmAnalyzeDiff(files, needOrdering, needEase)
+	if err != nil {
+		slog.Warn("LLM diff analysis failed", "repo", repo, "pr", prNumber, "error", err)
+		return
+	}
+	storeDiffAnalysis(repo, prNumber, sha, analysis)
+}
+
+// storeDiffAnalysis persists the LLM analysis results keyed by PR SHA.
+func storeDiffAnalysis(repo string, prNumber int, sha string, analysis *llmDiffAnalysis) {
+	storeFileOrdering(repo, prNumber, sha, analysis.ordering)
+	storeReviewEase(repo, prNumber, sha, analysis.reviewEase)
 }
 
 // cachedFileOrdering returns a previously cached LLM file ordering for the
@@ -1075,9 +1116,10 @@ func cachedFileOrdering(repo string, prNumber int, sha string) []string {
 	return names
 }
 
-// storeFileOrdering persists an LLM file ordering keyed by PR SHA.
+// storeFileOrdering persists an LLM file ordering keyed by PR SHA. Empty
+// orderings (e.g. from an ease-only analysis) are not stored.
 func storeFileOrdering(repo string, prNumber int, sha string, names []string) {
-	if sha == "" {
+	if sha == "" || len(names) == 0 {
 		return
 	}
 	db := config.C().DB
@@ -1094,6 +1136,39 @@ func storeFileOrdering(repo string, prNumber int, sha string, names []string) {
 	}
 }
 
+// cachedReviewEase returns a previously cached review-ease rating for the
+// given PR SHA, or an empty string when there is no cached rating.
+func cachedReviewEase(repo string, prNumber int, sha string) string {
+	if sha == "" {
+		return ""
+	}
+	db := config.C().DB
+	if db == nil {
+		return ""
+	}
+	ease, err := db.GetReviewEase(prNumber, repo, sha)
+	if err != nil {
+		slog.Warn("failed to read review ease cache", "error", err)
+		return ""
+	}
+	return ease
+}
+
+// storeReviewEase persists a review-ease rating keyed by PR SHA. Empty
+// ratings (feature disabled, or unusable LLM output) are not stored.
+func storeReviewEase(repo string, prNumber int, sha string, ease string) {
+	if sha == "" || ease == "" {
+		return
+	}
+	db := config.C().DB
+	if db == nil {
+		return
+	}
+	if err := db.UpsertReviewEase(prNumber, repo, sha, ease); err != nil {
+		slog.Warn("failed to write review ease cache", "error", err)
+	}
+}
+
 // diffFileName returns the path used to identify a diff file, preferring the
 // new name and falling back to the original name for deleted files.
 func diffFileName(file *utils.DiffFile) string {
@@ -1103,19 +1178,21 @@ func diffFileName(file *utils.DiffFile) string {
 	return file.OrigName
 }
 
-// llmFileOrdering asks an LLM to order the diff files so the PR reads
-// top-to-bottom from integration points through implementation to tests.
-func llmFileOrdering(files []*utils.DiffFile) ([]string, error) {
+// llmAnalyzeDiff asks an LLM for the requested analysis values: the file
+// ordering that makes the PR read top-to-bottom from integration points
+// through implementation to tests, and/or the rating of how easy the PR is to
+// review. The prompt only asks for what the caller needs.
+func llmAnalyzeDiff(files []*utils.DiffFile, includeOrdering, includeEase bool) (*llmDiffAnalysis, error) {
 	token := os.Getenv("GEMINI_API_KEY")
 	if token == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
 	}
-	return requestFileOrdering(files, token)
+	return requestDiffAnalysis(files, token, includeOrdering, includeEase)
 }
 
-// requestFileOrdering sends the diff to the LLM and returns the ordered list of
-// file paths it responds with.
-func requestFileOrdering(files []*utils.DiffFile, token string) ([]string, error) {
+// requestDiffAnalysis sends the diff to the LLM and returns the requested
+// values (ordered file paths and/or review-ease rating) it responds with.
+func requestDiffAnalysis(files []*utils.DiffFile, token string, includeOrdering, includeEase bool) (*llmDiffAnalysis, error) {
 	var fileList strings.Builder
 	for _, f := range files {
 		fileList.WriteString("- " + diffFileName(f) + "\n")
@@ -1126,22 +1203,7 @@ func requestFileOrdering(files []*utils.DiffFile, token string) ([]string, error
 		diffText = diffText[:llmOrderingMaxDiffSize] + "\n... (diff truncated)\n"
 	}
 
-	prompt := fmt.Sprintf(`You are ordering the files of a pull request diff so a reviewer can read the PR from top to bottom and understand it.
-
-Order the files by this priority:
-1. The most important and relevant changes first: the entry points where the change is integrated (call sites, public APIs, top-level wiring).
-2. Then helper functions and implementation details: how the change actually works.
-3. Then styling changes such as CSS: after code, but before tests.
-4. Then test files, last.
-
-A reviewer should be able to read top to bottom: starting where the change is integrated, then into how it works, then the tests.
-
-Files in this diff:
-%s
-Full diff:
-%s
-
-Respond with ONLY the file paths, one per line, in the order they should be displayed. Use the exact file paths listed above. Do not include numbering, bullets, commentary, or code fences.`, fileList.String(), diffText)
+	prompt := buildAnalysisPrompt(fileList.String(), diffText, includeOrdering, includeEase)
 
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
@@ -1174,16 +1236,99 @@ Respond with ONLY the file paths, one per line, in the order they should be disp
 		return nil, fmt.Errorf("no content in Gemini response")
 	}
 
-	var names []string
-	for _, line := range strings.Split(geminiResp.Candidates[0].Content.Parts[0].Text, "\n") {
-		if cleaned := cleanLLMFileName(line); cleaned != "" {
-			names = append(names, cleaned)
-		}
-	}
-	if len(names) == 0 {
+	analysis := parseDiffAnalysisText(geminiResp.Candidates[0].Content.Parts[0].Text)
+	if includeOrdering && len(analysis.ordering) == 0 {
 		return nil, fmt.Errorf("Gemini response contained no file paths")
 	}
-	return names, nil
+	if includeEase && analysis.reviewEase == "" {
+		if !includeOrdering {
+			return nil, fmt.Errorf("Gemini response contained no usable review-ease rating")
+		}
+		slog.Warn("Gemini response contained no usable review-ease rating")
+	}
+	return analysis, nil
+}
+
+// buildAnalysisPrompt builds the prompt for the diff analysis LLM call,
+// asking only for the values the caller requested: the file ordering, the
+// review-ease rating, or both.
+func buildAnalysisPrompt(fileList, diffText string, includeOrdering, includeEase bool) string {
+	var b strings.Builder
+	if includeOrdering {
+		b.WriteString(`You are ordering the files of a pull request diff so a reviewer can read the PR from top to bottom and understand it.
+
+Order the files by this priority:
+1. The most important and relevant changes first: the entry points where the change is integrated (call sites, public APIs, top-level wiring).
+2. Then helper functions and implementation details: how the change actually works.
+3. Then styling changes such as CSS: after code, but before tests.
+4. Then test files, last.
+
+A reviewer should be able to read top to bottom: starting where the change is integrated, then into how it works, then the tests.
+`)
+	} else {
+		b.WriteString(`You are rating a pull request diff for a code reviewer.
+`)
+	}
+	if includeEase {
+		b.WriteString(`
+Rate how easy this pull request is to review: "easy" for small, mechanical, or repetitive changes; "medium" for typical changes that need a careful read; "hard" for large, subtle, or high-risk changes (tricky logic, concurrency, security, many interacting files).
+`)
+	}
+	b.WriteString(fmt.Sprintf(`
+Files in this diff:
+%s
+Full diff:
+%s
+`, fileList, diffText))
+	switch {
+	case includeOrdering && includeEase:
+		b.WriteString(`
+Respond with a first line of exactly "REVIEW_EASE: <rating>" where <rating> is easy, medium, or hard, followed by the file paths, one per line, in the order they should be displayed. Use the exact file paths listed above. Do not include numbering, bullets, commentary, or code fences.`)
+	case includeOrdering:
+		b.WriteString(`
+Respond with ONLY the file paths, one per line, in the order they should be displayed. Use the exact file paths listed above. Do not include numbering, bullets, commentary, or code fences.`)
+	default:
+		b.WriteString(`
+Respond with ONLY a single line of exactly "REVIEW_EASE: <rating>" where <rating> is easy, medium, or hard. Do not include anything else.`)
+	}
+	return b.String()
+}
+
+// parseDiffAnalysisText parses the LLM response text into the ordered file
+// paths and the optional REVIEW_EASE rating line.
+func parseDiffAnalysisText(text string) *llmDiffAnalysis {
+	analysis := &llmDiffAnalysis{}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.Trim(strings.TrimSpace(line), "`*")
+		trimmed = strings.TrimSpace(trimmed)
+		if rest, ok := strings.CutPrefix(trimmed, reviewEaseLinePrefix); ok {
+			if ease := normalizeReviewEase(rest); ease != "" {
+				analysis.reviewEase = ease
+			}
+			continue
+		}
+		if cleaned := cleanLLMFileName(line); cleaned != "" {
+			analysis.ordering = append(analysis.ordering, cleaned)
+		}
+	}
+	return analysis
+}
+
+// normalizeReviewEase maps an LLM rating string onto one of the canonical
+// ratings ("easy", "medium", or "hard"); it returns an empty string for
+// anything else.
+func normalizeReviewEase(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'`*")
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "easy":
+		return "easy"
+	case "medium":
+		return "medium"
+	case "hard":
+		return "hard"
+	}
+	return ""
 }
 
 // buildDiffForLLM renders the diff files into a plain-text form for the LLM,

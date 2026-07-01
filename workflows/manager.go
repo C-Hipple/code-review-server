@@ -711,6 +711,23 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 		}
 	}
 
+	// Warm the diff + commits caches whenever a PR is newly added or its head
+	// commit changed. These two fields are the ones a reviewer needs to open the
+	// PR, and both go stale on every push (the diff is keyed to the head SHA).
+	// If we only fetched what a section's filters strictly require, a freshly
+	// added or just-updated PR would be a guaranteed cache miss the moment the
+	// user opened it. We deliberately gate this on an actual change — we do NOT
+	// pre-fetch diffs for unchanged PRs we may never look at.
+	db := config.C().DB
+	for key, pr := range prObjects {
+		if prNeedsCacheWarm(db, key, pr) {
+			req := prRequirements[key]
+			req.Diff = true
+			req.Commits = true
+			prRequirements[key] = req
+		}
+	}
+
 	// Fetch aux data in parallel
 	var wg sync.WaitGroup
 	for key, auxReq := range prRequirements {
@@ -730,6 +747,29 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 
 	log.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
 	return store
+}
+
+// prNeedsCacheWarm reports whether we should proactively fetch the diff and
+// commits for a PR because it was just added or updated. It returns true when:
+//   - the PR is brand new to us (no diff row cached yet),
+//   - its head SHA changed since we last cached it (new commits pushed), or
+//   - we only have a SHA-only placeholder row with no real diff body (e.g. an
+//     earlier fetch failed).
+//
+// In all three cases the diff/commits a reviewer needs are missing or stale, so
+// warming them now turns the next review open into a cache hit. For an unchanged
+// PR whose current-SHA diff is already cached, it returns false so we don't pull
+// data we may never use.
+func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
+	if pr == nil || pr.Head == nil || pr.Head.SHA == nil {
+		return false
+	}
+	body, cachedSHA, err := db.GetPullRequest(key.Number, key.Repo)
+	if err != nil {
+		// On a lookup error, err on the side of warming.
+		return true
+	}
+	return cachedSHA != *pr.Head.SHA || body == ""
 }
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR

@@ -84,10 +84,13 @@
 
 (with-eval-after-load 'evil
   ;; Global normal-state leader bindings: available in any buffer/mode,
-  ;; not only crs-list-mode.
-  (evil-define-key 'normal 'global
-    (kbd ", r s") #'crs-start-review-at-point
-    (kbd ", r b") #'crs-get-reviews)
+  ;; not only crs-list-mode.  Use `evil-global-set-key' rather than
+  ;; `evil-define-key' with the `global' pseudo-keymap: the latter targets
+  ;; a specific mode keymap and is unreliable for truly global bindings
+  ;; across evil versions, which is why the `, r s' / `, r b' leaders
+  ;; silently failed to bind.
+  (evil-global-set-key 'normal (kbd ", r s") #'crs-start-review-at-point)
+  (evil-global-set-key 'normal (kbd ", r b") #'crs-get-reviews)
   ;; crs-list-mode: normal state.  Without these, evil's normal-state
   ;; bindings shadow the plain `crs-list-mode-map' bindings, so the PR
   ;; list keys silently do nothing for evil users.

@@ -1085,8 +1085,13 @@ func (db *DB) DeleteLocalComment(id int64) error {
 func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) {
 	var body string
 	var sha string
+	// A PR accumulates one row per head SHA it has ever had (the UNIQUE key
+	// includes latest_sha). Order by rowid DESC so we return the most recently
+	// written row — i.e. the current head SHA — rather than an arbitrary (often
+	// stale) one. Without this, a bare LIMIT 1 could hand back an old SHA's diff
+	// or an empty placeholder row.
 	err := db.conn.QueryRow(
-		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
 		prNumber, repo,
 	).Scan(&body, &sha)
 
@@ -1102,7 +1107,7 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 // GetPullRequestSHAs returns both the head and base SHAs for a cached PR.
 func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT latest_sha, COALESCE(base_sha, '') FROM PullRequests WHERE pr_number = ? AND repo = ? LIMIT 1",
+		"SELECT latest_sha, COALESCE(base_sha, '') FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
 		prNumber, repo,
 	).Scan(&headSHA, &baseSHA)
 
@@ -1113,11 +1118,16 @@ func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA st
 }
 
 func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, baseSha, body string) error {
+	// Never overwrite a cached diff with an empty body. The workflow writes a
+	// SHA-only placeholder row (empty body) for PRs whose section doesn't need
+	// the diff, purely so CI/SHA lookups work. Clobbering the real diff with ""
+	// here would silently poison the cache and force a miss on the next review
+	// open, so keep the existing body when the incoming one is empty.
 	_, err := db.conn.Exec(
 		`INSERT INTO PullRequests (pr_number, repo, latest_sha, base_sha, body)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
-			body = excluded.body,
+			body = CASE WHEN excluded.body != '' THEN excluded.body ELSE body END,
 			base_sha = excluded.base_sha`,
 		prNumber, repo, latestSha, baseSha, body,
 	)

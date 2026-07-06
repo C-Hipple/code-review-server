@@ -167,6 +167,8 @@ ExperimentalLLMReviewEase = true
 
 Results are cached in the database per PR head SHA, so the LLM is queried at most once per PR revision.
 
+Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used, input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
+
 ## Example Config
 
 ```toml

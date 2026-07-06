@@ -42,6 +42,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
 - `git_tools/` — GitHub API wrapper using go-github v48
+- `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface; Gemini is the only backend today. Appends every call to `~/.crs/llm_calls.log`
 - `org/` — org-mode serialization for the Emacs client
 - `utils/` — diff parsing utilities
 - `cmd/` — plugin binaries (summarize_diff, security_check, etc.)
@@ -65,4 +66,4 @@ DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT th
 
 - `CRS_GITHUB_TOKEN` — required GitHub API token
 - `CRS_HOME` — override `~/.crs` directory
-- `GEMINI_API_KEY` — for the summarization plugin
+- `GEMINI_API_KEY` — for the summarization plugin and the experimental LLM diff analysis (`llm/`)

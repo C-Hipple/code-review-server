@@ -2,6 +2,7 @@ package server
 
 import (
 	"crs/config"
+	"crs/llm"
 	"crs/utils"
 	"log/slog"
 )
@@ -37,5 +38,5 @@ func ensureDiffAnalysis(repo string, prNumber int, sha, diff string) {
 		slog.Warn("Failed to parse diff for LLM diff analysis hook", "repo", repo, "pr", prNumber, "error", err)
 		return
 	}
-	ensureLLMDiffAnalysis(parsed.Files, repo, prNumber, sha)
+	llm.EnsureDiffAnalysis(parsed.Files, repo, prNumber, sha)
 }

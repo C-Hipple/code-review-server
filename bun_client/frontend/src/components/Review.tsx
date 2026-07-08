@@ -226,6 +226,94 @@ const getLanguageFromFilename = (filename: string): string => {
     return languageMap[ext] || 'text';
 };
 
+// Small badge shown by a commented line/file, hidden threads default to
+// collapsed. Hovering previews the thread read-only; clicking toggles the
+// full interactive thread open/closed.
+function CommentIndicator({
+    thread,
+    visible,
+    onToggle,
+}: {
+    thread: Comment[];
+    visible: boolean;
+    onToggle: () => void;
+}) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <span
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={e => {
+                e.stopPropagation();
+                onToggle();
+            }}
+            style={{
+                position: 'relative',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '2px',
+                minWidth: '20px',
+                height: '18px',
+                padding: '0 5px',
+                borderRadius: '9px',
+                background: visible ? colors.accent : colors.bgInfoDim,
+                color: visible ? '#fff' : colors.accent,
+                fontSize: '10px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                userSelect: 'none',
+            }}
+            title={visible ? 'Hide comment thread' : 'Click to show comment thread'}
+        >
+            <span>💬</span>
+            {thread.length > 1 && <span>{thread.length}</span>}
+            {hovered && !visible && (
+                <div
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        left: 0,
+                        marginBottom: '6px',
+                        background: 'var(--bg-secondary)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        width: '320px',
+                        maxWidth: '80vw',
+                        maxHeight: '260px',
+                        overflowY: 'auto',
+                        boxShadow: shadows.md,
+                        zIndex: 100,
+                        fontSize: '12px',
+                        fontWeight: 400,
+                        color: 'var(--text-primary)',
+                        cursor: 'default',
+                        textAlign: 'left',
+                        whiteSpace: 'normal',
+                    }}
+                >
+                    {thread.map(c => (
+                        <div key={c.id} style={{ marginBottom: '6px' }}>
+                            <div
+                                style={{
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '11px',
+                                    marginBottom: '2px',
+                                }}
+                            >
+                                {c.author}
+                            </div>
+                            <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </span>
+    );
+}
+
 export default function Review({
     owner,
     repo,
@@ -263,6 +351,20 @@ export default function Review({
     const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+    // Comment threads are hidden by default; a thread's root comment id must be
+    // in this set for its full interactive thread to render inline.
+    const [visibleThreads, setVisibleThreads] = useState<Set<string>>(new Set());
+    const toggleThreadsVisible = (rootIds: string[]) => {
+        setVisibleThreads(prev => {
+            const next = new Set(prev);
+            const allVisible = rootIds.every(id => next.has(id));
+            rootIds.forEach(id => {
+                if (allVisible) next.delete(id);
+                else next.add(id);
+            });
+            return next;
+        });
+    };
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
     // Description starts collapsed so the diff dominates the viewport.
     const [descCollapsed, setDescCollapsed] = useState(true);
@@ -590,6 +692,17 @@ export default function Review({
             setContent(res.content || '');
             setDiff(res.diff || '');
             setExpandedLineIndices(new Set());
+            const prevIds = new Set(comments.map(c => c.id));
+            const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
+            if (newComments.length > 0) {
+                setVisibleThreads(prev => {
+                    const next = new Set(prev);
+                    newComments.forEach(c => {
+                        next.add(c.in_reply_to ? c.in_reply_to.toString() : c.id);
+                    });
+                    return next;
+                });
+            }
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -1487,6 +1600,26 @@ export default function Review({
                                     </span>
                                 );
                             })()}
+                            {rootComments.length > 0 &&
+                                (() => {
+                                    const rootIds = rootComments.map(rc => rc.id);
+                                    const allVisible = rootIds.every(id => visibleThreads.has(id));
+                                    const allThreadComments = rootComments.flatMap(rc => [
+                                        rc,
+                                        ...lineComments.filter(
+                                            c => c.in_reply_to === parseInt(rc.id, 10)
+                                        ),
+                                    ]);
+                                    return (
+                                        <span onClick={e => e.stopPropagation()}>
+                                            <CommentIndicator
+                                                thread={allThreadComments}
+                                                visible={allVisible}
+                                                onToggle={() => toggleThreadsVisible(rootIds)}
+                                            />
+                                        </span>
+                                    );
+                                })()}
                             {hasOutdated && (
                                 <button
                                     onClick={e => {
@@ -1540,6 +1673,7 @@ export default function Review({
                             )}
                         </div>
                         {rootComments.map(rc => {
+                            if (!visibleThreads.has(rc.id)) return null;
                             const thread = [
                                 rc,
                                 ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
@@ -1955,6 +2089,31 @@ export default function Review({
                                 </span>
                             </>
                         )}
+                        {isCodeLine &&
+                            !isHunkHeader &&
+                            rootComments.length > 0 &&
+                            (() => {
+                                const rootIds = rootComments.map(rc => rc.id);
+                                const allVisible = rootIds.every(id => visibleThreads.has(id));
+                                const allThreadComments = rootComments.flatMap(rc => [
+                                    rc,
+                                    ...lineComments.filter(
+                                        c => c.in_reply_to === parseInt(rc.id, 10)
+                                    ),
+                                ]);
+                                return (
+                                    <span
+                                        style={{ display: 'flex', alignItems: 'center' }}
+                                        onClick={e => e.stopPropagation()}
+                                    >
+                                        <CommentIndicator
+                                            thread={allThreadComments}
+                                            visible={allVisible}
+                                            onToggle={() => toggleThreadsVisible(rootIds)}
+                                        />
+                                    </span>
+                                );
+                            })()}
                         {isCodeLine && !isHunkHeader && (
                             <span
                                 style={prefixStyle}
@@ -2085,6 +2244,7 @@ export default function Review({
                         )}
                     </div>
                     {rootComments.map(rc => {
+                        if (!visibleThreads.has(rc.id)) return null;
                         const thread = [
                             rc,
                             ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),

@@ -1,0 +1,743 @@
+import { useMemo } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { colors } from '../../design';
+import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
+import { getClickColumn } from '../../utils/dom';
+import type { LspData } from '../../hooks/useLsp';
+import LspPopover from '../LspPopover';
+import CommentThread from './CommentThread';
+import InlineCommentForm from './InlineCommentForm';
+import {
+    type Comment,
+    MAX_HIGHLIGHT_LINES_PER_FILE,
+    getFileStatusInfo,
+    getLanguageFromFilename,
+    slugify,
+} from './types';
+import type { DiffTheme } from './diff_theme';
+
+export interface DiffViewProps {
+    parsedLines: ParsedLine[];
+    // When set, only render lines belonging to this file (used by docked diff tabs).
+    filterFile?: string;
+    comments: Comment[];
+    outdatedComments: Comment[];
+    collapsedFiles: Set<string>;
+    activeLineIndex: number | null;
+    activeLspIndex: number | null;
+    replyToId: number | null;
+    editingCommentId: number | null;
+    commentBody: string;
+    editingCommentBody: string;
+    isAddingComment: boolean;
+    isMobile: boolean;
+    wrapLines: boolean;
+    diffTheme: DiffTheme;
+    lspData: LspData | null;
+    onCommentClick: (idx: number, file: string, pos: number) => void;
+    onCodeClick: (
+        idx: number,
+        file: string,
+        pos: number,
+        originalLineIndex: number,
+        col: number
+    ) => void;
+    onThreadClick: (thread: Comment[], file: string, pos: number, lineIdx: number) => void;
+    onDeleteComment: (id: number) => void;
+    onToggleFileCollapse: (file: string) => void;
+    onShowOutdated: (file: string) => void;
+    onDockDiffFile: (file: string) => void;
+    onExpandHunk: (hunkLineIndex: number, file: string, direction: 'before' | 'after') => void;
+    onOpenCodeViewer: (filePath: string, line: number, position: { x: number; y: number }) => void;
+    // Close the LSP popover shown inline in the comment form (clears data only).
+    onClearLspData: () => void;
+    // Close the floating LSP popover (clears data and the active line).
+    onCloseLsp: () => void;
+    onCancelInline: () => void;
+    onChangeCommentBody: (body: string) => void;
+    onChangeEditingCommentBody: (body: string) => void;
+    onSubmitInline: () => void;
+}
+
+// The main diff renderer: file headers, hunk rows, syntax-highlighted code
+// lines, inline comment threads, and the inline comment editor.
+export default function DiffView({
+    parsedLines,
+    filterFile,
+    comments,
+    outdatedComments,
+    collapsedFiles,
+    activeLineIndex,
+    activeLspIndex,
+    replyToId,
+    editingCommentId,
+    commentBody,
+    editingCommentBody,
+    isAddingComment,
+    isMobile,
+    wrapLines,
+    diffTheme,
+    lspData,
+    onCommentClick,
+    onCodeClick,
+    onThreadClick,
+    onDeleteComment,
+    onToggleFileCollapse,
+    onShowOutdated,
+    onDockDiffFile,
+    onExpandHunk,
+    onOpenCodeViewer,
+    onClearLspData,
+    onCloseLsp,
+    onCancelInline,
+    onChangeCommentBody,
+    onChangeEditingCommentBody,
+    onSubmitInline,
+}: DiffViewProps) {
+    const lines = useMemo(() => sortParsedLinesTestsLast(parsedLines), [parsedLines]);
+
+    // Pre-compute highlighted lines for each file section
+    const highlightedLines = useMemo(() => {
+        const result: Map<number, React.ReactNode> = new Map();
+
+        // Group lines by file and collect code for bulk highlighting
+        let currentFile: string | null = null;
+        let fileLines: { idx: number; code: string; prefix: string }[] = [];
+
+        const processFileSection = (file: string, linesData: typeof fileLines) => {
+            if (linesData.length === 0) return;
+
+            // Each highlighted line spins up its own Prism instance, so very large
+            // file sections are left unhighlighted to keep big diffs responsive.
+            // The renderer falls back to plain text when no entry exists for a line.
+            if (linesData.length > MAX_HIGHLIGHT_LINES_PER_FILE) return;
+
+            const language = getLanguageFromFilename(file);
+
+            // We'll use SyntaxHighlighter's output directly for each line
+            linesData.forEach(lineData => {
+                const lineCode = lineData.code || ' '; // Use space for empty lines
+                result.set(
+                    lineData.idx,
+                    <SyntaxHighlighter
+                        language={language}
+                        style={diffTheme}
+                        customStyle={{
+                            background: 'transparent',
+                            margin: 0,
+                            padding: 0,
+                            display: 'inline',
+                            fontSize: 'inherit',
+                            fontFamily: 'inherit',
+                        }}
+                        codeTagProps={{
+                            style: {
+                                background: 'transparent',
+                                fontFamily: 'inherit',
+                            },
+                        }}
+                        PreTag="span"
+                        CodeTag="span"
+                    >
+                        {lineCode}
+                    </SyntaxHighlighter>
+                );
+            });
+        };
+
+        lines.forEach((item, idx) => {
+            if (item.lineType === 'file-header') {
+                // Process previous file's lines
+                if (currentFile && fileLines.length > 0) {
+                    processFileSection(currentFile, fileLines);
+                }
+                currentFile = item.text;
+                fileLines = [];
+            } else if (
+                currentFile &&
+                (item.lineType === 'addition' ||
+                    item.lineType === 'deletion' ||
+                    item.lineType === 'code')
+            ) {
+                // Extract the code without the +/- prefix
+                const code = item.text.slice(1);
+                fileLines.push({ idx, code, prefix: item.text[0] });
+            }
+        });
+
+        // Process the last file section
+        if (currentFile && fileLines.length > 0) {
+            processFileSection(currentFile, fileLines);
+        }
+
+        return result;
+    }, [lines, diffTheme]);
+
+    if (lines.length === 0) return null;
+
+    // Pre-compute per-file add/del counts for display in file headers.
+    const fileCounts = new Map<string, { add: number; del: number }>();
+    let fcFile: string | null = null;
+    for (const p of lines) {
+        if (p.lineType === 'file-header') {
+            fcFile = p.file;
+            if (fcFile && !fileCounts.has(fcFile)) fileCounts.set(fcFile, { add: 0, del: 0 });
+        } else if (fcFile && fileCounts.has(fcFile)) {
+            const fc = fileCounts.get(fcFile)!;
+            if (p.lineType === 'addition') fc.add++;
+            else if (p.lineType === 'deletion') fc.del++;
+        }
+    }
+
+    // Comments attached to a specific parsed line (file header or code line).
+    const commentsForLine = (item: ParsedLine): Comment[] =>
+        item.file
+            ? comments.filter(
+                  c =>
+                      c.path === item.file &&
+                      (c.position === item.pos?.toString() || (c.position === '' && item.pos === 0))
+              )
+            : [];
+
+    const threadsForLine = (item: ParsedLine, idx: number, stickyOnMobile: boolean) => {
+        const lineComments = commentsForLine(item);
+        const rootComments = lineComments.filter(c => !c.in_reply_to);
+        return rootComments.map(rc => {
+            const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
+            const isReplyingToThread =
+                (replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId)) ||
+                (editingCommentId !== null &&
+                    thread.some(c => parseInt(c.id, 10) === editingCommentId));
+            return (
+                <CommentThread
+                    key={rc.id}
+                    thread={thread}
+                    isActive={isReplyingToThread}
+                    stickyOnMobile={stickyOnMobile}
+                    onClick={() => {
+                        if (item.file && item.pos !== null) {
+                            onThreadClick(thread, item.file, item.pos, idx);
+                        }
+                    }}
+                    onDeleteComment={onDeleteComment}
+                />
+            );
+        });
+    };
+
+    let currentFile: string | null = null;
+
+    const rows = lines.map((item, idx) => {
+        const line = item.text;
+        const isAddition = item.lineType === 'addition';
+        const isDeletion = item.lineType === 'deletion';
+        const isHunkHeader = item.lineType === 'hunk';
+        const isFileHeader = item.lineType === 'file-header';
+        const isCodeLine = isAddition || isDeletion || item.lineType === 'code';
+
+        // Update current file when we hit a file header
+        if (isFileHeader) {
+            currentFile = item.file;
+        }
+
+        // If filtering by file, skip lines not belonging to that file
+        if (filterFile && currentFile !== filterFile) {
+            return null;
+        }
+
+        // Skip rendering lines that belong to collapsed files (but always render file headers)
+        if (!isFileHeader && currentFile && collapsedFiles.has(currentFile)) {
+            return null;
+        }
+
+        // Render file header with clean styling
+        if (isFileHeader) {
+            const statusInfo = getFileStatusInfo(item.fileStatus);
+            const isInlineActive = activeLineIndex === idx;
+            const isCollapsed = item.file ? collapsedFiles.has(item.file) : false;
+            const fileOutdatedComments = item.file
+                ? outdatedComments.filter(c => c.path === item.file)
+                : [];
+            const hasOutdated = fileOutdatedComments.length > 0;
+
+            return (
+                <div key={idx} id={item.file ? `file-${slugify(item.file)}` : undefined}>
+                    <div
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            padding: '10px 12px',
+                            background:
+                                'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
+                            borderTop: idx > 0 ? '2px solid var(--border)' : 'none',
+                            borderBottom: '1px solid var(--border)',
+                            marginTop: idx > 0 ? '8px' : '0',
+                            cursor: 'pointer',
+                            borderLeft: isInlineActive
+                                ? '3px solid var(--accent)'
+                                : '3px solid transparent',
+                            position: 'relative',
+                        }}
+                        onClick={() =>
+                            item.file &&
+                            item.pos !== null &&
+                            onCommentClick(idx, item.file, item.pos)
+                        }
+                        className="hover-line"
+                        title={`Add comment to ${item.file}`}
+                    >
+                        <button
+                            onClick={e => {
+                                e.stopPropagation();
+                                if (item.file) onToggleFileCollapse(item.file);
+                            }}
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                padding: '4px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'var(--text-secondary)',
+                                fontSize: '16px',
+                                lineHeight: 1,
+                                transition: 'transform 0.2s ease',
+                                transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                            }}
+                            title={isCollapsed ? 'Expand file' : 'Collapse file'}
+                        >
+                            ▼
+                        </button>
+                        <span
+                            style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: '22px',
+                                height: '22px',
+                                borderRadius: '4px',
+                                background: statusInfo.bg,
+                                color: statusInfo.color,
+                                fontSize: '14px',
+                                fontWeight: 600,
+                            }}
+                        >
+                            {statusInfo.icon}
+                        </span>
+                        <span
+                            style={{
+                                fontSize: '11px',
+                                fontWeight: 500,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                                color: statusInfo.color,
+                                minWidth: '60px',
+                            }}
+                        >
+                            {statusInfo.label}
+                        </span>
+                        <span
+                            style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '13px',
+                                fontWeight: 500,
+                                color: 'var(--text-primary)',
+                            }}
+                        >
+                            {item.fileStatus === 'renamed' && item.origName
+                                ? `${item.origName} → ${item.text}`
+                                : item.text}
+                        </span>
+                        {(() => {
+                            const fc = item.file ? fileCounts.get(item.file) : null;
+                            if (!fc || (fc.add === 0 && fc.del === 0)) return null;
+                            return (
+                                <span
+                                    style={{
+                                        display: 'inline-flex',
+                                        gap: '4px',
+                                        marginLeft: '4px',
+                                    }}
+                                >
+                                    {fc.add > 0 && (
+                                        <span
+                                            style={{
+                                                color: 'var(--text-success)',
+                                                fontSize: '12px',
+                                            }}
+                                        >
+                                            +{fc.add}
+                                        </span>
+                                    )}
+                                    {fc.del > 0 && (
+                                        <span
+                                            style={{
+                                                color: 'var(--text-danger)',
+                                                fontSize: '12px',
+                                            }}
+                                        >
+                                            −{fc.del}
+                                        </span>
+                                    )}
+                                </span>
+                            );
+                        })()}
+                        {hasOutdated && (
+                            <button
+                                onClick={e => {
+                                    e.stopPropagation();
+                                    if (item.file) onShowOutdated(item.file);
+                                }}
+                                style={{
+                                    marginLeft: 'auto',
+                                    background: colors.bgWarningDim,
+                                    border: `1px solid ${colors.borderWarningDim}`,
+                                    color: colors.textWarning,
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '12px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    fontWeight: 500,
+                                }}
+                            >
+                                {' '}
+                                <span>⚠️</span> Outdated Comments ({fileOutdatedComments.length})
+                            </button>
+                        )}
+                        {item.file && (
+                            <button
+                                onClick={e => {
+                                    e.stopPropagation();
+                                    onDockDiffFile(item.file!);
+                                }}
+                                style={{
+                                    marginLeft: hasOutdated ? '6px' : 'auto',
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-tertiary)',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '12px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'color 0.15s ease',
+                                }}
+                                title="Open in tab"
+                            >
+                                <span style={{ fontSize: '13px' }}>⊞</span>
+                            </button>
+                        )}
+                    </div>
+                    {threadsForLine(item, idx, false)}
+                    {isInlineActive && (
+                        <InlineCommentForm
+                            file={item.file}
+                            pos={item.pos}
+                            editingCommentId={editingCommentId}
+                            replyToId={replyToId}
+                            commentBody={commentBody}
+                            editingCommentBody={editingCommentBody}
+                            isAddingComment={isAddingComment}
+                            onChangeCommentBody={onChangeCommentBody}
+                            onChangeEditingCommentBody={onChangeEditingCommentBody}
+                            onCancel={onCancelInline}
+                            onSubmit={onSubmitInline}
+                        >
+                            {lspData && (
+                                <LspPopover
+                                    hover={lspData.hover}
+                                    refs={lspData.refs}
+                                    definitions={lspData.definitions}
+                                    typeDefinitions={lspData.typeDefinitions}
+                                    variant="inline"
+                                    onRefClick={(r, e) => {
+                                        const filePath = r.uri.replace('file://', '');
+                                        onOpenCodeViewer(filePath, r.range.start.line + 1, {
+                                            x: e.clientX + 20,
+                                            y: e.clientY - 50,
+                                        });
+                                    }}
+                                    onClose={onClearLspData}
+                                />
+                            )}
+                        </InlineCommentForm>
+                    )}
+                </div>
+            );
+        }
+
+        let containerStyle: React.CSSProperties = {
+            display: 'flex',
+            alignItems: 'stretch',
+            minHeight: '20px',
+            position: 'relative',
+        };
+
+        let prefixStyle: React.CSSProperties = {
+            width: '20px',
+            minWidth: '20px',
+            textAlign: 'center',
+            userSelect: 'none',
+            color: 'var(--text-tertiary)',
+            borderRight: '1px solid var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '12px',
+        };
+
+        // On mobile, unwrapped lines scroll horizontally as a unit (see the
+        // max-content wrapper below). The code span must size to its content
+        // and never shrink so the row grows wider than the viewport.
+        const mobileScroll = isMobile && !wrapLines;
+        let lineStyle: React.CSSProperties = {
+            flex: mobileScroll ? '1 0 auto' : 1,
+            minWidth: mobileScroll ? 'auto' : 0,
+            padding: '0 8px',
+            whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
+            overflowWrap: wrapLines ? 'anywhere' : 'normal',
+            display: 'flex',
+            alignItems: wrapLines ? 'flex-start' : 'center',
+        };
+
+        if (isAddition) {
+            containerStyle = { ...containerStyle, background: colors.diffAddBg };
+            prefixStyle = {
+                ...prefixStyle,
+                color: colors.success,
+                background: colors.diffAddGutterBg,
+            };
+        } else if (isDeletion) {
+            containerStyle = { ...containerStyle, background: colors.diffDelBg };
+            prefixStyle = {
+                ...prefixStyle,
+                color: colors.danger,
+                background: colors.diffDelGutterBg,
+            };
+        } else if (isHunkHeader) {
+            containerStyle = { ...containerStyle, background: colors.diffHunkBg };
+            lineStyle = {
+                ...lineStyle,
+                color: colors.accent,
+                fontStyle: 'italic',
+                fontSize: '12px',
+            };
+        }
+
+        if (item.clickable) {
+            containerStyle = { ...containerStyle, cursor: 'default' };
+            prefixStyle = { ...prefixStyle, cursor: 'pointer' };
+        }
+
+        const isInlineActive = activeLineIndex === idx;
+        const isLspActive = activeLspIndex === idx;
+
+        // Determine what to render for the line content
+        let lineContent: React.ReactNode;
+        const highlightedContent = highlightedLines.get(idx);
+
+        if (highlightedContent && isCodeLine && !isHunkHeader) {
+            // Use syntax-highlighted content
+            lineContent = highlightedContent;
+        } else {
+            // Use plain text for headers and non-code lines
+            lineContent = isCodeLine ? line.slice(1) : line;
+        }
+
+        return (
+            <div key={idx}>
+                <div
+                    className={
+                        (item.clickable ? 'hover-line' : '') +
+                        (isHunkHeader ? ' diff-hunk-row' : '')
+                    }
+                    style={{
+                        ...containerStyle,
+                        borderLeft:
+                            isInlineActive || isLspActive
+                                ? '3px solid var(--accent)'
+                                : '3px solid transparent',
+                        marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
+                    }}
+                    title={undefined}
+                >
+                    {isCodeLine && !isHunkHeader && !isMobile && (
+                        <>
+                            <span
+                                className="diff-line-no"
+                                aria-hidden="true"
+                                style={{
+                                    background: isDeletion
+                                        ? colors.diffDelGutterBg
+                                        : isAddition
+                                          ? undefined
+                                          : undefined,
+                                }}
+                            >
+                                {item.oldLineNo ?? ''}
+                            </span>
+                            <span
+                                className="diff-line-no"
+                                aria-hidden="true"
+                                style={{
+                                    background: isAddition ? colors.diffAddGutterBg : undefined,
+                                }}
+                            >
+                                {item.newLineNo ?? ''}
+                            </span>
+                        </>
+                    )}
+                    {isCodeLine && !isHunkHeader && (
+                        <span
+                            style={prefixStyle}
+                            onClick={e => {
+                                if (item.clickable && item.file && item.pos !== null) {
+                                    e.stopPropagation();
+                                    onCommentClick(idx, item.file, item.pos);
+                                }
+                            }}
+                            title={
+                                item.clickable
+                                    ? `Add comment to ${item.file}:${item.pos}`
+                                    : undefined
+                            }
+                        >
+                            {isAddition ? '+' : isDeletion ? '-' : ''}
+                        </span>
+                    )}
+                    {isHunkHeader && item.file && (
+                        <span
+                            style={{
+                                display: 'inline-flex',
+                                gap: '4px',
+                                padding: '0 6px',
+                                alignItems: 'center',
+                            }}
+                        >
+                            <button
+                                type="button"
+                                onClick={e => {
+                                    e.stopPropagation();
+                                    onExpandHunk(item.originalLineIndex, item.file!, 'before');
+                                }}
+                                title="Expand 20 lines before this hunk"
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    borderRadius: '3px',
+                                    padding: '0 6px',
+                                    fontSize: '11px',
+                                    lineHeight: '16px',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                ↑
+                            </button>
+                            <button
+                                type="button"
+                                onClick={e => {
+                                    e.stopPropagation();
+                                    onExpandHunk(item.originalLineIndex, item.file!, 'after');
+                                }}
+                                title="Expand 20 lines after this hunk"
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    borderRadius: '3px',
+                                    padding: '0 6px',
+                                    fontSize: '11px',
+                                    lineHeight: '16px',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                ↓
+                            </button>
+                        </span>
+                    )}
+                    <span
+                        style={{
+                            ...lineStyle,
+                            cursor: item.clickable ? 'pointer' : 'default',
+                        }}
+                        onClick={e => {
+                            if (item.clickable && item.file && item.pos !== null) {
+                                const col = getClickColumn(e, e.currentTarget);
+                                onCodeClick(idx, item.file, item.pos, item.originalLineIndex, col);
+                            }
+                        }}
+                    >
+                        {lineContent}
+                    </span>
+                    {isLspActive && lspData && (
+                        <LspPopover
+                            hover={lspData.hover}
+                            refs={lspData.refs}
+                            definitions={lspData.definitions}
+                            typeDefinitions={lspData.typeDefinitions}
+                            variant="floating"
+                            onRefClick={(r, e) => {
+                                const filePath = r.uri.replace('file://', '');
+                                onOpenCodeViewer(filePath, r.range.start.line + 1, {
+                                    x: e.clientX + 20,
+                                    y: e.clientY - 50,
+                                });
+                            }}
+                            onClose={onCloseLsp}
+                        />
+                    )}
+                </div>
+                {threadsForLine(item, idx, isMobile)}
+                {isInlineActive && (
+                    <InlineCommentForm
+                        file={item.file}
+                        pos={item.pos}
+                        editingCommentId={editingCommentId}
+                        replyToId={replyToId}
+                        commentBody={commentBody}
+                        editingCommentBody={editingCommentBody}
+                        isAddingComment={isAddingComment}
+                        stickyOnMobile={isMobile}
+                        onChangeCommentBody={onChangeCommentBody}
+                        onChangeEditingCommentBody={onChangeEditingCommentBody}
+                        onCancel={onCancelInline}
+                        onSubmit={onSubmitInline}
+                    />
+                )}
+            </div>
+        );
+    });
+
+    // On phones, let the whole diff slide horizontally so long lines can be
+    // read in full. `max-content` makes every row as wide as the longest
+    // line (so add/del backgrounds extend across the full scroll width),
+    // while `minWidth: 100%` keeps short diffs filling the viewport. Inline
+    // comments are pinned back to the left edge (see their sticky styles) so
+    // they stay readable regardless of the horizontal scroll position.
+    if (isMobile) {
+        return (
+            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                <div
+                    style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        width: 'max-content',
+                        minWidth: '100%',
+                    }}
+                >
+                    {rows}
+                </div>
+            </div>
+        );
+    }
+
+    return <>{rows}</>;
+}

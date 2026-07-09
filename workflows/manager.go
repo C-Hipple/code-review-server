@@ -41,8 +41,8 @@ func (c *apiCallCounter) total() int64 {
 		c.Commits.Load()
 }
 
-func (c *apiCallCounter) log(log *slog.Logger) {
-	log.Info("GitHub API calls this cycle",
+func (c *apiCallCounter) log() {
+	slog.Info("GitHub API calls this cycle",
 		"pr_list", c.PRList.Load(),
 		"pr_specific", c.PRSpecific.Load(),
 		"comments", c.Comments.Load(),
@@ -80,7 +80,7 @@ type ManagerService struct {
 	oneoff        bool
 }
 
-func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []SerializedFileChange {
+func deduplicateChanges(changes []SerializedFileChange) []SerializedFileChange {
 	// Dedup is per (identifier, workflow): a single workflow may emit at most
 	// one canonical change per item per cycle, but different workflows that
 	// touch the same item must each contribute (e.g. one Update from workflow
@@ -93,7 +93,7 @@ func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []Seri
 	}
 
 	finalChanges := []SerializedFileChange{}
-	log.Debug("Deduplicating changes", "count", len(changesByIdentifier))
+	slog.Debug("Deduplicating changes", "count", len(changesByIdentifier))
 
 	for identifier, itemChanges := range changesByIdentifier {
 		var updateChange *SerializedFileChange
@@ -112,27 +112,27 @@ func deduplicateChanges(log *slog.Logger, changes []SerializedFileChange) []Seri
 		}
 
 		if updateChange != nil {
-			log.Debug("Found update, discarding other changes", "identifier", identifier)
+			slog.Debug("Found update, discarding other changes", "identifier", identifier)
 			finalChanges = append(finalChanges, *updateChange)
 		} else if addChange != nil {
-			log.Debug("Found add, discarding delete", "identifier", identifier)
+			slog.Debug("Found add, discarding delete", "identifier", identifier)
 			finalChanges = append(finalChanges, *addChange)
 		} else if deleteChange != nil {
-			log.Debug("Found delete", "identifier", identifier)
+			slog.Debug("Found delete", "identifier", identifier)
 			finalChanges = append(finalChanges, *deleteChange)
 		}
 	}
 	return finalChanges
 }
 
-func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGroup) {
+func ListenChanges(channel chan FileChanges, wg *sync.WaitGroup) {
 	changesMap := make(map[string][]SerializedFileChange)
 	for fileChange := range channel {
 		if fileChange.ChangeType == "No Change" {
 			wg.Done()
 			continue
 		}
-		fileChange.Report(log)
+		fileChange.Report()
 		key := fileChange.SectionName
 
 		var lines []string
@@ -147,13 +147,13 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 	}
 
 	var serialziedChannel = make(chan SerializedFileChange)
-	go ApplyChanges(log, serialziedChannel, wg)
+	go ApplyChanges(serialziedChannel, wg)
 
 	for _, changes := range changesMap {
-		deduplicatedChanges := deduplicateChanges(log, changes)
+		deduplicatedChanges := deduplicateChanges(changes)
 		numDeduplicated := len(changes) - len(deduplicatedChanges)
 		if numDeduplicated > 0 {
-			log.Debug("Deduplicated changes, adjusting WaitGroup", "count", numDeduplicated)
+			slog.Debug("Deduplicated changes, adjusting WaitGroup", "count", numDeduplicated)
 			for i := 0; i < numDeduplicated; i++ {
 				wg.Done()
 			}
@@ -165,13 +165,13 @@ func ListenChanges(log *slog.Logger, channel chan FileChanges, wg *sync.WaitGrou
 	close(serialziedChannel)
 }
 
-func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.WaitGroup) {
+func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	changeCount := 0
 	for deserializedChange := range channel {
 		db := config.C().DB
 
 		if config.C().AutoWorktree {
-			handleWorktreeChange(log, db, deserializedChange)
+			handleWorktreeChange(db, deserializedChange)
 		}
 
 		switch deserializedChange.FileChange.ChangeType {
@@ -187,10 +187,10 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 				deserializedChange.FileChange.WorkflowName,
 			)
 			if err != nil {
-				log.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+				slog.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
 			}
 			if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
-				notifyPRAdded(log, deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
+				notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
 			}
 		case "Delete":
 			// "Delete" now means "this workflow no longer claims this item".
@@ -202,16 +202,16 @@ func ApplyChanges(log *slog.Logger, channel chan SerializedFileChange, wg *sync.
 				deserializedChange.FileChange.WorkflowName,
 			)
 			if err != nil {
-				log.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
+				slog.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
 			}
 		}
 		changeCount++
 		wg.Done()
 	}
-	log.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+	slog.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
 }
 
-func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFileChange) {
+func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 	// Identifier is Repo-PRNumber for PRs
 	parts := strings.Split(change.FileChange.Identifier, "-")
 	if len(parts) < 2 {
@@ -275,17 +275,17 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 	// Check if repo exists
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		// Log debug if we can't find the repo, but don't error out loudly as it might be expected
-		log.Debug("Skipping worktree management, repo not found locally", "path", repoDir)
+		slog.Debug("Skipping worktree management, repo not found locally", "path", repoDir)
 		return
 	}
 
 	if change.FileChange.ChangeType == "Addition" || change.FileChange.ChangeType == "Update" {
 		// Create worktree
-		log.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
+		slog.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
 
 		// Ensure worktree root exists
 		if err := os.MkdirAll(worktreeRoot, 0755); err != nil {
-			log.Error("Failed to create worktree root directory", "path", worktreeRoot, "error", err)
+			slog.Error("Failed to create worktree root directory", "path", worktreeRoot, "error", err)
 			return
 		}
 
@@ -299,10 +299,10 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 
 		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath); err != nil {
 			// If it fails, we log it but don't stop the workflow
-			log.Error("Failed to create worktree", "error", err)
+			slog.Error("Failed to create worktree", "error", err)
 		} else {
 			if err := db.AddWorktree(prNumber, repoName, ownerName, worktreePath, branchName); err != nil {
-				log.Error("Failed to record worktree in DB", "error", err)
+				slog.Error("Failed to record worktree in DB", "error", err)
 			}
 		}
 
@@ -310,16 +310,16 @@ func handleWorktreeChange(log *slog.Logger, db *database.DB, change SerializedFi
 		// Remove worktree
 		path, err := db.GetWorktree(prNumber, repoName, ownerName)
 		if err != nil {
-			log.Error("Error checking for worktree", "error", err)
+			slog.Error("Error checking for worktree", "error", err)
 			return
 		}
 		if path != "" {
-			log.Info("Removing worktree", "pr", prNumber, "path", path)
+			slog.Info("Removing worktree", "pr", prNumber, "path", path)
 			if err := git_tools.RemoveWorktree(repoDir, path); err != nil {
-				log.Error("Failed to remove worktree", "error", err)
+				slog.Error("Failed to remove worktree", "error", err)
 			}
 			if err := db.RemoveWorktreeRecord(prNumber, repoName, ownerName); err != nil {
-				log.Error("Failed to remove worktree record from DB", "error", err)
+				slog.Error("Failed to remove worktree record from DB", "error", err)
 			}
 		}
 	}
@@ -334,16 +334,16 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 	}
 }
 
-func (ms ManagerService) runWorkflow(log *slog.Logger, workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
+func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
 	// Helper which times the workflow run command.
-	log.Info("Starting Workflow", "workflow", workflow.GetName())
+	slog.Info("Starting Workflow", "workflow", workflow.GetName())
 	start := time.Now()
-	result, err := workflow.Run(log, prs, workflow_chan, file_change_wg)
+	result, err := workflow.Run(prs, workflow_chan, file_change_wg)
 	duration := time.Since(start)
 	if err != nil {
-		log.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
+		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
 	}
-	log.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
+	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
 }
 
 // hasUnfetchedRequirements returns true if any PR data required by the workflow was
@@ -377,7 +377,7 @@ func hasUnfetchedRequirements(
 	return false
 }
 
-func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGroup) {
+func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	client := git_tools.GetGithubClient()
 	apiCalls := &apiCallCounter{}
 
@@ -414,11 +414,11 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 	for repoKey, states := range repoStatePRs {
 		owner, repo, _ := git_tools.ParseRepoName(repoKey)
 		for state := range states {
-			log.Debug("Fetching PRs", "repo", repoKey, "state", state)
+			slog.Debug("Fetching PRs", "repo", repoKey, "state", state)
 			prs, err := git_tools.GetPRs(client, state, owner, repo)
 			apiCalls.PRList.Add(1)
 			if err != nil {
-				log.Error("Failed to fetch PRs, will skip dependent workflows", "repo", repoKey, "state", state, "error", err)
+				slog.Error("Failed to fetch PRs, will skip dependent workflows", "repo", repoKey, "state", state, "error", err)
 				// repoStatePRs[repoKey][state] remains nil — signals failure to hasUnfetchedRequirements
 				continue
 			}
@@ -433,11 +433,11 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 			numbers = append(numbers, num)
 		}
 		if len(numbers) > 0 {
-			log.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
+			slog.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
 			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
 			apiCalls.PRSpecific.Add(1)
 			if err != nil {
-				log.Error("Failed to fetch specific PRs, will skip dependent workflows", "repo", repoKey, "error", err)
+				slog.Error("Failed to fetch specific PRs, will skip dependent workflows", "repo", repoKey, "error", err)
 				// specificPRs[repoKey][num] entries remain nil — signals failure
 				continue
 			}
@@ -448,7 +448,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 	}
 
 	// Pre-fetch auxiliary data for all PRs
-	auxDataStore := ms.prefetchAuxData(log, client, apiCalls, repoStatePRs, specificPRs)
+	auxDataStore := ms.prefetchAuxData(client, apiCalls, repoStatePRs, specificPRs)
 	SetCurrentAuxDataStore(auxDataStore)
 	defer SetCurrentAuxDataStore(nil)
 
@@ -457,7 +457,7 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		// Skip if any required PR data was not successfully fetched (e.g. rate limit).
 		// Running section-matching against an empty list would delete all DB items.
 		if hasUnfetchedRequirements(workflow, repoStatePRs, specificPRs) {
-			log.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
+			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
 			continue
 		}
 
@@ -480,26 +480,26 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		wg.Add(1)
 		go func(workflow Workflow, prs []*github.PullRequest) {
 			defer wg.Done()
-			ms.runWorkflow(log, workflow, prs, ms.workflow_chan, file_change_wg)
+			ms.runWorkflow(workflow, prs, ms.workflow_chan, file_change_wg)
 		}(workflow, workflowPRs)
 	}
 	if waitTimeout(&wg, 240*time.Second) {
-		log.Error("RunOnce waitgroup timed out waiting for workflows")
+		slog.Error("RunOnce waitgroup timed out waiting for workflows")
 	} else {
-		log.Info("Completed RunOnce Waitgroup")
+		slog.Info("Completed RunOnce Waitgroup")
 	}
-	apiCalls.log(log)
+	apiCalls.log()
 
 	// Fetch authoritative rate limit status from GitHub's /rate_limit endpoint.
 	rlLimit, rlRemaining, rlResetAt, rlErr := git_tools.GetRateLimitFromAPI(client)
 	if rlErr != nil {
-		log.Warn("Failed to fetch rate limit from GitHub API, using header-based estimate", "error", rlErr)
+		slog.Warn("Failed to fetch rate limit from GitHub API, using header-based estimate", "error", rlErr)
 		rlStatus := git_tools.GetRateLimitStatus()
 		rlLimit = rlStatus.Limit
 		rlRemaining = rlStatus.Remaining
 		rlResetAt = rlStatus.ResetAt
 	}
-	log.Info("GitHub rate limit post-cycle",
+	slog.Info("GitHub rate limit post-cycle",
 		"remaining", rlRemaining,
 		"limit", rlLimit,
 		"used_this_cycle", apiCalls.total(),
@@ -527,12 +527,12 @@ func (ms ManagerService) RunOnce(log *slog.Logger, file_change_wg *sync.WaitGrou
 		rlLimit,
 		rlResetAtStr,
 	); err != nil {
-		log.Error("Failed to save API call stats to database", "error", err)
+		slog.Error("Failed to save API call stats to database", "error", err)
 	}
 }
 
-func (ms *ManagerService) Run(log *slog.Logger) {
-	log.Info("Starting Service")
+func (ms *ManagerService) Run() {
+	slog.Info("Starting Service")
 
 	// Advisory lock to prevent multiple concurrent syncs (skip for oneoff mode)
 	if !ms.oneoff {
@@ -540,14 +540,14 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 		if err == nil {
 			crsHome = filepath.Join(crsHome, ".crs")
 			if err := os.MkdirAll(crsHome, 0755); err != nil {
-				log.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
+				slog.Error("Failed to create CRS directory for lock file", "path", crsHome, "error", err)
 			}
 			lockPath := filepath.Join(crsHome, "codereviewserver_sync.lock")
 			lockFile, err := os.Create(lockPath)
 			if err == nil {
 				err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 				if err != nil {
-					log.Warn("Another instance is already running background sync, skipping sync in this process.")
+					slog.Warn("Another instance is already running background sync, skipping sync in this process.")
 					lockFile.Close()
 					return
 				}
@@ -560,22 +560,22 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 	if ms.oneoff {
 		var listener_wg sync.WaitGroup
 		listener_wg.Add(1)
-		go ListenChanges(log, ms.workflow_chan, &listener_wg)
+		go ListenChanges(ms.workflow_chan, &listener_wg)
 
-		log.Info("Running Once")
-		ms.RunOnce(log, &listener_wg)
+		slog.Info("Running Once")
+		ms.RunOnce(&listener_wg)
 		close(ms.workflow_chan)
 		listener_wg.Done()
 		if waitTimeout(&listener_wg, 240*time.Second) {
-			log.Error("Listener waitgroup timed out waiting for changes to be applied")
+			slog.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
-		pruneOrphanedItems(log)
+		pruneOrphanedItems()
 	} else {
 		cycle_count := 0
 		for {
 			// Reload config and workflows before each cycle
 			if err := config.Reload(); err != nil {
-				log.Error("Failed to reload config before cycle", "error", err)
+				slog.Error("Failed to reload config before cycle", "error", err)
 			} else {
 				// Re-generate workflows
 				cfg := config.C()
@@ -589,12 +589,12 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 			db := config.C().DB
 			lastCycle, lastErr := db.GetLastWorkflowCycleTime()
 			if lastErr != nil {
-				log.Warn("Failed to get last workflow cycle time", "error", lastErr)
+				slog.Warn("Failed to get last workflow cycle time", "error", lastErr)
 			} else if !lastCycle.IsZero() {
 				elapsed := time.Since(lastCycle)
 				minInterval := ms.sleepTime / 2
 				if elapsed < minInterval {
-					log.Info("Skipping cycle, last run was too recent",
+					slog.Info("Skipping cycle, last run was too recent",
 						"last_run", lastCycle.Format(time.RFC3339),
 						"elapsed", elapsed.Round(time.Second),
 						"min_interval", minInterval)
@@ -604,45 +604,45 @@ func (ms *ManagerService) Run(log *slog.Logger) {
 				}
 			}
 
-			log.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
+			slog.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
 			var cycle_wg sync.WaitGroup
 			cycle_wg.Add(1)
 			ms.workflow_chan = make(chan FileChanges)
 
-			go ListenChanges(log, ms.workflow_chan, &cycle_wg)
-			ms.RunOnce(log, &cycle_wg)
+			go ListenChanges(ms.workflow_chan, &cycle_wg)
+			ms.RunOnce(&cycle_wg)
 			close(ms.workflow_chan)
 			cycle_wg.Done()
 
 			if waitTimeout(&cycle_wg, 240*time.Second) {
-				log.Error("Cycle waitgroup timed out waiting for changes to be applied")
+				slog.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 
-			pruneOrphanedItems(log)
+			pruneOrphanedItems()
 
 			// Log cycle completion so the throttle check works on next server start.
 			if err := db.LogWorkflowCycle(); err != nil {
-				log.Error("Failed to log workflow cycle completion", "error", err)
+				slog.Error("Failed to log workflow cycle completion", "error", err)
 			}
 
 			time.Sleep(ms.sleepTime)
 			cycle_count++
 		}
 	}
-	log.Info("Exiting Service")
+	slog.Info("Exiting Service")
 }
 
 // pruneOrphanedItems deletes any items that are no longer claimed by any
 // workflow. Run after every cycle once all per-workflow ownership updates have
 // been applied.
-func pruneOrphanedItems(log *slog.Logger) {
+func pruneOrphanedItems() {
 	deleted, err := config.C().DB.PruneOrphanedItems()
 	if err != nil {
-		log.Error("Failed to prune orphaned items", "error", err)
+		slog.Error("Failed to prune orphaned items", "error", err)
 		return
 	}
 	if deleted > 0 {
-		log.Info("Pruned orphaned items", "count", deleted)
+		slog.Info("Pruned orphaned items", "count", deleted)
 	}
 }
 
@@ -656,7 +656,7 @@ func (ms *ManagerService) Initialize() {
 }
 
 // prefetchAuxData gathers auxiliary data for all PRs that need it
-func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client,
+func (ms ManagerService) prefetchAuxData(client *github.Client,
 	apiCalls *apiCallCounter,
 	repoStatePRs map[string]map[string][]*github.PullRequest,
 	specificPRs map[string]map[int]*github.PullRequest) *AuxDataStore {
@@ -669,7 +669,7 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 
 	for _, wf := range ms.Workflows {
 		for _, req := range wf.GetPRRequirements() {
-			log.Info("AuxDataRequirement", "workflow", wf.GetName(),
+			slog.Info("AuxDataRequirement", "workflow", wf.GetName(),
 				"repo", fmt.Sprintf("%s/%s", req.Owner, req.Repo),
 				"comments", req.AuxData.Comments, "ci_status", req.AuxData.CIStatus,
 				"diff", req.AuxData.Diff, "reviews", req.AuxData.Reviews, "commits", req.AuxData.Commits)
@@ -739,13 +739,13 @@ func (ms ManagerService) prefetchAuxData(log *slog.Logger, client *github.Client
 		wg.Add(1)
 		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest) {
 			defer wg.Done()
-			auxData := fetchAuxDataForPR(log, client, apiCalls, key, auxReq, pr)
+			auxData := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
 			store.Set(key, auxData)
 		}(key, auxReq, prObjects[key])
 	}
 	wg.Wait()
 
-	log.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
+	slog.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
 	return store
 }
 
@@ -774,7 +774,7 @@ func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
-func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
+func fetchAuxDataForPR(client *github.Client,
 	apiCalls *apiCallCounter,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
 
@@ -808,7 +808,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 			prComments, err := git_tools.GetPRComments(client, key.Owner, key.Repo, key.Number)
 			apiCalls.Comments.Add(1)
 			if err != nil {
-				log.Warn("Failed to fetch comments for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				slog.Warn("Failed to fetch comments for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
 			}
 
@@ -861,7 +861,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 			apiCalls.Diff.Add(1)
 			diffResp, _, err := client.PullRequests.GetRaw(ctx, key.Owner, key.Repo, key.Number, github.RawOptions{Type: github.Diff})
 			if err != nil {
-				log.Warn("Failed to fetch diff for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				slog.Warn("Failed to fetch diff for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
 			}
 			auxData.Diff = diffResp
@@ -878,7 +878,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 			reviews, _, err := client.PullRequests.ListReviews(
 				context.Background(), key.Owner, key.Repo, key.Number, nil)
 			if err != nil {
-				log.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
+				slog.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
 				return
 			}
 			ghReviews = reviews
@@ -913,7 +913,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 			commits, _, err := client.PullRequests.ListCommits(
 				context.Background(), key.Owner, key.Repo, key.Number, nil)
 			if err != nil {
-				log.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
+				slog.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
 				return
 			}
 			ghCommits = commits
@@ -923,7 +923,7 @@ func fetchAuxDataForPR(log *slog.Logger, client *github.Client,
 	wg.Wait()
 
 	// Persist all fetched data to DB so GetPRDetails finds it cached
-	persistPRCacheData(log, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
+	persistPRCacheData(key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
 
 	return auxData
 }
@@ -944,7 +944,7 @@ func convertIssueToPRComment(ic *github.IssueComment) *github.PullRequestComment
 
 // persistPRCacheData stores all pre-fetched PR data to the DB cache
 // so that server.GetPRDetails can use it without making API calls.
-func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
+func persistPRCacheData(key PRKey, pr *github.PullRequest,
 	auxData *PRAuxData,
 	allComments []*github.PullRequestComment,
 	reviews []*github.PullRequestReview,
@@ -957,16 +957,22 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 	// 1. Comments
 	if allComments != nil {
 		if j, err := json.Marshal(allComments); err == nil {
-			db.UpsertPRComments(key.Number, key.Repo, string(j))
+			if err := db.UpsertPRComments(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
+			}
 		}
 	}
 
 	// 2. Diff + SHA
 	if auxData.Diff != "" {
-		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff)
+		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
+			slog.Error("Failed to cache PR diff", "pr", key.Number, "repo", key.Repo, "error", err)
+		}
 	} else if auxData.HeadSHA != "" {
 		// Store SHA even without diff so GetPRDetails can look up CI status
-		db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, "")
+		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
+			slog.Error("Failed to cache PR SHA", "pr", key.Number, "repo", key.Repo, "error", err)
+		}
 	}
 
 	// 3. Reviews (stored in same JSON format as server.ReviewJSON)
@@ -995,7 +1001,9 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 			})
 		}
 		if j, err := json.Marshal(rvs); err == nil {
-			db.UpsertPRReviews(key.Number, key.Repo, string(j))
+			if err := db.UpsertPRReviews(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR reviews", "pr", key.Number, "repo", key.Repo, "error", err)
+			}
 		}
 	}
 
@@ -1006,7 +1014,9 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 			CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
 		}{Status: combinedStatus, CheckRuns: checkRuns}
 		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {
-			db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j))
+			if err := db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j)); err != nil {
+				slog.Error("Failed to cache CI status", "pr", key.Number, "repo", key.Repo, "error", err)
+			}
 		}
 	}
 
@@ -1017,7 +1027,9 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 			Teams: pr.RequestedTeams,
 		}
 		if j, err := json.Marshal(reviewers); err == nil {
-			db.UpsertRequestedReviewers(key.Number, key.Repo, string(j))
+			if err := db.UpsertRequestedReviewers(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache requested reviewers", "pr", key.Number, "repo", key.Repo, "error", err)
+			}
 		}
 	}
 
@@ -1041,19 +1053,21 @@ func persistPRCacheData(log *slog.Logger, key PRKey, pr *github.PullRequest,
 			})
 		}
 		if j, err := json.Marshal(cms); err == nil {
-			db.UpsertPRCommits(key.Number, key.Repo, string(j))
+			if err := db.UpsertPRCommits(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR commits", "pr", key.Number, "repo", key.Repo, "error", err)
+			}
 		}
 	}
 
 	// 7. PR Metadata (constructed from PR object + fetched data)
 	if pr != nil {
-		buildAndCacheMetadata(log, db, key, pr, reviews, combinedStatus, checkRuns)
+		buildAndCacheMetadata(db, key, pr, reviews, combinedStatus, checkRuns)
 	}
 }
 
 // buildAndCacheMetadata constructs a PRMetadata-compatible JSON from the PR object
 // and fetched review/CI data, then stores it in the metadata cache.
-func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
+func buildAndCacheMetadata(db *database.DB, key PRKey,
 	pr *github.PullRequest,
 	reviews []*github.PullRequestReview,
 	combinedStatus *github.CombinedStatus,
@@ -1196,7 +1210,9 @@ func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
 	}
 
 	if j, err := json.Marshal(metadata); err == nil {
-		db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, string(j))
+		if err := db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, string(j)); err != nil {
+			slog.Error("Failed to cache PR metadata", "pr", key.Number, "repo", key.Repo, "error", err)
+		}
 	}
 
 	// Run release check for closed PRs
@@ -1208,10 +1224,12 @@ func buildAndCacheMetadata(log *slog.Logger, db *database.DB, key PRKey,
 			if mergeCommitSHA != "" {
 				status, err := GetReleaseStatus(releaseCheckCmd, key.Owner, key.Repo, mergeCommitSHA)
 				if err != nil {
-					log.Warn("Release check failed", "pr", key.Number, "repo", repoFullName, "error", err)
+					slog.Warn("Release check failed", "pr", key.Number, "repo", repoFullName, "error", err)
 				} else {
-					log.Debug("Release check result", "pr", key.Number, "repo", repoFullName, "status", status)
-					db.UpsertReleaseStatus(key.Owner, key.Repo, key.Number, status)
+					slog.Debug("Release check result", "pr", key.Number, "repo", repoFullName, "status", status)
+					if err := db.UpsertReleaseStatus(key.Owner, key.Repo, key.Number, status); err != nil {
+						slog.Error("Failed to store release status", "pr", key.Number, "repo", key.Repo, "error", err)
+					}
 				}
 			}
 		}

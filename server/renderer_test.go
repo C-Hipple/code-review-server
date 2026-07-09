@@ -215,7 +215,7 @@ func TestBuildCommentTreesFromList(t *testing.T) {
 			if len(result) != tt.expected {
 				t.Errorf("buildCommentTreesFromList() returned %d trees, want %d", len(result), tt.expected)
 			}
-			
+
 			// Verify all comments are included
 			totalComments := 0
 			for _, tree := range result {
@@ -440,7 +440,7 @@ func TestCleanEmptyEndingLines(t *testing.T) {
 			if len(result) != tt.expected {
 				t.Errorf("cleanEmptyEndingLines() returned length %d, want %d", len(result), tt.expected)
 			}
-			
+
 			// Verify no trailing empty/whitespace lines (only check from the end)
 			if len(result) > 0 {
 				for i := len(result) - 1; i >= 0; i-- {
@@ -470,12 +470,12 @@ func TestRenderPullRequest(t *testing.T) {
 	}
 
 	result := renderPullRequest(diff, convertToPRComments(comments))
-	
+
 	// Should contain the diff
 	if !strings.Contains(result, diff) {
 		t.Error("renderPullRequest() should contain the diff")
 	}
-	
+
 	// Should contain both comments
 	if !strings.Contains(result, "Reviewed By: user1") {
 		t.Error("renderPullRequest() should contain first comment")
@@ -483,7 +483,7 @@ func TestRenderPullRequest(t *testing.T) {
 	if !strings.Contains(result, "Reviewed By: user2") {
 		t.Error("renderPullRequest() should contain second comment")
 	}
-	
+
 	// Should have separator lines
 	if !strings.Contains(result, "------------------") {
 		t.Error("renderPullRequest() should contain separator lines")
@@ -532,17 +532,17 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 	}
 
 	trees := buildCommentTreesFromList(convertToPRComments(comments))
-	
+
 	// Should have at least 3 trees (may be more due to nested replies being orphaned)
 	if len(trees) < 3 {
 		t.Errorf("Expected at least 3 trees, got %d", len(trees))
 	}
-	
+
 	// Find trees by their root comment IDs
 	tree1Found := false
 	tree2Found := false
 	tree3Found := false
-	
+
 	for _, tree := range trees {
 		if len(tree) > 0 {
 			rootID := tree[0].GetID()
@@ -567,7 +567,7 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 			}
 		}
 	}
-	
+
 	if !tree1Found {
 		t.Error("Tree 1 (root comment 1) not found")
 	}
@@ -577,7 +577,7 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 	if !tree3Found {
 		t.Error("Tree 3 (root comment 4) not found")
 	}
-	
+
 	// Verify all comments are accounted for
 	total := 0
 	for _, tree := range trees {
@@ -591,13 +591,13 @@ func TestBuildCommentTreesFromList_Complex(t *testing.T) {
 func TestSplitComments(t *testing.T) {
 	// Root is outdated
 	root := &github.PullRequestComment{
-		ID:       github.Int64(1),
-		User:     &github.User{Login: github.String("user1")},
-		Body:     github.String("outdated root"),
-		Position: nil, // Outdated
+		ID:               github.Int64(1),
+		User:             &github.User{Login: github.String("user1")},
+		Body:             github.String("outdated root"),
+		Position:         nil, // Outdated
 		OriginalPosition: github.Int(10),
-		Line: nil,
-		OriginalLine: github.Int(10),
+		Line:             nil,
+		OriginalLine:     github.Int(10),
 	}
 	// Reply to outdated root (not explicitly outdated itself, but should inherit)
 	reply := &github.PullRequestComment{
@@ -605,7 +605,7 @@ func TestSplitComments(t *testing.T) {
 		InReplyTo: github.Int64(1),
 		User:      &github.User{Login: github.String("user2")},
 		Body:      github.String("reply to outdated"),
-		Position:  github.Int(15), 
+		Position:  github.Int(15),
 		Line:      github.Int(15),
 	}
 	// Another root, not outdated
@@ -653,47 +653,55 @@ func TestSplitComments(t *testing.T) {
 	}
 }
 
-func TestSortItems(t *testing.T) {
+func TestSortEntries(t *testing.T) {
 	now := time.Now()
-	items := []*database.Item{
-		{ID: 1, Title: "middle", CreatedAt: now.Add(-1 * time.Hour)},
-		{ID: 2, Title: "oldest", CreatedAt: now.Add(-2 * time.Hour)},
-		{ID: 3, Title: "newest", CreatedAt: now},
+	makeEntries := func() []sectionEntry {
+		mk := func(id int64, title string, createdAt time.Time, status string) sectionEntry {
+			return sectionEntry{
+				item:   &database.Item{ID: id, Title: title, CreatedAt: createdAt},
+				review: ReviewItem{Title: title, Status: status, CreatedAt: createdAt},
+			}
+		}
+		return []sectionEntry{
+			mk(1, "middle", now.Add(-1*time.Hour), "TODO"),
+			mk(2, "oldest", now.Add(-2*time.Hour), "TODO"),
+			mk(3, "newest", now, "TODO"),
+		}
+	}
+	titles := func(entries []sectionEntry) [3]string {
+		return [3]string{entries[0].item.Title, entries[1].item.Title, entries[2].item.Title}
 	}
 
 	t.Run("newest_first", func(t *testing.T) {
-		cp := make([]*database.Item, len(items))
-		copy(cp, items)
-		sortItems(cp, SortNewestFirst)
-		if cp[0].Title != "newest" || cp[1].Title != "middle" || cp[2].Title != "oldest" {
-			t.Errorf("newest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		entries := makeEntries()
+		sortEntries(entries, SortNewestFirst, true)
+		if titles(entries) != [3]string{"newest", "middle", "oldest"} {
+			t.Errorf("newest_first: got order %v", titles(entries))
 		}
 	})
 
 	t.Run("oldest_first", func(t *testing.T) {
-		cp := make([]*database.Item, len(items))
-		copy(cp, items)
-		sortItems(cp, SortOldestFirst)
-		if cp[0].Title != "oldest" || cp[1].Title != "middle" || cp[2].Title != "newest" {
-			t.Errorf("oldest_first: got order %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+		entries := makeEntries()
+		sortEntries(entries, SortOldestFirst, true)
+		if titles(entries) != [3]string{"oldest", "middle", "newest"} {
+			t.Errorf("oldest_first: got order %v", titles(entries))
 		}
 	})
 
-	t.Run("unknown sort preserves order", func(t *testing.T) {
-		cp := make([]*database.Item, len(items))
-		copy(cp, items)
-		sortItems(cp, "unknown")
-		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
-			t.Errorf("unknown sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+	t.Run("unknown configured sort preserves order", func(t *testing.T) {
+		entries := makeEntries()
+		sortEntries(entries, "unknown", true)
+		if titles(entries) != [3]string{"middle", "oldest", "newest"} {
+			t.Errorf("unknown sort should preserve order, got %v", titles(entries))
 		}
 	})
 
-	t.Run("empty sort string preserves order", func(t *testing.T) {
-		cp := make([]*database.Item, len(items))
-		copy(cp, items)
-		sortItems(cp, "")
-		if cp[0].Title != "middle" || cp[1].Title != "oldest" || cp[2].Title != "newest" {
-			t.Errorf("empty sort should preserve order, got %s, %s, %s", cp[0].Title, cp[1].Title, cp[2].Title)
+	t.Run("unconfigured uses canonical review ordering", func(t *testing.T) {
+		entries := makeEntries()
+		sortEntries(entries, "", false)
+		// reviewItemLess: same status, so most recently created first.
+		if titles(entries) != [3]string{"newest", "middle", "oldest"} {
+			t.Errorf("default sort should order newest first, got %v", titles(entries))
 		}
 	})
 }
@@ -829,16 +837,19 @@ func TestGetAllReviewsSorting(t *testing.T) {
 	})
 
 	// Expected: open → draft → merged → closed; within each group: repo-a before repo-b, lower number first.
-	type want struct{ status, repo string; number int }
+	type want struct {
+		status, repo string
+		number       int
+	}
 	expected := []want{
 		{"TODO", "repo-a", 1},
 		{"TODO", "repo-a", 5},
 		{"TODO", "repo-b", 2},
 		{"WAITING", "repo-a", 9},
 		{"WAITING", "repo-b", 1},
-		{"DONE", "repo-a", 3}, // merged
-		{"DONE", "repo-b", 4}, // merged
-		{"DONE", "repo-a", 7}, // closed
+		{"DONE", "repo-a", 3},  // merged
+		{"DONE", "repo-b", 4},  // merged
+		{"DONE", "repo-a", 7},  // closed
 		{"DONE", "repo-b", 10}, // closed
 	}
 

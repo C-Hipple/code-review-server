@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/go-github/v48/github"
 )
@@ -25,11 +27,11 @@ import (
 // simulate a db lol
 var CurrentCount int
 
-func RunServer(log *slog.Logger) {
+func RunServer() {
 	server := rpc.NewServer()
-	handler := &RPCHandler{Log: log}
+	handler := &RPCHandler{}
 	if err := server.Register(handler); err != nil {
-		log.Error("Error registering RPC handler", "error", err)
+		slog.Error("Error registering RPC handler", "error", err)
 		return
 	}
 
@@ -50,9 +52,7 @@ func (s *Stdio) Close() error {
 	return nil
 }
 
-type RPCHandler struct {
-	Log *slog.Logger
-}
+type RPCHandler struct{}
 
 type HelloArgs struct{}
 type HelloReply struct {
@@ -64,7 +64,7 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	var count int
 	err := config.C().DB.QueryRow("SELECT COUNT(*) FROM sections").Scan(&count)
 	if err != nil {
-		h.Log.Error("Error counting items", "error", err)
+		slog.Error("Error counting items", "error", err)
 		return err
 	}
 	CurrentCount += count
@@ -118,13 +118,13 @@ func reviewItemLess(a, b ReviewItem) bool {
 
 func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply) error {
 	if err := config.Reload(); err != nil {
-		h.Log.Error("Error reloading config", "error", err)
+		slog.Error("Error reloading config", "error", err)
 	}
 
 	renderer := NewOrgRenderer(config.C().DB)
 	content, items, err := renderer.RenderAndGetItems()
 	if err != nil {
-		h.Log.Error("Error rendering org files", "error", err)
+		slog.Error("Error rendering org files", "error", err)
 		return err
 	}
 	reply.Content = content
@@ -143,7 +143,10 @@ type GetPRstructArgs struct {
 	SkipCache bool   `json:"SkipCache"`
 }
 
-type GetPRReply struct {
+// PRPayload is the shared body of every RPC reply that returns a PR's full
+// state. Reply structs embed it so all methods expose the same fields, and
+// populate() is the single place they get filled in and normalized.
+type PRPayload struct {
 	Okay             bool          `json:"okay"`
 	Content          string        `json:"content"`
 	Metadata         *PRMetadata   `json:"metadata"`
@@ -155,54 +158,123 @@ type GetPRReply struct {
 	Feedback         string        `json:"feedback"`
 }
 
+// populate fills the payload from fetched PR details, normalizing nil slices
+// to empty ones so JSON clients always see [] instead of null.
+func (p *PRPayload) populate(details *PRDetails, content string, owner, repo string, number int) {
+	p.Okay = true
+	p.Content = content
+	p.Metadata = &details.Metadata
+	p.Diff = details.Diff
+	p.Comments = details.Comments
+	p.OutdatedComments = details.OutdatedComments
+	p.Reviews = details.Reviews
+	p.Commits = details.Commits
+	if p.Comments == nil {
+		p.Comments = []CommentJSON{}
+	}
+	if p.OutdatedComments == nil {
+		p.OutdatedComments = []CommentJSON{}
+	}
+	if p.Reviews == nil {
+		p.Reviews = []ReviewJSON{}
+	}
+	if p.Commits == nil {
+		p.Commits = []CommitJSON{}
+	}
+
+	feedback, err := config.C().DB.GetFeedback(owner, repo, number)
+	if err != nil {
+		slog.Warn("Error loading feedback for PR reply", "repo", repo, "pr", number, "error", err)
+	}
+	p.Feedback = feedback
+}
+
+type GetPRReply struct {
+	PRPayload
+}
+
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, args.SkipCache)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, args.SkipCache)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
-	reply.Commits = details.Commits
-	reply.Okay = true
-
-	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
-	reply.Feedback = feedback
+	h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
-// fetchPRAndRunPlugins is a helper to centralize PR fetching, cache handling, and plugin triggering
-func (h *RPCHandler) fetchPRAndRunPlugins(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
+// fetchPR fetches PR details plus the fully formatted content string. It is a
+// pure query: it reads caches (or GitHub on a miss) but never dispatches
+// plugins or LLM analysis — callers that want those side effects invoke
+// ensurePostUpdateHooks explicitly.
+func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
 	details, err := GetPRDetails(owner, repo, number, skipCache)
 	if err != nil {
-		h.Log.Error("Error fetching PR details", "error", err)
+		slog.Error("Error fetching PR details", "error", err)
 		return nil, "", err
 	}
 
-	// Trigger async plugin execution
+	// Get the full formatted response for the UI.
+	// We pass the already fetched details to avoid redundant API calls.
+	content, err := GetFullPRResponse(owner, repo, number, false, details)
+	if err != nil {
+		slog.Error("Error building formatted PR response", "repo", repo, "pr", number, "error", err)
+	}
+
+	return details, content, nil
+}
+
+// hookDispatchTTL is how long a (PR, head SHA) pair is considered recently
+// dispatched. Within this window repeated reads of the same PR revision skip
+// re-dispatching the post-update hooks entirely; the per-plugin SHA check in
+// executePluginForce remains the durable guard against duplicate work.
+const hookDispatchTTL = time.Minute
+
+var recentHookDispatches sync.Map // "owner/repo#number@sha" -> time.Time
+
+// shouldDispatchHooks debounces post-update hook dispatches per PR head SHA.
+func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
+	key := fmt.Sprintf("%s/%s#%d@%s", owner, repo, number, sha)
+	now := time.Now()
+	if v, ok := recentHookDispatches.Load(key); ok {
+		if last, ok := v.(time.Time); ok && now.Sub(last) < hookDispatchTTL {
+			return false
+		}
+	}
+	recentHookDispatches.Store(key, now)
+	return true
+}
+
+// ensurePostUpdateHooks dispatches the async post-update hooks (plugins and
+// the experimental LLM diff analysis) for a PR. Only methods that represent
+// "the client is looking at fresh PR content" call this; local-comment
+// mutations do not, since they never change the PR's head SHA.
+func (h *RPCHandler) ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
+	_, sha, err := config.C().DB.GetPullRequest(number, repo)
+	if err != nil {
+		slog.Warn("Error reading cached PR SHA for hook dispatch", "repo", repo, "pr", number, "error", err)
+	}
+	if !shouldDispatchHooks(owner, repo, number, sha) {
+		return
+	}
+
 	commentsJSON := "[]"
-	rawComments, _ := config.C().DB.GetPRComments(number, repo)
+	rawComments, err := config.C().DB.GetPRComments(number, repo)
+	if err != nil {
+		slog.Warn("Error reading cached PR comments for hook dispatch", "repo", repo, "pr", number, "error", err)
+	}
 	if rawComments != "" {
 		commentsJSON = rawComments
 	}
 
-	// Extract SHA from DB
-	_, sha, _ := config.C().DB.GetPullRequest(number, repo)
+	metadataJSON, err := json.Marshal(details.Metadata)
+	if err != nil {
+		slog.Warn("Error marshaling PR metadata for hook dispatch", "repo", repo, "pr", number, "error", err)
+		metadataJSON = []byte("{}")
+	}
 
-	// Dispatch post-update hooks (plugins + experimental file ordering); each
-	// hook runs in its own goroutine so this returns immediately.
-	metadataJSON, _ := json.Marshal(details.Metadata)
+	// Each hook runs in its own goroutine so this returns immediately.
 	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef)
-
-	// Get the full formatted response for the UI.
-	// We pass the already fetched details to avoid redundant API calls.
-	content, _ := GetFullPRResponse(owner, repo, number, false, details)
-
-	return details, content, nil
 }
 
 type GetAdjacentPRArgs struct {
@@ -258,26 +330,17 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 	}
 
 	adjacent := items[adjacentIdx]
-	h.Log.Info("GetAdjacentPR returning", "owner", adjacent.Owner, "repo", adjacent.Repo, "number", adjacent.Number)
-	details, content, err := h.fetchPRAndRunPlugins(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
+	slog.Info("GetAdjacentPR returning", "owner", adjacent.Owner, "repo", adjacent.Repo, "number", adjacent.Number)
+	details, content, err := h.fetchPR(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
 	if err != nil {
 		return err
 	}
+	h.ensurePostUpdateHooks(adjacent.Owner, adjacent.Repo, adjacent.Number, details)
 
 	reply.AdjacentOwner = adjacent.Owner
 	reply.AdjacentRepo = adjacent.Repo
 	reply.AdjacentNumber = adjacent.Number
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
-	reply.Commits = details.Commits
-	reply.Okay = true
-
-	feedback, _ := config.C().DB.GetFeedback(adjacent.Owner, adjacent.Repo, adjacent.Number)
-	reply.Feedback = feedback
+	reply.populate(details, content, adjacent.Owner, adjacent.Repo, adjacent.Number)
 	return nil
 }
 
@@ -292,34 +355,23 @@ type AddCommentArgs struct {
 }
 
 type AddCommentReply struct {
-	ID               int64         `json:"id"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
+	ID int64 `json:"id"`
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
 	comment, err := config.C().DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	if err != nil {
-		h.Log.Error("Error inserting local comment", "error", err)
+		slog.Error("Error inserting local comment", "error", err)
 		return err
 	}
 	reply.ID = comment.ID
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -332,34 +384,21 @@ type EditCommentArgs struct {
 }
 
 type EditCommentReply struct {
-	Okay             bool          `json:"okay"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
 	err := config.C().DB.UpdateLocalComment(args.ID, args.Body)
 	if err != nil {
-		h.Log.Error("Error updating local comment", "error", err)
+		slog.Error("Error updating local comment", "error", err)
 		return err
 	}
-	reply.Okay = true
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -371,49 +410,21 @@ type DeleteCommentArgs struct {
 }
 
 type DeleteCommentReply struct {
-	Okay             bool          `json:"okay"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
 	err := config.C().DB.DeleteLocalComment(args.ID)
 	if err != nil {
-		h.Log.Error("Error deleting local comment", "error", err)
+		slog.Error("Error deleting local comment", "error", err)
 		return err
 	}
-	reply.Okay = true
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-
-	// Ensure empty slices are returned as [] not null in JSON
-	if details.Comments == nil {
-		reply.Comments = []CommentJSON{}
-	} else {
-		reply.Comments = details.Comments
-	}
-	if details.OutdatedComments == nil {
-		reply.OutdatedComments = []CommentJSON{}
-	} else {
-		reply.OutdatedComments = details.OutdatedComments
-	}
-	if details.Reviews == nil {
-		reply.Reviews = []ReviewJSON{}
-	} else {
-		reply.Reviews = details.Reviews
-	}
-
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -425,33 +436,22 @@ type SetFeedbackArgs struct {
 }
 
 type SetFeedbackReply struct {
-	ID               int64         `json:"id"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
+	ID int64 `json:"id"`
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
 	err := config.C().DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
 	if err != nil {
-		h.Log.Error("Error inserting feedback", "error", err)
+		slog.Error("Error inserting feedback", "error", err)
 		return err
 	}
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -462,34 +462,21 @@ type RemovePRCommentsArgs struct {
 }
 
 type RemovePRCommentsReply struct {
-	Okay             bool          `json:"okay"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
 	err := config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
-		h.Log.Error("Error removing local comments", "error", err)
+		slog.Error("Error removing local comments", "error", err)
 		return err
 	}
-	reply.Okay = true
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -502,20 +489,14 @@ type SubmitReviewArgs struct {
 }
 
 type SubmitReviewReply struct {
-	Okay             bool          `json:"okay"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
+	PRPayload
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
 	// 1. Fetch Local Comments
 	comments, err := config.C().DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
-		h.Log.Error("Error fetching local comments", "error", err)
+		slog.Error("Error fetching local comments", "error", err)
 		return err
 	}
 
@@ -529,7 +510,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		if c.ReplyToID != nil {
 			err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, *c.ReplyToID)
 			if err != nil {
-				h.Log.Error("Error submitting reply", "error", err)
+				slog.Error("Error submitting reply", "error", err)
 			}
 		} else {
 			// Top-level comments
@@ -554,14 +535,14 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// 3. Submit to GitHub
 	err = git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest)
 	if err != nil {
-		h.Log.Error("Error submitting review to GitHub", "error", err)
+		slog.Error("Error submitting review to GitHub", "error", err)
 		return err
 	}
 
 	// 4. Clean up Local Comments
 	err = config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
 	if err != nil {
-		h.Log.Error("Error deleting local comments after submission", "error", err)
+		slog.Error("Error deleting local comments after submission", "error", err)
 	}
 
 	// 5. Remove the item from all sections in the database
@@ -569,22 +550,14 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	identifier := fmt.Sprintf("%s%d", args.Repo, args.Number)
 	err = config.C().DB.DeleteItemByIdentifier(identifier)
 	if err != nil {
-		h.Log.Error("Error removing item from sections after review", "identifier", identifier, "error", err)
+		slog.Error("Error removing item from sections after review", "identifier", identifier, "error", err)
 	}
 
-	reply.Okay = true
-
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
-
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -614,7 +587,7 @@ func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
 	client := git_tools.GetGithubClient()
 	result, err := git_tools.MergePR(client, args.Owner, args.Repo, args.Number, method)
 	if err != nil {
-		h.Log.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
+		slog.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
 		if result != nil {
 			reply.Merged = result.GetMerged()
 			reply.SHA = result.GetSHA()
@@ -636,16 +609,8 @@ type SyncPRArgs struct {
 }
 
 type SyncPRReply struct {
-	Okay             bool          `json:"okay"`
-	Updated          bool          `json:"updated"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
-	Commits          []CommitJSON  `json:"commits"`
-	Feedback         string        `json:"feedback"`
+	PRPayload
+	Updated bool `json:"updated"`
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
@@ -655,26 +620,17 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	_, oldSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
 	oldCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
 
-	details, content, err := h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, true)
+	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
+	h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 
 	_, newSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
 	newCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
 	reply.Updated = syncDetectedChanges(oldSHA, newSHA, oldCommentsJSON, newCommentsJSON)
 
-	reply.Content = content
-	reply.Metadata = &details.Metadata
-	reply.Diff = details.Diff
-	reply.Comments = details.Comments
-	reply.OutdatedComments = details.OutdatedComments
-	reply.Reviews = details.Reviews
-	reply.Commits = details.Commits
-	reply.Okay = true
-
-	feedback, _ := config.C().DB.GetFeedback(args.Owner, args.Repo, args.Number)
-	reply.Feedback = feedback
+	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -776,7 +732,6 @@ func GetLocalRepoPath(repo string) (string, error) {
 	}
 
 	repoPath := fmt.Sprintf("%s/%s", repoLocation, repo)
-	print(repoPath)
 	// Clean path to remove double slashes if any
 	return filepath.Clean(repoPath), nil
 }
@@ -795,9 +750,9 @@ type GetHunkContextArgs struct {
 	Count      int    `json:"Count"`     // Number of extra lines to fetch (capped at 100)
 
 	// Current hunk range — used to compute the updated hunk header after expansion.
-	OrigStart  int    `json:"OrigStart"`  // Current @@ -OrigStart,OrigLength
+	OrigStart  int    `json:"OrigStart"` // Current @@ -OrigStart,OrigLength
 	OrigLength int    `json:"OrigLength"`
-	NewStart   int    `json:"NewStart"`   // Current @@ +NewStart,NewLength
+	NewStart   int    `json:"NewStart"` // Current @@ +NewStart,NewLength
 	NewLength  int    `json:"NewLength"`
 	HunkHeader string `json:"HunkHeader"` // Optional text after @@ (e.g. function name)
 }
@@ -858,11 +813,11 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	// Falls back to the GitHub API only if the local repo isn't available.
 	content, err := getFileContentLocal(args.Repo, ref, args.Filename)
 	if err != nil {
-		h.Log.Info("Local git show failed, falling back to GitHub API", "file", args.Filename, "error", err)
+		slog.Info("Local git show failed, falling back to GitHub API", "file", args.Filename, "error", err)
 		client := git_tools.GetGithubClient()
 		content, err = git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
 		if err != nil {
-			h.Log.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
+			slog.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
 			return err
 		}
 	}
@@ -944,15 +899,22 @@ type GetPluginOutputReply struct {
 func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPluginOutputReply) error {
 	results, err := config.C().DB.GetPluginResults(args.Owner, args.Repo, args.Number)
 	if err != nil {
-		h.Log.Error("Error fetching plugin results", "error", err)
+		slog.Error("Error fetching plugin results", "error", err)
 		return err
 	}
 
-	// If no results found, or if we want to ensure they are at least triggered,
-	// we call fetchPRAndRunPlugins (which is async for the plugin part).
+	// If no results are stored yet, make sure the plugins have at least been
+	// triggered once for this PR.
 	if len(results) == 0 {
-		h.Log.Info("No plugin results found, triggering async run", "pr", args.Number)
-		go h.fetchPRAndRunPlugins(args.Owner, args.Repo, args.Number, false)
+		slog.Info("No plugin results found, triggering async run", "pr", args.Number)
+		go func() {
+			details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+			if err != nil {
+				slog.Error("Error fetching PR details for plugin trigger", "repo", args.Repo, "pr", args.Number, "error", err)
+				return
+			}
+			h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+		}()
 	}
 
 	reply.Output = results
@@ -980,26 +942,26 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 		// Clear all plugin results for this PR
 		err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, "")
 		if err != nil {
-			h.Log.Error("Error clearing plugin results", "error", err)
+			slog.Error("Error clearing plugin results", "error", err)
 			return err
 		}
-		h.Log.Info("Cleared all plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number)
+		slog.Info("Cleared all plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number)
 	} else {
 		// Clear only specified plugin results
 		for _, pluginName := range args.Plugins {
 			err := config.C().DB.DeletePluginResultsForPR(args.Owner, args.Repo, args.Number, pluginName)
 			if err != nil {
-				h.Log.Error("Error clearing plugin result", "plugin", pluginName, "error", err)
+				slog.Error("Error clearing plugin result", "plugin", pluginName, "error", err)
 				return err
 			}
 		}
-		h.Log.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
+		slog.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
 	}
 
 	// Fetch PR details and trigger plugins
 	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 	if err != nil {
-		h.Log.Error("Error fetching PR details for plugin rerun", "error", err)
+		slog.Error("Error fetching PR details for plugin rerun", "error", err)
 		return err
 	}
 

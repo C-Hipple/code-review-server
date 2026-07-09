@@ -1,12 +1,12 @@
 package server
 
 import (
+	"context"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
 	"crs/org"
 	"crs/utils"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -40,76 +40,29 @@ func NewOrgRenderer(db *database.DB) *OrgRenderer {
 	}
 }
 
-func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
-	sections, err := r.db.GetAllSections()
-	if err != nil {
-		return "", err
-	}
-
-	// Sort sections by Priority then Name
-	sort.Slice(sections, func(i, j int) bool {
-		if sections[i].Priority != sections[j].Priority {
-			return sections[i].Priority < sections[j].Priority
-		}
-		return sections[i].SectionName < sections[j].SectionName
-	})
-
-	// Build the org file content
-	var content strings.Builder
-	sectionSorting := config.C().SectionSorting
-
-	for _, section := range sections {
-		// Get items for this section
-		items, err := r.db.GetItemsBySection(section.ID)
-		if err != nil {
-			return "", err
-		}
-
-		// Apply per-section sorting if configured
-		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			sortItems(items, sortMethod)
-		}
-
-		// Build section header
-		sectionHeader := r.buildSectionHeader(section, items)
-		content.WriteString(sectionHeader)
-		content.WriteString("\n")
-
-		// Build items
-		for _, item := range items {
-			itemLines := r.buildItemLines(item, 2)
-			for _, line := range itemLines {
-				content.WriteString(line)
-				if !strings.HasSuffix(line, "\n") {
-					content.WriteString("\n")
-				}
-			}
-		}
-		// Add blank line between sections
-		content.WriteString("\n")
-	}
-
-	return content.String(), nil
+// sectionEntry pairs a stored item with its parsed ReviewItem so the two stay
+// aligned while a section is sorted.
+type sectionEntry struct {
+	item   *database.Item
+	review ReviewItem
 }
 
-// sortItems sorts items in-place according to the given sorting method.
-func sortItems(items []*database.Item, sortMethod string) {
-	switch sortMethod {
-	case SortNewestFirst:
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].CreatedAt.After(items[j].CreatedAt)
-		})
-	case SortOldestFirst:
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].CreatedAt.Before(items[j].CreatedAt)
-		})
-	}
+// sectionView is one section in final display order, produced by
+// collectSections. Every render entry point serializes from these.
+type sectionView struct {
+	section *database.Section
+	entries []sectionEntry
 }
 
-func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+// collectSections is the single pipeline behind all renderer entry points:
+// it loads every section and item, parses items into ReviewItems, and sorts
+// each section (per-section configured sorting, defaulting to the canonical
+// reviewItemLess ordering). Callers serialize the result to org text, JSON
+// items, or both.
+func (r *OrgRenderer) collectSections() ([]sectionView, error) {
 	sections, err := r.db.GetAllSections()
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	// Sort sections by Priority then Name
@@ -123,99 +76,118 @@ func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
 	// Fetch all items at once to avoid N+1 queries
 	allItems, err := r.db.GetAllItems()
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-
-	// Group items by sectionID
 	itemsBySection := make(map[int64][]*database.Item)
 	for _, item := range allItems {
 		itemsBySection[item.SectionID] = append(itemsBySection[item.SectionID], item)
 	}
 
-	// Build the org file content and structured items
-	var content strings.Builder
-	var reviewItems []ReviewItem
 	sectionSorting := config.C().SectionSorting
-
+	views := make([]sectionView, 0, len(sections))
 	for _, section := range sections {
-		// Get items for this section
 		items := itemsBySection[section.ID]
-
-		// Parse review items up-front so content and the items reply share a
-		// single ordering.
-		parsed := make([]ReviewItem, len(items))
+		entries := make([]sectionEntry, len(items))
 		for i, item := range items {
-			parsed[i] = r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-		}
-
-		indices := make([]int, len(items))
-		for i := range indices {
-			indices[i] = i
-		}
-		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			switch sortMethod {
-			case SortNewestFirst:
-				sort.SliceStable(indices, func(a, b int) bool {
-					return items[indices[a]].CreatedAt.After(items[indices[b]].CreatedAt)
-				})
-			case SortOldestFirst:
-				sort.SliceStable(indices, func(a, b int) bool {
-					return items[indices[a]].CreatedAt.Before(items[indices[b]].CreatedAt)
-				})
+			entries[i] = sectionEntry{
+				item:   item,
+				review: r.parseItemToReviewItem(item, section.SectionName, section.Priority),
 			}
-		} else {
-			sort.SliceStable(indices, func(a, b int) bool {
-				return reviewItemLess(parsed[indices[a]], parsed[indices[b]])
-			})
 		}
-		sortedItems := make([]*database.Item, len(items))
-		sortedParsed := make([]ReviewItem, len(parsed))
-		for i, idx := range indices {
-			sortedItems[i] = items[idx]
-			sortedParsed[i] = parsed[idx]
-		}
-		items = sortedItems
-		parsed = sortedParsed
+		sortMethod, configured := sectionSorting[section.SectionName]
+		sortEntries(entries, sortMethod, configured)
+		views = append(views, sectionView{section: section, entries: entries})
+	}
+	return views, nil
+}
 
-		// Build section header
-		sectionHeader := r.buildSectionHeader(section, items)
-		content.WriteString(sectionHeader)
+// sortEntries orders a section's entries in-place. A configured per-section
+// method (newest_first/oldest_first) wins; with no configuration the entries
+// fall back to the canonical reviewItemLess ordering. An unrecognized
+// configured method leaves the stored order untouched.
+func sortEntries(entries []sectionEntry, sortMethod string, configured bool) {
+	switch {
+	case configured && sortMethod == SortNewestFirst:
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].item.CreatedAt.After(entries[j].item.CreatedAt)
+		})
+	case configured && sortMethod == SortOldestFirst:
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].item.CreatedAt.Before(entries[j].item.CreatedAt)
+		})
+	case !configured:
+		sort.SliceStable(entries, func(i, j int) bool {
+			return reviewItemLess(entries[i].review, entries[j].review)
+		})
+	}
+}
+
+// renderSectionViews serializes the pipeline output to the org-mode text form.
+func (r *OrgRenderer) renderSectionViews(views []sectionView) string {
+	var content strings.Builder
+	for _, view := range views {
+		items := make([]*database.Item, len(view.entries))
+		for i, e := range view.entries {
+			items[i] = e.item
+		}
+
+		content.WriteString(r.buildSectionHeader(view.section, items))
 		content.WriteString("\n")
 
-		// Build items
-		for i, item := range items {
-			// String representation
-			itemLines := r.buildItemLines(item, 2)
-			for _, line := range itemLines {
+		for _, item := range items {
+			for _, line := range r.buildItemLines(item, 2) {
 				content.WriteString(line)
 				if !strings.HasSuffix(line, "\n") {
 					content.WriteString("\n")
 				}
 			}
-
-			// Structured representation
-			reviewItems = append(reviewItems, parsed[i])
 		}
 		// Add blank line between sections
 		content.WriteString("\n")
 	}
+	return content.String()
+}
 
-	return content.String(), reviewItems, nil
+// reviewItemsFromViews flattens the pipeline output to the JSON items form.
+func reviewItemsFromViews(views []sectionView) []ReviewItem {
+	var reviewItems []ReviewItem
+	for _, view := range views {
+		for _, e := range view.entries {
+			reviewItems = append(reviewItems, e.review)
+		}
+	}
+	return reviewItems
+}
+
+func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
+	views, err := r.collectSections()
+	if err != nil {
+		return "", err
+	}
+	return r.renderSectionViews(views), nil
+}
+
+func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+	views, err := r.collectSections()
+	if err != nil {
+		return "", nil, err
+	}
+	return r.renderSectionViews(views), reviewItemsFromViews(views), nil
 }
 
 // ReviewItem represents a single PR review item with structured metadata
 type ReviewItem struct {
-	Section       string    `json:"section"`
-	Priority      int       `json:"section_priority"`
-	Status        string    `json:"status"`
-	Tags          string    `json:"tags"`
-	Title         string    `json:"title"`
-	Owner         string    `json:"owner"`
-	Repo          string    `json:"repo"`
-	Number        int       `json:"number"`
-	Author        string    `json:"author"`
-	URL           string    `json:"url"`
-	ReleaseStatus string    `json:"release_status"`
+	Section       string `json:"section"`
+	Priority      int    `json:"section_priority"`
+	Status        string `json:"status"`
+	Tags          string `json:"tags"`
+	Title         string `json:"title"`
+	Owner         string `json:"owner"`
+	Repo          string `json:"repo"`
+	Number        int    `json:"number"`
+	Author        string `json:"author"`
+	URL           string `json:"url"`
+	ReleaseStatus string `json:"release_status"`
 	// ReviewEase is the LLM rating of how easy the PR is to review ("easy",
 	// "medium", or "hard"). Empty unless ExperimentalLLMReviewEase is enabled
 	// and a rating has been computed.
@@ -225,32 +197,11 @@ type ReviewItem struct {
 
 // GetAllReviewItems returns structured review items from all sections
 func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
-	sections, err := r.db.GetAllSections()
+	views, err := r.collectSections()
 	if err != nil {
 		return nil, err
 	}
-
-	var reviewItems []ReviewItem
-	sectionSorting := config.C().SectionSorting
-
-	for _, section := range sections {
-		items, err := r.db.GetItemsBySection(section.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		// Apply per-section sorting if configured
-		if sortMethod, ok := sectionSorting[section.SectionName]; ok {
-			sortItems(items, sortMethod)
-		}
-
-		for _, item := range items {
-			reviewItem := r.parseItemToReviewItem(item, section.SectionName, section.Priority)
-			reviewItems = append(reviewItems, reviewItem)
-		}
-	}
-
-	return reviewItems, nil
+	return reviewItemsFromViews(views), nil
 }
 
 // parseItemToReviewItem extracts structured metadata from an item's details
@@ -517,9 +468,9 @@ type PRMetadata struct {
 	Milestone          string   `json:"milestone"`
 	Labels             []string `json:"labels"`
 	Assignees          []string `json:"assignees"`
-	Reviewers          []string `json:"reviewers"`           // Requested individual reviewers
-	RequestedTeams     []string `json:"requested_teams"`     // Requested team reviewers
-	ApprovedBy         []string `json:"approved_by"`         // Logins of users who approved
+	Reviewers          []string `json:"reviewers"`            // Requested individual reviewers
+	RequestedTeams     []string `json:"requested_teams"`      // Requested team reviewers
+	ApprovedBy         []string `json:"approved_by"`          // Logins of users who approved
 	ChangesRequestedBy []string `json:"changes_requested_by"` // Logins of users who requested changes
 	CommentedBy        []string `json:"commented_by"`         // Logins of users who commented (non-approval/non-request)
 	Draft              bool     `json:"draft"`
@@ -540,8 +491,8 @@ type PRMetadata struct {
 }
 
 type PRDetails struct {
-	Metadata PRMetadata    `json:"metadata"`
-	Diff     string        `json:"diff"`
+	Metadata         PRMetadata    `json:"metadata"`
+	Diff             string        `json:"diff"`
 	Comments         []CommentJSON `json:"comments"`
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews          []ReviewJSON  `json:"reviews"`
@@ -689,7 +640,6 @@ func convertToPRComments(comments []*github.PullRequestComment) []PRComment {
 	return result
 }
 
-
 // convertLocalCommentsToPRComments converts a slice of database.LocalComment to []PRComment
 func convertLocalCommentsToPRComments(localComments []database.LocalComment) []PRComment {
 	result := make([]PRComment, len(localComments))
@@ -714,10 +664,10 @@ func convertIssueCommentToPRComment(ic *github.IssueComment) *github.PullRequest
 
 // cacheMissState records what was and wasn't in the DB at the time of a GetPRDetails call.
 type cacheMissState struct {
-	owner       string
-	repo        string
-	number      int
-	skipCache   bool
+	owner        string
+	repo         string
+	number       int
+	skipCache    bool
 	missedFields []string
 	// per-field: true = data was present in DB, false = cache miss
 	metadataHit bool
@@ -1006,11 +956,11 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				metadata.Milestone = pr.Milestone.GetTitle()
 			}
 
-
 			// Cache the metadata
-			metadataJSON, err := json.Marshal(metadata)
-			if err == nil {
-				config.C().DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON))
+			if metadataJSON, err := json.Marshal(metadata); err != nil {
+				slog.Error("Error marshaling PR metadata for cache", "pr", number, "repo", repo, "error", err)
+			} else if err := config.C().DB.UpsertPRMetadataCache(owner, repo, number, string(metadataJSON)); err != nil {
+				slog.Error("Error caching PR metadata", "pr", number, "repo", repo, "error", err)
 			}
 		}
 	}
@@ -1050,7 +1000,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		} else {
 			diff = d
 			// Store in cache
-			config.C().DB.UpsertPullRequest(number, repo, headSHA, baseSHA, diff)
+			if err := config.C().DB.UpsertPullRequest(number, repo, headSHA, baseSHA, diff); err != nil {
+				slog.Error("Error caching PR diff", "pr", number, "repo", repo, "error", err)
+			}
 		}
 	}
 
@@ -1065,15 +1017,24 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	if !skipCache {
 		cachedCommentsJSON, err := config.C().DB.GetPRComments(number, repo)
 		if err == nil && cachedCommentsJSON != "" {
-			json.Unmarshal([]byte(cachedCommentsJSON), &githubComments)
+			if err := json.Unmarshal([]byte(cachedCommentsJSON), &githubComments); err != nil {
+				slog.Error("Error unmarshaling cached PR comments", "pr", number, "repo", repo, "error", err)
+			}
 		}
 	}
 	if githubComments == nil {
 		missState.missedFields = append(missState.missedFields, "comments")
 		opts := github.PullRequestListCommentsOptions{}
-		githubComments, _, _ = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
+		var err error
+		githubComments, _, err = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
+		if err != nil {
+			slog.Error("Error fetching PR review comments", "pr", number, "repo", repo, "error", err)
+		}
 
-		issueComments, _, _ := client.Issues.ListComments(ctx, owner, repo, number, nil)
+		issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, number, nil)
+		if err != nil {
+			slog.Error("Error fetching PR issue comments", "pr", number, "repo", repo, "error", err)
+		}
 		for _, ic := range issueComments {
 			githubComments = append(githubComments, convertIssueCommentToPRComment(ic))
 		}
@@ -1084,15 +1045,22 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				return githubComments[i].CreatedAt.Before(*githubComments[j].CreatedAt)
 			})
 
-			commentsJSON, _ := json.Marshal(githubComments)
-			config.C().DB.UpsertPRComments(number, repo, string(commentsJSON))
+			commentsJSON, err := json.Marshal(githubComments)
+			if err != nil {
+				slog.Error("Error marshaling PR comments for cache", "pr", number, "repo", repo, "error", err)
+			} else if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+				slog.Error("Error caching PR comments", "pr", number, "repo", repo, "error", err)
+			}
 		}
 	}
 
 	comments := convertToPRComments(githubComments)
 	comments = filterComments(comments)
 
-	localComments, _ := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
+	localComments, err := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
+	if err != nil {
+		slog.Error("Error fetching local comments", "pr", number, "repo", repo, "error", err)
+	}
 	comments = append(comments, convertLocalCommentsToPRComments(localComments)...)
 
 	commentJSONs, outdatedCommentJSONs := splitComments(comments)
@@ -1110,7 +1078,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	if !skipCache {
 		cachedCommitsJSON, err := config.C().DB.GetPRCommits(number, repo)
 		if err == nil && cachedCommitsJSON != "" {
-			json.Unmarshal([]byte(cachedCommitsJSON), &commits)
+			if err := json.Unmarshal([]byte(cachedCommitsJSON), &commits); err != nil {
+				slog.Error("Error unmarshaling cached PR commits", "pr", number, "repo", repo, "error", err)
+			}
 		}
 	}
 	if commits == nil {
@@ -1134,22 +1104,23 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			// Cache the commits
-			if commitsJSON, err := json.Marshal(commits); err == nil {
-				config.C().DB.UpsertPRCommits(number, repo, string(commitsJSON))
+			if commitsJSON, err := json.Marshal(commits); err != nil {
+				slog.Error("Error marshaling PR commits for cache", "pr", number, "repo", repo, "error", err)
+			} else if err := config.C().DB.UpsertPRCommits(number, repo, string(commitsJSON)); err != nil {
+				slog.Error("Error caching PR commits", "pr", number, "repo", repo, "error", err)
 			}
 		}
 	}
 
 	return &PRDetails{
-		Metadata: metadata,
-		Diff:     formattedDiff,
-		Comments: commentJSONs,
+		Metadata:         metadata,
+		Diff:             formattedDiff,
+		Comments:         commentJSONs,
 		OutdatedComments: outdatedCommentJSONs,
-		Reviews:  reviews,
-		Commits:  commits,
+		Reviews:          reviews,
+		Commits:          commits,
 	}, nil
 }
-
 
 func GetFullPRResponse(owner string, repo string, number int, skipCache bool, details *PRDetails) (string, error) {
 
@@ -1206,7 +1177,7 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	}
 	sb.WriteString(fmt.Sprintf("Assignees: \t%s\n", assignees))
 	sb.WriteString("Suggested-Reviewers: No suggestions\n")
-	
+
 	reviewersStr := ""
 	if len(metadata.Reviewers) > 0 {
 		for _, r := range metadata.Reviewers {
@@ -1292,34 +1263,34 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// In GetPRDetails, we did:
 	// 		githubComments, _, _ = client.PullRequests.ListComments...
 	// 		issueComments, _, _ = client.Issues.ListComments...
-	// AND combined them. 
+	// AND combined them.
 	// So `details.Comments` contains ALL comments (both review comments and general issue comments).
-	
+
 	// Wait, `GetPRDetails` implementation I saw earlier:
 	// It calls `client.PullRequests.ListComments` AND `client.Issues.ListComments`.
 	// Then it appends them to `githubComments`.
 	// Then it converts to `comments`.
-	
+
 	// So `details.Comments` has everything.
 	// However, `GetFullPRResponse` previously treated "Conversation" as Issue Comments + Reviews.
 	// And "Files changed" had inline comments.
-	
+
 	// We need to differentiate standard comments from review comments.
 	// Standard comments (Issue Comments) usually have `Position` nil and `Path` nil?
 	// `CommentJSON` has `Path` string.
-	
+
 	for _, c := range comments {
 		// If it has a path, it's likely a code comment, so skip for "Conversation" section unless we want all?
 		// Previous implementation: `issueComments, _, _ := client.Issues.ListComments`
 		// These are specifically "general" comments.
 		// `PullRequests.ListComments` returns comments on code.
 		// `Issues.ListComments` returns comments on the PR itself (conversation).
-		
+
 		// In `GetPRDetails`, we merge them.
 		// How to distinguish?
 		// Issue comments usually have empty Path.
 		if c.Path != "" {
-			continue 
+			continue
 		}
 
 		convItems = append(convItems, conversationItem{
@@ -1329,10 +1300,10 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 			Type:   "Comment",
 		})
 	}
-	
-	// Use outdated comments too if they are conversation comments? 
+
+	// Use outdated comments too if they are conversation comments?
 	// Usually conversation comments don't become outdated in the same way (no line change).
-	
+
 	for _, r := range reviews {
 		// Skip empty commented reviews as they are usually just pending or noise
 		if r.State == "COMMENTED" && r.Body == "" {
@@ -1384,11 +1355,11 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// Wait, we used `pr.GetChangedFiles()` before.
 	// We might need to add this to PRMetadata if we want to avoid fetching the PR object again.
 	// But `PRMetadata` is what we cache.
-	
+
 	// Let's look at `PRMetadata` definition again.
 	// It does NOT have ChangedFiles/Additions/Deletions.
 	// So we might lose that info if we don't add it.
-	
+
 	// However, we have the Diff string. We can parse it to count files?
 	// `utils.Parse(diff)` returns `*utils.Diff`. `ParsedDiff.Files`.
 	parsedDiff, _ := utils.Parse(diff)
@@ -1399,7 +1370,7 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// Additions/Deletions are harder to get exactly from just the diff string without parsing hunks
 	// but strictly speaking we just display them.
 	// If we accept losing the exact + - count for now, or calculate it from diff.
-	
+
 	sb.WriteString(fmt.Sprintf("Files changed (%d files)\n\n", fileCount))
 
 	// Get diff with inline comments
@@ -1407,63 +1378,67 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// We can reuse `processPRDiffWithComments` logic but we need to pass our comments.
 	// Actually `processPRDiffWithComments` fetches comments if they are not passed?
 	// No, `processPRDiffWithComments` does the fetching.
-	
+
 	// We effectively want to run `processPRDiffWithComments` but utilizing the data we already have.
 	// But `processPRDiffWithComments` is designed to fetch.
-	
+
 	// Let's see: `processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)`
 	// It checks DB or fetches.
-	
+
 	// Since we already HAVE the comments in `details.Comments`, we should use them.
 	// But `processPRDiffWithComments` doesn't take a comments argument.
-	
+
 	// We can inline the logic of `processPRDiffWithComments` or refactor it.
 	// Refactoring `processPRDiffWithComments` to accept comments would be best but it's used elsewhere?
 	// It's used in `GetPRDiffWithInlineComments`.
-	
+
 	// I will duplicate the relevant logic here to ensure we use our `details.Comments`.
 	// The logic is:
 	// 1. Convert our `details.Comments` (which are `CommentJSON`) back to `PRComment` interface?
 	//    `CommentJSON` is a struct, `PRComment` is an interface.
 	//    We can make a wrapper or just use `CommentJSON` if we adapt the tree building.
-	
+
 	// Actually `CommentJSON` is a valid struct. Does it implement `PRComment`?
 	// `PRComment` interface: GetLogin, GetBody, GetID...
 	// `CommentJSON` fields: Author, Body, ID...
 	// The method names don't match (GetLogin vs Author field).
-	
+
 	// We can create a quick adapter for `CommentJSON` to `PRComment`.
-	
-	prComments := make([]PRComment, 0, len(comments) + len(outdatedComments))
+
+	prComments := make([]PRComment, 0, len(comments)+len(outdatedComments))
 	for _, c := range comments {
 		prComments = append(prComments, &JSONPRComment{c})
 	}
 	for _, c := range outdatedComments {
 		prComments = append(prComments, &JSONPRComment{c})
 	}
-	
+
 	// Note: We need the `JSONPRComment` adapter struct defined.
-	
+
 	// Build comment trees
 	allCommentTrees := buildCommentTreesFromList(prComments)
 	commentsByFileAndLine := make(map[string][][]PRComment)
 
 	for _, tree := range allCommentTrees {
-		if len(tree) == 0 { continue }
+		if len(tree) == 0 {
+			continue
+		}
 		root := tree[0]
 		// Skip if no path (general conversation)
-		if root.GetPath() == "" { continue }
-		
+		if root.GetPath() == "" {
+			continue
+		}
+
 		key := root.GetPath() + ":"
 		if root.GetPosition() != "" {
 			key += root.GetPosition()
 		}
 		commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 	}
-	
+
 	// Format Diff with comments
 	// `formatDiff` just prints the diff. We need to inject comments.
-	// The original `processPRDiffWithComments` calls `formatDiff(parsedDiff)` 
+	// The original `processPRDiffWithComments` calls `formatDiff(parsedDiff)`
 	// Wait, checking `processPRDiffWithComments` implementation in previous turns...
 	// It calculated `commentsByFileAndLine` but then just returned `formatDiff(parsedDiff)`.
 	// IT DID NOT ACTUALLY INSERT COMMENTS INTO THE DIFF in lines 1294-1306 of original file!
@@ -1472,37 +1447,37 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// 	// Insert any remaining comments...
 	// 	// for key, trees := range commentsByFileAndLine { ... } (COMMENTED OUT)
 	// 	return result, len(comments)
-	
-	// Ah, so does it NOT show inline comments? 
+
+	// Ah, so does it NOT show inline comments?
 	// `renderPullRequest` function earlier (line 305) appends comments at the end?
 	// But `GetFullPRResponse` calls `GetPRDiffWithInlineComments`.
-	
+
 	// Let's look at `GetFullPRResponse` from line 1128:
 	// `diffLines, _ := GetPRDiffWithInlineComments(owner, repo, number, skipCache, pr)`
 	// And `GetPRDiffWithInlineComments` calls `processPRDiffWithComments`.
 	// And `processPRDiffWithComments` (lines 1193-1307) returns... `formatDiff(parsedDiff)` !
-	
+
 	// It seems the current server implementation MIGHT NOT be actually interleaving comments?
 	// Or I missed something in `formatDiff`?
 	// `formatDiff` (line 1351) iterates files and hunks and just prints lines.
-	
+
 	// Wait, if the current implementation doesn't interleave comments, then I explicitly shouldn't duplicate that broken/missing feature or I should replicate "just diff".
 	// But the user asked to optimize `GetFullPRResponse`...
-	
+
 	// There is a `renderPullRequest` function at line 305 that takes diff and comments.
 	// But `GetFullPRResponse` doesn't call it.
-	
+
 	// Okay, assuming I just return the formatted diff strings as the original did.
 	// The original returns `diffLines` which comes from `GetPRDiffWithInlineComments`.
 	// which returns result of `processPRDiffWithComments`
 	// which returns result of `formatDiff`.
-	
+
 	// So yeah, sticking to returning `formatDiff(parsedDiff)` is correct behavior-preserving.
-	// The comments are seemingly unused in the diff section currently ?? 
+	// The comments are seemingly unused in the diff section currently ??
 	// OR `formatDiff` does something with global state? No.
-	
+
 	// I will just format the diff.
-	
+
 	if parsedDiff != nil {
 		headSHA, _, _ := config.C().DB.GetPullRequestSHAs(number, repo)
 		sb.WriteString(formatDiff(parsedDiff, repo, number, headSHA))
@@ -1517,17 +1492,17 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 type JSONPRComment struct {
 	CommentJSON
 }
-func (c *JSONPRComment) GetLogin() string { return c.Author }
-func (c *JSONPRComment) GetBody() string { return c.Body }
-func (c *JSONPRComment) GetID() string { return c.ID }
-func (c *JSONPRComment) GetPosition() string { return c.Position }
-func (c *JSONPRComment) GetInReplyTo() int64 { return c.InReplyTo }
-func (c *JSONPRComment) GetPath() string { return c.Path }
-func (c *JSONPRComment) GetCreatedAt() time.Time { return c.CreatedAt }
-func (c *JSONPRComment) IsOutdated() bool { return c.Outdated }
-func (c *JSONPRComment) GetCommitID() string { return "" } // Not in JSON currently
-func (c *JSONPRComment) GetDiffHunk() string { return c.DiffHunk }
 
+func (c *JSONPRComment) GetLogin() string        { return c.Author }
+func (c *JSONPRComment) GetBody() string         { return c.Body }
+func (c *JSONPRComment) GetID() string           { return c.ID }
+func (c *JSONPRComment) GetPosition() string     { return c.Position }
+func (c *JSONPRComment) GetInReplyTo() int64     { return c.InReplyTo }
+func (c *JSONPRComment) GetPath() string         { return c.Path }
+func (c *JSONPRComment) GetCreatedAt() time.Time { return c.CreatedAt }
+func (c *JSONPRComment) IsOutdated() bool        { return c.Outdated }
+func (c *JSONPRComment) GetCommitID() string     { return "" } // Not in JSON currently
+func (c *JSONPRComment) GetDiffHunk() string     { return c.DiffHunk }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
 	client := git_tools.GetGithubClient()
@@ -1565,27 +1540,22 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 	}
 
 	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
-	parsedDiff, err := utils.Parse(diff)
-	if err != nil {
-		slog.Error(err.Error())
-	} else {
-		for _, diffFile := range parsedDiff.Files {
-			slog.Info("parsed file:" + diffFile.NewName)
-			for _, hunk := range diffFile.Hunks {
-				slog.Info("Parsed Hunnk: " + hunk.RangeHeader())
-			}
-		}
-	}
-
 	if err != nil {
 		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		return "", 0
+	}
+	parsedDiff, err := utils.Parse(diff)
+	if err != nil {
+		slog.Error("Error parsing PR diff", "pr", number, "repo", repo, "error", err)
+		return "", 0
+	}
+	for _, diffFile := range parsedDiff.Files {
+		slog.Debug("Parsed diff file", "file", diffFile.NewName, "hunks", len(diffFile.Hunks))
 	}
 
 	// Store the result in the database (with latest_sha for future feature)
 	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
 }
-
 
 func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
 	var githubComments []*github.PullRequestComment
@@ -1657,13 +1627,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 
 	for _, tree := range allCommentTrees {
 		for _, comment := range tree {
-			filePath := comment.GetPath()
-			body := comment.GetBody()
-			slog.Info("file: " + filePath)
-			slog.Info("body : " + body)
-			if comment.GetInReplyTo() != 0 {
-				slog.Info("Reply To: " + strconv.FormatInt(comment.GetInReplyTo(), 10))
-			}
+			slog.Debug("Processing PR comment", "file", comment.GetPath(), "in_reply_to", comment.GetInReplyTo())
 		}
 		if len(tree) == 0 {
 			continue
@@ -1684,7 +1648,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 				key = filePath + ":"
 			}
 
-			slog.Info("Adding tree at key: " + key + " (Outdated: " + strconv.FormatBool(rootComment.IsOutdated()) + ")")
+			slog.Debug("Adding comment tree", "key", key, "outdated", rootComment.IsOutdated())
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}

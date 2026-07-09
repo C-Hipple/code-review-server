@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 // SortNewestFirst sorts items so that the most recently created appear first.
@@ -546,7 +546,7 @@ func (c *GitHubPRComment) GetPath() string {
 // GetCreatedAt returns the creation time of the comment
 func (c *GitHubPRComment) GetCreatedAt() time.Time {
 	if c.CreatedAt != nil {
-		return *c.CreatedAt
+		return c.CreatedAt.Time
 	}
 	return time.Time{}
 }
@@ -1042,7 +1042,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		if githubComments != nil {
 			// Sort comments by creation date to maintain order
 			sort.Slice(githubComments, func(i, j int) bool {
-				return githubComments[i].CreatedAt.Before(*githubComments[j].CreatedAt)
+				return githubComments[i].CreatedAt.Before(githubComments[j].CreatedAt.Time)
 			})
 
 			commentsJSON, err := json.Marshal(githubComments)
@@ -2060,7 +2060,7 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 	for _, r := range ghReviews {
 		var submittedAt time.Time
 		if r.SubmittedAt != nil {
-			submittedAt = *r.SubmittedAt
+			submittedAt = r.SubmittedAt.Time
 		}
 		reviews = append(reviews, ReviewJSON{
 			ID:          r.GetID(),

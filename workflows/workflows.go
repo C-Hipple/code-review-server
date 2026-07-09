@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 type RunResult struct {

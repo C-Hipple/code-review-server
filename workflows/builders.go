@@ -7,7 +7,7 @@ import (
 	"crs/config"
 	"crs/git_tools"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDomain string) []Workflow {

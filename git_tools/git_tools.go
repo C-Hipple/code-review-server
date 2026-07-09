@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
 )
 
@@ -873,11 +873,11 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		}
 		if strings.EqualFold(*r.User.Login, myLogin) {
 			if r.SubmittedAt.After(state.LastMeTime) {
-				state.LastMeTime = *r.SubmittedAt
+				state.LastMeTime = r.SubmittedAt.Time
 			}
 		} else {
 			if r.SubmittedAt.After(state.LastOthersTime) {
-				state.LastOthersTime = *r.SubmittedAt
+				state.LastOthersTime = r.SubmittedAt.Time
 			}
 		}
 	}
@@ -902,11 +902,11 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if strings.EqualFold(*c.User.Login, myLogin) {
 			participation[rootID] = true
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
-				state.LastMeTime = *c.CreatedAt
+				state.LastMeTime = c.CreatedAt.Time
 			}
 		} else {
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
-				state.LastOthersTime = *c.CreatedAt
+				state.LastOthersTime = c.CreatedAt.Time
 			}
 		}
 	}
@@ -927,11 +927,11 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if strings.EqualFold(*c.User.Login, myLogin) {
 			iParticipated = true
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastMeTime) {
-				state.LastMeTime = *c.CreatedAt
+				state.LastMeTime = c.CreatedAt.Time
 			}
 		} else {
 			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
-				state.LastOthersTime = *c.CreatedAt
+				state.LastOthersTime = c.CreatedAt.Time
 			}
 		}
 	}
@@ -1037,7 +1037,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	if len(commits) > 0 {
 		latestCommit := commits[len(commits)-1]
 		if latestCommit.Commit != nil && latestCommit.Commit.Committer != nil && latestCommit.Commit.Committer.Date != nil {
-			state.LastCommitTime = *latestCommit.Commit.Committer.Date
+			state.LastCommitTime = latestCommit.Commit.Committer.Date.Time
 		}
 	}
 

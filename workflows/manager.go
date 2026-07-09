@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 // apiCallCounter tracks GitHub API calls by type for a single RunOnce cycle.
@@ -835,7 +835,7 @@ func fetchAuxDataForPR(client *github.Client,
 				if combined[j].CreatedAt == nil {
 					return false
 				}
-				return combined[i].CreatedAt.Before(*combined[j].CreatedAt)
+				return combined[i].CreatedAt.Before(combined[j].CreatedAt.Time)
 			})
 			allCommentsForDB = combined
 		}()
@@ -989,7 +989,7 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 		for _, r := range reviews {
 			var submittedAt time.Time
 			if r.SubmittedAt != nil {
-				submittedAt = *r.SubmittedAt
+				submittedAt = r.SubmittedAt.Time
 			}
 			rvs = append(rvs, reviewJSON{
 				ID:          r.GetID(),

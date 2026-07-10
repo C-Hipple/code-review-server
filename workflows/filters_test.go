@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 func TestLatestUserReviewIsDismissed(t *testing.T) {
@@ -19,7 +19,7 @@ func TestLatestUserReviewIsDismissed(t *testing.T) {
 		return &github.PullRequestReview{
 			User:        &github.User{Login: &l},
 			State:       &s,
-			SubmittedAt: &t,
+			SubmittedAt: &github.Timestamp{Time: t},
 		}
 	}
 
@@ -125,7 +125,7 @@ func TestFilterMyReviewRequested(t *testing.T) {
 		return &github.PullRequestReview{
 			User:        &github.User{Login: &l},
 			State:       &s,
-			SubmittedAt: &ts,
+			SubmittedAt: &github.Timestamp{Time: ts},
 		}
 	}
 

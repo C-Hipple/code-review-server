@@ -4,7 +4,7 @@ import (
 	"crs/config"
 	"strings"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 // filterMyReviewRequested matches PRs where the configured user owes a review.
@@ -81,7 +81,7 @@ func latestUserReviewIsDismissed(reviews []*github.PullRequestReview, login stri
 		if !strings.EqualFold(*r.User.Login, login) {
 			continue
 		}
-		if latest == nil || r.SubmittedAt.After(*latest.SubmittedAt) {
+		if latest == nil || r.SubmittedAt.After(latest.SubmittedAt.Time) {
 			latest = r
 		}
 	}

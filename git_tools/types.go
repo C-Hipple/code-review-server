@@ -2,7 +2,7 @@ package git_tools
 
 import (
 	"time"
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 type CommentJSON struct {

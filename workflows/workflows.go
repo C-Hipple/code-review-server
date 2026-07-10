@@ -7,10 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 type RunResult struct {
@@ -90,21 +89,21 @@ func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
 	return reqs
 }
 
-func (w SyncReviewRequestsWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+func (w SyncReviewRequestsWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	prs = git_tools.ApplyPRFilters(prs, w.Filters)
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
-		log.Error("Error getting section", "error", err, "section", w.SectionTitle)
+		slog.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
 	}
-	log.Info("Got section: " + strconv.FormatInt(section.ID, 10) + " + " + section.SectionName)
+	slog.Debug("Got section", "id", section.ID, "name", section.SectionName)
 
 	beforeCount, _ := db.GetItemCount()
-	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, w.Name, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	slog.Info("Starting workflow", "items_before", beforeCount)
+	result := ProcessPRsDB(w.Name, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
-	log.Info("Finished workflow", "items_after", afterCount)
+	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
@@ -163,7 +162,7 @@ func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
 	return nil
 }
 
-func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
+func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
@@ -187,7 +186,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 	for _, entry := range w.Repos {
 		owner, repo, err := git_tools.ParseRepoName(entry)
 		if err != nil {
-			log.Error("Skipping invalid repo entry", "entry", entry, "error", err)
+			slog.Error("Skipping invalid repo entry", "entry", entry, "error", err)
 			continue
 		}
 		shortToRef[repo] = repoRef{owner: owner, repo: repo}
@@ -207,24 +206,24 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 		ref := shortToRef[short]
 		repoPRs, err := git_tools.GetSpecificPRs(client, ref.owner, ref.repo, nums)
 		if err != nil {
-			log.Error("Error getting specific PRs", "owner", ref.owner, "repo", ref.repo, "error", err)
+			slog.Error("Error getting specific PRs", "owner", ref.owner, "repo", ref.repo, "error", err)
 			continue
 		}
 		// Because GetPRRequirements returns nil, the manager's prefetch pass skips
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(log, client, ref.owner, ref.repo, repoPRs)
+		prefetchAuxDataForPRs(client, ref.owner, ref.repo, repoPRs)
 		allPRs = append(allPRs, repoPRs...)
 	}
 
 	allPRs = git_tools.ApplyPRFilters(allPRs, w.Filters)
 
 	beforeCount, _ := db.GetItemCount()
-	log.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(log, w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	slog.Info("Starting workflow", "items_before", beforeCount)
+	result := ProcessPRsDB(w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
-	log.Info("Finished workflow", "items_after", afterCount)
+	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
@@ -233,7 +232,7 @@ func (w ProjectListWorkflow) Run(log *slog.Logger, prs []*github.PullRequest, c 
 // the current global AuxDataStore. Used by workflows whose PR set isn't known
 // during the manager's collection phase (e.g. ProjectListWorkflow, which
 // resolves PR numbers via Jira at run time).
-func prefetchAuxDataForPRs(log *slog.Logger, client *github.Client, owner, repo string, prs []*github.PullRequest) {
+func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*github.PullRequest) {
 	if len(prs) == 0 {
 		return
 	}
@@ -259,10 +258,10 @@ func prefetchAuxDataForPRs(log *slog.Logger, client *github.Client, owner, repo 
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
 			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
-			data := fetchAuxDataForPR(log, client, apiCalls, key, auxReq, pr)
+			data := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
 			store.Set(key, data)
 		}(pr)
 	}
 	wg.Wait()
-	log.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs))
+	slog.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs))
 }

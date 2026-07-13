@@ -5,6 +5,7 @@ import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
 import { getClickColumn } from '../../utils/dom';
 import type { LspData } from '../../hooks/useLsp';
 import LspPopover from '../LspPopover';
+import CommentIndicator from './CommentIndicator';
 import CommentThread from './CommentThread';
 import InlineCommentForm from './InlineCommentForm';
 import {
@@ -23,6 +24,9 @@ export interface DiffViewProps {
     comments: Comment[];
     outdatedComments: Comment[];
     collapsedFiles: Set<string>;
+    // Root comment ids whose full thread should render inline; threads not in
+    // this set are collapsed behind a hover/click indicator.
+    visibleThreadIds: Set<string>;
     activeLineIndex: number | null;
     activeLspIndex: number | null;
     replyToId: number | null;
@@ -34,6 +38,7 @@ export interface DiffViewProps {
     wrapLines: boolean;
     diffTheme: DiffTheme;
     lspData: LspData | null;
+    onToggleThreadsVisible: (rootIds: string[]) => void;
     onCommentClick: (idx: number, file: string, pos: number) => void;
     onCodeClick: (
         idx: number,
@@ -67,6 +72,7 @@ export default function DiffView({
     comments,
     outdatedComments,
     collapsedFiles,
+    visibleThreadIds,
     activeLineIndex,
     activeLspIndex,
     replyToId,
@@ -78,6 +84,7 @@ export default function DiffView({
     wrapLines,
     diffTheme,
     lspData,
+    onToggleThreadsVisible,
     onCommentClick,
     onCodeClick,
     onThreadClick,
@@ -199,30 +206,62 @@ export default function DiffView({
               )
             : [];
 
+    const rootCommentsForLine = (item: ParsedLine): Comment[] => {
+        const lineComments = commentsForLine(item);
+        return lineComments.filter(c => !c.in_reply_to);
+    };
+
+    const threadForRoot = (rc: Comment, lineComments: Comment[]): Comment[] => [
+        rc,
+        ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
+    ];
+
     const threadsForLine = (item: ParsedLine, idx: number, stickyOnMobile: boolean) => {
         const lineComments = commentsForLine(item);
-        const rootComments = lineComments.filter(c => !c.in_reply_to);
-        return rootComments.map(rc => {
-            const thread = [rc, ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10))];
-            const isReplyingToThread =
-                (replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId)) ||
-                (editingCommentId !== null &&
-                    thread.some(c => parseInt(c.id, 10) === editingCommentId));
-            return (
-                <CommentThread
-                    key={rc.id}
-                    thread={thread}
-                    isActive={isReplyingToThread}
-                    stickyOnMobile={stickyOnMobile}
-                    onClick={() => {
-                        if (item.file && item.pos !== null) {
-                            onThreadClick(thread, item.file, item.pos, idx);
-                        }
-                    }}
-                    onDeleteComment={onDeleteComment}
+        const rootComments = rootCommentsForLine(item);
+        return rootComments
+            .filter(rc => visibleThreadIds.has(rc.id))
+            .map(rc => {
+                const thread = threadForRoot(rc, lineComments);
+                const isReplyingToThread =
+                    (replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId)) ||
+                    (editingCommentId !== null &&
+                        thread.some(c => parseInt(c.id, 10) === editingCommentId));
+                return (
+                    <CommentThread
+                        key={rc.id}
+                        thread={thread}
+                        isActive={isReplyingToThread}
+                        stickyOnMobile={stickyOnMobile}
+                        onClick={() => {
+                            if (item.file && item.pos !== null) {
+                                onThreadClick(thread, item.file, item.pos, idx);
+                            }
+                        }}
+                        onDeleteComment={onDeleteComment}
+                    />
+                );
+            });
+    };
+
+    // Indicator badge shown next to a commented line/file; toggles all of that
+    // line's threads open/closed together and previews them all on hover.
+    const commentIndicatorForLine = (item: ParsedLine) => {
+        const rootComments = rootCommentsForLine(item);
+        if (rootComments.length === 0) return null;
+        const lineComments = commentsForLine(item);
+        const rootIds = rootComments.map(rc => rc.id);
+        const allVisible = rootIds.every(id => visibleThreadIds.has(id));
+        const allThreadComments = rootComments.flatMap(rc => threadForRoot(rc, lineComments));
+        return (
+            <span onClick={e => e.stopPropagation()}>
+                <CommentIndicator
+                    thread={allThreadComments}
+                    visible={allVisible}
+                    onToggle={() => onToggleThreadsVisible(rootIds)}
                 />
-            );
-        });
+            </span>
+        );
     };
 
     let currentFile: string | null = null;
@@ -384,6 +423,7 @@ export default function DiffView({
                                 </span>
                             );
                         })()}
+                        {commentIndicatorForLine(item)}
                         {hasOutdated && (
                             <button
                                 onClick={e => {
@@ -593,6 +633,11 @@ export default function DiffView({
                                 {item.newLineNo ?? ''}
                             </span>
                         </>
+                    )}
+                    {isCodeLine && !isHunkHeader && (
+                        <span style={{ display: 'flex', alignItems: 'center' }}>
+                            {commentIndicatorForLine(item)}
+                        </span>
                     )}
                     {isCodeLine && !isHunkHeader && (
                         <span

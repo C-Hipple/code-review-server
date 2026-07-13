@@ -78,6 +78,20 @@ export default function Review({
     const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+    // Comment threads are hidden by default; a thread's root comment id must be
+    // in this set for its full interactive thread to render inline.
+    const [visibleThreadIds, setVisibleThreadIds] = useState<Set<string>>(new Set());
+    const toggleThreadsVisible = (rootIds: string[]) => {
+        setVisibleThreadIds(prev => {
+            const next = new Set(prev);
+            const allVisible = rootIds.every(id => next.has(id));
+            rootIds.forEach(id => {
+                if (allVisible) next.delete(id);
+                else next.add(id);
+            });
+            return next;
+        });
+    };
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
     // Description starts collapsed so the diff dominates the viewport.
     const [descCollapsed, setDescCollapsed] = useState(true);
@@ -403,6 +417,17 @@ export default function Review({
             setContent(res.content || '');
             setDiff(res.diff || '');
             setExpandedLineIndices(new Set());
+            const prevIds = new Set(comments.map(c => c.id));
+            const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
+            if (newComments.length > 0) {
+                setVisibleThreadIds(prev => {
+                    const next = new Set(prev);
+                    newComments.forEach(c => {
+                        next.add(c.in_reply_to ? c.in_reply_to.toString() : c.id);
+                    });
+                    return next;
+                });
+            }
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -711,6 +736,7 @@ export default function Review({
             comments={comments}
             outdatedComments={outdatedComments}
             collapsedFiles={collapsedFiles}
+            visibleThreadIds={visibleThreadIds}
             activeLineIndex={activeLineIndex}
             activeLspIndex={activeLspIndex}
             replyToId={replyToId}
@@ -722,6 +748,7 @@ export default function Review({
             wrapLines={wrapLines}
             diffTheme={customDiffTheme}
             lspData={lsp.lspData}
+            onToggleThreadsVisible={toggleThreadsVisible}
             onCommentClick={handleCommentClick}
             onCodeClick={handleCodeClick}
             onThreadClick={handleThreadClick}

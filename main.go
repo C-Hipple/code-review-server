@@ -91,10 +91,10 @@ func main() {
 				slog.Error("pprof server exited", "error", err)
 			}
 		}()
-		go ms.Run(log)
-		server.RunServer(log)
+		go ms.Run()
+		server.RunServer()
 	} else {
-		ms.Run(log)
+		ms.Run()
 	}
 }
 

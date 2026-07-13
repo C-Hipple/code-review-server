@@ -2,11 +2,11 @@ package workflows
 
 import (
 	"bytes"
+	"context"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
 	"crs/utils"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 type PRRequirement struct {
@@ -54,7 +54,7 @@ type PRAuxData struct {
 type Workflow interface {
 	GetName() string
 	GetPRRequirements() []PRRequirement
-	Run(log *slog.Logger, prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
+	Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
 	GetOrgSectionName() string
 }
 
@@ -80,8 +80,8 @@ type SerializedFileChange struct {
 	Lines      []string
 }
 
-func (fc FileChanges) Report(log *slog.Logger) {
-	log.Info(fmt.Sprintf("[%s] %-20s - %s (%s)", fc.ChangeType[:2], fc.SectionName, fc.Title, fc.Identifier))
+func (fc FileChanges) Report() {
+	slog.Info(fmt.Sprintf("[%s] %-20s - %s (%s)", fc.ChangeType[:2], fc.SectionName, fc.Title, fc.Identifier))
 }
 
 // Deserialize is no longer strictly needed for org rendering here as ApplyChanges will handle DB directly,
@@ -457,7 +457,7 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
-func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
+func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
 	ttl := time.Now().Add(2 * time.Hour).Unix()
@@ -488,7 +488,7 @@ func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullReque
 	{
 		items, err := db.GetItemsBySection(section.ID)
 		if err != nil {
-			log.Error("Error getting items from section", "error", err)
+			slog.Error("Error getting items from section", "error", err)
 		} else {
 			for _, item := range items {
 				if slices.Contains(pr_identifiers, item.Identifier) {
@@ -560,7 +560,7 @@ func ProcessPRsDB(log *slog.Logger, workflowName string, prs []*github.PullReque
 			changes = append(changes, fileChange)
 		}
 	} else {
-		log.Error("Error getting expired items", "error", err)
+		slog.Error("Error getting expired items", "error", err)
 	}
 
 	for _, output := range changes {
@@ -622,7 +622,6 @@ func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRe
 // Assume git_tools.GetGithubClient() and processWorkflowRuns are defined elsewhere
 // and work as intended.
 
-
 // getPRDiff fetches and stores the PR diff. If headSHA is provided, it skips the API call to get the PR.
 func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 	client := git_tools.GetGithubClient()
@@ -641,7 +640,6 @@ func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 
 	return []string{"*** Diff\n", diff}
 }
-
 
 // GetReleaseStatus runs the release check command with args: <owner> <repo> <commit-sha>
 // and returns the output string (e.g. "released", "release-client", "merged").

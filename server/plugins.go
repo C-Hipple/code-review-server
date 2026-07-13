@@ -40,7 +40,9 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 		// Skip on-demand plugins unless explicitly requested by name
 		if plugin.OnlyOnDemand && !pluginMap[plugin.Name] {
 			// Record a "deferred" status so clients know this plugin exists but hasn't been requested yet
-			config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "deferred", sha)
+			if err := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "deferred", sha); err != nil {
+				slog.Error("Failed to record deferred plugin status", "plugin", plugin.Name, "error", err)
+			}
 			continue
 		}
 		wg.Add(1)
@@ -72,7 +74,7 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 
 	// Skip execution if SHA hasn't changed (unless force is true)
 	if !force && storedSHA != "" && storedSHA == sha {
-		slog.Info("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha)
+		slog.Debug("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha)
 		return
 	}
 
@@ -120,7 +122,9 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 	}
 	if err != nil {
 		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "stderr", stderrBuf.String())
-		config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, stderrBuf.String(), resultStr), "error", sha)
+		if upsertErr := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, stderrBuf.String(), resultStr), "error", sha); upsertErr != nil {
+			slog.Error("Failed to store plugin error result", "plugin", plugin.Name, "error", upsertErr)
+		}
 		return
 	}
 

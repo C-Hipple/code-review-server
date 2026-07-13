@@ -1,16 +1,13 @@
 package workflows
 
 import (
-	"log/slog"
-	"os"
 	"sync"
 	"testing"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 func TestDeduplicateChanges(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	tests := []struct {
 		name     string
 		changes  []SerializedFileChange
@@ -62,7 +59,7 @@ func TestDeduplicateChanges(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := deduplicateChanges(logger, tt.changes)
+			result := deduplicateChanges(tt.changes)
 			if len(result) != tt.expected {
 				t.Errorf("expected %d changes, got %d", tt.expected, len(result))
 			}
@@ -77,10 +74,10 @@ type mockWorkflow struct {
 	runCalls int
 }
 
-func (m *mockWorkflow) GetName() string { return m.name }
-func (m *mockWorkflow) GetOrgSectionName() string { return m.name }
+func (m *mockWorkflow) GetName() string                    { return m.name }
+func (m *mockWorkflow) GetOrgSectionName() string          { return m.name }
 func (m *mockWorkflow) GetPRRequirements() []PRRequirement { return m.reqs }
-func (m *mockWorkflow) Run(_ *slog.Logger, _ []*github.PullRequest, _ chan FileChanges, _ *sync.WaitGroup) (RunResult, error) {
+func (m *mockWorkflow) Run(_ []*github.PullRequest, _ chan FileChanges, _ *sync.WaitGroup) (RunResult, error) {
 	m.runCalls++
 	return RunResult{}, nil
 }
@@ -173,8 +170,8 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "workflow with no requirements (e.g. ProjectListWorkflow)",
-			workflow: &mockWorkflow{reqs: nil},
+			name:         "workflow with no requirements (e.g. ProjectListWorkflow)",
+			workflow:     &mockWorkflow{reqs: nil},
 			repoStatePRs: map[string]map[string][]*github.PullRequest{},
 			specificPRs:  map[string]map[int]*github.PullRequest{},
 			want:         false, // no requirements = nothing to block on

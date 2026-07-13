@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
+import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
 try {
@@ -70,7 +71,7 @@ class RpcBridge {
         string | number,
         { resolve: (val: unknown) => void; reject: (err: unknown) => void }
     >();
-    private buffer = '';
+    private parser = new JsonRpcLineParser(msg => this.handleResponse(msg as JsonRpcResponse));
 
     constructor() {
         console.log(`[RpcBridge] PROJECT_ROOT: ${PROJECT_ROOT}`);
@@ -89,64 +90,15 @@ class RpcBridge {
 
     private async readLoop() {
         const reader = this.proc.stdout.getReader();
+        const decoder = new TextDecoder();
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                this.handleChunk(new TextDecoder().decode(value));
+                this.parser.push(decoder.decode(value, { stream: true }));
             }
         } catch (e) {
             console.error('Error reading from server:', e);
-        }
-    }
-
-    private handleChunk(chunk: string) {
-        this.buffer += chunk;
-
-        let depth = 0;
-        let start = 0;
-        let inString = false;
-        let isEscaped = false;
-
-        for (let i = 0; i < this.buffer.length; i++) {
-            const char = this.buffer[i];
-
-            if (isEscaped) {
-                isEscaped = false;
-                continue;
-            }
-
-            if (char === '\\') {
-                isEscaped = true;
-                continue;
-            }
-
-            if (char === '"') {
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString) {
-                if (char === '{') {
-                    if (depth === 0) start = i;
-                    depth++;
-                } else if (char === '}') {
-                    depth--;
-                    if (depth === 0) {
-                        // Found a complete object
-                        const jsonStr = this.buffer.substring(start, i + 1);
-                        try {
-                            const obj = JSON.parse(jsonStr);
-                            this.handleResponse(obj);
-                        } catch (e) {
-                            console.error('Failed to parse JSON:', jsonStr, e);
-                        }
-                        // Remove processed part
-                        this.buffer = this.buffer.substring(i + 1);
-                        i = -1; // Restart scanning from 0
-                    }
-                }
-            }
         }
     }
 

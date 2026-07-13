@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 type NotificationTODO struct {
@@ -27,5 +27,5 @@ func GetNotifications() []*github.Notification {
 
 func MarkRead(since time.Time) {
 	client := GetGithubClient()
-	client.Activity.MarkRepositoryNotificationsRead(context.Background(), "owner", "repo", since)
+	client.Activity.MarkRepositoryNotificationsRead(context.Background(), "owner", "repo", github.Timestamp{Time: since})
 }

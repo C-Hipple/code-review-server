@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v74/github"
 )
 
 func TestFilterWaitingOnMe(t *testing.T) {
@@ -178,7 +178,7 @@ func TestCalculateInteractionState(t *testing.T) {
 	makeReview := func(user string, submittedAt time.Time) *github.PullRequestReview {
 		return &github.PullRequestReview{
 			User:        &github.User{Login: &user},
-			SubmittedAt: &submittedAt,
+			SubmittedAt: &github.Timestamp{Time: submittedAt},
 		}
 	}
 
@@ -186,7 +186,7 @@ func TestCalculateInteractionState(t *testing.T) {
 		c := &github.PullRequestComment{
 			ID:        &id,
 			User:      &github.User{Login: &user},
-			CreatedAt: &createdAt,
+			CreatedAt: &github.Timestamp{Time: createdAt},
 		}
 		if inReplyTo != 0 {
 			c.InReplyTo = &inReplyTo
@@ -197,7 +197,7 @@ func TestCalculateInteractionState(t *testing.T) {
 	makeIssueComment := func(user string, createdAt time.Time) *github.IssueComment {
 		return &github.IssueComment{
 			User:      &github.User{Login: &user},
-			CreatedAt: &createdAt,
+			CreatedAt: &github.Timestamp{Time: createdAt},
 		}
 	}
 

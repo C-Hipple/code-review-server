@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { colors } from '../../design';
 import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
@@ -562,7 +562,15 @@ export default function DiffView({
                 background: colors.diffDelGutterBg,
             };
         } else if (isHunkHeader) {
-            containerStyle = { ...containerStyle, background: colors.diffHunkBg };
+            // Let .diff-hunk-row own `position` (sticky on desktop, static on
+            // mobile). An inline `position: relative` here would override the
+            // class's sticky while its `top` offset still applied, painting
+            // the header below its slot and overlapping the rows beneath it.
+            containerStyle = {
+                ...containerStyle,
+                background: colors.diffHunkBg,
+                position: undefined,
+            };
             lineStyle = {
                 ...lineStyle,
                 color: colors.accent,
@@ -591,8 +599,14 @@ export default function DiffView({
             lineContent = isCodeLine ? line.slice(1) : line;
         }
 
+        // Hunk headers render unwrapped (Fragment adds no DOM node): a
+        // per-row wrapper div would be their sticky containing block, sized
+        // exactly to the row, leaving the header no room to pin under the
+        // toolbar while its hunk scrolls.
+        const RowWrapper = isHunkHeader ? Fragment : 'div';
+
         return (
-            <div key={idx}>
+            <RowWrapper key={idx}>
                 <div
                     className={
                         (item.clickable ? 'hover-line' : '') +
@@ -757,7 +771,7 @@ export default function DiffView({
                         onSubmit={onSubmitInline}
                     />
                 )}
-            </div>
+            </RowWrapper>
         );
     });
 

@@ -1018,11 +1018,14 @@ textarea:focus-visible {
 }
 
 /* Guard against horizontal page scroll on small screens. Individual code/diff
-   blocks opt back into horizontal scrolling via their own overflow-x. */
+   blocks opt back into horizontal scrolling via their own overflow-x.
+   `clip` rather than `hidden`: overflow-x hidden turns <body> into a scroll
+   container, which re-anchors every `position: sticky` descendant (toolbar,
+   hunk headers) to <body> — which never scrolls — so nothing ever pinned. */
 html,
 body {
     max-width: 100%;
-    overflow-x: hidden;
+    overflow-x: clip;
 }
 
 /* Media-friendly defaults. */

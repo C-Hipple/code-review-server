@@ -144,7 +144,7 @@ Bun.serve<{
     envs: Record<string, string>;
     proc?: Subprocess;
 }>({
-    port: parseInt(process.env.PORT || '5172', 10),
+    port: parseInt(process.env.CRS_PORT || '5172', 10),
     async fetch(req, server) {
         const url = new URL(req.url);
 
@@ -586,4 +586,6 @@ Type: ${type}
     },
 });
 
-console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || '5172', 10)}`);
+console.log(
+    `Bun server running on http://localhost:${parseInt(process.env.CRS_PORT || '5172', 10)}`
+);

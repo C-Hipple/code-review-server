@@ -81,8 +81,8 @@ VOLUME ["/home/crs/data"]
 ENV XDG_CONFIG_HOME=/home/crs/.config
 ENV CRS_HOME=/home/crs/data
 
-# Web UI port (override with -e PORT=...)
-ENV PORT=5172
+# Web UI port (override with -e CRS_PORT=...)
+ENV CRS_PORT=5172
 EXPOSE 5172
 
 ENTRYPOINT ["/usr/local/bin/crs-gui"]

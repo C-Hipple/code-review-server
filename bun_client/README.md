@@ -18,7 +18,7 @@
     ./start_server.sh
     ```
 
-    This runs on `http://localhost:5172`.
+    This runs on `http://localhost:5172` by default. Set `CRS_PORT` to use a different port.
 
 2. Start the Frontend (Development Mode):
     ```bash

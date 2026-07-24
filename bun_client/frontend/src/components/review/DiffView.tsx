@@ -622,6 +622,26 @@ export default function DiffView({
                     }}
                     title={undefined}
                 >
+                    {isCodeLine && !isHunkHeader && (
+                        // Fixed-width comment gutter, to the LEFT of the line
+                        // numbers. Always rendered (empty when the line has no
+                        // comment) so a collapsed-comment badge never shifts the
+                        // line numbers or code. A wider multi-comment badge is
+                        // right-aligned here and overflows left into the diff
+                        // padding, never over the line numbers to its right.
+                        <span
+                            style={{
+                                width: '22px',
+                                minWidth: '22px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'flex-end',
+                                userSelect: 'none',
+                            }}
+                        >
+                            {commentIndicatorForLine(item)}
+                        </span>
+                    )}
                     {isCodeLine && !isHunkHeader && !isMobile && (
                         <>
                             <span
@@ -647,11 +667,6 @@ export default function DiffView({
                                 {item.newLineNo ?? ''}
                             </span>
                         </>
-                    )}
-                    {isCodeLine && !isHunkHeader && (
-                        <span style={{ display: 'flex', alignItems: 'center' }}>
-                            {commentIndicatorForLine(item)}
-                        </span>
                     )}
                     {isCodeLine && !isHunkHeader && (
                         <span

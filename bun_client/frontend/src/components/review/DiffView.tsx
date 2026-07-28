@@ -380,7 +380,7 @@ export default function DiffView({
                         <span
                             style={{
                                 fontFamily: 'var(--font-mono)',
-                                fontSize: '13px',
+                                fontSize: '1em',
                                 fontWeight: 500,
                                 color: 'var(--text-primary)',
                             }}
@@ -530,7 +530,9 @@ export default function DiffView({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '12px',
+            // Relative to the diff container's font size so the gutter tracks
+            // the Review Diff Font Size preference.
+            fontSize: '0.92em',
         };
 
         // On mobile, unwrapped lines scroll horizontally as a unit (see the
@@ -575,7 +577,7 @@ export default function DiffView({
                 ...lineStyle,
                 color: colors.accent,
                 fontStyle: 'italic',
-                fontSize: '12px',
+                fontSize: '0.92em',
             };
         }
 

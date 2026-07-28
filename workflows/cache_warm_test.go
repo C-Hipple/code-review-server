@@ -72,3 +72,54 @@ func TestPRNeedsCacheWarm(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyCacheWarmRequirements(t *testing.T) {
+	const (
+		prNumber = 100
+		repo     = "code-review-server"
+	)
+	key := PRKey{Owner: "owner", Repo: repo, Number: prNumber}
+
+	t.Run("warms every field GetPRDetails reads", func(t *testing.T) {
+		db := warmTestDB(t)
+		prObjects := map[PRKey]*github.PullRequest{key: prWithHeadSHA("sha1")}
+		reqs := map[PRKey]AuxDataRequirement{}
+
+		applyCacheWarmRequirements(db, prObjects, reqs)
+
+		got := reqs[key]
+		// Reviews and comments especially: a draft or closed PR gets no other
+		// chance at a PRReviews row, and that shows up as a "reviews" miss.
+		want := AuxDataRequirement{Diff: true, Commits: true, Reviews: true, Comments: true}
+		if got != want {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("preserves requirements the filters already asked for", func(t *testing.T) {
+		db := warmTestDB(t)
+		prObjects := map[PRKey]*github.PullRequest{key: prWithHeadSHA("sha1")}
+		reqs := map[PRKey]AuxDataRequirement{key: {CIStatus: true}}
+
+		applyCacheWarmRequirements(db, prObjects, reqs)
+
+		if !reqs[key].CIStatus {
+			t.Error("cache warm cleared a requirement set by the workflow's filters")
+		}
+	})
+
+	t.Run("leaves an unchanged PR alone", func(t *testing.T) {
+		db := warmTestDB(t)
+		if err := db.UpsertPullRequest(prNumber, repo, "sha1", "", "cached diff"); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		prObjects := map[PRKey]*github.PullRequest{key: prWithHeadSHA("sha1")}
+		reqs := map[PRKey]AuxDataRequirement{}
+
+		applyCacheWarmRequirements(db, prObjects, reqs)
+
+		if got := reqs[key]; got != (AuxDataRequirement{}) {
+			t.Errorf("unchanged PR should not be warmed, got %+v", got)
+		}
+	})
+}

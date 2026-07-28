@@ -250,6 +250,7 @@ func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*git
 	}
 	apiCalls := &apiCallCounter{}
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, prefetchConcurrency)
 	for _, pr := range prs {
 		if pr == nil || pr.Number == nil {
 			continue
@@ -257,6 +258,8 @@ func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*git
 		wg.Add(1)
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
 			data := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
 			store.Set(key, data)

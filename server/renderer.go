@@ -669,6 +669,10 @@ type cacheMissState struct {
 	number       int
 	skipCache    bool
 	missedFields []string
+	// fetchErr is set when GetPRDetails bailed out on a GitHub API error rather
+	// than on missing cache data. Without it, a failed request lands in the log
+	// looking like an ordinary miss on whichever field it died at.
+	fetchErr error
 	// per-field: true = data was present in DB, false = cache miss
 	metadataHit bool
 	diffHit     bool
@@ -711,15 +715,28 @@ func writeCacheMissLog(state cacheMissState) {
 	now := time.Now().UTC()
 
 	var sb strings.Builder
-	sb.WriteString("=== Cache Miss Report ===\n")
+	// A forced refresh (SyncPR) bypasses every cache on purpose, so its fields
+	// are not misses. Keeping it under a separate header means grepping for
+	// "Cache Miss Report" turns up only the entries worth investigating.
+	if state.skipCache {
+		sb.WriteString("=== Forced Refresh Report ===\n")
+	} else {
+		sb.WriteString("=== Cache Miss Report ===\n")
+	}
 	sb.WriteString(fmt.Sprintf("Time:     %s\n", now.Format("2006-01-02 15:04:05 UTC")))
 	sb.WriteString(fmt.Sprintf("PR:       #%d  (owner: %s, repo: %s)\n", state.number, state.owner, state.repo))
-	sb.WriteString(fmt.Sprintf("Missed:   %s\n", strings.Join(state.missedFields, ", ")))
 	if state.skipCache {
-		sb.WriteString("Forced:   yes (skipCache=true — all caches bypassed)\n")
+		sb.WriteString(fmt.Sprintf("Fetched:  %s\n", strings.Join(state.missedFields, ", ")))
+		sb.WriteString("Forced:   yes (skipCache=true — caches bypassed by request, not missing)\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Missed:   %s\n", strings.Join(state.missedFields, ", ")))
+	}
+	if state.fetchErr != nil {
+		sb.WriteString(fmt.Sprintf("Error:    %v\n", state.fetchErr))
+		sb.WriteString("          (request aborted here — fields below this point were never reached)\n")
 	}
 
-	sb.WriteString("\nCache State (at time of request):\n")
+	sb.WriteString("\nCache State (before this request):\n")
 	hitStr := func(hit bool) string {
 		if hit {
 			return "HIT"
@@ -773,23 +790,24 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	// Probe all caches upfront to record hit/miss state for the log.
 	// This happens before the existing cache logic so we capture the true pre-fetch state.
+	// The probes run even under skipCache: a forced refresh doesn't consult the
+	// caches, but reporting every field as MISS just because we chose not to
+	// read them tells us nothing about whether the warm path is working.
 	missState := cacheMissState{owner: owner, repo: repo, number: number, skipCache: skipCache}
-	if !skipCache {
-		if v, _ := config.C().DB.GetPRMetadataCache(owner, repo, number); v != "" {
-			missState.metadataHit = true
-		}
-		if v, _, _ := config.C().DB.GetPullRequest(number, repo); v != "" {
-			missState.diffHit = true
-		}
-		if v, _ := config.C().DB.GetPRComments(number, repo); v != "" {
-			missState.commentsHit = true
-		}
-		if v, _ := config.C().DB.GetPRReviews(number, repo); v != "" {
-			missState.reviewsHit = true
-		}
-		if v, _ := config.C().DB.GetPRCommits(number, repo); v != "" {
-			missState.commitsHit = true
-		}
+	if v, _ := config.C().DB.GetPRMetadataCache(owner, repo, number); v != "" {
+		missState.metadataHit = true
+	}
+	if v, _, _ := config.C().DB.GetPullRequest(number, repo); v != "" {
+		missState.diffHit = true
+	}
+	if v, _ := config.C().DB.GetPRComments(number, repo); v != "" {
+		missState.commentsHit = true
+	}
+	if v, _ := config.C().DB.GetPRReviews(number, repo); v != "" {
+		missState.reviewsHit = true
+	}
+	if v, _ := config.C().DB.GetPRCommits(number, repo); v != "" {
+		missState.commitsHit = true
 	}
 	defer func() { writeCacheMissLog(missState) }()
 
@@ -797,6 +815,11 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	var headSHA string
 	var baseSHA string
 	var reviews []ReviewJSON
+	// Tracked separately from `reviews != nil` because a PR with no reviews
+	// loads as an empty slice — indistinguishable from "never loaded" if we go
+	// by nil-ness, which used to cost a duplicate ListReviews call and a
+	// phantom "reviews" entry in the cache miss log on every fresh fetch.
+	reviewsLoaded := false
 	needsFreshFetch := skipCache
 
 	// 1. Try to load metadata from cache first (unless skipCache)
@@ -825,7 +848,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			// If we have cached data, return that instead of failing
 			if metadata.Number != 0 {
 				slog.Warn("GitHub API error, falling back to cached metadata", "error", err)
+				missState.fetchErr = err
 			} else {
+				missState.fetchErr = err
 				return nil, err
 			}
 		} else {
@@ -851,7 +876,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 
 			// Fetch reviews (with caching)
-			reviews, _ = GetPRReviews(owner, repo, number, skipCache)
+			var reviewsErr error
+			reviews, reviewsErr = GetPRReviews(owner, repo, number, skipCache)
+			reviewsLoaded = reviewsErr == nil
 
 			approvedBy := []string{}
 			changesRequestedBy := []string{}
@@ -1066,7 +1093,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	commentJSONs, outdatedCommentJSONs := splitComments(comments)
 
 	// 5. Load Reviews (with caching)
-	if reviews == nil {
+	if !reviewsLoaded {
 		if !missState.reviewsHit {
 			missState.missedFields = append(missState.missedFields, "reviews")
 		}
@@ -2045,6 +2072,10 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 			if err := json.Unmarshal([]byte(cachedReviewsJSON), &reviews); err != nil {
 				slog.Error("Error unmarshaling cached reviews", "error", err)
 			} else {
+				if reviews == nil {
+					// Rows written before reviews were cached as "[]" hold "null".
+					reviews = []ReviewJSON{}
+				}
 				return reviews, nil
 			}
 		}
@@ -2056,7 +2087,9 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 		return nil, err
 	}
 
-	var reviews []ReviewJSON
+	// Non-nil so a PR with no reviews serializes as "[]" instead of "null", and
+	// so callers can tell "loaded, none found" from "not loaded".
+	reviews := []ReviewJSON{}
 	for _, r := range ghReviews {
 		var submittedAt time.Time
 		if r.SubmittedAt != nil {

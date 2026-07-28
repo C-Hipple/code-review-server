@@ -9,9 +9,11 @@
     --diff-line-no-bg: rgba(127, 127, 127, 0.04);
     --diff-line-no-color: rgba(127, 127, 127, 0.85);
     --review-toolbar-top: 10px;
-    /* Fallback only — Review.tsx measures the toolbar at runtime and
-       overrides this so the hunk header pins flush below the toolbar. */
-    --review-hunk-sticky-top: 72px;
+    /* Fallbacks only — Review.tsx measures the toolbar and a file header row
+       at runtime and overrides these so the file header pins flush below the
+       toolbar and the hunk header pins flush below the file header. */
+    --review-sticky-top: 72px;
+    --review-hunk-sticky-top: 118px;
 }
 
 /* Default Theme (Dark) */
@@ -709,7 +711,27 @@ body {
     justify-content: flex-end;
 }
 
-/* Sticky hunk headers — slide under the toolbar.
+/* Sticky file headers — the file you are reading stays named in a bar
+   directly under the toolbar, with its hunk header pinned right below it
+   (see .diff-hunk-row). Both are bounded by their file's section wrapper
+   (see DiffView), so they scroll away with the file instead of lingering
+   once you have passed it. Same layering rules as the hunk row: an opaque
+   background so scrolling content can't ghost through, and its own
+   compositor layer so no sliver of the next row bleeds past its edge.
+   The row carries no top margin (see DiffView) — a margin would push the
+   pinned box down and open a seam below the toolbar. */
+.diff-file-row {
+    position: sticky;
+    top: var(--review-sticky-top);
+    z-index: 5;
+    /* Jumping here from the file index leaves room for the toolbar, so the
+       header lands exactly where it pins instead of behind the toolbar. */
+    scroll-margin-top: var(--review-sticky-top);
+    transform: translateZ(0);
+    will-change: transform;
+}
+
+/* Sticky hunk headers — slide under the file header.
    - Layered background (solid base + tint) keeps the row fully opaque
      so scrolling content can't ghost through.
    - min-height + extra bottom padding give a small buffer that
@@ -734,9 +756,10 @@ body {
 }
 
 /* On phones the diff scrolls horizontally inside its own container, which
-   re-anchors `position: sticky` to that scroller and would pin hunk headers
+   re-anchors `position: sticky` to that scroller and would pin the headers
    to the wrong box. Fall back to static positioning so they scroll inline. */
 @media (max-width: 768px) {
+    .diff-file-row,
     .diff-hunk-row {
         position: static;
         top: auto;

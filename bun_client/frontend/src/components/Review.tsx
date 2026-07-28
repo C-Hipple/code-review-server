@@ -101,29 +101,42 @@ export default function Review({
     const isMobile = useIsMobile();
     const [wrapLines, setWrapLines] = useState<boolean>(() => isMobile);
 
-    // Measure the sticky toolbar's actual rendered height and publish it as a
-    // CSS variable so sticky hunk headers can pin directly below the toolbar
-    // regardless of font size, button padding, or wrap.
+    // Measure the sticky toolbar and a file header row and publish their
+    // heights as CSS variables, so the file header pins directly below the
+    // toolbar and hunk headers pin directly below the file header —
+    // regardless of font size, button padding, or wrap. Every file header
+    // renders at the same height (see DiffView), so one row is enough.
     const toolbarRef = useRef<HTMLDivElement | null>(null);
     useLayoutEffect(() => {
         const el = toolbarRef.current;
         if (!el) return;
+        // Queried rather than ref'd: DiffView renders one of these per file and
+        // any of them gives the same height.
+        const fileRow = document.querySelector<HTMLElement>('.diff-file-row');
         const sync = () => {
             // Toolbar `top` offset (10px) + rendered height. No extra gap — any
-            // pixel between the toolbar's bottom and the hunk row's top would
-            // expose scrolling content through the seam.
+            // pixel between the toolbar's bottom and the row pinned beneath it
+            // would expose scrolling content through the seam.
             const top = 10 + el.offsetHeight;
-            document.documentElement.style.setProperty('--review-hunk-sticky-top', `${top}px`);
+            const root = document.documentElement;
+            root.style.setProperty('--review-sticky-top', `${top}px`);
+            // Before any file header exists, hunk headers pin under the toolbar.
+            root.style.setProperty(
+                '--review-hunk-sticky-top',
+                `${top + (fileRow?.offsetHeight ?? 0)}px`
+            );
         };
         sync();
         const ro = new ResizeObserver(sync);
         ro.observe(el);
+        if (fileRow) ro.observe(fileRow);
         window.addEventListener('resize', sync);
         return () => {
             ro.disconnect();
             window.removeEventListener('resize', sync);
         };
-    }, []);
+        // Re-run once the diff renders (or changes) so the file row is measured.
+    }, [diff]);
     // Inline review feedback drafting is hidden behind a toggle; the body is also
     // editable in the Submit Review modal.
     const [feedbackCollapsed, setFeedbackCollapsed] = useState(true);

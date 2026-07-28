@@ -694,14 +694,18 @@ body {
     box-shadow: var(--shadow-glow);
 }
 
-/* Diff line-number gutters */
+/* Diff line-number gutters.
+   Sized in `em` so the gutter tracks the Review Diff Font Size preference
+   (--diff-font-size, set on the diff container). The gutter keeps its 44px
+   floor at small sizes but grows with its content at larger ones, so wide
+   line numbers never spill over the +/- column. */
 .diff-line-no {
-    width: 44px;
+    flex: 0 0 auto;
     min-width: 44px;
     padding: 0 6px;
     text-align: right;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 0.85em;
     color: var(--diff-line-no-color);
     background: var(--diff-line-no-bg);
     border-right: 1px solid var(--border);

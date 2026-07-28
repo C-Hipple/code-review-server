@@ -1172,7 +1172,10 @@ export default function Review({
                                 style={{
                                     padding: '16px',
                                     fontFamily: 'var(--font-mono)',
-                                    fontSize: '13px',
+                                    // Set from the Review Diff Font Size preference; the
+                                    // diff's line numbers, +/- gutter and hunk headers
+                                    // size themselves in `em` off this base.
+                                    fontSize: 'var(--diff-font-size, 13px)',
                                     // No overflow:auto here — it would create a scroll
                                     // container and break sticky positioning of hunk
                                     // headers. Long lines are handled by per-line
@@ -1324,7 +1327,7 @@ export default function Review({
                                             overflowY: 'auto',
                                             padding: '16px',
                                             fontFamily: 'var(--font-mono)',
-                                            fontSize: '13px',
+                                            fontSize: 'var(--diff-font-size, 13px)',
                                         }}
                                     >
                                         {renderDiff(tab.filePath)}

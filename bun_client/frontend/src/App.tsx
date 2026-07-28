@@ -12,6 +12,11 @@ import {
     THEME_OPTIONS,
     ReviewLocation,
     REVIEW_LOCATION_OPTIONS,
+    DiffFontSize,
+    VALID_DIFF_FONT_SIZES,
+    DEFAULT_DIFF_FONT_SIZE,
+    DIFF_FONT_SIZE_OPTIONS,
+    DIFF_FONT_SIZE_PX,
 } from './design';
 
 interface PRParams {
@@ -36,6 +41,11 @@ function App() {
         if (saved === 'local' || saved === 'github') return saved;
         return 'local';
     });
+    const [diffFontSize, setDiffFontSize] = useState<DiffFontSize>(() => {
+        const saved = localStorage.getItem('diffFontSize') as DiffFontSize;
+        if (saved && VALID_DIFF_FONT_SIZES.includes(saved)) return saved;
+        return DEFAULT_DIFF_FONT_SIZE;
+    });
 
     // Apply theme
     useEffect(() => {
@@ -47,6 +57,17 @@ function App() {
     useEffect(() => {
         localStorage.setItem('reviewLocation', reviewLocation);
     }, [reviewLocation]);
+
+    // Publish the review diff font size as a CSS variable. The diff containers
+    // read `--diff-font-size` and everything inside the diff sizes off it in
+    // `em`, so the whole diff scales from this one value.
+    useEffect(() => {
+        document.documentElement.style.setProperty(
+            '--diff-font-size',
+            `${DIFF_FONT_SIZE_PX[diffFontSize]}px`
+        );
+        localStorage.setItem('diffFontSize', diffFontSize);
+    }, [diffFontSize]);
 
     // Dynamic Title
     useEffect(() => {
@@ -377,6 +398,50 @@ function App() {
                             }}
                         >
                             Determines where to open PRs when clicking their title in the list.
+                        </div>
+                    </div>
+                    <div>
+                        <div
+                            style={{
+                                fontSize: '13px',
+                                fontWeight: 600,
+                                color: 'var(--text-secondary)',
+                                marginBottom: '8px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                            }}
+                        >
+                            Review Diff Font Size
+                        </div>
+                        <Select
+                            value={diffFontSize}
+                            onChange={e => setDiffFontSize(e.target.value as DiffFontSize)}
+                            options={DIFF_FONT_SIZE_OPTIONS}
+                        />
+                        <div
+                            style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: `${DIFF_FONT_SIZE_PX[diffFontSize]}px`,
+                                color: 'var(--text-secondary)',
+                                background: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '4px',
+                                padding: '6px 8px',
+                                marginTop: '8px',
+                                whiteSpace: 'pre',
+                                overflowX: 'auto',
+                            }}
+                        >
+                            {'+ func preview(size int) error {'}
+                        </div>
+                        <div
+                            style={{
+                                fontSize: '11px',
+                                color: 'var(--text-tertiary)',
+                                marginTop: '6px',
+                            }}
+                        >
+                            Size of the diff text (and its line numbers) when reviewing a PR.
                         </div>
                     </div>
                 </div>

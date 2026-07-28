@@ -300,8 +300,13 @@ export default function DiffView({
             const hasOutdated = fileOutdatedComments.length > 0;
 
             return (
-                <div key={idx} id={item.file ? `file-${slugify(item.file)}` : undefined}>
+                // Fragment, not a wrapper div (same reason as hunk rows below):
+                // the header's sticky containing block must be the whole file
+                // section, not a box sized to the header itself, or it would
+                // have no room to stay pinned while the file's lines scroll by.
+                <Fragment key={idx}>
                     <div
+                        id={item.file ? `file-${slugify(item.file)}` : undefined}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -309,21 +314,27 @@ export default function DiffView({
                             padding: '10px 12px',
                             background:
                                 'linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)',
-                            borderTop: idx > 0 ? '2px solid var(--border)' : 'none',
+                            // Every file header keeps the same border and no top
+                            // margin so all of them render at an identical height:
+                            // Review.tsx measures one row to offset the sticky hunk
+                            // headers below, and a margin above a pinned row would
+                            // open a seam that scrolling content shows through.
+                            borderTop: '2px solid var(--border)',
                             borderBottom: '1px solid var(--border)',
-                            marginTop: idx > 0 ? '8px' : '0',
                             cursor: 'pointer',
                             borderLeft: isInlineActive
                                 ? '3px solid var(--accent)'
                                 : '3px solid transparent',
-                            position: 'relative',
+                            // `position` is left to .diff-file-row (sticky on
+                            // desktop, static on mobile); an inline value here
+                            // would override the class.
                         }}
                         onClick={() =>
                             item.file &&
                             item.pos !== null &&
                             onCommentClick(idx, item.file, item.pos)
                         }
-                        className="hover-line"
+                        className="hover-line diff-file-row"
                         title={`Add comment to ${item.file}`}
                     >
                         <button
@@ -383,7 +394,15 @@ export default function DiffView({
                                 fontSize: '13px',
                                 fontWeight: 500,
                                 color: 'var(--text-primary)',
+                                // Keep the header exactly one line tall: a wrapped
+                                // path would make this file's row taller than the
+                                // one measured for the sticky hunk offset.
+                                minWidth: 0,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
                             }}
+                            title={item.file || item.text}
                         >
                             {item.fileStatus === 'renamed' && item.origName
                                 ? `${item.origName} → ${item.text}`
@@ -509,7 +528,7 @@ export default function DiffView({
                             )}
                         </InlineCommentForm>
                     )}
-                </div>
+                </Fragment>
             );
         }
 
@@ -790,6 +809,24 @@ export default function DiffView({
         );
     });
 
+    // Group each file's rows under a section wrapper. That wrapper is the
+    // sticky containing block for the file's header and hunk rows, so they pin
+    // below the toolbar while the file is on screen and scroll away with it —
+    // rather than a header from a file you already passed lingering up there.
+    const sections: React.ReactNode[] = [];
+    let sectionRows: React.ReactNode[] = [];
+    const flushSection = () => {
+        if (sectionRows.length === 0) return;
+        sections.push(<div key={`section-${sections.length}`}>{sectionRows}</div>);
+        sectionRows = [];
+    };
+    lines.forEach((item, idx) => {
+        if (item.lineType === 'file-header') flushSection();
+        const row = rows[idx];
+        if (row) sectionRows.push(row);
+    });
+    flushSection();
+
     // On phones, let the whole diff slide horizontally so long lines can be
     // read in full. `max-content` makes every row as wide as the longest
     // line (so add/del backgrounds extend across the full scroll width),
@@ -807,11 +844,11 @@ export default function DiffView({
                         minWidth: '100%',
                     }}
                 >
-                    {rows}
+                    {sections}
                 </div>
             </div>
         );
     }
 
-    return <>{rows}</>;
+    return <>{sections}</>;
 }

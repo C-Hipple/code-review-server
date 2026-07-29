@@ -1174,8 +1174,30 @@ func reviewRequestedFrom(pr *github.PullRequest, login string) bool {
 	return false
 }
 
+// FilterWaitingOnMe filters against the root-level GithubUsername. Workflows
+// build their filters with MakeWaitingOnMeFilter so a per-workflow
+// GithubUsername is honored and an unset one is caught at build time.
 func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
-	myLogin := config.C().GithubUsername
+	return MakeWaitingOnMeFilter(config.C().GithubUsername)(prs)
+}
+
+// MakeWaitingOnMeFilter returns a filter matching PRs that need action from
+// myLogin. An empty myLogin matches nothing — every check below is an identity
+// comparison — so callers must reject that before building the filter.
+func MakeWaitingOnMeFilter(myLogin string) PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		return filterWaitingOnMe(prs, myLogin)
+	}
+}
+
+func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.PullRequest {
+	if myLogin == "" {
+		// Without an identity every comparison in here is against "", so the
+		// filter would quietly match nothing and leave the section empty with no
+		// indication of why.
+		slog.Error("FilterWaitingOnMe cannot match anything: GithubUsername is not configured")
+		return []*github.PullRequest{}
+	}
 
 	// Process PRs concurrently to avoid sequential API calls
 	type prResult struct {
@@ -1239,11 +1261,33 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 		}
 	}
 
+	// One line per cycle saying how many PRs survived. An empty section is
+	// otherwise indistinguishable from a section nobody asked a review on.
+	slog.Info("FilterWaitingOnMe", "user", myLogin, "candidates", len(prs), "matched", len(filtered))
+
 	return filtered
 }
 
+// FilterWaitingOnAuthor filters against the root-level GithubUsername. See
+// FilterWaitingOnMe for why workflows use the Make… variant instead.
 func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
-	myLogin := config.C().GithubUsername
+	return MakeWaitingOnAuthorFilter(config.C().GithubUsername)(prs)
+}
+
+// MakeWaitingOnAuthorFilter returns a filter matching PRs where myLogin acted
+// last and the author owes the next move. As with MakeWaitingOnMeFilter, an
+// empty myLogin can only match nothing.
+func MakeWaitingOnAuthorFilter(myLogin string) PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		return filterWaitingOnAuthor(prs, myLogin)
+	}
+}
+
+func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.PullRequest {
+	if myLogin == "" {
+		slog.Error("FilterWaitingOnAuthor cannot match anything: GithubUsername is not configured")
+		return []*github.PullRequest{}
+	}
 
 	// Process PRs concurrently to avoid sequential API calls
 	type prResult struct {

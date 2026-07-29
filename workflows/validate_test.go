@@ -50,6 +50,10 @@ func TestRegisteredWorkflowTypesAreBuildable(t *testing.T) {
 			WorkflowType: wt.Name,
 			Name:         "test",
 			SectionTitle: "Section",
+			// config.parseConfig copies the root-level GithubUsername into every
+			// workflow, so a built workflow always has one available; identity
+			// filters and ListMyPRsWorkflow refuse to build without it.
+			GithubUsername: "me",
 		}
 		// Fill in whatever the type declares it needs.
 		for _, field := range wt.RequiredFields {
@@ -129,6 +133,23 @@ func TestValidateWorkflows(t *testing.T) {
 			wantField: "Repos",
 			// falls back to the root-level list, which is empty here
 			wantMessage: "root-level Repos",
+		},
+		{
+			// The failure this catches is invisible at run time: the filter
+			// compares every PR against an empty login, matches nothing, and the
+			// section just stays empty.
+			name:        "identity filter without a username",
+			raw:         config.RawWorkflow{WorkflowType: "SyncReviewRequestsWorkflow", Name: "w", SectionTitle: "s", Filters: []string{"FilterWaitingOnMe"}},
+			globalRepos: []string{"owner/repo"},
+			wantField:   "Filters",
+			wantMessage: "GithubUsername is not set",
+		},
+		{
+			name:        "ListMyPRsWorkflow without a username",
+			raw:         config.RawWorkflow{WorkflowType: "ListMyPRsWorkflow", Name: "w", SectionTitle: "s"},
+			globalRepos: []string{"owner/repo"},
+			wantField:   "GithubUsername",
+			wantMessage: "is required by ListMyPRsWorkflow",
 		},
 		{
 			name:        "unknown PR state",

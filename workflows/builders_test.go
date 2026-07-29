@@ -25,10 +25,21 @@ func TestBuildFiltersList(t *testing.T) {
 		{
 			name: "Standard filters only",
 			rawWorkflow: config.RawWorkflow{
-				Name:    "test",
-				Filters: []string{"FilterNotDraft", "FilterNotMyPRs"},
+				Name:           "test",
+				GithubUsername: "me",
+				Filters:        []string{"FilterNotDraft", "FilterNotMyPRs"},
 			},
 			expectedCount: 2,
+		},
+		{
+			// An identity filter with no GithubUsername can only ever match
+			// nothing, so it must fail loudly rather than empty the section.
+			name: "Identity filter without GithubUsername returns error",
+			rawWorkflow: config.RawWorkflow{
+				Name:    "test",
+				Filters: []string{"FilterWaitingOnMe"},
+			},
+			wantErr: true,
 		},
 		{
 			name: "Teams configured adds team filter automatically",
@@ -51,9 +62,10 @@ func TestBuildFiltersList(t *testing.T) {
 		{
 			name: "Teams with other filters",
 			rawWorkflow: config.RawWorkflow{
-				Name:    "test",
-				Filters: []string{"FilterNotDraft", "FilterNotMyPRs"},
-				Teams:   []string{"team-a"},
+				Name:           "test",
+				GithubUsername: "me",
+				Filters:        []string{"FilterNotDraft", "FilterNotMyPRs"},
+				Teams:          []string{"team-a"},
 			},
 			expectedCount: 3, // team filter + 2 standard filters
 		},
@@ -90,11 +102,19 @@ func TestBuildFiltersList(t *testing.T) {
 // resolves through BuildFiltersList without error.  If a new filter is added to
 // the map, or an existing key is mistyped, this test will fail.
 func TestBuildFiltersList_AllKnownFilters(t *testing.T) {
+	knownFilters := []string{}
 	for name := range filter_func_map {
+		knownFilters = append(knownFilters, name)
+	}
+	for name := range identityFilters {
+		knownFilters = append(knownFilters, name)
+	}
+	for _, name := range knownFilters {
 		t.Run(name, func(t *testing.T) {
 			raw := config.RawWorkflow{
-				Name:    "test",
-				Filters: []string{name},
+				Name:           "test",
+				GithubUsername: "me",
+				Filters:        []string{name},
 			}
 			filters, err := BuildFiltersList(&raw)
 			if err != nil {
@@ -456,7 +476,7 @@ func TestMatchWorkflows_SkipsInvalid(t *testing.T) {
 			rawWorkflows: []config.RawWorkflow{
 				{WorkflowType: "SyncReviewRequestsWorkflow", Name: "wf1", Owner: "owner"},
 				{WorkflowType: "SingleRepoSyncReviewRequestsWorkflow", Name: "wf2", Owner: "owner", Repo: "repo"},
-				{WorkflowType: "ListMyPRsWorkflow", Name: "wf3", Owner: "owner"},
+				{WorkflowType: "ListMyPRsWorkflow", Name: "wf3", Owner: "owner", GithubUsername: "me"},
 			},
 			expectedCount: 3,
 		},

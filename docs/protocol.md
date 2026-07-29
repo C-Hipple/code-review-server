@@ -97,6 +97,17 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `comments` | []CommentJSON| List of structured PR active comments           |
 | `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
 | `reviews`  | []ReviewJSON | List of submitted reviews                       |
+| `annotations` | []PRAnnotation | Diff annotations aggregated from every plugin that has already executed successfully for this PR (see [Plugins](plugins.md#plugin-response-contract)) |
+
+#### PRAnnotation Object
+
+| Field      | Type   | Description                                              |
+|------------|--------|----------------------------------------------------------|
+| `plugin`   | string | Name of the plugin that produced the annotation          |
+| `filename` | string | Path of the file within the repo                         |
+| `line`     | int    | 1-based line number the annotation applies to            |
+| `severity` | string | Free-form severity, e.g. `info`, `warning`, `error`      |
+| `content`  | string | The annotation text                                      |
 
 #### PRMetadata Object
 
@@ -498,13 +509,29 @@ Retrieves the output and status of all plugins for a specific pull request.
 **Reply** (`GetPluginOutputReply`):
 | Field    | Type                        | Description                                            |
 |----------|-----------------------------|--------------------------------------------------------|
-| `output` | map[string]PluginResult     | Map of plugin names to their respective results/status |
+| `output` | map[string]PluginOutput     | Map of plugin names to their respective results/status |
 
-#### `PluginResult` Object
-| Field    | Type   | Description                                                          |
-|----------|--------|----------------------------------------------------------------------|
-| `result` | string | The captured output (stdout/stderr) of the plugin                    |
-| `status` | string | Execution status: `pending`, `success`, or `error`                   |
+#### `PluginOutput` Object
+| Field         | Type         | Description                                                                       |
+|---------------|--------------|-----------------------------------------------------------------------------------|
+| `result`      | string       | The raw captured stdout of the plugin, unchanged (kept for older clients)          |
+| `status`      | string       | Execution status: `pending`, `success`, `error`, or `deferred`                     |
+| `body`        | PluginBody   | The plugin's output parsed against the [response contract](plugins.md#plugin-response-contract); non-conforming output is wrapped as a `markdown` body holding the raw output |
+| `annotations` | []Annotation | Line-level diff annotations declared by the plugin (empty for legacy output)       |
+
+#### `PluginBody` Object
+| Field          | Type   | Description                            |
+|----------------|--------|----------------------------------------|
+| `body_type`    | string | Either `markdown` or `html`            |
+| `body_content` | string | The renderable output of the plugin    |
+
+#### `Annotation` Object
+| Field      | Type   | Description                                          |
+|------------|--------|------------------------------------------------------|
+| `filename` | string | Path of the file within the repo                     |
+| `line`     | int    | 1-based line number the annotation applies to        |
+| `severity` | string | Free-form severity, e.g. `info`, `warning`, `error`  |
+| `content`  | string | The annotation text                                  |
 
 ---
 

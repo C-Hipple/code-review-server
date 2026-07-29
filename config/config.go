@@ -13,22 +13,27 @@ import (
 )
 
 // This struct implements all possible values a workflow can define, then they're written as-needed.
+//
+// The toml tags only matter when the server writes the config back out (see
+// Update.Render): omitempty keeps a workflow's unused fields out of the file
+// so a round-trip through the config RPCs doesn't litter it with empty
+// strings and false booleans.
 type RawWorkflow struct {
-	WorkflowType        string
-	Name                string
-	Owner               string
-	Repo                string
-	Repos               []string
-	JiraEpic            string
-	Filters             []string
-	SectionTitle        string
-	PRState             string
-	GithubUsername      string
-	IncludeDiff         bool
-	Teams               []string // Teams to filter PRs by when using FilterTeamRequested
+	WorkflowType   string   `toml:"WorkflowType"`
+	Name           string   `toml:"Name"`
+	Owner          string   `toml:"Owner,omitempty"`
+	Repo           string   `toml:"Repo,omitempty"`
+	Repos          []string `toml:"Repos,omitempty"`
+	JiraEpic       string   `toml:"JiraEpic,omitempty"`
+	Filters        []string `toml:"Filters,omitempty"`
+	SectionTitle   string   `toml:"SectionTitle"`
+	PRState        string   `toml:"PRState,omitempty"`
+	GithubUsername string   `toml:"GithubUsername,omitempty"`
+	IncludeDiff    bool     `toml:"IncludeDiff,omitempty"`
+	Teams          []string `toml:"Teams,omitempty"` // Teams to filter PRs by when using FilterTeamRequested
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
-	DesktopNotifications *bool
+	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
 }
 
 // RepoConfig holds per-repository configuration settings.
@@ -49,18 +54,18 @@ type Plugin struct {
 
 // Define your classes
 type Config struct {
-	Repos          []string // List of repositories in "owner/repo" format. Workflows can override this.
-	RawWorkflows   []RawWorkflow
-	SleepDuration  time.Duration
-	JiraDomain     string
-	GithubUsername string
-	RepoLocation   string
+	Repos                []string // List of repositories in "owner/repo" format. Workflows can override this.
+	RawWorkflows         []RawWorkflow
+	SleepDuration        time.Duration
+	JiraDomain           string
+	GithubUsername       string
+	RepoLocation         string
 	AutoWorktree         bool
 	DesktopNotifications bool              // Send desktop notifications when a PR is added to a section
-	SectionPriority map[string]int    // Map of section title to priority (lower is better)
-	SectionSorting  map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
-	Plugins         []Plugin
-	RepoConfigs     map[string]RepoConfig // Keyed by "owner/repo"
+	SectionPriority      map[string]int    // Map of section title to priority (lower is better)
+	SectionSorting       map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
+	Plugins              []Plugin
+	RepoConfigs          map[string]RepoConfig // Keyed by "owner/repo"
 	// ExperimentalLLMFileOrdering, when true, orders the files in a PR diff via
 	// an LLM (integration first, then implementation, then styling, then tests)
 	// instead of the default test-files-last sort. Off by default.
@@ -70,7 +75,7 @@ type Config struct {
 	// file ordering. The rating is exposed as the review_ease field in PR
 	// metadata and review list items. Off by default; requires GEMINI_API_KEY.
 	ExperimentalLLMReviewEase bool
-	DB              *database.DB
+	DB                        *database.DB
 }
 
 var (
@@ -138,18 +143,18 @@ func ParseConfigForTest(data []byte) (*Config, error) {
 // It does NOT initialize the database.
 func parseConfig(data []byte) (*Config, error) {
 	var intermediate_config struct {
-		Repos               []string
-		JiraDomain          string
-		SleepDuration       int64
-		Workflows           []RawWorkflow
-		GithubUsername      string
-		RepoLocation        string
-		AutoWorktree         bool
-		DesktopNotifications bool
-		SectionPriority      map[string]int
-		SectionSorting      map[string]string
-		Plugins             []Plugin
-		RepoConfigs         map[string]RepoConfig
+		Repos                       []string
+		JiraDomain                  string
+		SleepDuration               int64
+		Workflows                   []RawWorkflow
+		GithubUsername              string
+		RepoLocation                string
+		AutoWorktree                bool
+		DesktopNotifications        bool
+		SectionPriority             map[string]int
+		SectionSorting              map[string]string
+		Plugins                     []Plugin
+		RepoConfigs                 map[string]RepoConfig
 		ExperimentalLLMFileOrdering bool
 		ExperimentalLLMReviewEase   bool
 	}
@@ -189,18 +194,18 @@ func parseConfig(data []byte) (*Config, error) {
 	}
 
 	return &Config{
-		Repos:              intermediate_config.Repos,
-		RawWorkflows:       intermediate_config.Workflows,
-		SleepDuration:      parsed_sleep_duration,
-		JiraDomain:         intermediate_config.JiraDomain,
-		GithubUsername:     intermediate_config.GithubUsername,
-		RepoLocation:       repoLocation,
-		AutoWorktree:         intermediate_config.AutoWorktree,
-		DesktopNotifications: intermediate_config.DesktopNotifications,
-		SectionPriority:    intermediate_config.SectionPriority,
-		SectionSorting:     intermediate_config.SectionSorting,
-		Plugins:            intermediate_config.Plugins,
-		RepoConfigs:        repoConfigs,
+		Repos:                       intermediate_config.Repos,
+		RawWorkflows:                intermediate_config.Workflows,
+		SleepDuration:               parsed_sleep_duration,
+		JiraDomain:                  intermediate_config.JiraDomain,
+		GithubUsername:              intermediate_config.GithubUsername,
+		RepoLocation:                repoLocation,
+		AutoWorktree:                intermediate_config.AutoWorktree,
+		DesktopNotifications:        intermediate_config.DesktopNotifications,
+		SectionPriority:             intermediate_config.SectionPriority,
+		SectionSorting:              intermediate_config.SectionSorting,
+		Plugins:                     intermediate_config.Plugins,
+		RepoConfigs:                 repoConfigs,
 		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
 		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
 	}, nil
@@ -209,12 +214,11 @@ func parseConfig(data []byte) (*Config, error) {
 // Initialize loads the configuration from the config file and initializes the database.
 // This should be called from main() to allow proper error handling.
 func loadConfig() (*Config, error) {
-	configHome, err := getXDGConfigHome()
+	configPath, err := ConfigPath()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config home: %w", err)
+		return nil, err
 	}
 
-	configPath := filepath.Join(configHome, "codereviewserver.toml")
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file at %s: %w", configPath, err)

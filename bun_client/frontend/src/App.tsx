@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
+import ConfigManager from './components/ConfigManager';
 import { rpcCall } from './api';
 import { useIsMobile } from './hooks/useMediaQuery';
 import {
@@ -29,6 +30,7 @@ function App() {
     const [view, setView] = useState<'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT'>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
+    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server'>('appearance');
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
     const [theme, setTheme] = useState<Theme>(() => {
@@ -343,11 +345,51 @@ function App() {
                 isOpen={showPrefs}
                 onClose={() => setShowPrefs(false)}
                 title="Preferences"
-                size="sm"
+                size="lg"
             >
                 <div
                     style={{
                         display: 'flex',
+                        gap: '4px',
+                        borderBottom: '1px solid var(--border)',
+                        marginBottom: '16px',
+                    }}
+                >
+                    {(
+                        [
+                            ['appearance', 'Appearance'],
+                            ['server', 'Server Configuration'],
+                        ] as const
+                    ).map(([tab, label]) => (
+                        <button
+                            key={tab}
+                            onClick={() => setPrefsTab(tab)}
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                borderBottom: `2px solid ${
+                                    prefsTab === tab ? 'var(--accent)' : 'transparent'
+                                }`,
+                                color:
+                                    prefsTab === tab
+                                        ? 'var(--text-primary)'
+                                        : 'var(--text-secondary)',
+                                padding: '8px 12px',
+                                fontSize: '14px',
+                                fontWeight: prefsTab === tab ? 600 : 400,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
+
+                {prefsTab === 'server' && <ConfigManager />}
+
+                <div
+                    style={{
+                        display: prefsTab === 'appearance' ? 'flex' : 'none',
                         flexDirection: 'column',
                         gap: '20px',
                         padding: '10px 0',

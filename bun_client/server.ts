@@ -294,6 +294,15 @@ Bun.serve<{
             return handleRpc('RPCHandler.RerunPlugins', [body]);
         }
 
+        if (url.pathname === '/api/get-config' && (req.method === 'POST' || req.method === 'GET')) {
+            return handleRpc('RPCHandler.GetConfig', [{}]);
+        }
+
+        if (url.pathname === '/api/update-config' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.UpdateConfig', [body]);
+        }
+
         if (url.pathname === '/api/check-lsp' && req.method === 'GET') {
             return new Response(JSON.stringify({ available: !!DIFF_LSP_PATH }), {
                 headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },

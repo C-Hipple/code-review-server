@@ -7,6 +7,7 @@ import (
 	"crs/git_tools"
 	"crs/llm"
 	"crs/utils"
+	"crs/workflows"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -676,6 +677,253 @@ type ListPluginsReply struct {
 func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply) error {
 	reply.Plugins = config.C().Plugins
 	return nil
+}
+
+// --- Configuration ---
+//
+// Clients read and edit the server's TOML config (~/.config/codereviewserver.toml)
+// through GetConfig and UpdateConfig. GetConfig also hands back the workflow
+// type and filter registries so a client can build its pickers from what this
+// server actually supports rather than hard-coding them.
+
+// ConfigView is the client-facing view of the configuration file. SleepDuration
+// is expressed in minutes, matching the TOML field rather than the
+// time.Duration the server keeps in memory.
+type ConfigView struct {
+	Repos                       []string             `json:"Repos"`
+	SleepDuration               int                  `json:"SleepDuration"`
+	JiraDomain                  string               `json:"JiraDomain"`
+	GithubUsername              string               `json:"GithubUsername"`
+	RepoLocation                string               `json:"RepoLocation"`
+	AutoWorktree                bool                 `json:"AutoWorktree"`
+	DesktopNotifications        bool                 `json:"DesktopNotifications"`
+	SectionPriority             map[string]int       `json:"SectionPriority"`
+	SectionSorting              map[string]string    `json:"SectionSorting"`
+	Workflows                   []config.RawWorkflow `json:"Workflows"`
+	Plugins                     []config.Plugin      `json:"Plugins"`
+	ExperimentalLLMFileOrdering bool                 `json:"ExperimentalLLMFileOrdering"`
+	ExperimentalLLMReviewEase   bool                 `json:"ExperimentalLLMReviewEase"`
+}
+
+// newConfigView builds the view from a loaded config, normalizing nil maps and
+// slices to empty ones so JSON clients always see {} / [] instead of null.
+func newConfigView(cfg config.Config) ConfigView {
+	view := ConfigView{
+		Repos:                       cfg.Repos,
+		SleepDuration:               int(cfg.SleepDuration.Minutes()),
+		JiraDomain:                  cfg.JiraDomain,
+		GithubUsername:              cfg.GithubUsername,
+		RepoLocation:                cfg.RepoLocation,
+		AutoWorktree:                cfg.AutoWorktree,
+		DesktopNotifications:        cfg.DesktopNotifications,
+		SectionPriority:             cfg.SectionPriority,
+		SectionSorting:              cfg.SectionSorting,
+		Workflows:                   cfg.RawWorkflows,
+		Plugins:                     cfg.Plugins,
+		ExperimentalLLMFileOrdering: cfg.ExperimentalLLMFileOrdering,
+		ExperimentalLLMReviewEase:   cfg.ExperimentalLLMReviewEase,
+	}
+	if view.Repos == nil {
+		view.Repos = []string{}
+	}
+	if view.SectionPriority == nil {
+		view.SectionPriority = map[string]int{}
+	}
+	if view.SectionSorting == nil {
+		view.SectionSorting = map[string]string{}
+	}
+	if view.Workflows == nil {
+		view.Workflows = []config.RawWorkflow{}
+	}
+	if view.Plugins == nil {
+		view.Plugins = []config.Plugin{}
+	}
+	return view
+}
+
+// ConfigPayload is the shared body of the config replies, so GetConfig and
+// UpdateConfig hand back the same shape and a client can render either one.
+type ConfigPayload struct {
+	Okay          bool                         `json:"okay"`
+	Message       string                       `json:"message"`
+	Path          string                       `json:"path"`
+	Config        ConfigView                   `json:"config"`
+	WorkflowTypes []workflows.WorkflowTypeInfo `json:"workflow_types"`
+	Filters       []workflows.FilterInfo       `json:"filters"`
+}
+
+func (p *ConfigPayload) populate(cfg config.Config) {
+	p.Okay = true
+	p.Config = newConfigView(cfg)
+	p.WorkflowTypes = workflows.WorkflowTypes()
+	p.Filters = workflows.FilterTypes()
+
+	path, err := config.ConfigPath()
+	if err != nil {
+		slog.Error("Error resolving config path", "error", err)
+	}
+	p.Path = path
+}
+
+type GetConfigArgs struct{}
+type GetConfigReply struct {
+	ConfigPayload
+}
+
+// GetConfig returns the current configuration, re-read from disk so clients
+// see edits made outside the server.
+func (h *RPCHandler) GetConfig(args *GetConfigArgs, reply *GetConfigReply) error {
+	reloadErr := config.Reload()
+	if reloadErr != nil {
+		// A config file that no longer parses shouldn't hide the running
+		// configuration; report the problem and return what's in memory.
+		slog.Error("Error reloading config", "error", reloadErr)
+	}
+	reply.populate(config.C())
+	if reloadErr != nil {
+		reply.Okay = false
+		reply.Message = fmt.Sprintf("Showing the configuration currently in memory; reloading from disk failed: %v", reloadErr)
+	}
+	return nil
+}
+
+// UpdateConfigArgs is a partial update: every field is optional and a field
+// left out (null) keeps whatever is on disk. Sending Workflows replaces the
+// whole list, which is how a client removes or reorders entries.
+type UpdateConfigArgs struct {
+	Repos                       *[]string             `json:"Repos"`
+	SleepDuration               *int                  `json:"SleepDuration"`
+	JiraDomain                  *string               `json:"JiraDomain"`
+	GithubUsername              *string               `json:"GithubUsername"`
+	RepoLocation                *string               `json:"RepoLocation"`
+	AutoWorktree                *bool                 `json:"AutoWorktree"`
+	DesktopNotifications        *bool                 `json:"DesktopNotifications"`
+	SectionPriority             *map[string]int       `json:"SectionPriority"`
+	SectionSorting              *map[string]string    `json:"SectionSorting"`
+	Workflows                   *[]config.RawWorkflow `json:"Workflows"`
+	ExperimentalLLMFileOrdering *bool                 `json:"ExperimentalLLMFileOrdering"`
+	ExperimentalLLMReviewEase   *bool                 `json:"ExperimentalLLMReviewEase"`
+}
+
+// UpdateConfigReply carries the same body as GetConfig plus any validation
+// problems. A rejected update is reported as okay=false with a populated
+// errors list — not as an RPC error — so clients can attach each message to the
+// field that caused it. The config in the reply is then the unchanged one still
+// on disk.
+type UpdateConfigReply struct {
+	ConfigPayload
+	Errors []config.ValidationError `json:"errors"`
+}
+
+// UpdateConfig validates a partial change against the configuration it would
+// produce, writes the merged TOML file (keeping the previous contents in
+// <path>.bak), and reloads the running config. Settings and keys the update
+// doesn't mention are preserved; comments in the file are not.
+//
+// Nothing is written unless validation passes. The background workflow manager
+// re-derives its workflows from the config at the top of each cycle, so a saved
+// change takes effect on the next sync.
+func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply) error {
+	reply.Errors = []config.ValidationError{}
+
+	update := config.Update{
+		Repos:                       normalizeRepos(args.Repos),
+		SleepDuration:               args.SleepDuration,
+		JiraDomain:                  args.JiraDomain,
+		GithubUsername:              args.GithubUsername,
+		RepoLocation:                args.RepoLocation,
+		AutoWorktree:                args.AutoWorktree,
+		DesktopNotifications:        args.DesktopNotifications,
+		SectionPriority:             args.SectionPriority,
+		SectionSorting:              args.SectionSorting,
+		Workflows:                   normalizeWorkflows(args.Workflows),
+		ExperimentalLLMFileOrdering: args.ExperimentalLLMFileOrdering,
+		ExperimentalLLMReviewEase:   args.ExperimentalLLMReviewEase,
+	}
+
+	if update.IsEmpty() {
+		reply.populate(config.C())
+		reply.Message = "No changes requested"
+		return nil
+	}
+
+	problems, err := config.Apply(update, validateConfig)
+	if err != nil {
+		slog.Error("Error applying config update", "error", err)
+		return err
+	}
+
+	reply.populate(config.C())
+	if len(problems) > 0 {
+		reply.Okay = false
+		reply.Errors = problems
+		reply.Message = fmt.Sprintf("Configuration not saved: found %s", pluralize(len(problems), "problem", "problems"))
+		return nil
+	}
+	reply.Message = fmt.Sprintf("Configuration saved to %s", reply.Path)
+	return nil
+}
+
+// validateConfig runs both halves of validation: the root-level and
+// always-required workflow fields owned by the config package, plus the
+// workflow types and filters owned by the workflows package.
+func validateConfig(cfg *config.Config) []config.ValidationError {
+	problems := config.Validate(cfg)
+	return append(problems, workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// normalizeRepos trims each entry and drops the blank ones, so a trailing empty
+// line in a client's textarea doesn't become a validation error.
+func normalizeRepos(repos *[]string) *[]string {
+	if repos == nil {
+		return nil
+	}
+	cleaned := trimList(*repos)
+	return &cleaned
+}
+
+// normalizeWorkflows trims the string fields of each submitted workflow. Values
+// arrive from text inputs, and a stray space in a section title would otherwise
+// create a section distinct from the one the user meant.
+func normalizeWorkflows(wfs *[]config.RawWorkflow) *[]config.RawWorkflow {
+	if wfs == nil {
+		return nil
+	}
+	cleaned := make([]config.RawWorkflow, 0, len(*wfs))
+	for _, wf := range *wfs {
+		wf.WorkflowType = strings.TrimSpace(wf.WorkflowType)
+		wf.Name = strings.TrimSpace(wf.Name)
+		wf.Owner = strings.TrimSpace(wf.Owner)
+		wf.Repo = strings.TrimSpace(wf.Repo)
+		wf.JiraEpic = strings.TrimSpace(wf.JiraEpic)
+		wf.SectionTitle = strings.TrimSpace(wf.SectionTitle)
+		wf.PRState = strings.TrimSpace(wf.PRState)
+		wf.GithubUsername = strings.TrimSpace(wf.GithubUsername)
+		wf.Repos = trimList(wf.Repos)
+		wf.Filters = trimList(wf.Filters)
+		wf.Teams = trimList(wf.Teams)
+		cleaned = append(cleaned, wf)
+	}
+	return &cleaned
+}
+
+// trimList trims every entry of a string list and drops the ones left empty.
+// Returns nil for an all-empty list so the field is omitted from the TOML file.
+func trimList(values []string) []string {
+	var cleaned []string
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	return cleaned
 }
 
 type GetRateLimitStatusArgs struct{}

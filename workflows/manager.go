@@ -655,6 +655,17 @@ func (ms *ManagerService) Initialize() {
 	}
 }
 
+// prefetchConcurrency caps how many PRs have their aux data fetched at once.
+// Each PR fans out to as many as six concurrent GitHub calls, so an unbounded
+// loop over a repo's open PR list (up to 200, see git_tools.GetPRs) can put
+// well over a thousand requests in flight simultaneously. GitHub answers that
+// with secondary rate-limit errors, and every call that fails silently leaves
+// its cache row unwritten — which is what a later "reviews: MISS" in
+// ~/.crs/cache_miss.log looks like from the outside. Keeping a lid on the
+// fan-out costs wall-clock time in the background cycle but makes the writes
+// land.
+const prefetchConcurrency = 8
+
 // prefetchAuxData gathers auxiliary data for all PRs that need it
 func (ms ManagerService) prefetchAuxData(client *github.Client,
 	apiCalls *apiCallCounter,
@@ -711,25 +722,11 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		}
 	}
 
-	// Warm the diff + commits caches whenever a PR is newly added or its head
-	// commit changed. These two fields are the ones a reviewer needs to open the
-	// PR, and both go stale on every push (the diff is keyed to the head SHA).
-	// If we only fetched what a section's filters strictly require, a freshly
-	// added or just-updated PR would be a guaranteed cache miss the moment the
-	// user opened it. We deliberately gate this on an actual change — we do NOT
-	// pre-fetch diffs for unchanged PRs we may never look at.
-	db := config.C().DB
-	for key, pr := range prObjects {
-		if prNeedsCacheWarm(db, key, pr) {
-			req := prRequirements[key]
-			req.Diff = true
-			req.Commits = true
-			prRequirements[key] = req
-		}
-	}
+	applyCacheWarmRequirements(config.C().DB, prObjects, prRequirements)
 
-	// Fetch aux data in parallel
+	// Fetch aux data in parallel, but bounded (see prefetchConcurrency).
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, prefetchConcurrency)
 	for key, auxReq := range prRequirements {
 		// Skip if no aux data is needed
 		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews && !auxReq.Commits {
@@ -739,6 +736,8 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		wg.Add(1)
 		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			auxData := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
 			store.Set(key, auxData)
 		}(key, auxReq, prObjects[key])
@@ -749,8 +748,37 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	return store
 }
 
-// prNeedsCacheWarm reports whether we should proactively fetch the diff and
-// commits for a PR because it was just added or updated. It returns true when:
+// applyCacheWarmRequirements turns on the aux fields a reviewer needs to open a
+// PR for every PR that was newly added or just pushed to. Those fields all go
+// stale on a push (the diff is keyed to the head SHA) and all of them are read
+// by GetPRDetails, so if we only fetched what a section's filters strictly
+// require, a freshly added or just-updated PR would be a guaranteed cache miss
+// the moment the user opened it. The warm is gated on an actual change — we do
+// NOT pre-fetch for unchanged PRs we may never look at.
+//
+// Reviews and comments are included even though prefetchAuxData separately
+// forces Reviews on for open non-draft PRs: that override skips drafts and
+// closed PRs, so without this pass those PRs never get a PRReviews row written
+// by a workflow and every open of one logs a "reviews" cache miss.
+func applyCacheWarmRequirements(db *database.DB,
+	prObjects map[PRKey]*github.PullRequest,
+	prRequirements map[PRKey]AuxDataRequirement) {
+
+	for key, pr := range prObjects {
+		if !prNeedsCacheWarm(db, key, pr) {
+			continue
+		}
+		req := prRequirements[key]
+		req.Diff = true
+		req.Commits = true
+		req.Reviews = true
+		req.Comments = true
+		prRequirements[key] = req
+	}
+}
+
+// prNeedsCacheWarm reports whether we should proactively warm the caches for a
+// PR because it was just added or updated. It returns true when:
 //   - the PR is brand new to us (no diff row cached yet),
 //   - its head SHA changed since we last cached it (new commits pushed), or
 //   - we only have a SHA-only placeholder row with no real diff body (e.g. an
@@ -878,7 +906,10 @@ func fetchAuxDataForPR(client *github.Client,
 			reviews, _, err := client.PullRequests.ListReviews(
 				context.Background(), key.Owner, key.Repo, key.Number, nil)
 			if err != nil {
-				slog.Warn("Failed to fetch reviews for pre-fetch", "pr", key.Number, "error", err)
+				// Nothing gets written to PRReviews when this fails, so the next
+				// time the UI opens this PR it logs a "reviews" cache miss.
+				slog.Warn("Failed to fetch reviews for pre-fetch, PRReviews cache left unwritten",
+					"pr", key.Number, "repo", key.Repo, "error", err)
 				return
 			}
 			ghReviews = reviews
@@ -985,7 +1016,10 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 			SubmittedAt time.Time `json:"submitted_at"`
 			HTMLURL     string    `json:"html_url"`
 		}
-		var rvs []reviewJSON
+		// Start from an empty (non-nil) slice so a PR with no reviews caches as
+		// "[]" rather than "null". Readers unmarshal "null" back into a nil
+		// slice, which is indistinguishable from "not loaded yet".
+		rvs := []reviewJSON{}
 		for _, r := range reviews {
 			var submittedAt time.Time
 			if r.SubmittedAt != nil {

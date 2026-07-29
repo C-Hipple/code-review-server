@@ -2,6 +2,8 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/git_tools"
+	"log/slog"
 	"strings"
 
 	"github.com/google/go-github/v74/github"
@@ -14,7 +16,22 @@ import (
 //     auto-dismissal removes the user's prior approval but does NOT add them
 //     back to RequestedReviewers, so case 1 alone misses these PRs.
 func filterMyReviewRequested(prs []*github.PullRequest) []*github.PullRequest {
-	myLogin := config.C().GithubUsername
+	return makeMyReviewRequestedFilter(config.C().GithubUsername)(prs)
+}
+
+// makeMyReviewRequestedFilter binds the filter to an explicit login so a
+// per-workflow GithubUsername is honored. An empty login matches nothing.
+func makeMyReviewRequestedFilter(myLogin string) git_tools.PRFilter {
+	return func(prs []*github.PullRequest) []*github.PullRequest {
+		return filterMyReviewRequestedFor(prs, myLogin)
+	}
+}
+
+func filterMyReviewRequestedFor(prs []*github.PullRequest, myLogin string) []*github.PullRequest {
+	if myLogin == "" {
+		slog.Error("FilterMyReviewRequested cannot match anything: GithubUsername is not configured")
+		return []*github.PullRequest{}
+	}
 	store := GetCurrentAuxDataStore()
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {

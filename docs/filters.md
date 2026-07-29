@@ -19,6 +19,21 @@ Each workflow can use the available filters to customize which PRs are included.
 *   `FilterByAuthor:<username>` - Only include PRs authored by the specified user
 *   `FilterExcludeAuthor:<username>` - Exclude PRs authored by the specified user
 
+## Filters that need your GitHub username
+
+`FilterMyReviewRequested`, `FilterMyPRs`, `FilterNotMyPRs`, `FilterWaitingOnMe` and `FilterWaitingOnAuthor` compare each PR against *your* GitHub login. They read `GithubUsername` from the workflow, falling back to the root-level setting.
+
+If neither is set, a workflow using one of these filters is **skipped at startup** with an explanatory log line, and the config editor reports the same problem. (Previously the filter simply matched nothing, leaving the section silently empty.)
+
+To see what the filter decides for each of your open PRs, run:
+
+```
+go run ./cmd/debug_waiting_on_me            # repos from your config
+go run ./cmd/debug_waiting_on_me owner/repo # or an explicit list
+```
+
+It prints your resolved username, any configuration problems, per-repo fetch errors, and a row per PR showing the requested reviewers and why the PR did or didn't match.
+
 ## FilterWaitingOnMe
 
 A PR is included when any of the following is true:

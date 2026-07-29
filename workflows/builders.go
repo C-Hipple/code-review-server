@@ -93,7 +93,11 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	}
 	// ListMyPRsWorkflow always filters to the authenticated user's PRs.
 	// Prepend it so user-supplied filters further narrow the result.
-	filters = append([]git_tools.PRFilter{git_tools.FilterMyPRs}, filters...)
+	login := strings.TrimSpace(raw.GithubUsername)
+	if login == "" {
+		return nil, fmt.Errorf("ListMyPRsWorkflow requires GithubUsername to be set (in this workflow or at the root of the config); without it it matches nothing")
+	}
+	filters = append([]git_tools.PRFilter{git_tools.MakeAuthorFilter(login)}, filters...)
 	wf := SyncReviewRequestsWorkflow{
 		Name:                 raw.Name,
 		Owner:                raw.Owner,
@@ -156,17 +160,32 @@ func computeAuxRequirements(filterNames []string, includeDiff bool) AuxDataRequi
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{
-	"FilterMyReviewRequested": filterMyReviewRequested,
-	"FilterNotDraft":          git_tools.FilterNotDraft,
-	"FilterIsDraft":           git_tools.FilterIsDraft,
-	"FilterNotMyPRs":          git_tools.FilterNotMyPRs,
-	"FilterMyPRs":             git_tools.FilterMyPRs,
-	"FilterCIPassing":         git_tools.FilterCIPassing,
-	"FilterCIFailing":         git_tools.FilterCIFailing,
-	"FilterStale":             git_tools.FilterStale,
-	"FilterNotStale":          git_tools.FilterNotStale,
-	"FilterWaitingOnMe":       git_tools.FilterWaitingOnMe,
-	"FilterWaitingOnAuthor":    git_tools.FilterWaitingOnAuthor,
+	"FilterNotDraft":  git_tools.FilterNotDraft,
+	"FilterIsDraft":   git_tools.FilterIsDraft,
+	"FilterCIPassing": git_tools.FilterCIPassing,
+	"FilterCIFailing": git_tools.FilterCIFailing,
+	"FilterStale":     git_tools.FilterStale,
+	"FilterNotStale":  git_tools.FilterNotStale,
+}
+
+// identityFilters are the filters that compare PR data against *my* GitHub
+// login. They are built separately from filter_func_map because they need that
+// login injected: with an empty one every comparison inside them is against "",
+// so they match nothing and leave a section silently empty. Binding the login at
+// build time turns a missing GithubUsername into a startup error instead.
+var identityFilters = map[string]func(login string) git_tools.PRFilter{
+	"FilterMyReviewRequested": makeMyReviewRequestedFilter,
+	"FilterNotMyPRs":          git_tools.MakeExcludeAuthorFilter,
+	"FilterMyPRs":             git_tools.MakeAuthorFilter,
+	"FilterWaitingOnMe":       git_tools.MakeWaitingOnMeFilter,
+	"FilterWaitingOnAuthor":   git_tools.MakeWaitingOnAuthorFilter,
+}
+
+// IsIdentityFilter reports whether the named filter needs a GithubUsername to
+// mean anything. Validation uses it to explain why a filter can't work.
+func IsIdentityFilter(name string) bool {
+	_, ok := identityFilters[name]
+	return ok
 }
 
 func ParseFilterString(raw string) (string, string) {
@@ -209,6 +228,19 @@ func BuildFiltersList(raw *config.RawWorkflow) ([]git_tools.PRFilter, error) {
 				return nil, fmt.Errorf("FilterExcludeAuthor requires an argument (e.g. FilterExcludeAuthor:username)")
 			}
 			filters = append(filters, git_tools.MakeExcludeAuthorFilter(filterArg))
+			continue
+		}
+
+		if makeFilter, ok := identityFilters[filterName]; ok {
+			// raw.GithubUsername is the workflow's own setting, defaulted to the
+			// root-level one when the workflow doesn't override it (see
+			// config.parseConfig). Until this lookup existed the per-workflow field
+			// was parsed and written back but never actually read by a filter.
+			login := strings.TrimSpace(raw.GithubUsername)
+			if login == "" {
+				return nil, fmt.Errorf("%s requires GithubUsername to be set (in this workflow or at the root of the config); without it the filter matches nothing", filterName)
+			}
+			filters = append(filters, makeFilter(login))
 			continue
 		}
 

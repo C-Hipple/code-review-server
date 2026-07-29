@@ -17,15 +17,17 @@ func TestBuildSyncReviewRequestWorkflow_RepoOverride(t *testing.T) {
 		{
 			name: "No override",
 			rawWorkflow: config.RawWorkflow{
-				Name: "test-no-override",
+				Name:           "test-no-override",
+				GithubUsername: "me",
 			},
 			expectedRepos: globalRepos,
 		},
 		{
 			name: "With override",
 			rawWorkflow: config.RawWorkflow{
-				Name:  "test-override",
-				Repos: []string{"override/repo1"},
+				Name:           "test-override",
+				GithubUsername: "me",
+				Repos:          []string{"override/repo1"},
 			},
 			expectedRepos: []string{"override/repo1"},
 		},
@@ -59,15 +61,17 @@ func TestBuildListMyPRsWorkflow_RepoOverride(t *testing.T) {
 		{
 			name: "No override",
 			rawWorkflow: config.RawWorkflow{
-				Name: "test-no-override",
+				Name:           "test-no-override",
+				GithubUsername: "me",
 			},
 			expectedRepos: globalRepos,
 		},
 		{
 			name: "With override",
 			rawWorkflow: config.RawWorkflow{
-				Name:  "test-override",
-				Repos: []string{"override/repo1"},
+				Name:           "test-override",
+				GithubUsername: "me",
+				Repos:          []string{"override/repo1"},
 			},
 			expectedRepos: []string{"override/repo1"},
 		},

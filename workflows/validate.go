@@ -141,6 +141,7 @@ func ValidateWorkflows(raws []config.RawWorkflow, globalRepos []string) []config
 		}
 
 		problems = append(problems, validateFilters(i, raw.Filters)...)
+		problems = append(problems, validateIdentityFilters(i, raw)...)
 
 		for j, repo := range raw.Repos {
 			if _, _, err := git_tools.ParseRepoName(strings.TrimSpace(repo)); err != nil {
@@ -199,6 +200,35 @@ func validateFilters(index int, filters []string) []config.ValidationError {
 				Message: fmt.Sprintf("%s does not take an argument, got %q", name, arg),
 			})
 		}
+	}
+	return problems
+}
+
+// validateIdentityFilters reports filters that compare against my GitHub login
+// when no login is available. config.parseConfig copies the root-level
+// GithubUsername into every workflow that doesn't set its own, so an empty value
+// here means neither was configured — and the filter would match nothing at all,
+// leaving its section permanently empty with nothing to explain it.
+func validateIdentityFilters(index int, raw config.RawWorkflow) []config.ValidationError {
+	if strings.TrimSpace(raw.GithubUsername) != "" {
+		return nil
+	}
+	problems := []config.ValidationError{}
+	needsIdentity := raw.WorkflowType == "ListMyPRsWorkflow"
+	for _, entry := range raw.Filters {
+		name, _ := ParseFilterString(strings.TrimSpace(entry))
+		if IsIdentityFilter(name) {
+			problems = append(problems, config.ValidationError{
+				Workflow: index, Field: "Filters",
+				Message: fmt.Sprintf("%s compares PRs against your GitHub login, but GithubUsername is not set (here or at the root of the config); the filter would match nothing", name),
+			})
+		}
+	}
+	if needsIdentity {
+		problems = append(problems, config.ValidationError{
+			Workflow: index, Field: "GithubUsername",
+			Message: "is required by ListMyPRsWorkflow (set it here or at the root of the config)",
+		})
 	}
 	return problems
 }

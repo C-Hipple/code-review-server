@@ -76,6 +76,7 @@ func main() {
 	}
 
 	cfg := config.C()
+	logConfigProblems(&cfg)
 	workflows_list := workflows.MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
 	ms := workflows.NewManagerService(
 		workflows_list,
@@ -95,6 +96,27 @@ func main() {
 		server.RunServer()
 	} else {
 		ms.Run()
+	}
+}
+
+// logConfigProblems runs the same validation the config-editing RPCs use and
+// logs whatever it finds. The config file is loaded, not rejected: a config that
+// was written by hand has never been validated before now, and most problems
+// only affect one workflow. They are logged as errors because the visible
+// symptom — a section that is simply empty — otherwise gives no hint that
+// anything is wrong.
+func logConfigProblems(cfg *config.Config) {
+	problems := append(config.Validate(cfg), workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	if len(problems) == 0 {
+		return
+	}
+	slog.Error("Configuration problems found; affected workflows may not behave as configured", "count", len(problems))
+	for _, p := range problems {
+		if p.Workflow >= 0 && p.Workflow < len(cfg.RawWorkflows) {
+			slog.Error("Config problem", "workflow", cfg.RawWorkflows[p.Workflow].Name, "field", p.Field, "problem", p.Message)
+			continue
+		}
+		slog.Error("Config problem", "field", p.Field, "problem", p.Message)
 	}
 }
 

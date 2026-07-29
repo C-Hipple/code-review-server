@@ -508,6 +508,175 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 ---
 
+### `RPCHandler.GetConfig`
+
+Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. The reply also carries the workflow type and filter registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
+
+**Arguments** (`GetConfigArgs`):
+```json
+{}
+```
+
+**Reply** (`GetConfigReply`):
+| Field            | Type               | Description                                                        |
+|------------------|--------------------|--------------------------------------------------------------------|
+| `okay`           | bool               | `true` if the configuration was read successfully                  |
+| `message`        | string             | Empty on success; explains the problem when the file can't be read |
+| `path`           | string             | Absolute path of the TOML file being read and written              |
+| `config`         | Config             | The current configuration (see below)                              |
+| `workflow_types` | []WorkflowTypeInfo | Workflow types this server can run                                 |
+| `filters`        | []FilterInfo       | Filters a workflow may use                                         |
+
+If the file on disk no longer parses, `okay` is `false` and `config` describes the configuration still running in memory.
+
+#### `Config` Object
+
+Field names match the TOML keys. See [Configuration](configuration.md) for what each one does.
+
+| Field                         | Type              | Description                                                     |
+|-------------------------------|-------------------|------------------------------------------------------------------|
+| `Repos`                       | []string          | Repositories in `owner/repo` form                               |
+| `SleepDuration`               | int               | Minutes between workflow syncs                                   |
+| `JiraDomain`                  | string            | Jira domain used by `ProjectListWorkflow`                        |
+| `GithubUsername`              | string            | Login used by the "me" filters                                   |
+| `RepoLocation`                | string            | Directory holding local clones                                   |
+| `AutoWorktree`                | bool              | Whether the server manages git worktrees                         |
+| `DesktopNotifications`        | bool              | Global desktop notification setting                              |
+| `SectionPriority`             | map[string]int    | Section title → priority (lower sorts first)                     |
+| `SectionSorting`              | map[string]string | Section title → `newest_first` / `oldest_first`                  |
+| `Workflows`                   | []Workflow        | Configured workflows                                             |
+| `Plugins`                     | []Plugin          | Configured plugins (read-only; `UpdateConfig` does not set them) |
+| `ExperimentalLLMFileOrdering` | bool              | LLM diff file ordering                                           |
+| `ExperimentalLLMReviewEase`   | bool              | LLM review-ease rating                                           |
+
+#### `Workflow` Object
+
+| Field                  | Type      | Description                                                              |
+|------------------------|-----------|---------------------------------------------------------------------------|
+| `WorkflowType`         | string    | One of the names in `workflow_types`                                      |
+| `Name`                 | string    | Unique workflow name; identifies which workflow owns an item              |
+| `SectionTitle`         | string    | Section the workflow's PRs land in                                        |
+| `Repos`                | []string  | Repositories for this workflow; empty inherits the root-level `Repos`      |
+| `Repo`                 | string    | Single repository (`SingleRepoSyncReviewRequestsWorkflow`)                |
+| `Owner`                | string    | Repository owner, for configs using the singular `Owner`/`Repo` form      |
+| `Filters`              | []string  | Filter names, argument-taking ones written as `FilterByLabel:bug`         |
+| `Teams`                | []string  | Team slugs whose review requests should match                             |
+| `JiraEpic`             | string    | Epic key (`ProjectListWorkflow`)                                          |
+| `PRState`              | string    | `open`, `closed`, or `all`; empty means `open`                            |
+| `IncludeDiff`          | bool      | Include the full diff in the section body                                 |
+| `GithubUsername`       | string    | Per-workflow username; inherits the root-level one when empty             |
+| `DesktopNotifications` | bool/null | Per-workflow override; `null` inherits the global setting                 |
+
+#### `WorkflowTypeInfo` Object
+
+| Field             | Type     | Description                                                       |
+|-------------------|----------|--------------------------------------------------------------------|
+| `name`            | string   | Value to put in a workflow's `WorkflowType`                        |
+| `description`     | string   | What the workflow type does                                        |
+| `deprecated`      | bool     | Whether the type still works but shouldn't be used for new configs |
+| `deprecated_by`   | string   | What to use instead (deprecated types only)                        |
+| `required_fields` | []string | Type-specific fields the workflow must set                         |
+| `optional_fields` | []string | Type-specific fields the workflow may set                          |
+
+`Name`, `WorkflowType`, and `SectionTitle` are required by every type and are not repeated in `required_fields`. Clients can use these two lists to decide which fields to show for the selected type.
+
+#### `FilterInfo` Object
+
+| Field          | Type   | Description                                                   |
+|----------------|--------|----------------------------------------------------------------|
+| `name`         | string | Filter name as written in `Filters`                            |
+| `description`  | string | What the filter matches                                        |
+| `requires_arg` | bool   | Whether the filter must be written as `Name:argument`          |
+| `arg_label`    | string | What the argument means (e.g. `label`, `username`)             |
+
+---
+
+### `RPCHandler.UpdateConfig`
+
+Writes a **partial** change to the configuration file and reloads the running config. Every argument is optional: a field that is omitted (or `null`) keeps whatever is on disk, as do settings the server doesn't model. Sending `Workflows` replaces the entire list, which is how a client adds, removes, or reorders entries.
+
+The new configuration is validated **before** anything is written. If it fails, the file is untouched and the reply comes back with `okay: false` and a populated `errors` list — a rejected configuration is not an RPC error, so clients can attach each message to the field that caused it.
+
+On success the file is replaced atomically and the previous contents are kept alongside it as `<path>.bak`. Comments and the original key ordering in the file are **not** preserved.
+
+The background workflow manager re-derives its workflows from the config at the start of every sync cycle, so a saved change takes effect on the next sync rather than immediately.
+
+**Arguments** (`UpdateConfigArgs`): any subset of the `Config` fields listed under `GetConfig`, except `Plugins` (which the server never rewrites).
+
+| Field                         | Type              | Required | Description                                      |
+|-------------------------------|-------------------|----------|--------------------------------------------------|
+| `Repos`                       | []string          | No       | Replaces the root-level repository list          |
+| `SleepDuration`               | int               | No       | Minutes between syncs                            |
+| `JiraDomain`                  | string            | No       | Jira domain                                      |
+| `GithubUsername`              | string            | No       | GitHub login                                     |
+| `RepoLocation`                | string            | No       | Local clone directory                            |
+| `AutoWorktree`                | bool              | No       | Worktree management                              |
+| `DesktopNotifications`        | bool              | No       | Global notification setting                      |
+| `SectionPriority`             | map[string]int    | No       | Replaces the section priority map                |
+| `SectionSorting`              | map[string]string | No       | Replaces the section sorting map                 |
+| `Workflows`                   | []Workflow        | No       | Replaces the whole workflow list                 |
+| `ExperimentalLLMFileOrdering` | bool              | No       | LLM diff file ordering                           |
+| `ExperimentalLLMReviewEase`   | bool              | No       | LLM review-ease rating                           |
+
+**Reply** (`UpdateConfigReply`):
+
+All fields from `GetConfigReply`, plus:
+
+| Field    | Type               | Description                                              |
+|----------|--------------------|-----------------------------------------------------------|
+| `errors` | []ValidationError  | Problems that caused the update to be rejected (empty on success) |
+
+`config` always describes the configuration that is actually in effect: the newly saved one after a successful update, or the unchanged one after a rejection.
+
+#### `ValidationError` Object
+
+| Field      | Type   | Description                                                              |
+|------------|--------|---------------------------------------------------------------------------|
+| `workflow` | int    | Index into `Workflows` the problem belongs to, or `-1` for a root setting |
+| `field`    | string | Field name the problem is about (e.g. `SectionTitle`, `Filters`)          |
+| `message`  | string | Human-readable description of the problem                                 |
+
+**Example Request** (replace the workflow list):
+```json
+{
+  "method": "RPCHandler.UpdateConfig",
+  "params": [{
+    "Workflows": [
+      {
+        "WorkflowType": "SyncReviewRequestsWorkflow",
+        "Name": "Team Reviews",
+        "SectionTitle": "Needs My Team's Review",
+        "Filters": ["FilterNotDraft", "FilterByLabel:bug"],
+        "Teams": ["my-team"]
+      }
+    ]
+  }],
+  "id": 8
+}
+```
+
+**Example Response** (rejected):
+```json
+{
+  "result": {
+    "okay": false,
+    "message": "Configuration not saved: found 2 problems",
+    "path": "/home/user/.config/codereviewserver.toml",
+    "errors": [
+      {"workflow": 0, "field": "SectionTitle", "message": "is required"},
+      {"workflow": 0, "field": "Filters", "message": "FilterByLabel requires an argument (e.g. FilterByLabel:<label>)"}
+    ],
+    "config": { "...": "the unchanged configuration" },
+    "workflow_types": [{ "...": "as in GetConfig" }],
+    "filters": [{ "...": "as in GetConfig" }]
+  },
+  "error": null,
+  "id": 8
+}
+```
+
+---
+
 ### `RPCHandler.GetRateLimitStatus`
 
 Returns the current GitHub API rate limit status, including remaining quota, reset time, and usage metrics.

@@ -1,3 +1,5 @@
+import type { ConfigReply, WorkflowEntry } from './config_utils';
+
 export const API_BASE =
     typeof window !== 'undefined' &&
     (window.location.port === '5173' || window.location.port === '5174')
@@ -24,6 +26,8 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetPluginOutput': '/api/get-plugin-output',
     'RPCHandler.RerunPlugins': '/api/rerun-plugins',
     'RPCHandler.GetHunkContext': '/api/get-hunk-context',
+    'RPCHandler.GetConfig': '/api/get-config',
+    'RPCHandler.UpdateConfig': '/api/update-config',
 };
 
 export interface GetHunkContextArgs {
@@ -51,6 +55,40 @@ export interface GetHunkContextReply {
 
 export async function getHunkContext(args: GetHunkContextArgs): Promise<GetHunkContextReply> {
     return rpcCall<GetHunkContextReply>('RPCHandler.GetHunkContext', [args]);
+}
+
+/**
+ * Fetches the server's TOML configuration along with the workflow type and
+ * filter registries the config editor builds its pickers from.
+ */
+export async function getConfig(): Promise<ConfigReply> {
+    return rpcCall<ConfigReply>('RPCHandler.GetConfig', [{}]);
+}
+
+/**
+ * Saves a partial configuration change. Fields left out keep whatever is on
+ * disk; sending `Workflows` replaces the whole list.
+ *
+ * A config the server rejects comes back as `okay: false` with `errors`
+ * populated rather than as a thrown error — the file is left untouched.
+ */
+export async function updateConfig(args: UpdateConfigArgs): Promise<ConfigReply> {
+    return rpcCall<ConfigReply>('RPCHandler.UpdateConfig', [args]);
+}
+
+export interface UpdateConfigArgs {
+    Repos?: string[];
+    SleepDuration?: number;
+    JiraDomain?: string;
+    GithubUsername?: string;
+    RepoLocation?: string;
+    AutoWorktree?: boolean;
+    DesktopNotifications?: boolean;
+    SectionPriority?: Record<string, number>;
+    SectionSorting?: Record<string, string>;
+    Workflows?: WorkflowEntry[];
+    ExperimentalLLMFileOrdering?: boolean;
+    ExperimentalLLMReviewEase?: boolean;
 }
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {

@@ -12,6 +12,17 @@ The web client is packaged with bun, and has a bun backend with a react frontend
 2. `bun install && bun run build`
 3. `bun start`
 
+### Preferences
+
+The gear icon next to the header opens Preferences, which has two tabs:
+
+- **Appearance** — theme, preferred review location, and diff font size. These are client-side settings stored in the browser's local storage.
+- **Server Configuration** — an editor for the server's TOML config (`~/.config/codereviewserver.toml`), covering the global settings and the workflow list.
+
+In the Server Configuration tab, each workflow is a collapsible card you can expand to edit, reorder with the arrow buttons, or delete. **+ Add workflow** appends a new one. The workflow type and filter dropdowns are populated from the registries the server sends with the config, so they always offer what the running server supports; filters that need an argument (`FilterByLabel` and friends) get an extra input for it, and fields that don't apply to the selected workflow type are hidden.
+
+The editor validates as you go and blocks a save while anything is wrong — a missing section title, a duplicate workflow name, a repository that isn't in `owner/repo` form. The server validates again before writing and reports anything the client missed against the field that caused it, so a config that can't run never reaches disk. See [Configuration](configuration.md#editing-the-config-from-a-client) for what saving does to the file and when the changes take effect.
+
 ## TUI Client
 
 The TUI client (`tui_client/`) is a fast, keyboard-driven terminal interface built in Rust. It's well-suited for quick access to your review queue from any terminal.

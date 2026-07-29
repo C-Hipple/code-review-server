@@ -27,6 +27,39 @@ SectionSorting: map[string]string [optional]
 - **RepoLocation**: The directory where you keep your git repositories. It defaults to "~/" if not defined. This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 - **DesktopNotifications**: When `true`, sends a desktop notification each time a PR is newly added to a section. Defaults to `false`. Currently only macOS is supported (via `osascript`); enabling this on other operating systems will log an error.
 
+## Editing the Config from a Client
+
+The config file is the source of truth, but you don't have to edit it by hand. Clients can read and write it over the RPC API with `RPCHandler.GetConfig` and `RPCHandler.UpdateConfig` (see [Protocol](protocol.md)). The web client exposes this as the **Server Configuration** tab behind the gear icon (see [Clients](clients.md)).
+
+Things worth knowing before editing the config from a client:
+
+- **Updates are partial.** A client sends only the settings it means to change; everything else in the file — including keys the server doesn't know about — is left as it is. Sending `Workflows` replaces the whole workflow list, which is how entries are added, removed, or reordered.
+- **Nothing is written unless it validates.** The server checks the configuration the update would produce and refuses to write one it can't run, reporting each problem against the field that caused it. The rules are listed below.
+- **The previous file is kept as `codereviewserver.toml.bak`.** Comments and the original key ordering are **not** preserved when the server rewrites the file, so keep your own copy if a hand-written config has comments you care about.
+- **Changes apply on the next sync.** The background workflow manager reloads the config at the start of each cycle (`SleepDuration` minutes apart), so a saved workflow starts collecting PRs on the following sync rather than instantly.
+- **Removed workflows leave their PRs behind until the next sync**, at which point items no longer claimed by any workflow are pruned. The section itself stays in the database even when nothing feeds it.
+
+### Validation Rules
+
+A configuration is rejected when any of the following is true:
+
+Root level:
+
+- `SleepDuration` is not a positive number of minutes, or is greater than 1440 (24 hours).
+- A `Repos` entry is not in `owner/repo` form.
+- A `SectionSorting` value is not `newest_first` or `oldest_first`.
+
+Per workflow:
+
+- `Name`, `WorkflowType`, or `SectionTitle` is missing.
+- Two workflows share a `Name` — names identify which workflow owns an item, so they must be unique.
+- `WorkflowType` is not one of the types listed below.
+- A filter is not one this server knows, an argument-taking filter (`FilterByLabel`, `FilterByAuthor`, `FilterExcludeAuthor`) is missing its argument, or an argument is given to a filter that takes none.
+- A `Repos` entry is not in `owner/repo` form, or a `Teams` entry is empty.
+- `PRState` is set to something other than `open`, `closed`, or `all`.
+- The workflow has no repositories to work with: neither its own `Repos` nor a root-level `Repos` list.
+- `ProjectListWorkflow` is missing `JiraEpic`, or `SingleRepoSyncReviewRequestsWorkflow` is missing a valid `Repo`.
+
 ## Workflows
 
 A list of tables called `[[Workflows]]` configures each workflow.

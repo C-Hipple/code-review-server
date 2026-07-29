@@ -13,11 +13,23 @@ Each workflow can use the available filters to customize which PRs are included.
 *   `FilterCIFailing` - Only include PRs with failing CI/Actions
 *   `FilterStale` - PRs with no activity for more than 3 days
 *   `FilterNotStale` - PRs with activity within the last 3 days
-*   `FilterWaitingOnMe` - PRs where you are a requested reviewer and need to act
+*   `FilterWaitingOnMe` - PRs that need action from you (see below)
 *   `FilterWaitingOnAuthor` - PRs where you were the last to act and are waiting on the author
 *   `FilterByLabel:<label_name>` - Only include PRs with the specified label (e.g., `FilterByLabel:bug`)
 *   `FilterByAuthor:<username>` - Only include PRs authored by the specified user
 *   `FilterExcludeAuthor:<username>` - Exclude PRs authored by the specified user
+
+## FilterWaitingOnMe
+
+A PR is included when any of the following is true:
+
+1.  **You have an open review request.** GitHub clears a review request as soon as you submit a review, and re-requesting a review puts you back in the PR's requested reviewers — so being listed there means the request is outstanding, no matter how recently you reviewed or commented. This is what makes re-review requests show up.
+2.  **Your most recent review was dismissed.** Stale-review dismissal and CODEOWNERS re-requests throw away your approval *without* adding you back to the requested reviewers, so this is the only signal that you owe a re-review.
+3.  **You have unresponded comments.** You participated in a review thread (or the PR conversation) and someone else replied after you.
+
+`FilterWaitingOnAuthor` is the complement: it excludes PRs where you have an open request or a dismissed review, so a PR never lands in both sections.
+
+Only *personal* review requests count. If your review is requested through a team, use the `Teams` field described below to build a section for it.
 
 ## Team-Based Filtering
 

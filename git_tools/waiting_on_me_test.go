@@ -54,14 +54,17 @@ func TestFilterWaitingOnMe(t *testing.T) {
 			shouldInclude: true,
 		},
 		{
-			name: "Personally requested, I acted after push",
+			// A pending review request outlives whatever I did before it: GitHub
+			// removes the request when I submit a review, so a login still sitting
+			// in RequestedReviewers means the request was (re-)made and is open.
+			name: "Personally requested with a newer prior review (re-review request)",
 			pr:   makePR(2, myLogin),
 			state: InteractionState{
 				LastMeTime:     time.Now().Add(-10 * time.Minute),
 				LastOthersTime: time.Now().Add(-20 * time.Minute),
 				LastCommitTime: time.Now().Add(-30 * time.Minute),
 			},
-			shouldInclude: false,
+			shouldInclude: true,
 		},
 		{
 			name: "Not personally requested, but unresponded comments",
@@ -80,8 +83,31 @@ func TestFilterWaitingOnMe(t *testing.T) {
 			shouldInclude: false,
 		},
 		{
-			name: "Personally requested, but I acted after others",
+			name: "Personally requested, and I commented since (request still open)",
 			pr:   makePR(5, myLogin),
+			state: InteractionState{
+				LastMeTime:     time.Now().Add(-5 * time.Minute),
+				LastOthersTime: time.Now().Add(-10 * time.Minute),
+				LastCommitTime: time.Now().Add(-20 * time.Minute),
+			},
+			shouldInclude: true,
+		},
+		{
+			// Stale-review dismissal (CODEOWNERS, "dismiss stale approvals on push")
+			// drops my approval without adding me back to RequestedReviewers.
+			name: "Not requested, but my latest review was dismissed",
+			pr:   makePR(8, "other"),
+			state: InteractionState{
+				LastMeTime:        time.Now().Add(-5 * time.Minute),
+				LastOthersTime:    time.Now().Add(-10 * time.Minute),
+				LastCommitTime:    time.Now().Add(-20 * time.Minute),
+				MyReviewDismissed: true,
+			},
+			shouldInclude: true,
+		},
+		{
+			name: "Not requested, my review stands, nothing outstanding",
+			pr:   makePR(9, "other"),
 			state: InteractionState{
 				LastMeTime:     time.Now().Add(-5 * time.Minute),
 				LastOthersTime: time.Now().Add(-10 * time.Minute),
@@ -392,6 +418,115 @@ func TestCalculateInteractionState(t *testing.T) {
 	}
 }
 
+// TestCalculateInteractionStateReviewDismissed covers the re-review signal that
+// never reaches RequestedReviewers: a dismissed review means my verdict was
+// thrown away and the PR is waiting on me again, while a later review of any
+// other state means I have already weighed in since.
+func TestCalculateInteractionStateReviewDismissed(t *testing.T) {
+	myLogin := "myself"
+	now := time.Now()
+
+	makeReview := func(user, state string, submittedAt time.Time) *github.PullRequestReview {
+		return &github.PullRequestReview{
+			User:        &github.User{Login: github.String(user)},
+			State:       github.String(state),
+			SubmittedAt: &github.Timestamp{Time: submittedAt},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		reviews         []*github.PullRequestReview
+		expectDismissed bool
+	}{
+		{
+			name:            "No reviews",
+			expectDismissed: false,
+		},
+		{
+			name:            "My approval still stands",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "APPROVED", now.Add(-time.Hour))},
+			expectDismissed: false,
+		},
+		{
+			name:            "My latest review was dismissed",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "DISMISSED", now.Add(-time.Hour))},
+			expectDismissed: true,
+		},
+		{
+			name: "Dismissed, then I reviewed again",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "DISMISSED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "APPROVED", now.Add(-time.Hour)),
+			},
+			expectDismissed: false,
+		},
+		{
+			name: "Someone else's review was dismissed",
+			reviews: []*github.PullRequestReview{
+				makeReview("other", "DISMISSED", now.Add(-time.Hour)),
+			},
+			expectDismissed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := CalculateInteractionState(myLogin, &github.PullRequest{}, tt.reviews, nil, nil)
+			if state.MyReviewDismissed != tt.expectDismissed {
+				t.Errorf("MyReviewDismissed: expected %v, got %v", tt.expectDismissed, state.MyReviewDismissed)
+			}
+		})
+	}
+}
+
+// TestLatestCommitTime guards the "last push" timestamp against list orderings
+// where the newest commit is not the final element — force-pushes and rebases
+// both produce them, and an under-reported push time makes a PR look answered.
+func TestLatestCommitTime(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+
+	commit := func(committed time.Time) *github.RepositoryCommit {
+		return &github.RepositoryCommit{
+			Commit: &github.Commit{
+				Committer: &github.CommitAuthor{Date: &github.Timestamp{Time: committed}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		commits  []*github.RepositoryCommit
+		expected time.Time
+	}{
+		{name: "No commits", expected: time.Time{}},
+		{
+			name:     "Newest commit is last",
+			commits:  []*github.RepositoryCommit{commit(now.Add(-2 * time.Hour)), commit(now.Add(-time.Hour))},
+			expected: now.Add(-time.Hour),
+		},
+		{
+			name:     "Newest commit is not last",
+			commits:  []*github.RepositoryCommit{commit(now.Add(-time.Hour)), commit(now.Add(-2 * time.Hour))},
+			expected: now.Add(-time.Hour),
+		},
+		{
+			name:     "Nil entries are skipped",
+			commits:  []*github.RepositoryCommit{nil, {}, {Commit: &github.Commit{}}, commit(now.Add(-time.Hour))},
+			expected: now.Add(-time.Hour),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := latestCommitTime(tt.commits)
+			if !got.Equal(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, got)
+			}
+		})
+	}
+}
+
 func TestFilterWaitingOnAuthor(t *testing.T) {
 	cfg := config.C()
 	cfg.GithubUsername = "myself"
@@ -400,7 +535,11 @@ func TestFilterWaitingOnAuthor(t *testing.T) {
 	owner := "owner"
 	repo := "repo"
 
-	makePR := func(number int) *github.PullRequest {
+	makePR := func(number int, reviewers ...string) *github.PullRequest {
+		requestedReviewers := []*github.User{}
+		for _, r := range reviewers {
+			requestedReviewers = append(requestedReviewers, &github.User{Login: github.String(r)})
+		}
 		return &github.PullRequest{
 			Number: &number,
 			User:   &github.User{Login: github.String("author")},
@@ -410,6 +549,7 @@ func TestFilterWaitingOnAuthor(t *testing.T) {
 					Name:  &repo,
 				},
 			},
+			RequestedReviewers: requestedReviewers,
 		}
 	}
 
@@ -462,6 +602,29 @@ func TestFilterWaitingOnAuthor(t *testing.T) {
 			name:          "All times zero",
 			pr:            makePR(104),
 			state:         InteractionState{},
+			shouldInclude: false,
+		},
+		{
+			// Same timestamps as the first case, but the author re-requested my
+			// review — the PR is waiting on me, not on them.
+			name: "I acted last but my review was re-requested",
+			pr:   makePR(105, "myself"),
+			state: InteractionState{
+				LastMeTime:     time.Now().Add(-5 * time.Minute),
+				LastOthersTime: time.Now().Add(-10 * time.Minute),
+				LastCommitTime: time.Now().Add(-20 * time.Minute),
+			},
+			shouldInclude: false,
+		},
+		{
+			name: "I acted last but my review was dismissed",
+			pr:   makePR(106),
+			state: InteractionState{
+				LastMeTime:        time.Now().Add(-5 * time.Minute),
+				LastOthersTime:    time.Now().Add(-10 * time.Minute),
+				LastCommitTime:    time.Now().Add(-20 * time.Minute),
+				MyReviewDismissed: true,
+			},
 			shouldInclude: false,
 		},
 		{

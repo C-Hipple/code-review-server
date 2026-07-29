@@ -27,7 +27,18 @@ type PRFilter func([]*github.PullRequest) []*github.PullRequest
 
 func GetPRs(client *github.Client, state string, owner string, repo string) ([]*github.PullRequest, error) {
 	per_page := 100
-	options := github.PullRequestListOptions{State: state, ListOptions: github.ListOptions{PerPage: per_page, Page: 1}}
+	// Sort by recent activity, not creation date. We only ever look at the first
+	// max_additional_calls+1 pages, so on a repo with more open PRs than that
+	// window the ordering decides what is even eligible for filtering. A PR that
+	// just had a review re-requested has a fresh updated_at but may have been
+	// created months ago, and under the default created-desc ordering it fell off
+	// the end of the window and never reached the filters at all.
+	options := github.PullRequestListOptions{
+		State:       state,
+		Sort:        "updated",
+		Direction:   "desc",
+		ListOptions: github.ListOptions{PerPage: per_page, Page: 1},
+	}
 	// Use make so a successful fetch with 0 results returns a non-nil empty slice.
 	// Callers use nil to detect fetch failure vs success (nil == failed, non-nil == succeeded).
 	prs := make([]*github.PullRequest, 0)
@@ -857,6 +868,11 @@ type InteractionState struct {
 	LastOthersTime         time.Time
 	LastCommitTime         time.Time
 	HasUnrespondedComments bool
+	// MyReviewDismissed is true when the most recent review I submitted has been
+	// dismissed (stale-review dismissal, a CODEOWNERS re-request, or a manual
+	// dismissal). GitHub does not put me back in RequestedReviewers in that case,
+	// so this is the only signal that I owe a re-review.
+	MyReviewDismissed bool
 }
 
 func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews []*github.PullRequestReview, reviewComments []*github.PullRequestComment, issueComments []*github.IssueComment) InteractionState {
@@ -867,11 +883,15 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	}
 
 	// Fetch Reviews
+	var myLatestReview *github.PullRequestReview
 	for _, r := range reviews {
 		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
 			continue
 		}
 		if strings.EqualFold(*r.User.Login, myLogin) {
+			if myLatestReview == nil || r.SubmittedAt.After(myLatestReview.SubmittedAt.Time) {
+				myLatestReview = r
+			}
 			if r.SubmittedAt.After(state.LastMeTime) {
 				state.LastMeTime = r.SubmittedAt.Time
 			}
@@ -881,6 +901,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 			}
 		}
 	}
+	state.MyReviewDismissed = myLatestReview != nil && myLatestReview.GetState() == "DISMISSED"
 
 	// Fetch Review Comments
 	// Group comments by their "thread"
@@ -942,6 +963,56 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	return state
 }
 
+// interactionPageSize / interactionMaxPages bound the paginated fetches behind
+// GetInteractionState. GitHub caps a PR's commit list at 250 entries, and a PR
+// with more than 500 comments is far past the point where any of this matters,
+// so five pages is plenty while keeping the worst case at five calls per list.
+const (
+	interactionPageSize = 100
+	interactionMaxPages = 5
+)
+
+// listAllPages walks the paginated endpoint fetch until it runs out of pages
+// (or hits interactionMaxPages), returning everything it collected. On error it
+// returns the pages gathered so far alongside the error, so callers can still
+// work with a partial history rather than falling back to nothing.
+func listAllPages[T any](fetch func(opts *github.ListOptions) ([]T, *github.Response, error)) ([]T, error) {
+	var all []T
+	opts := &github.ListOptions{PerPage: interactionPageSize, Page: 1}
+	for i := 0; i < interactionMaxPages; i++ {
+		page, resp, err := fetch(opts)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, page...)
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// latestCommitTime returns the newest commit timestamp in commits. It scans for
+// the maximum rather than trusting the last element: pagination and rebases both
+// hand back lists whose final entry is not the most recent commit, and an
+// under-reported "last push" time makes a PR look like I have already responded
+// to it.
+func latestCommitTime(commits []*github.RepositoryCommit) time.Time {
+	var latest time.Time
+	for _, c := range commits {
+		if c == nil || c.Commit == nil {
+			continue
+		}
+		for _, ts := range []*github.CommitAuthor{c.Commit.Committer, c.Commit.Author} {
+			if ts != nil && ts.Date != nil && ts.Date.After(latest) {
+				latest = ts.Date.Time
+			}
+		}
+	}
+	return latest
+}
+
 func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
 	if pr == nil || pr.Number == nil {
 		return InteractionState{}
@@ -969,9 +1040,17 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	resultChan := make(chan result, 4)
 
+	// Every list below is paginated. GitHub's default page size is 30, and all of
+	// these endpoints return oldest-first, so a single unpaginated call on an
+	// active PR hands back only the *start* of its history: my latest review, the
+	// reply that is waiting on me, and the newest commit all fall off the end.
+	// That silently skews every timestamp this state is built from.
+
 	// Fetch Reviews
 	go func() {
-		reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, nil)
+		reviews, err := listAllPages(func(opts *github.ListOptions) ([]*github.PullRequestReview, *github.Response, error) {
+			return client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, opts)
+		})
 		if err != nil {
 			slog.Warn("Error listing reviews", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -980,7 +1059,10 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Review Comments
 	go func() {
-		reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, *pr.Number, nil)
+		reviewComments, err := listAllPages(func(opts *github.ListOptions) ([]*github.PullRequestComment, *github.Response, error) {
+			return client.PullRequests.ListComments(ctx, owner, repo, *pr.Number,
+				&github.PullRequestListCommentsOptions{ListOptions: *opts})
+		})
 		if err != nil {
 			slog.Warn("Error listing review comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -989,7 +1071,10 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Issue Comments
 	go func() {
-		issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, *pr.Number, nil)
+		issueComments, err := listAllPages(func(opts *github.ListOptions) ([]*github.IssueComment, *github.Response, error) {
+			return client.Issues.ListComments(ctx, owner, repo, *pr.Number,
+				&github.IssueListCommentsOptions{ListOptions: *opts})
+		})
 		if err != nil {
 			slog.Warn("Error listing issue comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -998,7 +1083,9 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Commits
 	go func() {
-		commits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, nil)
+		commits, err := listAllPages(func(opts *github.ListOptions) ([]*github.RepositoryCommit, *github.Response, error) {
+			return client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, opts)
+		})
 		if err != nil {
 			slog.Warn("Error listing commits", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -1034,12 +1121,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, issueComments)
 
 	// Set LastCommitTime from commits
-	if len(commits) > 0 {
-		latestCommit := commits[len(commits)-1]
-		if latestCommit.Commit != nil && latestCommit.Commit.Committer != nil && latestCommit.Commit.Committer.Date != nil {
-			state.LastCommitTime = latestCommit.Commit.Committer.Date.Time
-		}
-	}
+	state.LastCommitTime = latestCommitTime(commits)
 
 	// Cache the result even if there were errors (with shorter TTL)
 	// This prevents retry storms
@@ -1079,6 +1161,19 @@ func GetMyTeams() []string {
 	return slugs
 }
 
+// reviewRequestedFrom reports whether login has an open personal review request
+// on the PR. GitHub logins are case-insensitive, so the comparison uses
+// EqualFold: a casing mismatch between the configured GithubUsername and the
+// login returned by the API would otherwise match nobody.
+func reviewRequestedFrom(pr *github.PullRequest, login string) bool {
+	for _, r := range pr.RequestedReviewers {
+		if r != nil && r.Login != nil && strings.EqualFold(*r.Login, login) {
+			return true
+		}
+	}
+	return false
+}
+
 func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 	myLogin := config.C().GithubUsername
 
@@ -1102,34 +1197,29 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 
 			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 
-			// Is Personally Requested?
-			isRequested := false
-			for _, r := range pr.RequestedReviewers {
-				// GitHub logins are case-insensitive, so compare with EqualFold:
-				// a casing mismatch between the configured GithubUsername and the
-				// login returned by the API would otherwise make isRequested
-				// always false and the filter would match nothing.
-				if r != nil && r.Login != nil && strings.EqualFold(*r.Login, myLogin) {
-					isRequested = true
-					break
-				}
-			}
+			isRequested := reviewRequestedFrom(pr, myLogin)
 
 			// A PR is "Waiting on me" if:
-			// 1. I am individually requested AND I haven't acted since the last push or last other action.
-			// 2. OR I have unresponded comments.
-			shouldFilter := false
+			// 1. I have a pending review request on it, OR
+			// 2. my last review was dismissed (so I owe a re-review), OR
+			// 3. I have unresponded comments.
+			//
+			// Case 1 is deliberately unconditional. GitHub clears a review request
+			// the moment the requested reviewer submits a review, and "re-request
+			// review" puts them back into RequestedReviewers — so a login sitting in
+			// RequestedReviewers *now* always means an outstanding request, however
+			// recently that person reviewed or commented. This used to be gated on
+			// "have I acted since the last push / last other action", which hid
+			// exactly the re-review case: the prior review is newer than both the
+			// last commit and the last comment, so every re-request was filtered out.
+			shouldFilter := isRequested || state.MyReviewDismissed || state.HasUnrespondedComments
 
-			if isRequested {
-				actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
-				if !actedSinceOthers {
-					shouldFilter = true
-				}
-			}
-
-			if state.HasUnrespondedComments {
-				shouldFilter = true
-			}
+			slog.Debug("FilterWaitingOnMe",
+				"repo", *pr.Base.Repo.Name, "number", *pr.Number, "included", shouldFilter,
+				"requested", isRequested, "review_dismissed", state.MyReviewDismissed,
+				"unresponded_comments", state.HasUnrespondedComments,
+				"last_me", state.LastMeTime, "last_others", state.LastOthersTime,
+				"last_commit", state.LastCommitTime)
 
 			resultChan <- prResult{pr: pr, shouldFilter: shouldFilter}
 		}(pr)
@@ -1153,6 +1243,8 @@ func FilterWaitingOnMe(prs []*github.PullRequest) []*github.PullRequest {
 }
 
 func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
+	myLogin := config.C().GithubUsername
+
 	// Process PRs concurrently to avoid sequential API calls
 	type prResult struct {
 		pr           *github.PullRequest
@@ -1174,7 +1266,13 @@ func FilterWaitingOnAuthor(prs []*github.PullRequest) []*github.PullRequest {
 			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
 
-			resultChan <- prResult{pr: pr, shouldFilter: actedSinceOthers}
+			// An open review request on me — or a dismissal of my last review —
+			// outranks the timestamps: the ball is back in my court, not the
+			// author's. Without this a re-requested PR would show up in both the
+			// "Waiting on Me" and "Waiting on Author" sections.
+			owedByMe := reviewRequestedFrom(pr, myLogin) || state.MyReviewDismissed
+
+			resultChan <- prResult{pr: pr, shouldFilter: actedSinceOthers && !owedByMe}
 		}(pr)
 	}
 

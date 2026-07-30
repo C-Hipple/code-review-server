@@ -1,5 +1,7 @@
-import Markdown from 'react-markdown';
 import { Button, colors, shadows } from '../../design';
+import { resolvePluginBody, sortedAnnotations } from '../../plugin_utils';
+import PluginAnnotations from '../PluginAnnotations';
+import PluginBodyView from '../PluginBodyView';
 import type { PluginResult } from './types';
 
 interface PluginsPanelProps {
@@ -157,19 +159,12 @@ export default function PluginsPanel({
                                             background: 'var(--bg-primary)',
                                         }}
                                     >
-                                        {data.result ? (
-                                            <Markdown>{data.result}</Markdown>
-                                        ) : (
-                                            <span
-                                                style={{
-                                                    color: 'var(--text-secondary)',
-                                                    fontStyle: 'italic',
-                                                }}
-                                            >
-                                                No output produced.
-                                            </span>
-                                        )}
+                                        <PluginBodyView
+                                            body={resolvePluginBody(data)}
+                                            emptyLabel="No output produced."
+                                        />
                                     </div>
+                                    <PluginAnnotations annotations={sortedAnnotations(data)} />
                                 </div>
                             ))}
                         </div>

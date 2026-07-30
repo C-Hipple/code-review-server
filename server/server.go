@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crs/config"
-	"crs/database"
 	"crs/git_tools"
 	"crs/llm"
 	"crs/utils"
@@ -148,15 +147,16 @@ type GetPRstructArgs struct {
 // state. Reply structs embed it so all methods expose the same fields, and
 // populate() is the single place they get filled in and normalized.
 type PRPayload struct {
-	Okay             bool          `json:"okay"`
-	Content          string        `json:"content"`
-	Metadata         *PRMetadata   `json:"metadata"`
-	Diff             string        `json:"diff"`
-	Comments         []CommentJSON `json:"comments"`
-	OutdatedComments []CommentJSON `json:"outdated_comments"`
-	Reviews          []ReviewJSON  `json:"reviews"`
-	Commits          []CommitJSON  `json:"commits"`
-	Feedback         string        `json:"feedback"`
+	Okay             bool           `json:"okay"`
+	Content          string         `json:"content"`
+	Metadata         *PRMetadata    `json:"metadata"`
+	Diff             string         `json:"diff"`
+	Comments         []CommentJSON  `json:"comments"`
+	OutdatedComments []CommentJSON  `json:"outdated_comments"`
+	Reviews          []ReviewJSON   `json:"reviews"`
+	Commits          []CommitJSON   `json:"commits"`
+	Feedback         string         `json:"feedback"`
+	Annotations      []PRAnnotation `json:"annotations"`
 }
 
 // populate fills the payload from fetched PR details, normalizing nil slices
@@ -188,6 +188,15 @@ func (p *PRPayload) populate(details *PRDetails, content string, owner, repo str
 		slog.Warn("Error loading feedback for PR reply", "repo", repo, "pr", number, "error", err)
 	}
 	p.Feedback = feedback
+
+	annotations, err := collectPluginAnnotations(owner, repo, number)
+	if err != nil {
+		slog.Warn("Error loading plugin annotations for PR reply", "repo", repo, "pr", number, "error", err)
+	}
+	if annotations == nil {
+		annotations = []PRAnnotation{}
+	}
+	p.Annotations = annotations
 }
 
 type GetPRReply struct {
@@ -1140,7 +1149,7 @@ type GetPluginOutputArgs struct {
 }
 
 type GetPluginOutputReply struct {
-	Output map[string]database.PluginResult `json:"output"`
+	Output map[string]PluginOutput `json:"output"`
 }
 
 // GetPluginOutput returns all stored plugin outputs for the given PR
@@ -1165,7 +1174,7 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 		}()
 	}
 
-	reply.Output = results
+	reply.Output = parsePluginOutputs(results)
 	return nil
 }
 
@@ -1177,9 +1186,9 @@ type RerunPluginsArgs struct {
 }
 
 type RerunPluginsReply struct {
-	Okay    bool                             `json:"okay"`
-	Message string                           `json:"message"`
-	Output  map[string]database.PluginResult `json:"output"`
+	Okay    bool                    `json:"okay"`
+	Message string                  `json:"message"`
+	Output  map[string]PluginOutput `json:"output"`
 }
 
 // RerunPlugins forces reexecution of plugins for a given PR, bypassing SHA cache checks.
@@ -1234,7 +1243,7 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 	}
 
 	// Return empty output for now (plugins running async)
-	reply.Output = make(map[string]database.PluginResult)
+	reply.Output = make(map[string]PluginOutput)
 	return nil
 }
 

@@ -1,4 +1,5 @@
 import { colors } from '../../design';
+import type { PRAnnotation } from '../../plugin_utils';
 
 // Above this many changed lines in a single file, the diff renders that file
 // without per-line syntax highlighting to avoid thousands of Prism instances.
@@ -34,10 +35,15 @@ export interface ReviewData {
     html_url: string;
 }
 
-export interface PluginResult {
-    result: string;
-    status: string;
-}
+// The plugin response contract lives in plugin_utils, alongside the helpers
+// that interpret it; re-exported here so review components have one import.
+export type {
+    PluginAnnotation,
+    PluginBody,
+    PluginBodyType,
+    PluginResult,
+    PRAnnotation,
+} from '../../plugin_utils';
 
 export interface PRMetadata {
     number: number;
@@ -71,6 +77,10 @@ export interface PRResponse {
     reviews: ReviewData[];
     metadata: PRMetadata;
     feedback: string;
+    // Annotations from every plugin that has already run for this PR, each
+    // tagged with its source plugin. Rendering these into the diff is follow-up
+    // work; the plugin surfaces read annotations from GetPluginOutput today.
+    annotations?: PRAnnotation[];
     // Only set by SyncPR: true when the sync pulled in a new head SHA or new comments.
     updated?: boolean;
 }

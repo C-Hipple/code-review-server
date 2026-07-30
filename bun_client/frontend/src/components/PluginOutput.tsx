@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
 import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
+import { resolvePluginBody, sortedAnnotations, type PluginResult } from '../plugin_utils';
+import PluginAnnotations from './PluginAnnotations';
+import PluginBodyView from './PluginBodyView';
 
 interface PluginOutputProps {
     owner: string;
@@ -9,11 +12,6 @@ interface PluginOutputProps {
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
     onClose?: () => void;
-}
-
-interface PluginResult {
-    result: string;
-    status: string;
 }
 
 interface GetPluginOutputResponse {
@@ -142,6 +140,8 @@ export default function PluginOutput({
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                         {pluginNames.map(pluginName => {
                             const plugin = pluginOutput[pluginName];
+                            const body = resolvePluginBody(plugin);
+                            const annotations = sortedAnnotations(plugin);
                             return (
                                 <Card
                                     key={pluginName}
@@ -172,6 +172,12 @@ export default function PluginOutput({
                                         >
                                             {pluginName}
                                         </span>
+                                        {annotations.length > 0 && (
+                                            <Badge variant="info" size="sm" pill>
+                                                {annotations.length} annotation
+                                                {annotations.length === 1 ? '' : 's'}
+                                            </Badge>
+                                        )}
                                         {plugin.status.toLowerCase() === 'deferred' && (
                                             <Button
                                                 onClick={() => executePlugin(pluginName)}
@@ -184,38 +190,19 @@ export default function PluginOutput({
                                         )}
                                     </div>
                                     <div
+                                        className="markdown-content"
                                         style={{
                                             padding: '16px',
                                             maxHeight: '400px',
                                             overflowY: 'auto',
+                                            fontSize: '14px',
+                                            lineHeight: '1.6',
+                                            color: 'var(--text-primary)',
                                         }}
                                     >
-                                        {plugin.result ? (
-                                            <pre
-                                                style={{
-                                                    margin: 0,
-                                                    fontSize: '13px',
-                                                    lineHeight: '1.5',
-                                                    fontFamily: 'var(--font-mono)',
-                                                    whiteSpace: 'pre-wrap',
-                                                    wordBreak: 'break-word',
-                                                    color: 'var(--text-primary)',
-                                                }}
-                                            >
-                                                {plugin.result}
-                                            </pre>
-                                        ) : (
-                                            <div
-                                                style={{
-                                                    color: 'var(--text-secondary)',
-                                                    fontStyle: 'italic',
-                                                    fontSize: '14px',
-                                                }}
-                                            >
-                                                No output
-                                            </div>
-                                        )}
+                                        <PluginBodyView body={body} />
                                     </div>
+                                    <PluginAnnotations annotations={annotations} />
                                 </Card>
                             );
                         })}

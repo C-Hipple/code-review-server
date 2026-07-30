@@ -70,6 +70,60 @@ The `example_plugin` included in this repository demonstrates the interface and 
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
 
+## Plugin Response Contract
+
+A plugin's stdout can be plain text, but a plugin may instead emit a JSON document matching the response contract. This lets it declare how its body should be rendered and attach line-level annotations to the PR diff:
+
+```json
+{
+  "body": {
+    "body_type": "markdown",
+    "body_content": "This is the response."
+  },
+  "annotations": [
+    {"filename": "test.py", "line": 75, "severity": "warning", "content": "this line looks wrong"}
+  ]
+}
+```
+
+### `body` Object
+
+| Field          | Type   | Description                                  |
+|----------------|--------|----------------------------------------------|
+| `body_type`    | string | Either `markdown` or `html` (case-insensitive) |
+| `body_content` | string | The renderable output of the plugin          |
+
+### `annotations` List (optional)
+
+Each annotation anchors a remark to a line of a file in the PR:
+
+| Field      | Type   | Description                                                  |
+|------------|--------|--------------------------------------------------------------|
+| `filename` | string | Path of the file within the repo (required)                  |
+| `line`     | int    | 1-based line number the annotation applies to (required)     |
+| `severity` | string | Free-form severity, e.g. `info`, `warning`, `error`          |
+| `content`  | string | The annotation text                                          |
+
+Annotations without a `filename` or a positive `line` are dropped, since they can't be anchored to the diff.
+
+### Backwards Compatibility
+
+Output that doesn't match the contract — plain text, invalid JSON, JSON without a `body` object, or an unknown `body_type` — is treated as legacy output and wrapped as:
+
+```json
+{"body": {"body_type": "markdown", "body_content": "<the raw output, verbatim>"}, "annotations": []}
+```
+
+so existing plugins keep working unchanged. The raw stdout is always stored and returned as-is in the `result` field of `GetPluginOutput`; parsing happens when results are served to clients.
+
+Annotations from every successfully executed plugin for a PR are also aggregated into the `annotations` field of the `GetPR` response (each tagged with the plugin's name), so clients can render them into the diff.
+
+### Rendering in the Web Client
+
+The web client renders a `markdown` body as markdown and an `html` body inside a sandboxed frame that inherits the current theme. The frame withholds `allow-scripts`, so scripts and inline event handlers in a plugin's HTML never execute — plugin bodies are often LLM-generated text derived from a PR's diff and description, which is not trusted markup.
+
+Annotations are listed beneath each plugin's body on both the plugin output page and the review view's plugin drawer, sorted by file and line. Rendering them inline in the diff is separate work.
+
 ## On-Demand Plugins
 
 By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini or Claude).

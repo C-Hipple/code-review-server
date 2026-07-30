@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/google/go-github/v74/github"
@@ -177,43 +178,33 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		return RunResult{}, errors.New("ProjectList requires at least one repo")
 	}
 
-	// Resolve each configured "owner/repo" to its short name so the JIRA filter
-	// (which only sees the repo short name in PR URLs) can match and we can map
-	// results back to the correct owner when fetching from GitHub.
-	type repoRef struct{ owner, repo string }
-	shortToRef := make(map[string]repoRef, len(w.Repos))
-	shortRepos := make([]string, 0, len(w.Repos))
-	for _, entry := range w.Repos {
-		owner, repo, err := git_tools.ParseRepoName(entry)
-		if err != nil {
-			slog.Error("Skipping invalid repo entry", "entry", entry, "error", err)
-			continue
-		}
-		shortToRef[repo] = repoRef{owner: owner, repo: repo}
-		shortRepos = append(shortRepos, repo)
-	}
-	if len(shortRepos) == 0 {
+	// Resolve each configured "owner/repo" entry so the Jira lookup can match the
+	// PR links it finds and we can fetch each PR from the right repo.
+	refs := resolveRepoRefs(w.Repos)
+	if len(refs) == 0 {
 		return RunResult{}, errors.New("ProjectList has no valid repos")
 	}
 
-	prsByRepo := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, shortRepos)
+	prsByRepo := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, refs)
 
+	// Walk the configured order rather than the map so each cycle processes the
+	// repos the same way.
 	var allPRs []*github.PullRequest
-	for short, nums := range prsByRepo {
+	for _, ref := range refs {
+		nums := prsByRepo[ref]
 		if len(nums) == 0 {
 			continue
 		}
-		ref := shortToRef[short]
-		repoPRs, err := git_tools.GetSpecificPRs(client, ref.owner, ref.repo, nums)
+		repoPRs, err := git_tools.GetSpecificPRs(client, ref.Owner, ref.Repo, nums)
 		if err != nil {
-			slog.Error("Error getting specific PRs", "owner", ref.owner, "repo", ref.repo, "error", err)
+			slog.Error("Error getting specific PRs", "owner", ref.Owner, "repo", ref.Repo, "error", err)
 			continue
 		}
 		// Because GetPRRequirements returns nil, the manager's prefetch pass skips
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(client, ref.owner, ref.repo, repoPRs)
+		prefetchAuxDataForPRs(client, ref.Owner, ref.Repo, repoPRs)
 		allPRs = append(allPRs, repoPRs...)
 	}
 
@@ -225,6 +216,28 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 	afterCount, _ := db.GetItemCount()
 	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
+}
+
+// resolveRepoRefs turns configured "owner/repo" entries into repo refs, keeping
+// the configured order, dropping malformed entries and collapsing duplicates so
+// a repo listed twice is only fetched once.
+func resolveRepoRefs(entries []string) []jira.RepoRef {
+	refs := make([]jira.RepoRef, 0, len(entries))
+	seen := make(map[jira.RepoRef]struct{}, len(entries))
+	for _, entry := range entries {
+		owner, repo, err := git_tools.ParseRepoName(strings.TrimSpace(entry))
+		if err != nil {
+			slog.Error("Skipping invalid repo entry", "entry", entry, "error", err)
+			continue
+		}
+		ref := jira.RepoRef{Owner: owner, Repo: repo}
+		if _, dup := seen[ref]; dup {
+			continue
+		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 // prefetchAuxDataForPRs fetches all auxiliary data (diff, comments, reviews,

@@ -118,6 +118,12 @@ so existing plugins keep working unchanged. The raw stdout is always stored and 
 
 Annotations from every successfully executed plugin for a PR are also aggregated into the `annotations` field of the `GetPR` response (each tagged with the plugin's name), so clients can render them into the diff.
 
+### Rendering in the Web Client
+
+The web client renders a `markdown` body as markdown and an `html` body inside a sandboxed frame that inherits the current theme. The frame withholds `allow-scripts`, so scripts and inline event handlers in a plugin's HTML never execute — plugin bodies are often LLM-generated text derived from a PR's diff and description, which is not trusted markup.
+
+Annotations are listed beneath each plugin's body on both the plugin output page and the review view's plugin drawer, sorted by file and line. Rendering them inline in the diff is separate work.
+
 ## On-Demand Plugins
 
 By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini or Claude).

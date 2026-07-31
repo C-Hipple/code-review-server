@@ -8,9 +8,9 @@ interface PluginAnnotationsProps {
 }
 
 /**
- * Lists a plugin's line-level annotations beneath its body. Rendering these
- * inline in the diff is separate follow-up work; this is the flat view on the
- * plugin output surfaces.
+ * Lists a plugin's line-level annotations beneath its body — the flat view on
+ * the plugin output surfaces. The review view also renders them inline in the
+ * diff (see annotation_utils and DiffView).
  */
 export default function PluginAnnotations({ annotations, onSelect }: PluginAnnotationsProps) {
     if (annotations.length === 0) return null;

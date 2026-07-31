@@ -122,7 +122,13 @@ Annotations from every successfully executed plugin for a PR are also aggregated
 
 The web client renders a `markdown` body as markdown and an `html` body inside a sandboxed frame that inherits the current theme. The frame withholds `allow-scripts`, so scripts and inline event handlers in a plugin's HTML never execute — plugin bodies are often LLM-generated text derived from a PR's diff and description, which is not trusted markup.
 
-Annotations are listed beneath each plugin's body on both the plugin output page and the review view's plugin drawer, sorted by file and line. Rendering them inline in the diff is separate work.
+Annotations are listed beneath each plugin's body on both the plugin output page and the review view's plugin drawer, sorted by file and line.
+
+They also render inline in the diff, collapsed the same way review comments are. An annotated line shows a flag badge in the gutter, coloured by the most severe annotation on it: hovering previews the annotations, clicking expands a card beneath the line with each annotation's severity, source plugin, and text. The toolbar's **⚑ Annotations** button expands or collapses all of them at once.
+
+An annotation anchors to the line matching its `line` on the PR's **head** side, so it lands on an added or unchanged line of the diff. Annotations the diff can't show a row for — a line outside any hunk, or one that only exists on the base side — collapse onto that file's header instead, labelled with the line they point at, rather than disappearing. Annotations naming a file that isn't in the diff at all are only listed in the plugins drawer. Paths must match the diff's repo-relative paths (a leading `./` is tolerated).
+
+The diff reads annotations from the plugin results it has loaded, so rerunning a plugin from the drawer updates the diff without reloading the PR. Only successfully executed plugins contribute, matching the `annotations` aggregate on the PR reply. The Emacs client does not render annotations inline.
 
 ## On-Demand Plugins
 

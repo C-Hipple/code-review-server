@@ -28,6 +28,44 @@ export function getStatusColor(variant: StatusVariant): string {
 }
 
 /**
+ * The dim palette for a status variant: a readable foreground over a tinted
+ * background, plus the matching border. Use it where a solid `getStatusColor`
+ * fill would shout — inline badges and callouts sitting inside content.
+ */
+export interface StatusTone {
+    fg: string;
+    bg: string;
+    border: string;
+}
+
+export function getStatusTone(variant: StatusVariant): StatusTone {
+    switch (variant) {
+        case 'success':
+            return {
+                fg: colors.textSuccess,
+                bg: colors.bgSuccessDim,
+                border: colors.borderSuccessDim,
+            };
+        case 'danger':
+            return {
+                fg: colors.textDanger,
+                bg: colors.bgDangerDim,
+                border: colors.borderDangerDim,
+            };
+        case 'warning':
+            return {
+                fg: colors.textWarning,
+                bg: colors.bgWarningDim,
+                border: colors.borderWarningDim,
+            };
+        case 'info':
+            return { fg: colors.accent, bg: colors.bgInfoDim, border: colors.borderInfoDim };
+        default:
+            return { fg: colors.textSecondary, bg: colors.bgTertiary, border: colors.border };
+    }
+}
+
+/**
  * Map common status strings to variants
  */
 export function mapStatusToVariant(status: string): StatusVariant {

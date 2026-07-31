@@ -48,7 +48,7 @@ var workflowTypes = []WorkflowTypeInfo{
 	},
 	{
 		Name:           "ProjectListWorkflow",
-		Description:    "Sync the pull requests linked to the children of a Jira epic. Requires JiraDomain plus the JIRA_API_TOKEN and JIRA_API_EMAIL environment variables.",
+		Description:    "Sync the pull requests linked to the children of a Jira epic. Repos takes a list, so one workflow can cover a project spanning several repositories. Requires JiraDomain plus the JIRA_API_TOKEN and JIRA_API_EMAIL environment variables.",
 		RequiredFields: []string{"JiraEpic"},
 		OptionalFields: []string{"Repos", "Filters", "IncludeDiff", "DesktopNotifications"},
 	},

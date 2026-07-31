@@ -135,7 +135,7 @@ Filters = ["FilterMyPRs"]  # Explicitly add this filter
 
 The `ProjectListWorkflow` pulls information from Jira to build a realtime list of all PRs which are linked to children cards of the Jira epic given in the config.
 
-Each workflow is tied to a single github repository, if you want multiple repos per project, create two workflows and have them use the same SectionTitle.
+A project often spans more than one repository, so `Repos` takes a list, just like the other workflow types. Every repo in the list is checked against the epic's linked PRs, each repo's PRs are evaluated independently, and they all land in the same section — one workflow covers the whole project. If `Repos` is omitted the workflow falls back to the root-level `Repos` list.
 
 ```bash
 export JIRA_API_TOKEN="Jira API Token"
@@ -148,10 +148,23 @@ JiraDomain="https://your-company.atlassain.net"
 [[Workflows]]
 WorkflowType = "ProjectListWorkflow"
 Name = "Project - Example"
+Repos = ["C-Hipple/diff-lsp", "C-Hipple/code-review-server"]
+SectionTitle = "Diff LSP Upgrade Project"
+JiraEpic = "BOARD-123" # the epic key
+```
+
+Repos are matched on the full `owner/repo` pair, so a project can span repos that share a short name under different owners. PRs linked to the epic from a repo outside the list are ignored.
+
+The singular `Owner`/`Repo` pair is still accepted for a single-repo project, but `Repos` is preferred:
+
+```toml
+[[Workflows]]
+WorkflowType = "ProjectListWorkflow"
+Name = "Project - Single Repo"
 Owner = "C-Hipple"
 Repo = "diff-lsp"
 SectionTitle = "Diff LSP Upgrade Project"
-JiraEpic = "BOARD-123" # the epic key
+JiraEpic = "BOARD-123"
 ```
 
 ## Release Checking

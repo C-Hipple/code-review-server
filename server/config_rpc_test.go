@@ -2,8 +2,11 @@ package server
 
 import (
 	"crs/config"
+	"crs/workflows"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -114,6 +117,83 @@ func TestUpdateConfigSavesValidWorkflows(t *testing.T) {
 	if !strings.Contains(string(written), `Repos = ['owner/repo']`) {
 		t.Errorf("expected untouched settings to survive, got:\n%s", written)
 	}
+}
+
+// A project spanning several repos is configured as one workflow with a Repos
+// list, so the whole list has to survive the client round-trip: through
+// UpdateConfig, onto disk, and back out of the reloaded config.
+func TestUpdateConfigSavesMultiRepoProjectList(t *testing.T) {
+	path := useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	newWorkflows := []config.RawWorkflow{{
+		WorkflowType: "ProjectListWorkflow",
+		Name:         "Project - Multi",
+		SectionTitle: "Multi Repo Project",
+		JiraEpic:     "BOARD-123",
+		Repos:        []string{" C-Hipple/code-review-server ", "", "C-Hipple/diff-lsp"},
+	}}
+	reply := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{Workflows: &newWorkflows}, reply); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+
+	if !reply.Okay {
+		t.Fatalf("expected a multi-repo ProjectListWorkflow to be accepted, got %v", reply.Errors)
+	}
+	wantRepos := []string{"C-Hipple/code-review-server", "C-Hipple/diff-lsp"}
+	if got := reply.Config.Workflows[0].Repos; !reflect.DeepEqual(got, wantRepos) {
+		t.Errorf("expected blank entries dropped and the rest trimmed, got %v", got)
+	}
+	if got := config.C().RawWorkflows[0].Repos; !reflect.DeepEqual(got, wantRepos) {
+		t.Errorf("expected both repos in the reloaded config, got %v", got)
+	}
+
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read written config: %v", err)
+	}
+	for _, repo := range wantRepos {
+		if !strings.Contains(string(written), repo) {
+			t.Errorf("expected %q on disk, got:\n%s", repo, written)
+		}
+	}
+
+	// And the saved config must still build into a workflow carrying every repo.
+	built := workflows.MatchWorkflows(config.C().RawWorkflows, &[]string{}, "https://example.atlassian.net")
+	if len(built) != 1 {
+		t.Fatalf("expected the saved workflow to build, got %d", len(built))
+	}
+	wf, ok := built[0].(workflows.ProjectListWorkflow)
+	if !ok {
+		t.Fatalf("expected a ProjectListWorkflow, got %T", built[0])
+	}
+	if !reflect.DeepEqual(wf.Repos, wantRepos) {
+		t.Errorf("built workflow Repos = %v, want %v", wf.Repos, wantRepos)
+	}
+}
+
+// Clients build their workflow editor from the registry this handler serves, so
+// ProjectListWorkflow has to advertise Repos for the field to be offered at all.
+func TestGetConfigAdvertisesReposForProjectList(t *testing.T) {
+	useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	reply := &GetConfigReply{}
+	if err := h.GetConfig(&GetConfigArgs{}, reply); err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+
+	for _, wt := range reply.WorkflowTypes {
+		if wt.Name != "ProjectListWorkflow" {
+			continue
+		}
+		if !slices.Contains(wt.OptionalFields, "Repos") {
+			t.Errorf("expected ProjectListWorkflow to offer Repos, got %v", wt.OptionalFields)
+		}
+		return
+	}
+	t.Error("ProjectListWorkflow missing from the workflow type registry")
 }
 
 func TestUpdateConfigRejectsInvalidWorkflows(t *testing.T) {

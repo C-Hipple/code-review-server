@@ -43,9 +43,44 @@ func getAuth() (string, string) {
 	return jiraEmail, token
 }
 
+// RepoRef identifies a GitHub repository by owner and short name. A project can
+// span several repos, and two of them may share a short name under different
+// owners, so PRs are matched and grouped on the pair rather than on the name.
+type RepoRef struct {
+	Owner string
+	Repo  string
+}
+
+func (r RepoRef) FullName() string {
+	return fmt.Sprintf("%s/%s", r.Owner, r.Repo)
+}
+
+// normalized lowercases the ref for comparison; GitHub owner and repo names are
+// case-insensitive, and Jira reports whatever casing the PR was linked with.
+func (r RepoRef) normalized() RepoRef {
+	return RepoRef{Owner: strings.ToLower(r.Owner), Repo: strings.ToLower(r.Repo)}
+}
+
+// targetSet maps a normalized ref back to the ref as it was configured, so
+// callers get keys they can hand straight to the GitHub API.
+type targetSet map[RepoRef]RepoRef
+
+func newTargetSet(refs []RepoRef) targetSet {
+	targets := make(targetSet, len(refs))
+	for _, ref := range refs {
+		targets[ref.normalized()] = ref
+	}
+	return targets
+}
+
+func (t targetSet) lookup(ref RepoRef) (RepoRef, bool) {
+	configured, ok := t[ref.normalized()]
+	return configured, ok
+}
+
 // GetProjectPRKeys returns the PR numbers for every target repo under a JIRA epic,
-// keyed by the repo short name (e.g. "code-review-server").
-func GetProjectPRKeys(domain string, epicKey string, repo_names []string) map[string][]int {
+// keyed by the repo they belong to.
+func GetProjectPRKeys(domain string, epicKey string, repos []RepoRef) map[RepoRef][]int {
 	if !strings.HasSuffix(domain, "/") {
 		domain += "/"
 	}
@@ -60,7 +95,7 @@ func GetProjectPRKeys(domain string, epicKey string, repo_names []string) map[st
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		slog.Error("Error creating request", "error", err)
-		return map[string][]int{}
+		return map[RepoRef][]int{}
 	}
 	req.URL.RawQuery = params.Encode()
 
@@ -71,7 +106,7 @@ func GetProjectPRKeys(domain string, epicKey string, repo_names []string) map[st
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("Error making request", "error", err)
-		return map[string][]int{}
+		return map[RepoRef][]int{}
 	}
 	defer resp.Body.Close()
 
@@ -81,31 +116,44 @@ func GetProjectPRKeys(domain string, epicKey string, repo_names []string) map[st
 		body := make([]byte, 1024)
 		n, _ := resp.Body.Read(body) // We ignore the error here.
 		slog.Error("JIRA response body", "content", string(body[:n]))
-		return map[string][]int{}
+		return map[RepoRef][]int{}
 	}
 
 	var data JiraSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		slog.Error("Error decoding JSON", "error", err)
-		return map[string][]int{}
+		return map[RepoRef][]int{}
 	}
 
-	return processIssues(domain, data, repo_names)
+	return processIssues(domain, data, repos)
 
 }
 
 type issuePR struct {
-	repo string
-	num  int
+	ref RepoRef
+	num int
 }
 
-func processIssues(domain string, data JiraSearchResponse, target_repos []string) map[string][]int {
-	// Returns a map of repo short name -> list of PR numbers for that repo.
-
-	targets := make(map[string]struct{}, len(target_repos))
-	for _, r := range target_repos {
-		targets[r] = struct{}{}
+// parsePRURL pulls the repo and PR number out of a GitHub pull request URL of
+// the form https://<host>/<owner>/<repo>/pull/<number>.
+func parsePRURL(prURL string) (RepoRef, int, error) {
+	parts := strings.Split(strings.TrimSuffix(prURL, "/"), "/")
+	if len(parts) < 4 {
+		return RepoRef{}, 0, fmt.Errorf("unexpected PR URL %q", prURL)
 	}
+	num, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return RepoRef{}, 0, fmt.Errorf("failed to convert PR number %q to int", parts[len(parts)-1])
+	}
+	return RepoRef{Owner: parts[len(parts)-4], Repo: parts[len(parts)-3]}, num, nil
+}
+
+func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRef) map[RepoRef][]int {
+	// Returns a map of repo -> list of PR numbers for that repo. PRs linked to
+	// repos outside the target list are dropped, so a project spanning several
+	// repos gets each repo's PRs grouped independently.
+
+	targets := newTargetSet(target_repos)
 
 	var wg sync.WaitGroup
 
@@ -133,19 +181,19 @@ func processIssues(domain string, data JiraSearchResponse, target_repos []string
 				return
 			}
 
-			urlParts := strings.Split(pr.URL, "/")
-			repo := urlParts[len(urlParts)-3]
-			if _, ok := targets[repo]; !ok {
-				errChan <- fmt.Errorf("Issue PR is for a separate repo: %s", repo)
-				return
-			}
-			prNum := urlParts[len(urlParts)-1]
-			num, err := strconv.Atoi(prNum)
+			ref, num, err := parsePRURL(pr.URL)
 			if err != nil {
-				errChan <- fmt.Errorf("Failed to convert prNum %s to int", prNum)
+				errChan <- fmt.Errorf("issue %s: %w", issue.ID, err)
 				return
 			}
-			resultsChan <- issuePR{repo: repo, num: num}
+			// Match on owner and repo together: a project may span repos that
+			// share a short name under different owners.
+			configured, ok := targets.lookup(ref)
+			if !ok {
+				errChan <- fmt.Errorf("Issue PR is for a separate repo: %s", ref.FullName())
+				return
+			}
+			resultsChan <- issuePR{ref: configured, num: num}
 		}(issue)
 	}
 
@@ -153,9 +201,9 @@ func processIssues(domain string, data JiraSearchResponse, target_repos []string
 	close(errChan)
 	close(resultsChan)
 
-	out := make(map[string][]int)
+	out := make(map[RepoRef][]int)
 	for r := range resultsChan {
-		out[r.repo] = append(out[r.repo], r.num)
+		out[r.ref] = append(out[r.ref], r.num)
 	}
 	return out
 }

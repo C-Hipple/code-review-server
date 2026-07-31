@@ -90,6 +90,19 @@ export function annotationSeverityVariant(severity: string): StatusVariant {
     }
 }
 
+/**
+ * Whether a plugin can be re-run from the UI.
+ *
+ * Only plugins that have finished executing offer a re-run: a `deferred`
+ * plugin has never run (it gets an Execute button instead) and a `pending`
+ * one is still in flight. Everything else — success, error, or a status a
+ * newer server invents — has a result on screen worth refreshing.
+ */
+export function canRerunPlugin(plugin: PluginResult): boolean {
+    const status = (plugin.status || '').toLowerCase();
+    return status !== '' && status !== 'deferred' && status !== 'pending';
+}
+
 /** Total number of annotations across every plugin, for summary counts. */
 export function totalAnnotationCount(plugins: Record<string, PluginResult>): number {
     return Object.values(plugins).reduce((sum, p) => sum + (p.annotations?.length ?? 0), 0);

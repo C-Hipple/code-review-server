@@ -1,5 +1,5 @@
 import { Button, colors, shadows } from '../../design';
-import { resolvePluginBody, sortedAnnotations } from '../../plugin_utils';
+import { canRerunPlugin, resolvePluginBody, sortedAnnotations } from '../../plugin_utils';
 import PluginAnnotations from '../PluginAnnotations';
 import PluginBodyView from '../PluginBodyView';
 import type { PluginResult } from './types';
@@ -115,39 +115,58 @@ export default function PluginsPanel({
                                         <span style={{ fontWeight: 600, fontSize: '14px' }}>
                                             {name}
                                         </span>
-                                        <span
+                                        <div
                                             style={{
-                                                fontSize: '11px',
-                                                padding: '2px 10px',
-                                                borderRadius: '12px',
-                                                fontWeight: 600,
-                                                background:
-                                                    data.status === 'success'
-                                                        ? colors.bgSuccessDim
-                                                        : data.status === 'pending'
-                                                          ? colors.bgWarningDim
-                                                          : colors.bgDangerDim,
-                                                color:
-                                                    data.status === 'success'
-                                                        ? colors.textSuccess
-                                                        : data.status === 'pending'
-                                                          ? colors.textWarning
-                                                          : colors.textDanger,
-                                                border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px',
                                             }}
                                         >
-                                            {data.status.toUpperCase()}
-                                        </span>
-                                        {data.status.toLowerCase() === 'deferred' && (
-                                            <Button
-                                                onClick={() => onExecutePlugin(name)}
-                                                loading={executingPlugins.has(name)}
-                                                variant="secondary"
-                                                size="sm"
+                                            {canRerunPlugin(data) && (
+                                                <Button
+                                                    onClick={() => onExecutePlugin(name)}
+                                                    loading={executingPlugins.has(name)}
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    title={`Re-run ${name}`}
+                                                >
+                                                    Re-run
+                                                </Button>
+                                            )}
+                                            <span
+                                                style={{
+                                                    fontSize: '11px',
+                                                    padding: '2px 10px',
+                                                    borderRadius: '12px',
+                                                    fontWeight: 600,
+                                                    background:
+                                                        data.status === 'success'
+                                                            ? colors.bgSuccessDim
+                                                            : data.status === 'pending'
+                                                              ? colors.bgWarningDim
+                                                              : colors.bgDangerDim,
+                                                    color:
+                                                        data.status === 'success'
+                                                            ? colors.textSuccess
+                                                            : data.status === 'pending'
+                                                              ? colors.textWarning
+                                                              : colors.textDanger,
+                                                    border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                }}
                                             >
-                                                Execute
-                                            </Button>
-                                        )}
+                                                {data.status.toUpperCase()}
+                                            </span>
+                                            {data.status.toLowerCase() === 'deferred' && (
+                                                <Button
+                                                    onClick={() => onExecutePlugin(name)}
+                                                    loading={executingPlugins.has(name)}
+                                                    variant="secondary"
+                                                    size="sm"
+                                                >
+                                                    Execute
+                                                </Button>
+                                            )}
+                                        </div>
                                     </div>
                                     <div
                                         className="plugin-output markdown-content"

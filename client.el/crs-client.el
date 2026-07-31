@@ -57,6 +57,7 @@
   "D" #'crs-run-on-demand-plugin
   "R" #'crs-rerun-plugin
   "H" #'crs-toggle-comments
+  "A" #'crs-toggle-annotations
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
@@ -120,6 +121,7 @@
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
+    "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
     (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before
@@ -146,6 +148,7 @@
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
     "H" #'crs-toggle-comments
+    "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
     (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before

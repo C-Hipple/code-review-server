@@ -128,7 +128,15 @@ They also render inline in the diff, collapsed the same way review comments are.
 
 An annotation anchors to the line matching its `line` on the PR's **head** side, so it lands on an added or unchanged line of the diff. Annotations the diff can't show a row for — a line outside any hunk, or one that only exists on the base side — collapse onto that file's header instead, labelled with the line they point at, rather than disappearing. Annotations naming a file that isn't in the diff at all are only listed in the plugins drawer. Paths must match the diff's repo-relative paths (a leading `./` is tolerated).
 
-The diff reads annotations from the plugin results it has loaded, so rerunning a plugin from the drawer updates the diff without reloading the PR. Only successfully executed plugins contribute, matching the `annotations` aggregate on the PR reply. The Emacs client does not render annotations inline.
+The diff reads annotations from the plugin results it has loaded, so rerunning a plugin from the drawer updates the diff without reloading the PR. Only successfully executed plugins contribute, matching the `annotations` aggregate on the PR reply.
+
+### Rendering in the Emacs Client
+
+Plugin output buffers show each plugin's parsed body (instead of its raw stdout, which is JSON for contract-emitting plugins), with the plugin's annotations listed beneath the body sorted by file and line.
+
+Annotations also render inline in the review buffer's diff, from the `annotations` aggregate on the `GetPR` reply. They are inserted after the diff has been washed with git-delta — the same way review comments are — so the washer's syntax highlighting is unaffected. Annotations start collapsed: an annotated line carries a right-aligned `<A: plugin>` indicator, and placing the cursor on such a line previews the annotations in the echo area. Toggling comments open with `H` expands annotations along with them; `A` toggles annotations on their own.
+
+As in the web client, an annotation anchors to the line matching its `line` on the PR's head side, landing on an added or unchanged line of the diff. Annotations the diff can't show a row for attach to their file's first hunk header, labelled with the line they point at. Annotations naming a file that isn't in the diff at all appear only in the plugin output buffers.
 
 ## On-Demand Plugins
 

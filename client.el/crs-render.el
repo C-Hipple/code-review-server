@@ -116,36 +116,48 @@ not the buffer has been washed by git-delta:
 
 (defun crs-toggle-comments ()
   "Toggle visibility of all comments in the current review buffer.
-Re-renders the buffer with or without comments based on the toggle state."
+Re-renders the buffer with or without comments based on the toggle state.
+Plugin annotations follow the same state: uncollapsing comments also
+uncollapses annotations."
   (interactive)
   (unless crs--buffer-diff
     (error "No stored PR data. Please reload the review first"))
   (setq crs--buffer-show-comments (not crs--buffer-show-comments))
+  (setq crs--buffer-show-annotations crs--buffer-show-comments)
   (let ((current-line (line-number-at-pos)))
     (crs--render-and-update (current-buffer) nil current-line))
   (message "Comments %s" (if crs--buffer-show-comments "shown" "hidden")))
 
 
 (defun crs--maybe-show-collapsed-comments ()
-  "Show collapsed comments in minibuffer if cursor is on a line with compact indicator."
-  (when (and (eq major-mode 'my-code-review-mode)
-             (not crs--buffer-show-comments)
-             crs--buffer-comments)
-    (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-      (when (string-match "<C: [^>]+>" line)
-        ;; Extract file and position from context
-        (let* ((ctx (crs--get-comment-context))
-               (file (nth 3 ctx))
-               (pos (nth 4 ctx)))
-          (when (and file pos)
-            (let* ((comment-map (crs--index-comments crs--buffer-comments))
-                   (key (format "%s:%s" file pos))
-                   (comments (gethash key comment-map)))
-              (when comments
-                (crs--display-comments-in-minibuffer comments)))))))))
+  "Preview collapsed comments and annotations for the line at point.
+Shows a one-line echo-area summary when the cursor sits on a line with a
+compact <C: ...> comment indicator or <A: ...> annotation indicator."
+  (when (eq major-mode 'my-code-review-mode)
+    (let* ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+           (comments
+            (when (and (not crs--buffer-show-comments)
+                       crs--buffer-comments
+                       (string-match "<C: [^>]+>" line))
+              ;; Extract file and position from context
+              (let* ((ctx (crs--get-comment-context))
+                     (file (nth 3 ctx))
+                     (pos (nth 4 ctx)))
+                (when (and file pos)
+                  (gethash (format "%s:%s" file pos)
+                           (crs--index-comments crs--buffer-comments))))))
+           (annotations (unless crs--buffer-show-annotations
+                          (crs--annotations-on-current-line)))
+           (parts (delq nil
+                        (list (when comments
+                                (crs--comments-minibuffer-summary comments))
+                              (when annotations
+                                (crs--annotations-minibuffer-summary annotations))))))
+      (when parts
+        (message "%s" (string-join parts " ‖ "))))))
 
-(defun crs--display-comments-in-minibuffer (comments)
-  "Display COMMENTS in the minibuffer as a one-line summary."
+(defun crs--comments-minibuffer-summary (comments)
+  "Format COMMENTS as a one-line echo-area summary."
   (let* ((count (length comments))
          (summary
           (mapconcat
@@ -159,7 +171,7 @@ Re-renders the buffer with or without comments based on the toggle state."
                    (format "[%s]: %s" author first-line)))))
            comments
            " | ")))
-    (message "%d comment%s: %s" count (if (= count 1) "" "s") summary)))
+    (format "%d comment%s: %s" count (if (= count 1) "" "s") summary)))
 
 ;; Override evil-mode keybindings - define keys for normal and visual states
 
@@ -229,6 +241,224 @@ If LINE extends past MIN-COLUMN, place indicator one space after LINE ends."
          (target-column (max min-column (1+ line-length)))
          (padding (- target-column line-length)))
     (concat line (make-string padding ?\s) indicator)))
+
+;;; Plugin annotations
+;;
+;; Plugins can attach line-level annotations to the PR diff (see
+;; docs/plugins.md).  Each annotation carries a filename and a 1-based line
+;; number on the PR's HEAD side, so it anchors to an added or unchanged line
+;; of the diff.  Like comments, annotations are inserted into the buffer
+;; AFTER delta-wash has painted the diff, so the washer never sees them.
+
+(defun crs--normalize-annotation-path (path)
+  "Return PATH with a tolerated leading \"./\" stripped."
+  (if (and path (string-prefix-p "./" path))
+      (substring path 2)
+    path))
+
+(defun crs--index-annotations (annotations)
+  "Index ANNOTATIONS into a hash table keyed by \"file:line\".
+ANNOTATIONS is the list (or vector) of annotation alists from a GetPR
+reply.  Each value is the list of annotations for that head-side line, in
+the server's plugin-name order."
+  (let ((map (make-hash-table :test 'equal)))
+    (seq-do (lambda (annotation)
+              (let* ((file (crs--normalize-annotation-path
+                            (cdr (assq 'filename annotation))))
+                     (line (cdr (assq 'line annotation)))
+                     (key (format "%s:%s" file line)))
+                (puthash key (cons annotation (gethash key map)) map)))
+            (or annotations []))
+    (maphash (lambda (k v) (puthash k (nreverse v) map)) map)
+    map))
+
+(defun crs--format-compact-annotation-indicator (annotations)
+  "Format a compact annotation indicator for ANNOTATIONS.
+Returns a string like <A: plugin1, plugin2>."
+  (let ((plugins (seq-uniq
+                  (seq-map (lambda (a)
+                             (or (cdr (assq 'plugin a)) "plugin"))
+                           annotations))))
+    (format "<A: %s>" (string-join plugins ", "))))
+
+(defun crs--render-annotation-block (annotations &optional show-line)
+  "Render ANNOTATIONS (a list anchored to one spot) into a block string.
+When SHOW-LINE is non-nil each entry names the line it points at, for
+annotations that could not be anchored to a visible diff line."
+  (let ((lines (list "    ┌─ PLUGIN ANNOTATION ────────────")))
+    (dolist (annotation annotations)
+      (let* ((severity (or (cdr (assq 'severity annotation)) ""))
+             (plugin (or (cdr (assq 'plugin annotation)) "plugin"))
+             (line (cdr (assq 'line annotation)))
+             (content (or (cdr (assq 'content annotation)) "")))
+        (push (format "    │ %s%s%s"
+                      (if (string-empty-p severity) "" (format "[%s] " severity))
+                      plugin
+                      (if (and show-line line) (format " @ line %s" line) ""))
+              lines)
+        (dolist (content-line (split-string content "\n"))
+          (push (concat "    │   " content-line) lines))))
+    (push "    └──────────────────────────────────" lines)
+    (push "" lines)
+    (mapconcat #'identity (nreverse lines) "\n")))
+
+(defun crs--insert-annotations-into-buffer (annotations show-full)
+  "Insert plugin ANNOTATIONS into the current buffer's washed diff.
+An annotation anchors to the line matching its head-side line number, so
+it lands on an added or unchanged line.  Annotations for a file in the
+diff whose line is not visible attach to that file's first hunk header
+instead; annotations for files not in the diff are dropped (they remain
+visible in the plugin output buffers).
+
+SHOW-FULL non-nil inserts full annotation blocks beneath each annotated
+line; otherwise a compact <A: plugin> indicator is appended to the line,
+carrying the annotation list in a `crs-annotations' text property so the
+echo-area preview can find it.  Must run after `delta-wash' and after
+`crs--insert-comments-into-buffer' so line positions are final and the
+washer's painting is untouched."
+  (when (> (length (or annotations [])) 0)
+    (let ((annotation-map (crs--index-annotations annotations))
+          (anchored (make-hash-table :test 'equal))
+          (first-hunks (make-hash-table :test 'equal))
+          (insertions nil)
+          (current-file nil)
+          (head-line nil)
+          (in-hunk nil))
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let* ((line-start (point))
+                 (line-end (line-end-position))
+                 (line (buffer-substring-no-properties line-start line-end)))
+            (cond
+             ;; Simplified file header
+             ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
+              (setq current-file (string-trim (match-string 2 line)))
+              (setq in-hunk nil))
+
+             ;; Raw diff headers
+             ((string-prefix-p "diff " line)
+              (setq current-file nil)
+              (setq in-hunk nil))
+
+             ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+              (setq current-file (match-string 1 line))
+              (setq in-hunk nil))
+
+             ;; Hunk header: reset the head-side line counter
+             ((string-match "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,[0-9]+\\)? @@" line)
+              (setq head-line (string-to-number (match-string 1 line)))
+              (setq in-hunk t)
+              (when (and current-file (not (gethash current-file first-hunks)))
+                (puthash current-file (cons line-start line-end) first-hunks)))
+
+             ;; Skip interleaved comment/annotation blocks
+             ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line)
+              nil)
+
+             ;; Content line (raw or delta-washed).  Only added and context
+             ;; lines exist on the head side, so removed lines neither match
+             ;; an annotation nor advance the head-line counter.
+             ((and in-hunk current-file head-line (crs--diff-line-marker line))
+              (unless (eq (crs--diff-line-marker line) ?-)
+                (let* ((key (format "%s:%d" current-file head-line))
+                       (line-annotations (gethash key annotation-map)))
+                  (when line-annotations
+                    (puthash key t anchored)
+                    (push (cons line-end
+                                (if show-full
+                                    (concat "\n" (string-trim-right
+                                                  (crs--render-annotation-block line-annotations)))
+                                  (list 'indicator line-annotations)))
+                          insertions)))
+                (setq head-line (1+ head-line))))))
+          (forward-line 1)))
+
+      ;; Annotations the diff can't show a row for hang off their file's
+      ;; first hunk header instead of disappearing, like file-level comments.
+      (let ((leftovers (make-hash-table :test 'equal)))
+        (seq-do (lambda (annotation)
+                  (let* ((file (crs--normalize-annotation-path
+                                (cdr (assq 'filename annotation))))
+                         (key (format "%s:%s" file (cdr (assq 'line annotation)))))
+                    (when (and (not (gethash key anchored))
+                               (gethash file first-hunks))
+                      (puthash file (cons annotation (gethash file leftovers)) leftovers))))
+                (or annotations []))
+        (maphash
+         (lambda (file annotation-list)
+           (let ((sorted (sort (nreverse annotation-list)
+                               (lambda (a b)
+                                 (< (or (cdr (assq 'line a)) 0)
+                                    (or (cdr (assq 'line b)) 0)))))
+                 (hunk-pos (gethash file first-hunks)))
+             (push (if show-full
+                       (cons (car hunk-pos) (crs--render-annotation-block sorted t))
+                     (cons (cdr hunk-pos) (list 'indicator sorted)))
+                   insertions)))
+         leftovers))
+
+      ;; Execute insertions (sorted by point descending).  Indicators are
+      ;; inserted at line end without touching the line itself, so text
+      ;; properties applied by the washer survive.
+      (setq insertions (sort insertions (lambda (a b) (> (car a) (car b)))))
+      (save-excursion
+        (dolist (ins insertions)
+          (goto-char (car ins))
+          (let ((content (cdr ins)))
+            (if (and (listp content) (eq (car content) 'indicator))
+                (let* ((line-annotations (cadr content))
+                       (indicator (propertize
+                                   (crs--format-compact-annotation-indicator line-annotations)
+                                   'crs-annotations line-annotations))
+                       (line-length (- (point) (line-beginning-position)))
+                       (padding (max (- 120 line-length) 1)))
+                  (insert (make-string padding ?\s) indicator))
+              (insert content))))))))
+
+(defun crs--annotations-on-current-line ()
+  "Return the plugin annotations attached to the current line, or nil.
+Compact annotation indicators carry their annotation list in a
+`crs-annotations' text property."
+  (let* ((beg (line-beginning-position))
+         (end (line-end-position))
+         (found (get-text-property beg 'crs-annotations))
+         (pos beg))
+    (while (and (not found)
+                (setq pos (next-single-property-change pos 'crs-annotations nil end))
+                (< pos end))
+      (setq found (get-text-property pos 'crs-annotations)))
+    found))
+
+(defun crs--annotations-minibuffer-summary (annotations)
+  "Format ANNOTATIONS as a one-line echo-area summary."
+  (let ((count (length annotations)))
+    (format "%d annotation%s: %s" count (if (= count 1) "" "s")
+            (mapconcat
+             (lambda (annotation)
+               (let* ((severity (or (cdr (assq 'severity annotation)) ""))
+                      (plugin (or (cdr (assq 'plugin annotation)) "plugin"))
+                      (content (or (cdr (assq 'content annotation)) ""))
+                      (first-line (car (split-string content "\n")))
+                      (first-line (if (> (length first-line) 60)
+                                      (concat (substring first-line 0 57) "...")
+                                    first-line)))
+                 (if (string-empty-p severity)
+                     (format "[%s]: %s" plugin first-line)
+                   (format "[%s/%s]: %s" plugin severity first-line))))
+             annotations " | "))))
+
+(defun crs-toggle-annotations ()
+  "Toggle visibility of plugin annotations in the current review buffer.
+Collapsed annotations show as compact <A: plugin> indicators; expanded
+ones render full blocks beneath the annotated lines."
+  (interactive)
+  (unless crs--buffer-diff
+    (error "No stored PR data. Please reload the review first"))
+  (setq crs--buffer-show-annotations (not crs--buffer-show-annotations))
+  (let ((current-line (line-number-at-pos)))
+    (crs--render-and-update (current-buffer) nil current-line))
+  (message "Annotations %s" (if crs--buffer-show-annotations "shown" "hidden")))
 
 (defun crs--render-diff (diff-content comment-map &optional show-full-comments)
   "Render the diff string with interleaved comments.
@@ -713,12 +943,19 @@ for more robust position restoration."
           (new-reviews nil)
           (new-commits nil)
           (new-preamble nil)
+          (new-annotations nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
                                t))
+          ;; Annotations start collapsed; `crs-toggle-comments' and
+          ;; `crs-toggle-annotations' flip this buffer-locally.
+          (new-show-annotations (if (local-variable-p 'crs--buffer-show-annotations)
+                                    crs--buffer-show-annotations
+                                  nil))
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
+          (existing-annotations crs--buffer-annotations)
           (existing-outdated-comments crs--buffer-outdated-comments)
           (existing-metadata crs--buffer-metadata)
           (existing-reviews crs--buffer-reviews)
@@ -756,7 +993,8 @@ for more robust position restoration."
           (setq new-metadata metadata)
           (setq new-reviews reviews)
           (setq new-commits commits)
-          (setq new-preamble preamble)))
+          (setq new-preamble preamble)
+          (setq new-annotations (cdr (assq 'annotations content)))))
 
       ;; Temporarily set for rendering (before mode change wipes them)
       (setq crs--buffer-diff (or new-diff existing-diff))
@@ -767,6 +1005,8 @@ for more robust position restoration."
       (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-annotations (or new-annotations existing-annotations))
+      (setq crs--buffer-show-annotations new-show-annotations)
       (setq crs--buffer-review-feedback existing-review-feedback)
 
       (erase-buffer)
@@ -792,6 +1032,10 @@ for more robust position restoration."
 
         ;; 4. Insert Comments (only regular comments in-line with diff)
         (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments)
+
+        ;; 4.5. Insert plugin annotations (after comments so their line
+        ;; positions account for the interleaved comment blocks)
+        (crs--insert-annotations-into-buffer crs--buffer-annotations crs--buffer-show-annotations)
 
         ;; 5. Insert Preamble & Feedback at TOP
         (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
@@ -841,6 +1085,8 @@ for more robust position restoration."
       (setq crs--buffer-commits (or new-commits existing-commits))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
+      (setq crs--buffer-annotations (or new-annotations existing-annotations))
+      (setq crs--buffer-show-annotations new-show-annotations)
       (setq crs--buffer-review-feedback existing-review-feedback)
 
       (let ((final-pos

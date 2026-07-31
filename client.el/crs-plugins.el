@@ -14,6 +14,46 @@
 (declare-function crs--render-and-update "crs-render")
 (declare-function crs--get-current-review-info "crs-review")
 
+(defun crs--insert-plugin-output-entry (name data)
+  "Insert one plugin's entry from a GetPluginOutput reply at point.
+NAME is the plugin name and DATA its output alist.  The parsed response
+contract body is preferred over the raw result (which is JSON for
+contract-emitting plugins); the plugin's annotations, when present, are
+listed beneath the body sorted by file and line."
+  (let* ((status (cdr (assq 'status data)))
+         (body (cdr (assq 'body data)))
+         (body-content (cdr (assq 'body_content body)))
+         (res (cdr (assq 'result data)))
+         (annotations (append (cdr (assq 'annotations data)) nil)))
+    (insert (format "# Plugin: %s (Status: %s)\n" name status))
+    (insert "──────────────────────────────────\n")
+    (insert (or (and body-content
+                     (not (string-empty-p body-content))
+                     body-content)
+                res
+                "No output."))
+    (insert "\n")
+    (when annotations
+      (setq annotations
+            (sort annotations
+                  (lambda (a b)
+                    (let ((file-a (or (cdr (assq 'filename a)) ""))
+                          (file-b (or (cdr (assq 'filename b)) "")))
+                      (if (string= file-a file-b)
+                          (< (or (cdr (assq 'line a)) 0)
+                             (or (cdr (assq 'line b)) 0))
+                        (string< file-a file-b))))))
+      (insert (format "\n## Annotations (%d)\n" (length annotations)))
+      (dolist (annotation annotations)
+        (let ((severity (or (cdr (assq 'severity annotation)) ""))
+              (content (or (cdr (assq 'content annotation)) "")))
+          (insert (format "- %s:%s%s %s\n"
+                          (cdr (assq 'filename annotation))
+                          (cdr (assq 'line annotation))
+                          (if (string-empty-p severity) "" (format " [%s]" severity))
+                          (replace-regexp-in-string "\n" "\n  " content))))))
+    (insert "\n")))
+
 (defun crs-refresh-plugin-output ()
   "Refresh the plugin output in the current buffer."
   (interactive)
@@ -40,15 +80,10 @@
                  (insert "No plugin output available.\n")
                (dolist (plugin-entry (append output nil))
                  (let* ((name (symbol-name (car plugin-entry)))
-                        (data (cdr plugin-entry))
-                        (res (cdr (assq 'result data)))
-                        (status (cdr (assq 'status data))))
+                        (data (cdr plugin-entry)))
                    (puthash name data crs--plugin-output-map)
                    (when (or (null target-plugin) (string= name target-plugin))
-                     (insert (format "# Plugin: %s (Status: %s)\n" name status))
-                     (insert "──────────────────────────────────\n")
-                     (insert (or res "No output."))
-                     (insert "\n\n")))))
+                     (crs--insert-plugin-output-entry name data)))))
              (goto-char (point-min))))
          (message "Plugin output refreshed."))))))
 
@@ -106,14 +141,9 @@ Temporarily disables read-only mode (required when called from
                  (insert "No plugin output available.\n")
                (dolist (plugin-entry (append output nil)) ;; Ensure it's treated as a list of pairs
                  (let* ((name (symbol-name (car plugin-entry)))
-                        (data (cdr plugin-entry))
-                        (res (cdr (assq 'result data)))
-                        (status (cdr (assq 'status data))))
+                        (data (cdr plugin-entry)))
                    (puthash name data plugin-map)
-                   (insert (format "# Plugin: %s (Status: %s)\n" name status))
-                   (insert "──────────────────────────────────\n")
-                   (insert (or res "No output."))
-                   (insert "\n\n"))))
+                   (crs--insert-plugin-output-entry name data))))
              (goto-char (point-min))
              (crs-plugin-output-mode)
              (setq crs--plugin-output-map plugin-map)
@@ -164,12 +194,7 @@ Uses cached data from the general plugin output buffer if available."
               (with-current-buffer buffer
                 (let ((inhibit-read-only t))
                   (erase-buffer)
-                  (let* ((status (cdr (assq 'status cached-data)))
-                         (res (cdr (assq 'result cached-data))))
-                    (insert (format "# Plugin: %s (Status: %s)\n" plugin status))
-                    (insert "──────────────────────────────────\n")
-                    (insert (or res "No output."))
-                    (insert "\n\n"))
+                  (crs--insert-plugin-output-entry plugin cached-data)
                   (goto-char (point-min))
                   (crs-plugin-output-mode)
                   ;; Store context
@@ -198,15 +223,10 @@ Uses cached data from the general plugin output buffer if available."
                        (insert "No plugin output available.\n")
                      (dolist (plugin-entry (append output nil))
                        (let* ((name (symbol-name (car plugin-entry)))
-                              (data (cdr plugin-entry))
-                              (res (cdr (assq 'result data)))
-                              (status (cdr (assq 'status data))))
+                              (data (cdr plugin-entry)))
                          (puthash name data plugin-map)
                          (when (string= name plugin)
-                           (insert (format "# Plugin: %s (Status: %s)\n" name status))
-                           (insert "──────────────────────────────────\n")
-                           (insert (or res "No output."))
-                           (insert "\n\n")))))
+                           (crs--insert-plugin-output-entry name data)))))
                    (goto-char (point-min))
                    (crs-plugin-output-mode)
                    (setq crs--plugin-output-map plugin-map)

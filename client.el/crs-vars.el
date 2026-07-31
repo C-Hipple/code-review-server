@@ -89,6 +89,13 @@ Set to nil to disable the timeout."
   "The preamble content (header + conversation) for the current PR.")
 (defvar-local crs--buffer-show-comments t
   "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
+(defvar-local crs--buffer-annotations nil
+  "The plugin annotations for the current PR, from the GetPR reply.")
+(defvar-local crs--buffer-show-annotations nil
+  "Whether to show full plugin annotation blocks in the buffer.
+Annotations start collapsed to compact indicators; uncollapsing comments
+with `crs-toggle-comments' also uncollapses annotations, and
+`crs-toggle-annotations' toggles them on their own.")
 (defvar-local crs--buffer-review-feedback nil
   "The review feedback for the current PR.")
 (defvar-local crs--buffer-commits nil

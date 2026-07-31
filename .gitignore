@@ -66,6 +66,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 
-crs
-example_plugin
-summarize_diff
+# Binaries built into the repo root. Anchored, so they don't also ignore the
+# cmd/ directories the plugins are built from.
+/crs
+/example_plugin
+/summarize_diff

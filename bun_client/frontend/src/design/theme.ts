@@ -5,15 +5,21 @@
 export const VALID_THEMES = [
     'light',
     'dark',
+    'github-light',
+    'github-dark',
     'gruvbox-dark',
     'gruvbox-light',
     'solarized-light',
     'solarized-dark',
+    'monokai',
     'dracula',
     'nord',
     'night-owl',
     'tokyo-night',
-    'catppuccin',
+    'catppuccin-latte',
+    'catppuccin-frappe',
+    'catppuccin-macchiato',
+    'catppuccin-mocha',
     'everforest',
     'rose-pine',
     'synthwave-84',
@@ -29,19 +35,48 @@ export interface ThemeOption {
 export const THEME_OPTIONS: ThemeOption[] = [
     { value: 'dark', label: '🌙 Dark (One Dark)' },
     { value: 'light', label: '☀️ Light (One Light)' },
+    { value: 'github-dark', label: '🐙 GitHub Dark' },
+    { value: 'github-light', label: '🐙 GitHub Light' },
     { value: 'gruvbox-dark', label: '📦 Gruvbox Dark' },
     { value: 'gruvbox-light', label: '📦 Gruvbox Light' },
     { value: 'solarized-dark', label: '☀️ Solarized Dark' },
     { value: 'solarized-light', label: '☀️ Solarized Light' },
+    { value: 'monokai', label: '🍬 Monokai' },
     { value: 'dracula', label: '🧛 Dracula' },
     { value: 'nord', label: '❄️ Nord' },
     { value: 'night-owl', label: '🦉 Night Owl' },
     { value: 'tokyo-night', label: '🌃 Tokyo Night' },
-    { value: 'catppuccin', label: '🐱 Catppuccin' },
+    { value: 'catppuccin-mocha', label: '🐱 Catppuccin Mocha' },
+    { value: 'catppuccin-macchiato', label: '🐱 Catppuccin Macchiato' },
+    { value: 'catppuccin-frappe', label: '🐱 Catppuccin Frappé' },
+    { value: 'catppuccin-latte', label: '🐱 Catppuccin Latte' },
     { value: 'everforest', label: '🌲 Everforest' },
     { value: 'rose-pine', label: '🌹 Rose Pine' },
     { value: 'synthwave-84', label: "🕹️ SynthWave '84" },
 ];
+
+/**
+ * Themes that have been renamed. A value persisted by an older client maps to
+ * its current equivalent instead of silently falling back to the default.
+ */
+const LEGACY_THEME_ALIASES: Record<string, Theme> = {
+    // 'catppuccin' shipped as Catppuccin's Mocha flavor before the other
+    // three flavors were added.
+    catppuccin: 'catppuccin-mocha',
+};
+
+export const isTheme = (value: unknown): value is Theme =>
+    typeof value === 'string' && (VALID_THEMES as readonly string[]).includes(value);
+
+/**
+ * Normalize a stored theme value, returning null when it names no theme this
+ * build knows about so the caller can fall back to its own default.
+ */
+export const resolveTheme = (value: string | null): Theme | null => {
+    if (isTheme(value)) return value;
+    if (value !== null && value in LEGACY_THEME_ALIASES) return LEGACY_THEME_ALIASES[value];
+    return null;
+};
 
 /**
  * Review Location preferences

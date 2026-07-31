@@ -1,16 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import {
-    oneDark,
-    oneLight,
-    gruvboxDark,
-    gruvboxLight,
-    solarizedlight,
-    solarizedDarkAtom,
-    dracula,
-    nord,
-    nightOwl,
-} from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { colors, shadows } from '../design';
+import { getSyntaxTheme } from './review/diff_theme';
 import { readFile, listFiles } from '../api';
 import type { Theme } from '../design';
 import { useLsp } from '../hooks/useLsp';
@@ -472,28 +462,7 @@ export default function CodeViewerModal({
     };
 
     // Get theme for syntax highlighting
-    const syntaxTheme = useMemo(() => {
-        switch (theme) {
-            case 'light':
-                return oneLight;
-            case 'gruvbox-dark':
-                return gruvboxDark;
-            case 'gruvbox-light':
-                return gruvboxLight;
-            case 'solarized-light':
-                return solarizedlight;
-            case 'solarized-dark':
-                return solarizedDarkAtom;
-            case 'dracula':
-                return dracula;
-            case 'nord':
-                return nord;
-            case 'night-owl':
-                return nightOwl;
-            default:
-                return oneDark;
-        }
-    }, [theme]);
+    const syntaxTheme = useMemo(() => getSyntaxTheme(theme), [theme]);
 
     const toggleDir = useCallback(
         (path: string) => {

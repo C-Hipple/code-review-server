@@ -78,8 +78,9 @@ export interface PRResponse {
     metadata: PRMetadata;
     feedback: string;
     // Annotations from every plugin that has already run for this PR, each
-    // tagged with its source plugin. Rendering these into the diff is follow-up
-    // work; the plugin surfaces read annotations from GetPluginOutput today.
+    // tagged with its source plugin. The review view builds the same list from
+    // the plugin outputs it loads (see annotation_utils) so a plugin rerun
+    // refreshes the diff, and reads this field for clients that don't.
     annotations?: PRAnnotation[];
     // Only set by SyncPR: true when the sync pulled in a new head SHA or new comments.
     updated?: boolean;

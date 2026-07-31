@@ -1,10 +1,14 @@
 import { Fragment, useMemo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { colors } from '../../design';
+import { fileAnnotationKey, lineAnnotationKey, type AnnotationIndex } from '../../annotation_utils';
 import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
 import { getClickColumn } from '../../utils/dom';
+import type { PRAnnotation } from '../../plugin_utils';
 import type { LspData } from '../../hooks/useLsp';
 import LspPopover from '../LspPopover';
+import AnnotationCard from './AnnotationCard';
+import AnnotationIndicator from './AnnotationIndicator';
 import CommentIndicator from './CommentIndicator';
 import CommentThread from './CommentThread';
 import InlineCommentForm from './InlineCommentForm';
@@ -27,6 +31,11 @@ export interface DiffViewProps {
     // Root comment ids whose full thread should render inline; threads not in
     // this set are collapsed behind a hover/click indicator.
     visibleThreadIds: Set<string>;
+    // Plugin annotations bucketed by the row they anchor to.
+    annotations: AnnotationIndex;
+    // Annotation bucket keys whose card should render inline; buckets not in
+    // this set are collapsed behind an indicator, same as comment threads.
+    visibleAnnotationKeys: Set<string>;
     activeLineIndex: number | null;
     activeLspIndex: number | null;
     replyToId: number | null;
@@ -39,6 +48,7 @@ export interface DiffViewProps {
     diffTheme: DiffTheme;
     lspData: LspData | null;
     onToggleThreadsVisible: (rootIds: string[]) => void;
+    onToggleAnnotations: (key: string) => void;
     onCommentClick: (idx: number, file: string, pos: number) => void;
     onCodeClick: (
         idx: number,
@@ -73,6 +83,8 @@ export default function DiffView({
     outdatedComments,
     collapsedFiles,
     visibleThreadIds,
+    annotations,
+    visibleAnnotationKeys,
     activeLineIndex,
     activeLspIndex,
     replyToId,
@@ -85,6 +97,7 @@ export default function DiffView({
     diffTheme,
     lspData,
     onToggleThreadsVisible,
+    onToggleAnnotations,
     onCommentClick,
     onCodeClick,
     onThreadClick,
@@ -261,6 +274,85 @@ export default function DiffView({
                     onToggle={() => onToggleThreadsVisible(rootIds)}
                 />
             </span>
+        );
+    };
+
+    // Plugin annotations for a row: those anchored to the line's head-side line
+    // number, or — on a file header — those whose line this diff doesn't render.
+    const annotationsForLine = (item: ParsedLine): { key: string; list: PRAnnotation[] } | null => {
+        if (!item.file) return null;
+        const key =
+            item.lineType === 'file-header'
+                ? fileAnnotationKey(item.file)
+                : item.newLineNo != null
+                  ? lineAnnotationKey(item.file, item.newLineNo)
+                  : null;
+        if (!key) return null;
+        const list =
+            item.lineType === 'file-header'
+                ? annotations.byFile.get(key)
+                : annotations.byLine.get(key);
+        return list && list.length > 0 ? { key, list } : null;
+    };
+
+    // Collapsed badge for an annotated line/file; expands every annotation on
+    // that row together and previews them all on hover.
+    const annotationIndicatorForLine = (item: ParsedLine, align: 'left' | 'right') => {
+        const anchored = annotationsForLine(item);
+        if (!anchored) return null;
+        return (
+            <span onClick={e => e.stopPropagation()}>
+                <AnnotationIndicator
+                    annotations={anchored.list}
+                    visible={visibleAnnotationKeys.has(anchored.key)}
+                    align={align}
+                    onToggle={() => onToggleAnnotations(anchored.key)}
+                />
+            </span>
+        );
+    };
+
+    // The badge's home on a code row: an end cap flush to the right of the whole
+    // line, not a second gutter column — the code and its line numbers sit
+    // exactly where they would in a PR with no annotations at all.
+    //
+    // It is opaque (the row's tint over the diff background) so an unwrapped
+    // line spilling past the viewport passes behind the badge rather than
+    // through it, and sticks to the visible right edge while the diff scrolls
+    // horizontally on mobile.
+    const annotationCellForLine = (item: ParsedLine, rowTint: string | null) => {
+        const badge = annotationIndicatorForLine(item, 'right');
+        if (!badge) return null;
+        return (
+            <span
+                style={{
+                    position: 'sticky',
+                    right: 0,
+                    display: 'flex',
+                    alignItems: wrapLines ? 'flex-start' : 'center',
+                    padding: wrapLines ? '2px 6px 0 10px' : '0 6px 0 10px',
+                    backgroundColor: 'var(--bg-primary)',
+                    backgroundImage: rowTint
+                        ? `linear-gradient(${rowTint}, ${rowTint})`
+                        : undefined,
+                    userSelect: 'none',
+                }}
+            >
+                {badge}
+            </span>
+        );
+    };
+
+    const annotationCardForLine = (item: ParsedLine, stickyOnMobile: boolean) => {
+        const anchored = annotationsForLine(item);
+        if (!anchored || !visibleAnnotationKeys.has(anchored.key)) return null;
+        return (
+            <AnnotationCard
+                annotations={anchored.list}
+                showLines={item.lineType === 'file-header'}
+                stickyOnMobile={stickyOnMobile}
+                onCollapse={() => onToggleAnnotations(anchored.key)}
+            />
         );
     };
 
@@ -443,6 +535,7 @@ export default function DiffView({
                             );
                         })()}
                         {commentIndicatorForLine(item)}
+                        {annotationIndicatorForLine(item, 'left')}
                         {hasOutdated && (
                             <button
                                 onClick={e => {
@@ -494,6 +587,7 @@ export default function DiffView({
                             </button>
                         )}
                     </div>
+                    {annotationCardForLine(item, false)}
                     {threadsForLine(item, idx, false)}
                     {isInlineActive && (
                         <InlineCommentForm
@@ -558,6 +652,14 @@ export default function DiffView({
         // max-content wrapper below). The code span must size to its content
         // and never shrink so the row grows wider than the viewport.
         const mobileScroll = isMobile && !wrapLines;
+
+        // The row's own tint, re-applied behind the annotation badge at the end
+        // of the line (see annotationCellForLine). null for context rows, which
+        // take the diff's background unchanged.
+        const rowTint = isAddition ? colors.diffAddBg : isDeletion ? colors.diffDelBg : null;
+        const annotationCell =
+            isCodeLine && !isHunkHeader ? annotationCellForLine(item, rowTint) : null;
+
         let lineStyle: React.CSSProperties = {
             flex: mobileScroll ? '1 0 auto' : 1,
             minWidth: mobileScroll ? 'auto' : 0,
@@ -566,6 +668,11 @@ export default function DiffView({
             overflowWrap: wrapLines ? 'anywhere' : 'normal',
             display: 'flex',
             alignItems: wrapLines ? 'flex-start' : 'center',
+            // An unwrapped line longer than the viewport spills past its box.
+            // Where a badge caps the row, stop the text at the badge instead of
+            // letting it reappear on the far side of it. Nothing readable is
+            // lost: the page clips that overflow at the viewport edge anyway.
+            ...(annotationCell ? { overflow: 'hidden' } : {}),
         };
 
         if (isAddition) {
@@ -772,6 +879,7 @@ export default function DiffView({
                     >
                         {lineContent}
                     </span>
+                    {annotationCell}
                     {isLspActive && lspData && (
                         <LspPopover
                             hover={lspData.hover}
@@ -790,6 +898,7 @@ export default function DiffView({
                         />
                     )}
                 </div>
+                {annotationCardForLine(item, isMobile)}
                 {threadsForLine(item, idx, isMobile)}
                 {isInlineActive && (
                     <InlineCommentForm

@@ -3,6 +3,7 @@ import { rpcCall, getHunkContext } from '../api';
 import { Button, Toast, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import {
     dockViewer as dockViewerState,
@@ -89,6 +90,17 @@ export default function Review({
                 if (allVisible) next.delete(id);
                 else next.add(id);
             });
+            return next;
+        });
+    };
+    // Plugin annotations are hidden by default too; a bucket's key (see
+    // annotation_utils) must be in this set for its card to render inline.
+    const [visibleAnnotationKeys, setVisibleAnnotationKeys] = useState<Set<string>>(new Set());
+    const toggleAnnotations = (key: string) => {
+        setVisibleAnnotationKeys(prev => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
             return next;
         });
     };
@@ -545,6 +557,19 @@ export default function Review({
         [diff, expandedLineIndices]
     );
 
+    // Plugin annotations, anchored to the rows of the diff they refer to. Taken
+    // from the loaded plugin outputs rather than the PR payload's identical
+    // `annotations` field so rerunning a plugin refreshes the diff too.
+    const annotationIndex = useMemo(
+        () => indexAnnotations(collectPRAnnotations(pluginOutputs), parsedLines),
+        [pluginOutputs, parsedLines]
+    );
+    const allAnnotationsVisible =
+        annotationIndex.keys.length > 0 &&
+        annotationIndex.keys.every(key => visibleAnnotationKeys.has(key));
+    const toggleAllAnnotations = () =>
+        setVisibleAnnotationKeys(allAnnotationsVisible ? new Set() : new Set(annotationIndex.keys));
+
     // File collapse handlers
     const toggleFileCollapse = (filename: string) => {
         setCollapsedFiles(prev => {
@@ -750,6 +775,8 @@ export default function Review({
             outdatedComments={outdatedComments}
             collapsedFiles={collapsedFiles}
             visibleThreadIds={visibleThreadIds}
+            annotations={annotationIndex}
+            visibleAnnotationKeys={visibleAnnotationKeys}
             activeLineIndex={activeLineIndex}
             activeLspIndex={activeLspIndex}
             replyToId={replyToId}
@@ -762,6 +789,7 @@ export default function Review({
             diffTheme={customDiffTheme}
             lspData={lsp.lspData}
             onToggleThreadsVisible={toggleThreadsVisible}
+            onToggleAnnotations={toggleAnnotations}
             onCommentClick={handleCommentClick}
             onCodeClick={handleCodeClick}
             onThreadClick={handleThreadClick}
@@ -873,6 +901,20 @@ export default function Review({
                         ? `(${Object.keys(pluginOutputs).length})`
                         : ''}
                 </Button>
+                {annotationIndex.count > 0 && (
+                    <Button
+                        onClick={toggleAllAnnotations}
+                        variant={allAnnotationsVisible ? 'primary' : 'secondary'}
+                        size="sm"
+                        title={
+                            allAnnotationsVisible
+                                ? 'Collapse every plugin annotation in the diff'
+                                : 'Expand every plugin annotation in the diff'
+                        }
+                    >
+                        ⚑ Annotations ({annotationIndex.count})
+                    </Button>
+                )}
 
                 <span
                     title="Click any line of code to comment. Click a file pill below to jump to that file."

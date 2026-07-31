@@ -105,8 +105,8 @@ export default function Review({
         });
     };
     const [activeOutdatedFile, setActiveOutdatedFile] = useState<string | null>(null);
-    // Description starts collapsed so the diff dominates the viewport.
-    const [descCollapsed, setDescCollapsed] = useState(true);
+    // Description starts expanded — it's the context for everything below it.
+    const [descCollapsed, setDescCollapsed] = useState(false);
     // On phones, wrap long diff lines by default so they read without
     // horizontal scrolling; keep `pre` (scroll) as the default on desktop where
     // column alignment matters more.

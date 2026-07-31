@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import Markdown from 'react-markdown';
 import { colors } from '../../design';
 import { type ReviewData, stripHtmlComments } from './types';
 
 // Chronological list of submitted reviews that carry a body.
 export default function ReviewDiscussion({ reviews }: { reviews: ReviewData[] }) {
+    // Starts collapsed so the diff stays close to the top of the page.
+    const [collapsed, setCollapsed] = useState(true);
     const withBody = reviews.filter(r => r.body && r.body.trim());
     if (withBody.length === 0) return null;
 
@@ -17,19 +20,57 @@ export default function ReviewDiscussion({ reviews }: { reviews: ReviewData[] })
                 overflow: 'hidden',
             }}
         >
-            <div
+            <button
+                type="button"
+                onClick={() => setCollapsed(c => !c)}
+                aria-expanded={!collapsed}
                 style={{
+                    width: '100%',
                     padding: '12px 16px',
-                    borderBottom: '1px solid var(--border)',
+                    borderTop: 'none',
+                    borderLeft: 'none',
+                    borderRight: 'none',
+                    borderBottom: collapsed ? 'none' : '1px solid var(--border)',
                     background: 'var(--bg-primary)',
                     fontSize: '13px',
                     fontWeight: 500,
                     color: 'var(--text-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    cursor: 'pointer',
+                    textAlign: 'left',
                 }}
             >
+                <span
+                    style={{
+                        display: 'inline-block',
+                        transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.15s ease',
+                        fontSize: '10px',
+                    }}
+                >
+                    ▼
+                </span>
                 Review Discussion ({withBody.length})
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {collapsed && (
+                    <span
+                        style={{
+                            fontSize: '11px',
+                            color: 'var(--text-tertiary)',
+                            fontWeight: 400,
+                        }}
+                    >
+                        — click to expand
+                    </span>
+                )}
+            </button>
+            <div
+                style={{
+                    display: collapsed ? 'none' : 'flex',
+                    flexDirection: 'column',
+                }}
+            >
                 {withBody
                     .sort(
                         (a, b) =>

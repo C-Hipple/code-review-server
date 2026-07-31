@@ -9,7 +9,7 @@ import {
     Modal,
     Select,
     Theme,
-    VALID_THEMES,
+    resolveTheme,
     THEME_OPTIONS,
     ReviewLocation,
     REVIEW_LOCATION_OPTIONS,
@@ -34,8 +34,8 @@ function App() {
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
     const [theme, setTheme] = useState<Theme>(() => {
-        const saved = localStorage.getItem('theme') as Theme;
-        if (saved && VALID_THEMES.includes(saved)) return saved;
+        const saved = resolveTheme(localStorage.getItem('theme'));
+        if (saved) return saved;
         return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     });
     const [reviewLocation, setReviewLocation] = useState<ReviewLocation>(() => {

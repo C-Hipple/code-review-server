@@ -123,6 +123,104 @@
     --overlay-bg: rgba(31, 35, 40, 0.4);
 }
 
+/* GitHub Dark Theme — Primer's own palette, so the diff reads the way the
+   same PR does on github.com (stronger line fills than the default dark). */
+[data-theme='github-dark'] {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --text-primary: #e6edf3;
+    --text-secondary: #848d97;
+    --text-tertiary: #6e7681;
+    --accent: #2f81f7;
+    --accent-dim: rgba(47, 129, 247, 0.15);
+    --border: #30363d;
+    --success: #238636;
+    --danger: #da3633;
+    --warning: #9e6a03;
+
+    --text-success: #3fb950;
+    --text-danger: #f85149;
+    --text-warning: #d29922;
+    --text-merged: #a371f7;
+
+    --bg-success-dim: rgba(46, 160, 67, 0.15);
+    --bg-danger-dim: rgba(248, 81, 73, 0.15);
+    --bg-warning-dim: rgba(187, 128, 9, 0.15);
+    --bg-merged-dim: rgba(163, 113, 247, 0.15);
+    --bg-info-dim: rgba(47, 129, 247, 0.1);
+    --bg-info-dim-strong: rgba(47, 129, 247, 0.15);
+
+    --border-success-dim: rgba(63, 185, 80, 0.4);
+    --border-danger-dim: rgba(248, 81, 73, 0.4);
+    --border-warning-dim: rgba(210, 153, 34, 0.4);
+    --border-info-dim: rgba(47, 129, 247, 0.2);
+    --border-merged-dim: rgba(163, 113, 247, 0.3);
+
+    --diff-add-bg: rgba(46, 160, 67, 0.15);
+    --diff-add-gutter-bg: rgba(46, 160, 67, 0.3);
+    --diff-del-bg: rgba(248, 81, 73, 0.1);
+    --diff-del-gutter-bg: rgba(248, 81, 73, 0.25);
+    --diff-hunk-bg: rgba(56, 139, 253, 0.15);
+    --diff-line-no-bg: rgba(255, 255, 255, 0.02);
+    --diff-line-no-color: #6e7681;
+
+    --shadow-sm: 0 1px 3px rgba(1, 4, 9, 0.5);
+    --shadow-md: 0 4px 12px rgba(1, 4, 9, 0.5);
+    --shadow-lg: 0 8px 24px rgba(1, 4, 9, 0.6);
+    --shadow-glow: 0 0 0 1px rgba(47, 129, 247, 0.2);
+    --overlay-bg: rgba(1, 4, 9, 0.8);
+}
+
+/* GitHub Light Theme */
+[data-theme='github-light'] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f6f8fa;
+    --bg-tertiary: #eaeef2;
+    --text-primary: #1f2328;
+    --text-secondary: #656d76;
+    --text-tertiary: #8c959f;
+    --accent: #0969da;
+    --accent-dim: rgba(9, 105, 218, 0.1);
+    --border: #d1d9e0;
+    --success: #1f883d;
+    --danger: #cf222e;
+    --warning: #9a6700;
+
+    --text-success: #1a7f37;
+    --text-danger: #cf222e;
+    --text-warning: #9a6700;
+    --text-merged: #8250df;
+
+    --bg-success-dim: rgba(31, 136, 61, 0.1);
+    --bg-danger-dim: rgba(207, 34, 46, 0.1);
+    --bg-warning-dim: rgba(154, 103, 0, 0.1);
+    --bg-merged-dim: rgba(130, 80, 223, 0.1);
+    --bg-info-dim: rgba(9, 105, 218, 0.05);
+    --bg-info-dim-strong: rgba(9, 105, 218, 0.1);
+
+    --border-success-dim: rgba(31, 136, 61, 0.2);
+    --border-danger-dim: rgba(207, 34, 46, 0.2);
+    --border-warning-dim: rgba(154, 103, 0, 0.2);
+    --border-info-dim: rgba(9, 105, 218, 0.2);
+    --border-merged-dim: rgba(130, 80, 223, 0.2);
+
+    /* GitHub's own diff swatches */
+    --diff-add-bg: #e6ffec;
+    --diff-add-gutter-bg: #abf2bc;
+    --diff-del-bg: #ffebe9;
+    --diff-del-gutter-bg: #ffc1c0;
+    --diff-hunk-bg: #ddf4ff;
+    --diff-line-no-bg: rgba(0, 0, 0, 0.025);
+    --diff-line-no-color: #59636e;
+
+    --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.075);
+    --shadow-md: 0 3px 6px rgba(140, 149, 159, 0.15);
+    --shadow-lg: 0 8px 24px rgba(140, 149, 159, 0.2);
+    --shadow-glow: 0 0 0 1px rgba(9, 105, 218, 0.2);
+    --overlay-bg: rgba(31, 35, 40, 0.4);
+}
+
 /* Gruvbox Dark Theme */
 [data-theme='gruvbox-dark'] {
     --bg-primary: #282828;
@@ -309,7 +407,54 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
     --shadow-md: 0 3px 6px rgba(0, 0, 0, 0.1);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.15);
+    --shadow-glow: 0 0 0 1px rgba(38, 139, 210, 0.2);
     --overlay-bg: rgba(253, 246, 227, 0.4);
+}
+
+/* Monokai Theme */
+[data-theme='monokai'] {
+    --bg-primary: #272822;
+    --bg-secondary: #1e1f1c;
+    --bg-tertiary: #3e3d32;
+    --text-primary: #f8f8f2;
+    --text-secondary: #a59f85;
+    --text-tertiary: #75715e;
+    --accent: #66d9ef;
+    --accent-dim: rgba(102, 217, 239, 0.15);
+    --border: #49483e;
+    --success: #a6e22e;
+    --danger: #f92672;
+    --warning: #e6db74;
+
+    --text-success: #a6e22e;
+    --text-danger: #f92672;
+    --text-warning: #e6db74;
+    --text-merged: #ae81ff;
+
+    --bg-success-dim: rgba(166, 226, 46, 0.15);
+    --bg-danger-dim: rgba(249, 38, 114, 0.15);
+    --bg-warning-dim: rgba(230, 219, 116, 0.15);
+    --bg-merged-dim: rgba(174, 129, 255, 0.15);
+    --bg-info-dim: rgba(102, 217, 239, 0.1);
+    --bg-info-dim-strong: rgba(102, 217, 239, 0.15);
+
+    --border-success-dim: rgba(166, 226, 46, 0.4);
+    --border-danger-dim: rgba(249, 38, 114, 0.4);
+    --border-warning-dim: rgba(230, 219, 116, 0.4);
+    --border-info-dim: rgba(102, 217, 239, 0.2);
+    --border-merged-dim: rgba(174, 129, 255, 0.3);
+
+    --diff-add-bg: rgba(166, 226, 46, 0.12);
+    --diff-add-gutter-bg: rgba(166, 226, 46, 0.2);
+    --diff-del-bg: rgba(249, 38, 114, 0.12);
+    --diff-del-gutter-bg: rgba(249, 38, 114, 0.2);
+    --diff-hunk-bg: rgba(102, 217, 239, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+    --shadow-glow: 0 0 0 1px rgba(102, 217, 239, 0.2);
+    --overlay-bg: rgba(0, 0, 0, 0.8);
 }
 
 /* Dracula Theme */
@@ -496,8 +641,148 @@
     --overlay-bg: rgba(0, 0, 0, 0.8);
 }
 
+/* Catppuccin Latte Theme (light flavor) */
+[data-theme='catppuccin-latte'] {
+    --bg-primary: #eff1f5;
+    --bg-secondary: #e6e9ef;
+    --bg-tertiary: #dce0e8;
+    --text-primary: #4c4f69;
+    --text-secondary: #6c6f85;
+    --text-tertiary: #8c8fa1;
+    --accent: #1e66f5;
+    --accent-dim: rgba(30, 102, 245, 0.1);
+    --border: #ccd0da;
+    --success: #40a02b;
+    --danger: #d20f39;
+    --warning: #df8e1d;
+
+    --text-success: #40a02b;
+    --text-danger: #d20f39;
+    --text-warning: #df8e1d;
+    --text-merged: #8839ef;
+
+    --bg-success-dim: rgba(64, 160, 43, 0.1);
+    --bg-danger-dim: rgba(210, 15, 57, 0.1);
+    --bg-warning-dim: rgba(223, 142, 29, 0.1);
+    --bg-merged-dim: rgba(136, 57, 239, 0.1);
+    --bg-info-dim: rgba(30, 102, 245, 0.05);
+    --bg-info-dim-strong: rgba(30, 102, 245, 0.1);
+
+    --border-success-dim: rgba(64, 160, 43, 0.2);
+    --border-danger-dim: rgba(210, 15, 57, 0.2);
+    --border-warning-dim: rgba(223, 142, 29, 0.2);
+    --border-info-dim: rgba(30, 102, 245, 0.2);
+    --border-merged-dim: rgba(136, 57, 239, 0.2);
+
+    --diff-add-bg: #cfe2d1;
+    --diff-add-gutter-bg: #b7d7b4;
+    --diff-del-bg: #eac8d3;
+    --diff-del-gutter-bg: #e6a9b9;
+    --diff-hunk-bg: #d2def5;
+    --diff-line-no-bg: rgba(0, 0, 0, 0.025);
+    --diff-line-no-color: #8c8fa1;
+
+    --shadow-sm: 0 1px 2px rgba(76, 79, 105, 0.1);
+    --shadow-md: 0 3px 6px rgba(76, 79, 105, 0.1);
+    --shadow-lg: 0 8px 24px rgba(76, 79, 105, 0.15);
+    --shadow-glow: 0 0 0 1px rgba(30, 102, 245, 0.2);
+    --overlay-bg: rgba(76, 79, 105, 0.4);
+}
+
+/* Catppuccin Frappé Theme */
+[data-theme='catppuccin-frappe'] {
+    --bg-primary: #303446;
+    --bg-secondary: #292c3c;
+    --bg-tertiary: #414559;
+    --text-primary: #c6d0f5;
+    --text-secondary: #a5adce;
+    --text-tertiary: #737994;
+    --accent: #8caaee;
+    --accent-dim: rgba(140, 170, 238, 0.15);
+    --border: #51576d;
+    --success: #a6d189;
+    --danger: #e78284;
+    --warning: #e5c890;
+
+    --text-success: #a6d189;
+    --text-danger: #e78284;
+    --text-warning: #e5c890;
+    --text-merged: #ca9ee6;
+
+    --bg-success-dim: rgba(166, 209, 137, 0.15);
+    --bg-danger-dim: rgba(231, 130, 132, 0.15);
+    --bg-warning-dim: rgba(229, 200, 144, 0.15);
+    --bg-merged-dim: rgba(202, 158, 230, 0.15);
+    --bg-info-dim: rgba(140, 170, 238, 0.1);
+    --bg-info-dim-strong: rgba(140, 170, 238, 0.15);
+
+    --border-success-dim: rgba(166, 209, 137, 0.4);
+    --border-danger-dim: rgba(231, 130, 132, 0.4);
+    --border-warning-dim: rgba(229, 200, 144, 0.4);
+    --border-info-dim: rgba(140, 170, 238, 0.2);
+    --border-merged-dim: rgba(202, 158, 230, 0.3);
+
+    --diff-add-bg: rgba(166, 209, 137, 0.12);
+    --diff-add-gutter-bg: rgba(166, 209, 137, 0.2);
+    --diff-del-bg: rgba(231, 130, 132, 0.12);
+    --diff-del-gutter-bg: rgba(231, 130, 132, 0.2);
+    --diff-hunk-bg: rgba(140, 170, 238, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-glow: 0 0 0 1px rgba(140, 170, 238, 0.2);
+    --overlay-bg: rgba(0, 0, 0, 0.7);
+}
+
+/* Catppuccin Macchiato Theme */
+[data-theme='catppuccin-macchiato'] {
+    --bg-primary: #24273a;
+    --bg-secondary: #1e2030;
+    --bg-tertiary: #363a4f;
+    --text-primary: #cad3f5;
+    --text-secondary: #a5adcb;
+    --text-tertiary: #6e738d;
+    --accent: #8aadf4;
+    --accent-dim: rgba(138, 173, 244, 0.15);
+    --border: #494d64;
+    --success: #a6da95;
+    --danger: #ed8796;
+    --warning: #eed49f;
+
+    --text-success: #a6da95;
+    --text-danger: #ed8796;
+    --text-warning: #eed49f;
+    --text-merged: #c6a0f6;
+
+    --bg-success-dim: rgba(166, 218, 149, 0.15);
+    --bg-danger-dim: rgba(237, 135, 150, 0.15);
+    --bg-warning-dim: rgba(238, 212, 159, 0.15);
+    --bg-merged-dim: rgba(198, 160, 246, 0.15);
+    --bg-info-dim: rgba(138, 173, 244, 0.1);
+    --bg-info-dim-strong: rgba(138, 173, 244, 0.15);
+
+    --border-success-dim: rgba(166, 218, 149, 0.4);
+    --border-danger-dim: rgba(237, 135, 150, 0.4);
+    --border-warning-dim: rgba(238, 212, 159, 0.4);
+    --border-info-dim: rgba(138, 173, 244, 0.2);
+    --border-merged-dim: rgba(198, 160, 246, 0.3);
+
+    --diff-add-bg: rgba(166, 218, 149, 0.12);
+    --diff-add-gutter-bg: rgba(166, 218, 149, 0.2);
+    --diff-del-bg: rgba(237, 135, 150, 0.12);
+    --diff-del-gutter-bg: rgba(237, 135, 150, 0.2);
+    --diff-hunk-bg: rgba(138, 173, 244, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+    --shadow-glow: 0 0 0 1px rgba(138, 173, 244, 0.2);
+    --overlay-bg: rgba(0, 0, 0, 0.8);
+}
+
 /* Catppuccin Mocha Theme */
-[data-theme='catppuccin'] {
+[data-theme='catppuccin-mocha'] {
     --bg-primary: #1e1e2e;
     --bg-secondary: #181825;
     --bg-tertiary: #313244;

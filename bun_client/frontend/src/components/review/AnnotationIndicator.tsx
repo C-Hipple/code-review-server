@@ -6,6 +6,11 @@ import { annotationSeverityVariant, type PRAnnotation } from '../../plugin_utils
 interface AnnotationIndicatorProps {
     annotations: PRAnnotation[];
     visible: boolean;
+    /**
+     * Which edge the hover preview is pinned to. Badges at the right end of a
+     * diff line need 'right', or the preview opens off the side of the page.
+     */
+    align?: 'left' | 'right';
     onToggle: () => void;
 }
 
@@ -16,6 +21,7 @@ interface AnnotationIndicatorProps {
 export default function AnnotationIndicator({
     annotations,
     visible,
+    align = 'left',
     onToggle,
 }: AnnotationIndicatorProps) {
     const [hovered, setHovered] = useState(false);
@@ -63,7 +69,7 @@ export default function AnnotationIndicator({
                     style={{
                         position: 'absolute',
                         bottom: '100%',
-                        left: 0,
+                        ...(align === 'right' ? { right: 0 } : { left: 0 }),
                         marginBottom: '6px',
                         background: 'var(--bg-secondary)',
                         border: '1px solid var(--border)',

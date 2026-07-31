@@ -277,13 +277,6 @@ export default function DiffView({
         );
     };
 
-    // The badge gutter holds a comment badge and an annotation badge side by
-    // side, so it widens for an annotated PR. Badges are right-aligned and
-    // overflow left into the page padding, which the page clips — at the
-    // narrow width a line carrying both would lose its annotation badge off
-    // the left edge.
-    const gutterWidth = annotations.count > 0 ? '46px' : '22px';
-
     // Plugin annotations for a row: those anchored to the line's head-side line
     // number, or — on a file header — those whose line this diff doesn't render.
     const annotationsForLine = (item: ParsedLine): { key: string; list: PRAnnotation[] } | null => {
@@ -302,9 +295,9 @@ export default function DiffView({
         return list && list.length > 0 ? { key, list } : null;
     };
 
-    // Collapsed badge next to an annotated line/file; expands every annotation
-    // on that row together and previews them all on hover.
-    const annotationIndicatorForLine = (item: ParsedLine) => {
+    // Collapsed badge for an annotated line/file; expands every annotation on
+    // that row together and previews them all on hover.
+    const annotationIndicatorForLine = (item: ParsedLine, align: 'left' | 'right') => {
         const anchored = annotationsForLine(item);
         if (!anchored) return null;
         return (
@@ -312,8 +305,40 @@ export default function DiffView({
                 <AnnotationIndicator
                     annotations={anchored.list}
                     visible={visibleAnnotationKeys.has(anchored.key)}
+                    align={align}
                     onToggle={() => onToggleAnnotations(anchored.key)}
                 />
+            </span>
+        );
+    };
+
+    // The badge's home on a code row: an end cap flush to the right of the whole
+    // line, not a second gutter column — the code and its line numbers sit
+    // exactly where they would in a PR with no annotations at all.
+    //
+    // It is opaque (the row's tint over the diff background) so an unwrapped
+    // line spilling past the viewport passes behind the badge rather than
+    // through it, and sticks to the visible right edge while the diff scrolls
+    // horizontally on mobile.
+    const annotationCellForLine = (item: ParsedLine, rowTint: string | null) => {
+        const badge = annotationIndicatorForLine(item, 'right');
+        if (!badge) return null;
+        return (
+            <span
+                style={{
+                    position: 'sticky',
+                    right: 0,
+                    display: 'flex',
+                    alignItems: wrapLines ? 'flex-start' : 'center',
+                    padding: wrapLines ? '2px 6px 0 10px' : '0 6px 0 10px',
+                    backgroundColor: 'var(--bg-primary)',
+                    backgroundImage: rowTint
+                        ? `linear-gradient(${rowTint}, ${rowTint})`
+                        : undefined,
+                    userSelect: 'none',
+                }}
+            >
+                {badge}
             </span>
         );
     };
@@ -510,7 +535,7 @@ export default function DiffView({
                             );
                         })()}
                         {commentIndicatorForLine(item)}
-                        {annotationIndicatorForLine(item)}
+                        {annotationIndicatorForLine(item, 'left')}
                         {hasOutdated && (
                             <button
                                 onClick={e => {
@@ -627,6 +652,14 @@ export default function DiffView({
         // max-content wrapper below). The code span must size to its content
         // and never shrink so the row grows wider than the viewport.
         const mobileScroll = isMobile && !wrapLines;
+
+        // The row's own tint, re-applied behind the annotation badge at the end
+        // of the line (see annotationCellForLine). null for context rows, which
+        // take the diff's background unchanged.
+        const rowTint = isAddition ? colors.diffAddBg : isDeletion ? colors.diffDelBg : null;
+        const annotationCell =
+            isCodeLine && !isHunkHeader ? annotationCellForLine(item, rowTint) : null;
+
         let lineStyle: React.CSSProperties = {
             flex: mobileScroll ? '1 0 auto' : 1,
             minWidth: mobileScroll ? 'auto' : 0,
@@ -635,6 +668,11 @@ export default function DiffView({
             overflowWrap: wrapLines ? 'anywhere' : 'normal',
             display: 'flex',
             alignItems: wrapLines ? 'flex-start' : 'center',
+            // An unwrapped line longer than the viewport spills past its box.
+            // Where a badge caps the row, stop the text at the badge instead of
+            // letting it reappear on the far side of it. Nothing readable is
+            // lost: the page clips that overflow at the viewport edge anyway.
+            ...(annotationCell ? { overflow: 'hidden' } : {}),
         };
 
         if (isAddition) {
@@ -716,22 +754,19 @@ export default function DiffView({
                         // Fixed-width comment gutter, to the LEFT of the line
                         // numbers. Always rendered (empty when the line has no
                         // comment) so a collapsed-comment badge never shifts the
-                        // line numbers or code. A wider multi-comment badge — or
-                        // an annotation badge beside it — is right-aligned here
-                        // and overflows left into the diff padding, never over
-                        // the line numbers to its right.
+                        // line numbers or code. A wider multi-comment badge is
+                        // right-aligned here and overflows left into the diff
+                        // padding, never over the line numbers to its right.
                         <span
                             style={{
-                                width: gutterWidth,
-                                minWidth: gutterWidth,
+                                width: '22px',
+                                minWidth: '22px',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'flex-end',
-                                gap: '3px',
                                 userSelect: 'none',
                             }}
                         >
-                            {annotationIndicatorForLine(item)}
                             {commentIndicatorForLine(item)}
                         </span>
                     )}
@@ -844,6 +879,7 @@ export default function DiffView({
                     >
                         {lineContent}
                     </span>
+                    {annotationCell}
                     {isLspActive && lspData && (
                         <LspPopover
                             hover={lspData.hover}

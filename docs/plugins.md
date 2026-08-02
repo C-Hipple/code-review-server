@@ -57,7 +57,7 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 
 - **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR. Emits the [response contract](#plugin-response-contract): a markdown body holding the summary, plus up to six annotations anchored to the lines worth a reviewer's attention.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
-- **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
+- **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
@@ -67,6 +67,8 @@ Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and a
 You can write a plugin in any language you like. The only requirement is that the binary must be discoverable on your `$PATH`.
 
 The `example_plugin` included in this repository demonstrates the interface and potential options.
+
+Go plugins living in this repository share `cmd/internal/pluginkit`, which holds the response contract types, the diff line numbering that lets a model anchor annotations, and the Gemini call the bundled LLM plugins make.
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
 
@@ -228,7 +230,11 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
 
 ### Output
 
-The plugin produces a brief report with:
+The plugin emits the [response contract](#plugin-response-contract).
+
+Its markdown body is a brief report with:
 - Specific violations (with file/line references where available)
 - Areas of the diff that comply well with the guidelines
 - An overall style compliance assessment
+
+Alongside the report it returns up to ten annotations, one per line of the diff that breaks a guideline, so violations render inline in the diff as well as in the report. Each annotation names the guideline broken and how to fix the line, with a severity of `info` for a nit, `warning` for a clear violation, or `error` for one that breaks a guideline stated as a hard requirement. A diff the model can't number — one with no parseable hunks — yields no annotations, and the report alone is returned.

@@ -1,55 +1,46 @@
 package main
 
 import (
-	"bytes"
+	"crs/cmd/internal/pluginkit"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-type GeminiPart struct {
-	Text string `json:"text"`
+// style_guidelines emits the plugin response contract described in
+// docs/plugins.md: a markdown body holding the compliance report, plus an
+// annotation on each line of the diff that breaks one of the user's rules.
+
+// maxAnnotations is what the model is asked for. A style guide can be broken
+// on a lot of lines at once, and a diff buried in flags is unreadable, so the
+// worst offenders are worth more than an exhaustive list.
+const maxAnnotations = 10
+
+// modelOutput is the shape Gemini is asked to return, mirroring
+// responseSchema below.
+type modelOutput struct {
+	Report      string                 `json:"report"`
+	Annotations []pluginkit.Annotation `json:"annotations"`
 }
 
-type GeminiContent struct {
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
-}
-
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-type PRMetadata struct {
-	Number      int      `json:"number"`
-	Title       string   `json:"title"`
-	Author      string   `json:"author"`
-	BaseRef     string   `json:"base_ref"`
-	HeadRef     string   `json:"head_ref"`
-	State       string   `json:"state"`
-	Milestone   string   `json:"milestone"`
-	Labels      []string `json:"labels"`
-	Assignees   []string `json:"assignees"`
-	Reviewers   []string `json:"reviewers"`
-	Draft       bool     `json:"draft"`
-	CIStatus    string   `json:"ci_status"`
-	CIFailures  []string `json:"ci_failures"`
-	Body        string   `json:"body"`
-	URL         string   `json:"url"`
-	WorktreePath string  `json:"worktree_path"`
+// responseSchema constrains Gemini's reply to the report and annotations we
+// know how to turn into a plugin response.
+func responseSchema() *pluginkit.Schema {
+	return &pluginkit.Schema{
+		Type: "OBJECT",
+		Properties: map[string]*pluginkit.Schema{
+			"report": {
+				Type:        "STRING",
+				Description: "Markdown report on the diff's compliance with the style guidelines.",
+			},
+			"annotations": pluginkit.AnnotationsSchema(maxAnnotations),
+		},
+		PropertyOrdering: []string{"report", "annotations"},
+		Required:         []string{"report", "annotations"},
+	}
 }
 
 func loadStyleGuidelines() (string, error) {
@@ -65,18 +56,10 @@ func loadStyleGuidelines() (string, error) {
 	return string(data), nil
 }
 
-func callGemini(diff string, metadata PRMetadata, styleGuidelines string, geminiToken string) (string, error) {
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + geminiToken
+func buildPrompt(diff string, metadata pluginkit.PRMetadata, styleGuidelines string) string {
+	rendered, fileList := pluginkit.PromptDiff(diff)
 
-	var contextInfo string
-	if metadata.Title != "" {
-		contextInfo += fmt.Sprintf("PR Title: %s\n", metadata.Title)
-	}
-	if metadata.Body != "" {
-		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Body)
-	}
-
-	prompt := fmt.Sprintf(`You are a code reviewer evaluating a pull request against style guidelines.
+	return fmt.Sprintf(`You are a code reviewer evaluating a pull request against style guidelines.
 
 ## Style Guidelines
 
@@ -85,56 +68,51 @@ func callGemini(diff string, metadata PRMetadata, styleGuidelines string, gemini
 ## PR Context
 
 %s
+## Files
+
+%s
+
 ## Diff
+
+%s
 
 %s
 
 ## Instructions
 
-Evaluate the PR diff against the style guidelines above. Be concise:
-- Note any violations with file and line references where possible
-- Note areas that follow the guidelines well (briefly)
-- Provide a short overall assessment
+Evaluate the diff against the style guidelines above, and return both a report
+and the violating lines. Focus only on style guideline compliance. Be direct
+and specific.
 
-Focus only on style guideline compliance. Be direct and specific.
-`, styleGuidelines, contextInfo, diff)
+report: a concise markdown report with
+- any violations, with file and line references
+- areas that follow the guidelines well (briefly)
+- a short overall assessment
 
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Parts: []GeminiPart{
-					{Text: prompt},
-				},
-			},
-		},
+annotations: at most %d remarks, each anchored to one line of the diff that
+breaks a guideline. Only annotate a line the guidelines actually speak to; an
+empty list is fine, and a clean diff should have one.
+- filename: one of the paths listed under Files, copied exactly.
+- line: the number shown beside that line in the diff. Lines marked "-" were
+  removed and have no number, so they cannot be annotated.
+- severity: %s for a nit, %s for a clear violation, %s for one that breaks a
+  guideline stated as a hard requirement.
+- content: the guideline broken and how to fix the line, in one or two
+  sentences.
+`, styleGuidelines, metadata.Context(), fileList, rendered, pluginkit.DiffLegend,
+		maxAnnotations, pluginkit.SeverityInfo, pluginkit.SeverityWarning, pluginkit.SeverityError)
+}
+
+// responseFor turns Gemini's reply into a plugin response. A reply that isn't
+// the JSON we asked for becomes the body verbatim, which is what this plugin
+// emitted before it spoke the contract.
+func responseFor(reply string) pluginkit.Response {
+	var parsed modelOutput
+	if err := json.Unmarshal([]byte(pluginkit.TrimCodeFence(reply)), &parsed); err != nil || strings.TrimSpace(parsed.Report) == "" {
+		return pluginkit.MarkdownResponse(reply, nil)
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", err
-	}
-
-	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
-	}
-
-	return "", fmt.Errorf("no content in response")
+	return pluginkit.MarkdownResponse(strings.TrimSpace(parsed.Report), parsed.Annotations)
 }
 
 func main() {
@@ -152,7 +130,7 @@ func main() {
 	_ = number
 	_ = commentsJSON
 
-	var metadata PRMetadata
+	var metadata pluginkit.PRMetadata
 	if *headersJSON != "" {
 		if err := json.Unmarshal([]byte(*headersJSON), &metadata); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to parse headers: %v\n", err)
@@ -176,11 +154,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	result, err := callGemini(*diff, metadata, styleGuidelines, geminiToken)
+	result, err := pluginkit.Generate(buildPrompt(*diff, metadata, styleGuidelines), responseSchema(), geminiToken)
 	if err != nil {
 		fmt.Printf("Error calling Gemini: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println(result)
+	if err := pluginkit.EncodeResponse(os.Stdout, responseFor(result)); err != nil {
+		fmt.Printf("Error encoding plugin response: %v\n", err)
+		os.Exit(1)
+	}
 }

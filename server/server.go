@@ -74,7 +74,14 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	return nil
 }
 
-type GetReviewsArgs struct{}
+// GetReviewsArgs lets a client opt in to the heavy per-PR detail subtrees in
+// the rendered org content. Both default to false: the dashboard only needs
+// headlines and metadata, and a client showing a full PR fetches it with
+// GetPR, which returns the diff and comments as structured fields.
+type GetReviewsArgs struct {
+	IncludeDiff     bool `json:"IncludeDiff"`
+	IncludeComments bool `json:"IncludeComments"`
+}
 
 type GetReviewsReply struct {
 	Content string       `json:"content"` // Kept for simplicity on org-mode clients
@@ -122,7 +129,10 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 	}
 
 	renderer := NewOrgRenderer(config.C().DB)
-	content, items, err := renderer.RenderAndGetItems()
+	content, items, err := renderer.RenderAndGetItems(RenderOptions{
+		IncludeDiff:     args.IncludeDiff,
+		IncludeComments: args.IncludeComments,
+	})
 	if err != nil {
 		slog.Error("Error rendering org files", "error", err)
 		return err
@@ -306,7 +316,8 @@ type GetAdjacentPRReply struct {
 
 func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
 	renderer := NewOrgRenderer(config.C().DB)
-	_, items, err := renderer.RenderAndGetItems()
+	// Adjacency only needs the ordered items; skip rendering the org text.
+	items, err := renderer.GetAllReviewItems()
 	if err != nil {
 		return err
 	}

@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'crs-client)
 
 ;;; --- Wiring: the loader pulls in every module ---
@@ -252,6 +253,80 @@ line the diff does not show, and one for a file outside the diff.")
     (crs--insert-plugin-output-entry
      "Legacy" '((result . "plain text output") (status . "success")))
     (should (string-match-p "plain text output" (buffer-string)))))
+
+;;; --- JSON-RPC transport ---
+
+(defun crs-tests--filter-lines (chunks)
+  "Feed CHUNKS through `crs--process-filter', returning the lines dispatched."
+  (let ((got nil))
+    (setq crs--response-pending nil)
+    (cl-letf (((symbol-function 'crs--handle-response)
+               (lambda (line) (push line got))))
+      (dolist (chunk chunks)
+        (crs--process-filter nil chunk)))
+    (nreverse got)))
+
+(ert-deftest crs-test-process-filter-reassembles-chunks ()
+  "Complete lines are dispatched however the output is chunked."
+  ;; One chunk, one line.
+  (should (equal (crs-tests--filter-lines '("{\"id\":1}\n")) '("{\"id\":1}")))
+  ;; A line split across several chunks is dispatched once, intact.
+  (should (equal (crs-tests--filter-lines '("{\"id" "\":1}" "\n"))
+                 '("{\"id\":1}")))
+  ;; Several lines arriving in a single chunk are dispatched in order.
+  (should (equal (crs-tests--filter-lines '("a\nb\nc\n")) '("a" "b" "c")))
+  ;; A newline landing mid-chunk splits correctly.
+  (should (equal (crs-tests--filter-lines '("a\nb" "c\n")) '("a" "bc")))
+  ;; Empty lines are skipped, matching the previous behavior.
+  (should (equal (crs-tests--filter-lines '("a\n\n\nb\n")) '("a" "b"))))
+
+(ert-deftest crs-test-process-filter-holds-partial-line ()
+  "A trailing partial line is buffered until its newline arrives."
+  ;; Nothing dispatched while the line is incomplete.
+  (should (equal (crs-tests--filter-lines '("{\"id\":1}")) nil))
+  (should crs--response-pending)
+  ;; The buffered remainder is prepended to the next chunk.
+  (setq crs--response-pending nil)
+  (let ((got nil))
+    (cl-letf (((symbol-function 'crs--handle-response)
+               (lambda (line) (push line got))))
+      (crs--process-filter nil "{\"id\"")
+      (should (null got))
+      (crs--process-filter nil ":1}\nnext")
+      (should (equal got '("{\"id\":1}")))
+      ;; "next" is still pending, not dispatched.
+      (crs--process-filter nil "-line\n")
+      (should (equal (nreverse got) '("{\"id\":1}" "next-line")))))
+  (should-not crs--response-pending))
+
+(ert-deftest crs-test-process-filter-large-payload-roundtrip ()
+  "A large single-line reply survives chunking byte-for-byte.
+This is the shape that made the old filter quadratic: many chunks with no
+newline until the very end."
+  (let* ((payload (json-encode `((jsonrpc . "2.0") (id . 1)
+                                 (result . ((content . ,(make-string 200000 ?x)))))))
+         (chunks nil)
+         (i 0))
+    (while (< i (length payload))
+      (push (substring payload i (min (length payload) (+ i 4096))) chunks)
+      (setq i (+ i 4096)))
+    (setq chunks (nreverse (cons "\n" chunks)))
+    (should (equal (crs-tests--filter-lines chunks) (list payload)))))
+
+(ert-deftest crs-test-parse-json-matches-json-read ()
+  "`crs--parse-json' reproduces `json-read-from-string' semantics."
+  (dolist (doc '("{\"a\":1,\"b\":[1,2,3]}"
+                 "{\"t\":true,\"f\":false,\"n\":null}"
+                 "{\"nested\":{\"deep\":[{\"k\":\"v\"}]}}"
+                 "{\"unicode\":\"caf\\u00e9 \\u2014 ok\"}"
+                 "{\"empty_arr\":[],\"empty_obj\":{}}"
+                 "[1,\"two\",false]"))
+    (should (equal (crs--parse-json doc) (json-read-from-string doc))))
+  ;; Arrays stay vectors and false stays :json-false, which callers rely on.
+  (let ((parsed (crs--parse-json "{\"items\":[1,2],\"ok\":false}")))
+    (should (vectorp (cdr (assq 'items parsed))))
+    (should (eq (cdr (assq 'ok parsed)) :json-false))
+    (should (eq (cdr (assq 'missing parsed)) nil))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

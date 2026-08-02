@@ -57,7 +57,10 @@
                  (cons 'Repo repo)
                  (cons 'Number number)))
    (lambda (result)
-     (message "DEBUG GetPR result: %S" result)
+     (when crs-debug
+       (message "DEBUG GetPR result: %s"
+                (truncate-string-to-width (format "%S" result)
+                                          crs-debug-max-length nil nil t)))
      (let* ((buffer (get-buffer-create (crs--review-buffer-name owner repo number)))
             (project-path (expand-file-name (concat "~/" repo)))
             (error-info (cdr (assq 'error result))))

@@ -23,8 +23,24 @@
 (defvar crs--pending-requests (make-hash-table :test 'equal)
   "Hash table mapping request IDs to callback functions.")
 
-(defvar crs--response-buffer ""
-  "Buffer for accumulating partial JSON-RPC responses.")
+(defvar crs--response-pending nil
+  "Reversed list of output chunks not yet terminated by a newline.
+Chunks are kept unjoined so that accumulating a large single-line reply
+costs one concatenation when it completes rather than one per chunk.")
+
+(defcustom crs-debug nil
+  "When non-nil, log JSON-RPC responses to the *Messages* buffer.
+Off by default: a reply can run to megabytes (a GetPR reply carries the
+whole diff), and logging one costs both the echo-area redisplay and a
+permanent copy in *Messages*.  Logged responses are truncated to
+`crs-debug-max-length' characters."
+  :type 'boolean
+  :group 'crs)
+
+(defcustom crs-debug-max-length 2000
+  "Maximum number of characters of a response logged when `crs-debug' is non-nil."
+  :type 'integer
+  :group 'crs)
 
 (defvar crs-reviews-buffer-name "* Reviews *"
   "Name of the buffer used to display the reviews list.")
@@ -37,8 +53,9 @@
 
 (defcustom crs-include-comments-tree nil
   "When non-nil, include a comments sub-tree for each PR in the GetAllReviews org output.
-This causes the server to embed cached PR comments inline under each PR heading.
-Disabled by default because fetching and rendering comments slows down the reviews buffer."
+This is passed to the server as IncludeComments, so the comments are left
+out of the reply entirely rather than stripped after transfer.  Disabled by
+default because fetching and rendering comments slows down the reviews buffer."
   :type 'boolean
   :group 'crs)
 

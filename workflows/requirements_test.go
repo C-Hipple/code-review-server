@@ -115,16 +115,19 @@ func TestComputeAuxRequirements(t *testing.T) {
 			expected:    AuxDataRequirement{Diff: true},
 		},
 		{
+			// The interaction filters fetch their own data for the PRs that
+			// pass their search prefilter; pre-fetching for the whole
+			// candidate set is exactly what the prefilter exists to avoid.
 			name:        "FilterWaitingOnMe",
 			filterNames: []string{"FilterWaitingOnMe"},
 			includeDiff: false,
-			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+			expected:    AuxDataRequirement{},
 		},
 		{
 			name:        "FilterWaitingOnAuthor",
 			filterNames: []string{"FilterWaitingOnAuthor"},
 			includeDiff: false,
-			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+			expected:    AuxDataRequirement{},
 		},
 		{
 			name:        "FilterCIPassing",
@@ -148,7 +151,7 @@ func TestComputeAuxRequirements(t *testing.T) {
 			name:        "MultipleFilters",
 			filterNames: []string{"FilterNotDraft", "FilterWaitingOnMe", "FilterCIPassing"},
 			includeDiff: true,
-			expected:    AuxDataRequirement{Comments: true, CIStatus: true, Diff: true, Reviews: true, Commits: true},
+			expected:    AuxDataRequirement{CIStatus: true, Diff: true},
 		},
 		{
 			name:        "UnrelatedFilters",
@@ -163,6 +166,56 @@ func TestComputeAuxRequirements(t *testing.T) {
 			got := computeAuxRequirements(tt.filterNames, tt.includeDiff)
 			if got != tt.expected {
 				t.Errorf("computeAuxRequirements(%v, %v) = %+v, want %+v", tt.filterNames, tt.includeDiff, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestPostFilterAuxRequirements pins the pre-fetch/post-fetch split for the
+// interaction filters: the display data computeAuxRequirements no longer
+// requests for the whole candidate set must instead be requested for the
+// filter survivors, and only for workflows that actually use those filters.
+func TestPostFilterAuxRequirements(t *testing.T) {
+	tests := []struct {
+		name        string
+		filterNames []string
+		expected    AuxDataRequirement
+	}{
+		{
+			name:        "NoFilters",
+			filterNames: []string{},
+			expected:    AuxDataRequirement{},
+		},
+		{
+			name:        "FilterWaitingOnMe",
+			filterNames: []string{"FilterWaitingOnMe"},
+			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+		},
+		{
+			name:        "FilterWaitingOnAuthor",
+			filterNames: []string{"FilterWaitingOnAuthor"},
+			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+		},
+		{
+			name:        "MixedWithOtherFilters",
+			filterNames: []string{"FilterNotDraft", "FilterWaitingOnMe"},
+			expected:    AuxDataRequirement{Comments: true, Reviews: true, Commits: true},
+		},
+		{
+			// Workflows without an interaction filter are fully covered by
+			// the manager's pre-fetch; fetching again post-filter would
+			// double every call.
+			name:        "NonInteractionFilters",
+			filterNames: []string{"FilterNotDraft", "FilterMyReviewRequested", "FilterCIPassing"},
+			expected:    AuxDataRequirement{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := postFilterAuxRequirements(tt.filterNames)
+			if got != tt.expected {
+				t.Errorf("postFilterAuxRequirements(%v) = %+v, want %+v", tt.filterNames, got, tt.expected)
 			}
 		})
 	}

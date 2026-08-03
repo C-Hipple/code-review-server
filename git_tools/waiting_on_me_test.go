@@ -418,6 +418,123 @@ func TestCalculateInteractionState(t *testing.T) {
 	}
 }
 
+// TestCalculateInteractionStateVerdictClearsThreads covers the rule that an
+// explicit verdict (APPROVED / CHANGES_REQUESTED) is a holistic response to
+// the PR: thread replies older than the verdict are not "waiting on me", ones
+// newer than it are. Modeled on a real false positive: I comment in a thread,
+// the author replies, and I respond by approving the PR rather than replying
+// in the thread — without the verdict rule that PR sits in Waiting on Me
+// forever.
+func TestCalculateInteractionStateVerdictClearsThreads(t *testing.T) {
+	myLogin := "myself"
+	other := "other"
+	now := time.Now()
+
+	makeReview := func(user, state string, submittedAt time.Time) *github.PullRequestReview {
+		return &github.PullRequestReview{
+			User:        &github.User{Login: github.String(user)},
+			State:       github.String(state),
+			SubmittedAt: &github.Timestamp{Time: submittedAt},
+		}
+	}
+	makeComment := func(id int64, user string, createdAt time.Time, inReplyTo int64) *github.PullRequestComment {
+		c := &github.PullRequestComment{
+			ID:        &id,
+			User:      &github.User{Login: &user},
+			CreatedAt: &github.Timestamp{Time: createdAt},
+		}
+		if inReplyTo != 0 {
+			c.InReplyTo = &inReplyTo
+		}
+		return c
+	}
+
+	// My comment, then the author's reply.
+	danglingThread := []*github.PullRequestComment{
+		makeComment(1, myLogin, now.Add(-30*time.Minute), 0),
+		makeComment(2, other, now.Add(-20*time.Minute), 1),
+	}
+
+	tests := []struct {
+		name            string
+		reviews         []*github.PullRequestReview
+		reviewComments  []*github.PullRequestComment
+		issueComments   []*github.IssueComment
+		wantUnresponded bool
+	}{
+		{
+			name:            "Dangling reply with no verdict",
+			reviewComments:  danglingThread,
+			wantUnresponded: true,
+		},
+		{
+			name:            "Approval after the reply clears it",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "APPROVED", now.Add(-10*time.Minute))},
+			reviewComments:  danglingThread,
+			wantUnresponded: false,
+		},
+		{
+			name:            "Changes-requested after the reply clears it",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "CHANGES_REQUESTED", now.Add(-10*time.Minute))},
+			reviewComments:  danglingThread,
+			wantUnresponded: false,
+		},
+		{
+			name:    "Reply after my approval re-flags",
+			reviews: []*github.PullRequestReview{makeReview(myLogin, "APPROVED", now.Add(-25*time.Minute))},
+			// Thread reply at -20m postdates the -25m approval.
+			reviewComments:  danglingThread,
+			wantUnresponded: true,
+		},
+		{
+			// COMMENTED reviews are how GitHub wraps standalone inline
+			// comments; they must not act as PR-wide responses.
+			name:            "COMMENTED review does not clear the reply",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "COMMENTED", now.Add(-10*time.Minute))},
+			reviewComments:  danglingThread,
+			wantUnresponded: true,
+		},
+		{
+			// A dismissed approval's state is rewritten to DISMISSED, so it
+			// stops clearing threads (and MyReviewDismissed flags the PR
+			// through its own signal).
+			name:            "Dismissed approval does not clear the reply",
+			reviews:         []*github.PullRequestReview{makeReview(myLogin, "DISMISSED", now.Add(-10*time.Minute))},
+			reviewComments:  danglingThread,
+			wantUnresponded: true,
+		},
+		{
+			name:            "Someone else's verdict does not clear the reply",
+			reviews:         []*github.PullRequestReview{makeReview(other, "APPROVED", now.Add(-10*time.Minute))},
+			reviewComments:  danglingThread,
+			wantUnresponded: true,
+		},
+		{
+			// Regression: the conversation-tab check used to compare against
+			// LastOthersTime, which moves on other people's *reviews* — a
+			// third reviewer approving after my last activity re-flagged any
+			// PR I had ever conversation-commented on.
+			name: "Another reviewer's later review does not re-flag the conversation tab",
+			reviews: []*github.PullRequestReview{
+				makeReview(other, "APPROVED", now.Add(-5*time.Minute)),
+			},
+			issueComments: []*github.IssueComment{
+				{User: &github.User{Login: &myLogin}, CreatedAt: &github.Timestamp{Time: now.Add(-15 * time.Minute)}},
+			},
+			wantUnresponded: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := CalculateInteractionState(myLogin, &github.PullRequest{}, tt.reviews, tt.reviewComments, tt.issueComments)
+			if state.HasUnrespondedComments != tt.wantUnresponded {
+				t.Errorf("HasUnrespondedComments: expected %v, got %v", tt.wantUnresponded, state.HasUnrespondedComments)
+			}
+		})
+	}
+}
+
 // TestCalculateInteractionStateReviewDismissed covers the re-review signal that
 // never reaches RequestedReviewers: a dismissed review means my verdict was
 // thrown away and the PR is waiting on me again, while a later review of any

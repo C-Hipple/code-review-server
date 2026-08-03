@@ -51,6 +51,7 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 		SectionTitle:         raw.SectionTitle,
 		IncludeDiff:          raw.IncludeDiff,
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
@@ -75,6 +76,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		SectionTitle:         raw.SectionTitle,
 		IncludeDiff:          raw.IncludeDiff,
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
@@ -107,6 +109,7 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 		SectionTitle:         raw.SectionTitle,
 		IncludeDiff:          raw.IncludeDiff,
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
+		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil
@@ -138,25 +141,52 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, repos *[]string, jiraDoma
 	return wf, nil
 }
 
-// computeAuxRequirements determines which metadata needs to be pre-fetched by
-// inspecting the filter names configured for a workflow. Only fetch what the
-// filters actually require, letting Details() fall back for anything else.
+// computeAuxRequirements determines which metadata the manager pre-fetches by
+// inspecting the filter names configured for a workflow. The pre-fetch pass
+// runs BEFORE filtering, so anything requested here is fetched for every
+// candidate PR of the workflow's repos on every cycle — on a repo with
+// hundreds of open PRs that is hundreds of API calls per field per cycle.
+// Only data a filter actually reads out of the AuxDataStore belongs here;
+// Details() falls back to the API for anything else.
+//
+// FilterWaitingOnMe and FilterWaitingOnAuthor deliberately request nothing:
+// they cannot read the AuxDataStore (they live in git_tools, which the store
+// is not visible to) and instead fetch interaction data themselves for the
+// few PRs that survive their cheap search prefilter — see
+// git_tools/interaction_prefilter.go. The display data their sections need is
+// fetched after filtering, for survivors only (postFilterAuxRequirements).
 func computeAuxRequirements(filterNames []string, includeDiff bool) AuxDataRequirement {
 	req := AuxDataRequirement{Diff: includeDiff}
 	for _, raw := range filterNames {
 		name, _ := ParseFilterString(raw)
 		switch name {
-		case "FilterWaitingOnMe", "FilterWaitingOnAuthor":
-			req.Comments = true
-			req.Reviews = true
-			req.Commits = true
 		case "FilterCIPassing", "FilterCIFailing":
 			req.CIStatus = true
 		case "FilterMyReviewRequested":
+			// filterMyReviewRequestedFor reads aux.Reviews from the store to
+			// catch dismissed reviews.
 			req.Reviews = true
 		}
 	}
 	return req
+}
+
+// postFilterAuxRequirements returns the aux data to fetch for the PRs that
+// SURVIVE a workflow's filters. The interaction filters keep the manager from
+// pre-fetching anything for their candidate set (see computeAuxRequirements),
+// but the handful of PRs that end up in the section still need comments,
+// reviews, and commits — for the section display (reviewer summary, comment
+// counts) and for GetPRDetails' DB caches — the same data the pre-fetch pass
+// provided before the prefilter existed. A zero value means the workflow has
+// no interaction filter and the manager's pre-fetch already covered it.
+func postFilterAuxRequirements(filterNames []string) AuxDataRequirement {
+	for _, raw := range filterNames {
+		name, _ := ParseFilterString(raw)
+		if name == "FilterWaitingOnMe" || name == "FilterWaitingOnAuthor" {
+			return AuxDataRequirement{Comments: true, Reviews: true, Commits: true}
+		}
+	}
+	return AuxDataRequirement{}
 }
 
 var filter_func_map = map[string]func(prs []*github.PullRequest) []*github.PullRequest{

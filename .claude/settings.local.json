@@ -29,7 +29,9 @@
       "Bash(bun run:*)",
       "Bash(gh pr *)",
       "Bash(gh run *)",
-      "Bash(bunx prettier *)"
+      "Bash(bunx prettier *)",
+      "Bash(go run *)",
+      "Bash(gh api *)"
     ]
   }
 }

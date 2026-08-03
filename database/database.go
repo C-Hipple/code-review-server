@@ -227,6 +227,20 @@ func (db *DB) initSchema() error {
 		completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS WorkflowActionLog (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		workflow_name TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL DEFAULT '',
+		owner TEXT NOT NULL DEFAULT '',
+		repo TEXT NOT NULL DEFAULT '',
+		pr_number INTEGER NOT NULL DEFAULT 0,
+		sha TEXT NOT NULL DEFAULT '',
+		fields_written TEXT NOT NULL DEFAULT '',
+		section_name TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS APICallStats (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -392,6 +406,57 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN rate_limit_reset_at TEXT NOT NULL DEFAULT ''")
 		if err != nil {
 			slog.Warn("Error adding rate_limit_reset_at column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: bring an existing WorkflowActionLog up to the current column
+	// set. The CREATE TABLE above only fires for fresh databases, so a table
+	// written by an earlier version of this schema keeps whatever columns it had.
+	// Same table-existence guard as the migrations above: pragma_table_info
+	// returns 0 rows for a missing table, which would otherwise trigger ALTERs
+	// against a table that does not exist.
+	var workflowActionLogExists int
+	_ = db.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='WorkflowActionLog'").Scan(&workflowActionLogExists)
+	if workflowActionLogExists > 0 {
+		workflowActionLogColumns := []struct {
+			name string
+			ddl  string
+		}{
+			{"workflow_name", "ALTER TABLE WorkflowActionLog ADD COLUMN workflow_name TEXT NOT NULL DEFAULT ''"},
+			{"action", "ALTER TABLE WorkflowActionLog ADD COLUMN action TEXT NOT NULL DEFAULT ''"},
+			{"owner", "ALTER TABLE WorkflowActionLog ADD COLUMN owner TEXT NOT NULL DEFAULT ''"},
+			{"repo", "ALTER TABLE WorkflowActionLog ADD COLUMN repo TEXT NOT NULL DEFAULT ''"},
+			{"pr_number", "ALTER TABLE WorkflowActionLog ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0"},
+			{"sha", "ALTER TABLE WorkflowActionLog ADD COLUMN sha TEXT NOT NULL DEFAULT ''"},
+			{"fields_written", "ALTER TABLE WorkflowActionLog ADD COLUMN fields_written TEXT NOT NULL DEFAULT ''"},
+			{"section_name", "ALTER TABLE WorkflowActionLog ADD COLUMN section_name TEXT NOT NULL DEFAULT ''"},
+			{"detail", "ALTER TABLE WorkflowActionLog ADD COLUMN detail TEXT NOT NULL DEFAULT ''"},
+			// SQLite refuses to ADD COLUMN with a non-constant default, so the
+			// migrated column defaults to empty rather than CURRENT_TIMESTAMP.
+			// LogWorkflowAction always writes created_at explicitly, so nothing
+			// depends on the column default.
+			{"created_at", "ALTER TABLE WorkflowActionLog ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT ''"},
+		}
+		for _, col := range workflowActionLogColumns {
+			err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('WorkflowActionLog') WHERE name=?", col.name).Scan(&count)
+			if err == nil && count == 0 {
+				if _, err = db.conn.Exec(col.ddl); err != nil {
+					slog.Warn("Error adding column to WorkflowActionLog", "column", col.name, "error", err)
+				}
+			}
+		}
+
+		// Indexed after the column migration, not in the schema block above: on a
+		// legacy table missing these columns, indexing them up front fails the
+		// whole schema statement and takes NewDB down with it.
+		indexes := []string{
+			"CREATE INDEX IF NOT EXISTS idx_workflow_action_log_pr ON WorkflowActionLog(owner, repo, pr_number, id DESC)",
+			"CREATE INDEX IF NOT EXISTS idx_workflow_action_log_created ON WorkflowActionLog(created_at)",
+		}
+		for _, idx := range indexes {
+			if _, err = db.conn.Exec(idx); err != nil {
+				slog.Warn("Error creating WorkflowActionLog index", "error", err)
+			}
 		}
 	}
 

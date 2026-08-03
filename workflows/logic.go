@@ -69,6 +69,11 @@ type FileChanges struct {
 	SectionName  string
 	TTL          int64
 	WorkflowName string
+	// HeadSHA is the PR head SHA this change was built from. Recorded in
+	// WorkflowActionLog so a later cache-miss report can tell whether the
+	// workflow was working from the SHA the reviewer is now looking at. Empty
+	// for Delete changes, which are built from DB rows rather than a PR.
+	HeadSHA string
 	// NotifyOnAdd is the effective desktop-notification decision for the
 	// workflow that produced this change. When true and ChangeType is
 	// "Addition", a desktop notification will be sent.
@@ -616,6 +621,7 @@ func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRe
 		SectionName:  section.SectionName,
 		TTL:          0, // Set by caller
 		WorkflowName: workflowName,
+		HeadSHA:      pr.GetHead().GetSHA(),
 	}
 }
 

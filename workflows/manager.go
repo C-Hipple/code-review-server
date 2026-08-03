@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -188,6 +190,9 @@ func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 			)
 			if err != nil {
 				slog.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+			} else {
+				logItemAction(deserializedChange.FileChange,
+					[]string{"status", "title", "details", "tags", "workflows"}, "")
 			}
 			if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
 				notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
@@ -203,12 +208,57 @@ func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 			)
 			if err != nil {
 				slog.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
+			} else {
+				logItemAction(deserializedChange.FileChange, []string{"workflows"},
+					"workflow released ownership; item pruned if no owners remain")
 			}
 		}
 		changeCount++
 		wg.Done()
 	}
 	slog.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+}
+
+// logItemAction records an item write (Addition / Update / Delete) in
+// WorkflowActionLog. Identifiers that aren't PR items are skipped rather than
+// logged with empty coordinates.
+func logItemAction(change *FileChanges, fields []string, detail string) {
+	owner, repo, number, ok := parsePRIdentifier(change.Identifier)
+	if !ok {
+		return
+	}
+	logWorkflowAction(database.WorkflowAction{
+		WorkflowName:  change.WorkflowName,
+		Action:        change.ChangeType,
+		Owner:         owner,
+		Repo:          repo,
+		PRNumber:      number,
+		SHA:           change.HeadSHA,
+		FieldsWritten: fields,
+		SectionName:   change.SectionName,
+		Detail:        detail,
+	})
+}
+
+// parsePRIdentifier splits a workflow item identifier ("owner/repo-123") into
+// its parts. The number is taken from the last "-" so owner and repo names that
+// contain dashes ("C-hipple/code-review-server-207") parse correctly. The repo
+// it returns is the short name, matching the cache-key convention used by the
+// PR cache tables.
+func parsePRIdentifier(identifier string) (string, string, int, bool) {
+	dash := strings.LastIndex(identifier, "-")
+	if dash < 0 {
+		return "", "", 0, false
+	}
+	number, err := strconv.Atoi(identifier[dash+1:])
+	if err != nil || number <= 0 {
+		return "", "", 0, false
+	}
+	owner, repo, found := strings.Cut(identifier[:dash], "/")
+	if !found || owner == "" || repo == "" {
+		return "", "", 0, false
+	}
+	return owner, repo, number, true
 }
 
 func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
@@ -570,6 +620,7 @@ func (ms *ManagerService) Run() {
 			slog.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
 		pruneOrphanedItems()
+		pruneWorkflowActionLog()
 	} else {
 		cycle_count := 0
 		for {
@@ -619,6 +670,7 @@ func (ms *ManagerService) Run() {
 			}
 
 			pruneOrphanedItems()
+			pruneWorkflowActionLog()
 
 			// Log cycle completion so the throttle check works on next server start.
 			if err := db.LogWorkflowCycle(); err != nil {
@@ -643,6 +695,27 @@ func pruneOrphanedItems() {
 	}
 	if deleted > 0 {
 		slog.Info("Pruned orphaned items", "count", deleted)
+	}
+}
+
+// workflowActionLogRetention is how far back WorkflowActionLog rows are kept.
+// Every cycle writes roughly two rows per PR it touches (one cache write, one
+// item write), so on the default 10-minute cycle a 200-PR dashboard accumulates
+// on the order of a few hundred thousand rows a week. That is well within what
+// SQLite handles and far longer than any cache-miss investigation needs; lower
+// it if the database size becomes a concern.
+const workflowActionLogRetention = 7 * 24 * time.Hour
+
+// pruneWorkflowActionLog drops action log rows past the retention window. Run
+// after every cycle.
+func pruneWorkflowActionLog() {
+	deleted, err := config.C().DB.PruneWorkflowActionsBefore(time.Now().Add(-workflowActionLogRetention))
+	if err != nil {
+		slog.Error("Failed to prune workflow action log", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("Pruned workflow action log", "count", deleted)
 	}
 }
 
@@ -677,6 +750,10 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	// Collect all PRs and merge their aux data requirements
 	prRequirements := make(map[PRKey]AuxDataRequirement)
 	prObjects := make(map[PRKey]*github.PullRequest)
+	// Requirements are merged across workflows, so a single fetch can be on
+	// behalf of several of them. Track every requester so the action log names
+	// them all rather than picking one arbitrarily.
+	prWorkflows := make(map[PRKey][]string)
 
 	for _, wf := range ms.Workflows {
 		for _, req := range wf.GetPRRequirements() {
@@ -704,6 +781,9 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				}
 				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
 				prObjects[key] = pr
+				if !slices.Contains(prWorkflows[key], wf.GetName()) {
+					prWorkflows[key] = append(prWorkflows[key], wf.GetName())
+				}
 
 				// Merge requirements (OR them together)
 				existing := prRequirements[key]
@@ -734,13 +814,13 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		}
 
 		wg.Add(1)
-		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest) {
+		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest, workflowName string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			auxData := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
+			auxData := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
 			store.Set(key, auxData)
-		}(key, auxReq, prObjects[key])
+		}(key, auxReq, prObjects[key], strings.Join(prWorkflows[key], ","))
 	}
 	wg.Wait()
 
@@ -802,8 +882,11 @@ func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
+// workflowName identifies who asked for the fetch; it is recorded in
+// WorkflowActionLog alongside the fields that actually landed.
 func fetchAuxDataForPR(client *github.Client,
 	apiCalls *apiCallCounter,
+	workflowName string,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
 
 	auxData := &PRAuxData{}
@@ -954,7 +1037,7 @@ func fetchAuxDataForPR(client *github.Client,
 	wg.Wait()
 
 	// Persist all fetched data to DB so GetPRDetails finds it cached
-	persistPRCacheData(key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
+	persistPRCacheData(workflowName, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
 
 	return auxData
 }
@@ -975,7 +1058,12 @@ func convertIssueToPRComment(ic *github.IssueComment) *github.PullRequestComment
 
 // persistPRCacheData stores all pre-fetched PR data to the DB cache
 // so that server.GetPRDetails can use it without making API calls.
-func persistPRCacheData(key PRKey, pr *github.PullRequest,
+//
+// Every cache field that lands is recorded in WorkflowActionLog together with
+// the workflow name and head SHA. A field that was requested but failed to
+// fetch (or failed to write) is deliberately absent from that list, which is
+// what makes the log useful when explaining a later cache miss.
+func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	auxData *PRAuxData,
 	allComments []*github.PullRequestComment,
 	reviews []*github.PullRequestReview,
@@ -984,12 +1072,15 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 	checkRuns *github.ListCheckRunsResults) {
 
 	db := config.C().DB
+	var written []string
 
 	// 1. Comments
 	if allComments != nil {
 		if j, err := json.Marshal(allComments); err == nil {
 			if err := db.UpsertPRComments(key.Number, key.Repo, string(j)); err != nil {
 				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "comments")
 			}
 		}
 	}
@@ -998,11 +1089,15 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 	if auxData.Diff != "" {
 		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
 			slog.Error("Failed to cache PR diff", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			written = append(written, "diff")
 		}
 	} else if auxData.HeadSHA != "" {
 		// Store SHA even without diff so GetPRDetails can look up CI status
 		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
 			slog.Error("Failed to cache PR SHA", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			written = append(written, "sha")
 		}
 	}
 
@@ -1037,6 +1132,8 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 		if j, err := json.Marshal(rvs); err == nil {
 			if err := db.UpsertPRReviews(key.Number, key.Repo, string(j)); err != nil {
 				slog.Error("Failed to cache PR reviews", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "reviews")
 			}
 		}
 	}
@@ -1050,6 +1147,8 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {
 			if err := db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j)); err != nil {
 				slog.Error("Failed to cache CI status", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "ci_status")
 			}
 		}
 	}
@@ -1063,6 +1162,8 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 		if j, err := json.Marshal(reviewers); err == nil {
 			if err := db.UpsertRequestedReviewers(key.Number, key.Repo, string(j)); err != nil {
 				slog.Error("Failed to cache requested reviewers", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "requested_reviewers")
 			}
 		}
 	}
@@ -1089,23 +1190,67 @@ func persistPRCacheData(key PRKey, pr *github.PullRequest,
 		if j, err := json.Marshal(cms); err == nil {
 			if err := db.UpsertPRCommits(key.Number, key.Repo, string(j)); err != nil {
 				slog.Error("Failed to cache PR commits", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "commits")
 			}
 		}
 	}
 
 	// 7. PR Metadata (constructed from PR object + fetched data)
 	if pr != nil {
-		buildAndCacheMetadata(db, key, pr, reviews, combinedStatus, checkRuns)
+		if buildAndCacheMetadata(db, key, pr, reviews, combinedStatus, checkRuns) {
+			written = append(written, "metadata")
+		}
+	}
+
+	logWorkflowAction(database.WorkflowAction{
+		WorkflowName:  workflowName,
+		Action:        database.WorkflowActionCacheWrite,
+		Owner:         key.Owner,
+		Repo:          key.Repo,
+		PRNumber:      key.Number,
+		SHA:           auxData.HeadSHA,
+		FieldsWritten: written,
+		Detail:        describeAuxRequest(auxData, written),
+	})
+}
+
+// describeAuxRequest notes anything worth knowing about a cache write beyond
+// the field list, so a later cache-miss report can say *why* a field is absent
+// rather than only that it is.
+func describeAuxRequest(auxData *PRAuxData, written []string) string {
+	if len(written) == 0 {
+		return "no cache fields written (all requested fetches failed or returned nothing)"
+	}
+	if auxData.HeadSHA == "" {
+		return "head SHA unknown; SHA-keyed caches (diff, CI status) could not be written"
+	}
+	return ""
+}
+
+// logWorkflowAction records one workflow action, downgrading failures to a warn:
+// the log is diagnostic, and losing a row must never fail a workflow cycle.
+func logWorkflowAction(action database.WorkflowAction) {
+	db := config.C().DB
+	if db == nil {
+		return
+	}
+	if _, err := db.LogWorkflowAction(action); err != nil {
+		slog.Warn("Failed to record workflow action",
+			"workflow", action.WorkflowName, "action", action.Action,
+			"pr", action.PRNumber, "repo", action.Repo, "error", err)
 	}
 }
 
 // buildAndCacheMetadata constructs a PRMetadata-compatible JSON from the PR object
-// and fetched review/CI data, then stores it in the metadata cache.
+// and fetched review/CI data, then stores it in the metadata cache. It reports
+// whether the metadata row was actually written, so the caller can log the
+// field as written only when it landed.
 func buildAndCacheMetadata(db *database.DB, key PRKey,
 	pr *github.PullRequest,
 	reviews []*github.PullRequestReview,
 	combinedStatus *github.CombinedStatus,
-	checkRuns *github.ListCheckRunsResults) {
+	checkRuns *github.ListCheckRunsResults) bool {
 
 	// Labels
 	labels := []string{}
@@ -1243,9 +1388,12 @@ func buildAndCacheMetadata(db *database.DB, key PRKey,
 		ReleaseStatus:      existingReleaseStatus,
 	}
 
+	metadataWritten := false
 	if j, err := json.Marshal(metadata); err == nil {
 		if err := db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 			slog.Error("Failed to cache PR metadata", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			metadataWritten = true
 		}
 	}
 
@@ -1268,4 +1416,6 @@ func buildAndCacheMetadata(db *database.DB, key PRKey,
 			}
 		}
 	}
+
+	return metadataWritten
 }

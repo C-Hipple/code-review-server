@@ -733,6 +733,112 @@ type cacheMissState struct {
 	commitsHit  bool
 }
 
+// humanizeAgo renders a duration as a short "how long ago" string.
+func humanizeAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd %dh", int(d.Hours()/24), int(d.Hours())%24)
+	}
+}
+
+// cacheFieldToLogField maps a missed field name as GetPRDetails records it to
+// the field name the workflow writes into WorkflowActionLog. "metadata" and
+// "diff" happen to match; the rest are listed so the mapping stays explicit
+// when either side gains a field.
+var cacheFieldToLogField = map[string]string{
+	"metadata": "metadata",
+	"diff":     "diff",
+	"comments": "comments",
+	"reviews":  "reviews",
+	"commits":  "commits",
+}
+
+// workflowActionSection reports what the workflows last did to this PR. A cache
+// miss on its own only says the data was absent; the last action says whether a
+// workflow ever wrote that field, when, from which SHA, and which workflow was
+// responsible — which is what turns the report into something actionable.
+func workflowActionSection(db *database.DB, state cacheMissState, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("\nLast Workflow Action:\n")
+
+	latest, err := db.GetLatestWorkflowAction(state.owner, state.repo, state.number)
+	if err != nil {
+		sb.WriteString(fmt.Sprintf("  (lookup failed: %v)\n", err))
+		return sb.String()
+	}
+	if latest == nil {
+		sb.WriteString("  (none recorded — no workflow has written this PR since the action log was introduced)\n")
+		return sb.String()
+	}
+
+	sb.WriteString(fmt.Sprintf("  Workflow:        %s\n", orNone(latest.WorkflowName)))
+	sb.WriteString(fmt.Sprintf("  Action:          %s\n", latest.Action))
+	if latest.CreatedAt.IsZero() {
+		sb.WriteString("  When:            (unknown)\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("  When:            %s ago  (%s UTC)\n",
+			humanizeAgo(now.Sub(latest.CreatedAt)), latest.CreatedAt.Format("2006-01-02 15:04:05")))
+	}
+	sb.WriteString(fmt.Sprintf("  Head SHA:        %s\n", orNone(latest.SHA)))
+	sb.WriteString(fmt.Sprintf("  Fields written:  %s\n", latest.FieldsSummary()))
+	if latest.SectionName != "" {
+		sb.WriteString(fmt.Sprintf("  Section:         %s\n", latest.SectionName))
+	}
+	if latest.Detail != "" {
+		sb.WriteString(fmt.Sprintf("  Note:            %s\n", latest.Detail))
+	}
+
+	// Per-field history for exactly the fields this request had to fetch. A
+	// field the workflows have never written is the clearest possible signal
+	// that the gap is on the workflow side, not the read side.
+	if len(state.missedFields) > 0 {
+		// Under skipCache the field list is what we refetched on purpose, not
+		// what was missing, so the heading has to say so.
+		if state.skipCache {
+			sb.WriteString("\nLast Workflow Write Per Refetched Field:\n")
+		} else {
+			sb.WriteString("\nLast Workflow Write Per Missed Field:\n")
+		}
+		for _, missed := range state.missedFields {
+			logField, mapped := cacheFieldToLogField[missed]
+			if !mapped {
+				sb.WriteString(fmt.Sprintf("  %-9s (not tracked in the workflow action log)\n", missed+":"))
+				continue
+			}
+			action, err := db.GetLatestWorkflowActionWithField(state.owner, state.repo, state.number, logField)
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("  %-9s (lookup failed: %v)\n", missed+":", err))
+				continue
+			}
+			if action == nil {
+				sb.WriteString(fmt.Sprintf("  %-9s never written by a workflow\n", missed+":"))
+				continue
+			}
+			when := "unknown time"
+			if !action.CreatedAt.IsZero() {
+				when = humanizeAgo(now.Sub(action.CreatedAt)) + " ago"
+			}
+			sb.WriteString(fmt.Sprintf("  %-9s %s by %s (sha %s)\n",
+				missed+":", when, orNone(action.WorkflowName), orNone(action.SHA)))
+		}
+	}
+
+	return sb.String()
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
 func writeCacheMissLog(state cacheMissState) {
 	if len(state.missedFields) == 0 {
 		return
@@ -812,22 +918,13 @@ func writeCacheMissLog(state cacheMissState) {
 		sb.WriteString("  Section:         (not found in workflow items — PR may not have been fetched by a workflow yet)\n")
 	}
 	if !workflowAddedAt.IsZero() {
-		ago := now.Sub(workflowAddedAt)
-		// Format duration as human-readable
-		var agoStr string
-		if ago < time.Minute {
-			agoStr = fmt.Sprintf("%ds", int(ago.Seconds()))
-		} else if ago < time.Hour {
-			agoStr = fmt.Sprintf("%dm %ds", int(ago.Minutes()), int(ago.Seconds())%60)
-		} else if ago < 24*time.Hour {
-			agoStr = fmt.Sprintf("%dh %dm", int(ago.Hours()), int(ago.Minutes())%60)
-		} else {
-			agoStr = fmt.Sprintf("%dd %dh", int(ago.Hours()/24), int(ago.Hours())%24)
-		}
-		sb.WriteString(fmt.Sprintf("  Added:           %s ago  (%s UTC)\n", agoStr, workflowAddedAt.UTC().Format("2006-01-02 15:04:05")))
+		sb.WriteString(fmt.Sprintf("  Added:           %s ago  (%s UTC)\n",
+			humanizeAgo(now.Sub(workflowAddedAt)), workflowAddedAt.UTC().Format("2006-01-02 15:04:05")))
 	} else {
 		sb.WriteString("  Added:           (unknown — item not found or created_at not set)\n")
 	}
+
+	sb.WriteString(workflowActionSection(db, state, now))
 
 	sb.WriteString("---\n\n")
 

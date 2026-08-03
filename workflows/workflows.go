@@ -102,7 +102,7 @@ func (w SyncReviewRequestsWorkflow) Run(prs []*github.PullRequest, c chan FileCh
 	// point of the interaction prefilter is that the candidate set is large
 	// and the surviving set is small. See postFilterAuxRequirements.
 	if w.PostFilterAux != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(prs, w.PostFilterAux)
+		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
 	}
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
@@ -216,7 +216,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(client, ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
+		prefetchAuxDataForPRs(client, w.Name, ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
 			Comments: true,
 			CIStatus: true,
 			Diff:     true,
@@ -262,8 +262,9 @@ func resolveRepoRefs(entries []string) []jira.RepoRef {
 // PRs and persists it to the DB caches and the current global AuxDataStore.
 // Used by workflows whose PR set isn't known during the manager's collection
 // phase (ProjectListWorkflow, which resolves PR numbers via Jira at run time)
-// and for post-filter fetches (prefetchAuxForFilteredPRs).
-func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
+// and for post-filter fetches (prefetchAuxForFilteredPRs). workflowName is
+// recorded in WorkflowActionLog alongside the fields each fetch writes.
+func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
 	if len(prs) == 0 {
 		return
 	}
@@ -285,7 +286,7 @@ func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*git
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
-			data := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
+			data := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
 			// MergeSet, not Set: auxReq may be a subset of the fields another
 			// pass already stored for this PR (e.g. the manager pre-fetched
 			// its diff), and those must survive.
@@ -301,7 +302,7 @@ func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*git
 // workflow's filters have run, so the PR count here is the section's size,
 // not the candidate set's; see postFilterAuxRequirements in builders.go for
 // why interaction-filter workflows defer this data until after filtering.
-func prefetchAuxForFilteredPRs(prs []*github.PullRequest, auxReq AuxDataRequirement) {
+func prefetchAuxForFilteredPRs(workflowName string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
 	if len(prs) == 0 {
 		return
 	}
@@ -317,6 +318,6 @@ func prefetchAuxForFilteredPRs(prs []*github.PullRequest, auxReq AuxDataRequirem
 		groups[ref] = append(groups[ref], pr)
 	}
 	for ref, group := range groups {
-		prefetchAuxDataForPRs(client, ref.owner, ref.repo, group, auxReq)
+		prefetchAuxDataForPRs(client, workflowName, ref.owner, ref.repo, group, auxReq)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crs/cmd/internal/pluginkit"
 	"flag"
 	"fmt"
 	"io"
@@ -242,6 +243,9 @@ func main() {
 	headers := flag.String("headers", "", "PR metadata JSON")
 	comments := flag.String("comments", "", "Review comments JSON")
 	postReviewFlag := flag.Bool("post-review", false, "Post review via gh pr review")
+	// The review doesn't vary by call type, but the flag still has to be
+	// accepted since the server always passes it.
+	pluginkit.RegisterCallTypeFlag()
 	flag.Parse()
 
 	stderr := os.Stderr

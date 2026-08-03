@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crs/cmd/internal/pluginkit"
 	"flag"
 	"fmt"
 )
@@ -13,6 +14,7 @@ func main() {
 	comments := flag.String("comments", "", "PR comments JSON")
 	headers := flag.String("headers", "", "PR metadata JSON")
 	branch := flag.String("branch", "", "PR head branch name")
+	callType := pluginkit.RegisterCallTypeFlag()
 
 	flag.Parse()
 
@@ -25,6 +27,9 @@ func main() {
 	if *number != 0 {
 		fmt.Printf("Number: %d\n", *number)
 	}
+	// The server always passes --call-type, so a plugin can tell an automatic
+	// run apart from one a reviewer asked for.
+	fmt.Printf("Call Type: %s\n", callType())
 	if *branch != "" {
 		fmt.Printf("Branch: %s\n", *branch)
 	}

@@ -5,6 +5,7 @@ import (
 	"crs/database"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,6 +112,100 @@ func TestRunPluginsForce_EmptyListSkipsOnDemandPlugins(t *testing.T) {
 	}
 	if _, err := os.Stat(onDemandMarker); err == nil {
 		t.Error("expected on-demand plugin to be skipped on empty rerun, but it ran")
+	}
+}
+
+func TestCallTypeFor(t *testing.T) {
+	tests := []struct {
+		name   string
+		plugin config.Plugin
+		force  bool
+		want   PluginCallType
+	}{
+		{"normal plugin, unforced", config.Plugin{Name: "p"}, false, PluginCallAutomatic},
+		{"normal plugin, forced", config.Plugin{Name: "p"}, true, PluginCallRerun},
+		{"deferred plugin, forced", config.Plugin{Name: "p", OnlyOnDemand: true}, true, PluginCallExplicit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := callTypeFor(tt.plugin, tt.force); got != tt.want {
+				t.Errorf("callTypeFor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// argRecorderScript writes a plugin invocation's arguments to argsPath so a
+// test can assert on the flags the server passed.
+func argRecorderScript(t *testing.T, dir, name, argsPath string) string {
+	t.Helper()
+	script := filepath.Join(dir, name)
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" > "+argsPath+"\n"), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+	return script
+}
+
+func recordedArgs(t *testing.T, argsPath string) string {
+	t.Helper()
+	got, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("plugin did not record its arguments: %v", err)
+	}
+	return string(got)
+}
+
+func TestRunPlugins_PassesAutomaticCallType(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := argRecorderScript(t, dir, "normal.sh", argsPath)
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "normal-plugin", Command: script}},
+	})
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	if args := recordedArgs(t, argsPath); !strings.Contains(args, "--call-type automatic") {
+		t.Errorf("expected --call-type automatic in plugin args, got %q", args)
+	}
+}
+
+func TestRunPluginsForce_PassesRerunCallType(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := argRecorderScript(t, dir, "normal.sh", argsPath)
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "normal-plugin", Command: script}},
+	})
+
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "main", true, []string{"normal-plugin"})
+
+	if args := recordedArgs(t, argsPath); !strings.Contains(args, "--call-type rerun") {
+		t.Errorf("expected --call-type rerun in plugin args, got %q", args)
+	}
+}
+
+func TestRunPluginsForce_PassesExplicitCallTypeForDeferredPlugin(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := argRecorderScript(t, dir, "ondemand.sh", argsPath)
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "expensive-plugin", Command: script, OnlyOnDemand: true}},
+	})
+
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "feature-branch", true, []string{"expensive-plugin"})
+
+	if args := recordedArgs(t, argsPath); !strings.Contains(args, "--call-type explicit") {
+		t.Errorf("expected --call-type explicit in plugin args, got %q", args)
 	}
 }
 

@@ -122,6 +122,9 @@ func main() {
 	number := flag.Int("number", 0, "PR number")
 	commentsJSON := flag.String("comments", "", "PR comments JSON")
 	headersJSON := flag.String("headers", "", "PR metadata JSON")
+	// The report doesn't vary by call type, but the flag still has to be
+	// accepted since the server always passes it.
+	pluginkit.RegisterCallTypeFlag()
 
 	flag.Parse()
 

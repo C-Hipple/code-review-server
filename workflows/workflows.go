@@ -204,7 +204,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(client, ref.Owner, ref.Repo, repoPRs)
+		prefetchAuxDataForPRs(client, w.Name, ref.Owner, ref.Repo, repoPRs)
 		allPRs = append(allPRs, repoPRs...)
 	}
 
@@ -245,7 +245,7 @@ func resolveRepoRefs(entries []string) []jira.RepoRef {
 // the current global AuxDataStore. Used by workflows whose PR set isn't known
 // during the manager's collection phase (e.g. ProjectListWorkflow, which
 // resolves PR numbers via Jira at run time).
-func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*github.PullRequest) {
+func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo string, prs []*github.PullRequest) {
 	if len(prs) == 0 {
 		return
 	}
@@ -274,7 +274,7 @@ func prefetchAuxDataForPRs(client *github.Client, owner, repo string, prs []*git
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
-			data := fetchAuxDataForPR(client, apiCalls, key, auxReq, pr)
+			data := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
 			store.Set(key, data)
 		}(pr)
 	}

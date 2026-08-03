@@ -39,7 +39,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `plugins.go` — async plugin execution
 
 ### Supporting Packages
-- `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results
+- `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`)
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
 - `git_tools/` — GitHub API wrapper using go-github v48
 - `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface; Gemini is the only backend today. Appends every call to `~/.crs/llm_calls.log`
@@ -54,7 +54,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 ## Key Data Flow
 
 1. **Workflow fetch**: GitHub API → filter PRs → `ProcessPRsDB` upserts into `sections`/`items` tables
-2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI and persists to DB caches
+2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written)
 3. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
 4. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
 

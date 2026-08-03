@@ -2,16 +2,19 @@ package server
 
 import (
 	"crs/config"
+	"crs/database"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // readCacheMissLog runs writeCacheMissLog against a temporary CRS_HOME and
-// returns whatever it wrote.
-func readCacheMissLog(t *testing.T, state cacheMissState) string {
+// returns whatever it wrote. seed, when non-nil, populates the database before
+// the report is generated.
+func readCacheMissLog(t *testing.T, state cacheMissState, seed ...func(*database.DB)) string {
 	t.Helper()
 	crsHome := t.TempDir()
 	t.Setenv("CRS_HOME", crsHome)
@@ -19,6 +22,10 @@ func readCacheMissLog(t *testing.T, state cacheMissState) string {
 	db := setupTestDB(t)
 	config.SetC(config.Config{DB: db})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	for _, fn := range seed {
+		fn(db)
+	}
 
 	writeCacheMissLog(state)
 
@@ -90,6 +97,97 @@ func TestWriteCacheMissLogSkipsCleanRequests(t *testing.T) {
 		number: 30306,
 	}); body != "" {
 		t.Errorf("nothing missed, but a report was written:\n%s", body)
+	}
+}
+
+func TestWriteCacheMissLogIncludesLatestWorkflowAction(t *testing.T) {
+	// The miss itself only says the data was absent. The last workflow action
+	// says who last wrote this PR, when, and from which SHA — without it there's
+	// no way to tell a workflow that never ran from one that ran and skipped the
+	// field.
+	body := readCacheMissLog(t, cacheMissState{
+		owner:        "multimediallc",
+		repo:         "chaturbate",
+		number:       30321,
+		missedFields: []string{"reviews", "commits"},
+		diffHit:      true,
+	}, func(db *database.DB) {
+		if _, err := db.LogWorkflowAction(database.WorkflowAction{
+			WorkflowName:  "review_requests",
+			Action:        database.WorkflowActionCacheWrite,
+			Owner:         "multimediallc",
+			Repo:          "chaturbate",
+			PRNumber:      30321,
+			SHA:           "deadbeef",
+			FieldsWritten: []string{"comments", "diff"},
+			CreatedAt:     time.Now().Add(-90 * time.Second),
+		}); err != nil {
+			t.Fatalf("seeding workflow action: %v", err)
+		}
+	})
+
+	if !strings.Contains(body, "Last Workflow Action:") {
+		t.Fatalf("workflow action section missing:\n%s", body)
+	}
+	if !strings.Contains(body, "Workflow:        review_requests") {
+		t.Errorf("workflow name missing from report:\n%s", body)
+	}
+	if !strings.Contains(body, "Head SHA:        deadbeef") {
+		t.Errorf("head SHA missing from report:\n%s", body)
+	}
+	if !strings.Contains(body, "Fields written:  comments, diff") {
+		t.Errorf("written field list missing from report:\n%s", body)
+	}
+	// Neither missed field was ever written, which is the actionable finding.
+	if !strings.Contains(body, "reviews:  never written by a workflow") {
+		t.Errorf("per-field history missing for reviews:\n%s", body)
+	}
+	if !strings.Contains(body, "commits:  never written by a workflow") {
+		t.Errorf("per-field history missing for commits:\n%s", body)
+	}
+}
+
+func TestWriteCacheMissLogReportsStaleFieldWrite(t *testing.T) {
+	// A field written by an earlier cycle but missing now points at eviction or
+	// a SHA change rather than a workflow that never covers the field, so the
+	// report has to name the last write instead of saying "never".
+	body := readCacheMissLog(t, cacheMissState{
+		owner:        "multimediallc",
+		repo:         "chaturbate",
+		number:       30321,
+		missedFields: []string{"reviews"},
+	}, func(db *database.DB) {
+		if _, err := db.LogWorkflowAction(database.WorkflowAction{
+			WorkflowName:  "review_requests",
+			Action:        database.WorkflowActionCacheWrite,
+			Owner:         "multimediallc",
+			Repo:          "chaturbate",
+			PRNumber:      30321,
+			SHA:           "oldsha",
+			FieldsWritten: []string{"reviews"},
+			CreatedAt:     time.Now().Add(-3 * time.Hour),
+		}); err != nil {
+			t.Fatalf("seeding workflow action: %v", err)
+		}
+	})
+
+	if !strings.Contains(body, "reviews:  3h 0m ago by review_requests (sha oldsha)") {
+		t.Errorf("stale write not reported:\n%s", body)
+	}
+}
+
+func TestWriteCacheMissLogWithoutWorkflowActions(t *testing.T) {
+	// A PR the workflows have never touched must say so plainly rather than
+	// printing an empty section.
+	body := readCacheMissLog(t, cacheMissState{
+		owner:        "multimediallc",
+		repo:         "chaturbate",
+		number:       30321,
+		missedFields: []string{"metadata"},
+	})
+
+	if !strings.Contains(body, "(none recorded") {
+		t.Errorf("missing 'no actions recorded' note:\n%s", body)
 	}
 }
 

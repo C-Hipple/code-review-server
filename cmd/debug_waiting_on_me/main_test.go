@@ -32,10 +32,22 @@ func TestExplain(t *testing.T) {
 		}
 	}
 
+	// A nil set (fail-open) unless the case says otherwise; cases exercising
+	// the prefilter pass an explicit set, mirroring the filter's paths.
+	inSet := func(numbers ...int) git_tools.InteractionSet {
+		set := git_tools.InteractionSet{}
+		for _, n := range numbers {
+			key := strings.ToLower(fmt.Sprintf("%s/%s#%d", owner, repo, n))
+			set[key] = true
+		}
+		return set
+	}
+
 	tests := []struct {
 		name       string
 		pr         *github.PullRequest
 		state      git_tools.InteractionState
+		interacted git_tools.InteractionSet
 		wantMatch  bool
 		wantReason string
 	}{
@@ -77,6 +89,25 @@ func TestExplain(t *testing.T) {
 			wantMatch:  false,
 			wantReason: "incomplete PR data",
 		},
+		{
+			// Same dismissed state as the "dismissed review" case, but the
+			// search set doesn't contain the PR — the prefilter's decision
+			// must win, and the reason must say so.
+			name:       "prefiltered despite dismissed state",
+			pr:         makePR(7, "someone-else"),
+			state:      git_tools.InteractionState{MyReviewDismissed: true},
+			interacted: inSet(999),
+			wantMatch:  false,
+			wantReason: "prefiltered",
+		},
+		{
+			name:       "in the interaction set with dismissed review",
+			pr:         makePR(8, "someone-else"),
+			state:      git_tools.InteractionState{MyReviewDismissed: true},
+			interacted: inSet(8),
+			wantMatch:  true,
+			wantReason: "dismissed",
+		},
 	}
 
 	for _, tt := range tests {
@@ -84,7 +115,7 @@ func TestExplain(t *testing.T) {
 			key := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, tt.pr.GetNumber())
 			git_tools.GlobalCache.Set(key, tt.state, time.Hour)
 
-			match, reason := explain(tt.pr, login)
+			match, reason := explain(tt.pr, login, tt.interacted)
 			if match != tt.wantMatch {
 				t.Errorf("match: expected %v, got %v (%s)", tt.wantMatch, match, reason)
 			}

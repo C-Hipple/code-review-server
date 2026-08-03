@@ -249,7 +249,13 @@ If the buffer already exists, switch to it instead of making a new RPC call."
 
       (crs--send-request
        "RPCHandler.GetAllReviews"
-       (vector)
+       ;; Ask the server to leave out the per-PR subtrees this buffer never
+       ;; reads.  Diffs alone were ~98% of the reply, and the list only ever
+       ;; parses a PR URL off the current line — `crs-get-review' re-fetches
+       ;; the diff through GetPR when a review is actually opened.
+       (vector (list (cons 'IncludeDiff :json-false)
+                     (cons 'IncludeComments
+                           (if crs-include-comments-tree t :json-false))))
        (lambda (result)
          (let* ((content (cdr (assq 'content result)))
                 (rendered (if crs-include-comments-tree

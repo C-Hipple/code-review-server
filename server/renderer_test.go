@@ -1030,6 +1030,107 @@ func TestGetLatestReviewEaseSkipsUnratedRows(t *testing.T) {
 	}
 }
 
+// detailsWithSubtrees mirrors the element layout PRToFileChangesDetails
+// produces: flat metadata, then one element per subtree heading followed by
+// that subtree's body.
+func detailsWithSubtrees() []string {
+	return []string{
+		"42",
+		"Repo: C-Hipple/code-review-server",
+		"*** SUCCESS CI Status\n",
+		" build: success\n",
+		"*** Diff\n",
+		"diff --git a/x.go b/x.go\n+added line\n-removed line\n",
+		"*** BODY\n the pr body\n",
+		"*** Comments [1]\n",
+		" alice: nice change\n",
+	}
+}
+
+func TestBuildItemLinesRenderOptions(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	section, err := db.GetOrCreateSection("Test Section", 0)
+	if err != nil {
+		t.Fatalf("failed to create section: %v", err)
+	}
+	item, err := db.UpsertItem(section.ID, "42", "TODO", "Some PR",
+		detailsWithSubtrees(), []string{"code-review-server"}, 0)
+	if err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+	r := NewOrgRenderer(db)
+
+	for _, tc := range []struct {
+		name    string
+		opts    RenderOptions
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "compact zero value drops diff and comments",
+			opts:    RenderOptions{},
+			want:    []string{"CI Status", "build: success", "Repo:"},
+			notWant: []string{"*** Diff", "added line", "*** Comments", "alice", "the pr body"},
+		},
+		{
+			name:    "diff opted in",
+			opts:    RenderOptions{IncludeDiff: true},
+			want:    []string{"*** Diff", "added line", "CI Status"},
+			notWant: []string{"*** Comments", "alice", "the pr body"},
+		},
+		{
+			name:    "comments opted in",
+			opts:    RenderOptions{IncludeComments: true},
+			want:    []string{"*** Comments", "alice", "CI Status"},
+			notWant: []string{"*** Diff", "added line", "the pr body"},
+		},
+		{
+			name:    "full render keeps both but never the body",
+			opts:    FullRenderOptions(),
+			want:    []string{"*** Diff", "added line", "*** Comments", "alice"},
+			notWant: []string{"the pr body"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(r.buildItemLines(item, 2, tc.opts), "")
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("rendered output missing %q:\n%s", want, got)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(got, notWant) {
+					t.Errorf("rendered output should not contain %q:\n%s", notWant, got)
+				}
+			}
+		})
+	}
+}
+
+func TestDetailSubtree(t *testing.T) {
+	for _, tc := range []struct {
+		detail string
+		want   string
+	}{
+		{"*** Diff\n", "Diff"},
+		{"*** Comments [4]\n", "Comments [4]"},
+		{"** TODO Some PR\n", "TODO Some PR"},
+		{"Repo: C-Hipple/code-review-server", ""},
+		{" build: success\n", ""},
+		// A diff body is a single element and must not read as a heading,
+		// even when a diff line happens to begin with stars.
+		{"diff --git a/x.go b/x.go\n+*** not a heading\n", ""},
+		{"***nospace", ""},
+	} {
+		if got := detailSubtree(tc.detail); got != tc.want {
+			t.Errorf("detailSubtree(%q) = %q, want %q", tc.detail, got, tc.want)
+		}
+	}
+}
+
 func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	db := setupTestDB(t)
 	config.SetC(config.Config{DB: db, ExperimentalLLMReviewEase: true})
@@ -1053,7 +1154,7 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	}
 
 	r := NewOrgRenderer(db)
-	lines := r.buildItemLines(item, 2)
+	lines := r.buildItemLines(item, 2, FullRenderOptions())
 	if len(lines) == 0 {
 		t.Fatal("no lines rendered")
 	}
@@ -1063,7 +1164,7 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 
 	// With the flag off, the headline keeps only the stored tags.
 	config.SetC(config.Config{DB: db})
-	lines = r.buildItemLines(item, 2)
+	lines = r.buildItemLines(item, 2, FullRenderOptions())
 	if !strings.Contains(lines[0], ":code-review-server:") || strings.Contains(lines[0], "medium") {
 		t.Errorf("title line %q should not include review-ease tag when disabled", lines[0])
 	}

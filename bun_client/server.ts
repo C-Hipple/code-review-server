@@ -138,13 +138,15 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+const SERVER_PORT = parseInt(process.env.CRS_PORT || '5172', 10);
+
 Bun.serve<{
     cmd: string | null;
     args?: string[];
     envs: Record<string, string>;
     proc?: Subprocess;
 }>({
-    port: parseInt(process.env.PORT || '5172', 10),
+    port: SERVER_PORT,
     async fetch(req, server) {
         const url = new URL(req.url);
 
@@ -595,4 +597,4 @@ Type: ${type}
     },
 });
 
-console.log(`Bun server running on http://localhost:${parseInt(process.env.PORT || '5172', 10)}`);
+console.log(`Bun server running on http://localhost:${SERVER_PORT}`);

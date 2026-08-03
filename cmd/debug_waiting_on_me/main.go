@@ -3,9 +3,12 @@
 //
 // An empty "Waiting on Me" section has several possible causes that all look
 // identical from the outside: no GithubUsername, a repo the token can't read
-// (which makes the manager skip the whole workflow for that cycle), or simply
-// no outstanding requests. This runs the same checks the filter does against
-// the live config and prints the decision for every open PR.
+// (which makes the manager skip the whole workflow for that cycle), the
+// interaction prefilter skipping a PR the search index hasn't caught up on
+// (see git_tools/interaction_prefilter.go), or simply no outstanding
+// requests. This runs the same checks the filter does — including the
+// prefilter — against the live config and prints the decision for every
+// open PR.
 //
 //	go run ./cmd/debug_waiting_on_me              # repos from the config
 //	go run ./cmd/debug_waiting_on_me owner/repo   # or an explicit list
@@ -70,6 +73,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The same two-search interaction set the filter consults; a nil set means
+	// the filter is running in its fail-open mode (checking every PR).
+	interacted := git_tools.SearchMyOpenInteractions(login)
+	if interacted == nil {
+		fmt.Println("\n!! Interaction prefilter unavailable (search failed?) — the filter falls")
+		fmt.Println("   back to checking every PR. Decisions below reflect that fallback.")
+	} else {
+		fmt.Printf("\nInteraction prefilter: search found %d open PRs with reviews or comments from %q.\n",
+			len(interacted), login)
+	}
+
 	fmt.Printf("\n== Open PRs (matching as %q) ==\n", login)
 	client := git_tools.GetGithubClient()
 	totalPRs, totalMatched := 0, 0
@@ -97,7 +111,7 @@ func main() {
 		fmt.Fprintln(w, "  MATCH\t#\tAUTHOR\tREQUESTED REVIEWERS\tTEAMS\tREASON")
 		matched := 0
 		for _, pr := range prs {
-			decision, reason := explain(pr, login)
+			decision, reason := explain(pr, login, interacted)
 			if decision {
 				matched++
 			}
@@ -124,8 +138,11 @@ func main() {
 	}
 }
 
-// explain reruns the filter's checks for one PR and reports which of them fired.
-func explain(pr *github.PullRequest, login string) (bool, string) {
+// explain reruns the filter's checks for one PR — in the same order the
+// filter takes them, so a PR the prefilter skips is reported as skipped even
+// if a full interaction-state check would have matched it (that divergence is
+// exactly the thing worth surfacing when debugging a missing PR).
+func explain(pr *github.PullRequest, login string, interacted git_tools.InteractionSet) (bool, string) {
 	if pr == nil || pr.Base == nil || pr.Base.Repo == nil ||
 		pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
 		return false, "incomplete PR data"
@@ -138,13 +155,17 @@ func explain(pr *github.PullRequest, login string) (bool, string) {
 			break
 		}
 	}
+	if requested {
+		return true, "review requested from you"
+	}
+
+	if !interacted.MayHaveInteracted(pr) {
+		return false, "prefiltered: search found no reviews or comments from you"
+	}
 
 	state := git_tools.GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 
 	reasons := []string{}
-	if requested {
-		reasons = append(reasons, "review requested from you")
-	}
 	if state.MyReviewDismissed {
 		reasons = append(reasons, "your last review was dismissed")
 	}

@@ -39,6 +39,36 @@ func (s *AuxDataStore) Set(key PRKey, data *PRAuxData) {
 	s.data[key] = data
 }
 
+// MergeSet stores data for key, backfilling any fields data doesn't carry
+// from the entry already stored. Post-filter fetches request only a subset of
+// aux fields, and a plain Set would wipe whatever an earlier pass (e.g. the
+// manager's pre-fetch) already gathered for the same PR.
+func (s *AuxDataStore) MergeSet(key PRKey, data *PRAuxData) {
+	if data == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old := s.data[key]; old != nil {
+		if data.Comments == nil {
+			data.Comments = old.Comments
+			data.FormattedComments = old.FormattedComments
+			data.CommentsCount = old.CommentsCount
+		}
+		if data.CIStatus == nil {
+			data.CIStatus = old.CIStatus
+		}
+		if data.Diff == "" {
+			data.Diff = old.Diff
+			data.DiffLines = old.DiffLines
+		}
+		if data.Reviews == nil {
+			data.Reviews = old.Reviews
+		}
+	}
+	s.data[key] = data
+}
+
 // Global accessor for PRToOrgBridge to use
 var currentAuxDataStore *AuxDataStore
 var auxDataMu sync.RWMutex

@@ -883,7 +883,21 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	}
 
 	// Fetch Reviews
+	//
+	// myVerdictTime is when I last submitted an explicit verdict (APPROVED or
+	// CHANGES_REQUESTED). A verdict is a holistic response to the whole PR:
+	// anything others said before it was on my screen when I judged, so a
+	// thread reply older than the verdict is not "waiting on me" — without
+	// this, one "done!" reply from the author pins the PR in Waiting on Me
+	// forever, straight through my approval. COMMENTED reviews don't count as
+	// verdicts because GitHub wraps every standalone inline comment in an
+	// implicit COMMENTED review — treating those as PR-wide responses would
+	// let a drive-by comment in one thread clear every other thread. A later
+	// dismissal rewrites the review's state to DISMISSED, so a dismissed
+	// verdict stops clearing anything and MyReviewDismissed flags the PR
+	// instead.
 	var myLatestReview *github.PullRequestReview
+	var myVerdictTime time.Time
 	for _, r := range reviews {
 		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
 			continue
@@ -891,6 +905,9 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if strings.EqualFold(*r.User.Login, myLogin) {
 			if myLatestReview == nil || r.SubmittedAt.After(myLatestReview.SubmittedAt.Time) {
 				myLatestReview = r
+			}
+			if (r.GetState() == "APPROVED" || r.GetState() == "CHANGES_REQUESTED") && r.SubmittedAt.After(myVerdictTime) {
+				myVerdictTime = r.SubmittedAt.Time
 			}
 			if r.SubmittedAt.After(state.LastMeTime) {
 				state.LastMeTime = r.SubmittedAt.Time
@@ -904,8 +921,12 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	state.MyReviewDismissed = myLatestReview != nil && myLatestReview.GetState() == "DISMISSED"
 
 	// Fetch Review Comments
-	// Group comments by their "thread"
-	threads := make(map[int64]string) // Thread Root ID -> Last Commenter Login
+	// Group comments by their "thread", remembering who spoke last and when.
+	type lastComment struct {
+		login string
+		at    time.Time
+	}
+	threads := make(map[int64]lastComment)
 	participation := make(map[int64]bool)
 
 	for _, c := range reviewComments {
@@ -918,7 +939,13 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 			rootID = *c.InReplyTo
 		}
 
-		threads[rootID] = *c.User.Login
+		var at time.Time
+		if c.CreatedAt != nil {
+			at = c.CreatedAt.Time
+		}
+		if prev, ok := threads[rootID]; !ok || !at.Before(prev.at) {
+			threads[rootID] = lastComment{login: *c.User.Login, at: at}
+		}
 
 		if strings.EqualFold(*c.User.Login, myLogin) {
 			participation[rootID] = true
@@ -932,15 +959,25 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		}
 	}
 
-	for rootID, lastCommenter := range threads {
-		if participation[rootID] && !strings.EqualFold(lastCommenter, myLogin) {
+	// A thread is waiting on me only if someone else spoke last in it AND
+	// that happened after my latest verdict (see myVerdictTime above).
+	for rootID, last := range threads {
+		if participation[rootID] && !strings.EqualFold(last.login, myLogin) && last.at.After(myVerdictTime) {
 			state.HasUnrespondedComments = true
 			break
 		}
 	}
 
 	// Fetch Issue Comments
+	//
+	// The conversation tab is treated as one more thread, except the bar for
+	// "I responded" is any later activity of mine (LastMeTime), not only a
+	// verdict. Only conversation-tab comments count as the dangling reply:
+	// this used to compare against LastOthersTime, which also moves on other
+	// people's reviews — so a third reviewer approving after me would re-flag
+	// any PR I had ever conversation-commented on.
 	iParticipated := false
+	var lastOtherIssueAt time.Time
 	for _, c := range issueComments {
 		if c == nil || c.User == nil || c.User.Login == nil {
 			continue
@@ -951,12 +988,17 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 				state.LastMeTime = c.CreatedAt.Time
 			}
 		} else {
-			if c.CreatedAt != nil && c.CreatedAt.After(state.LastOthersTime) {
-				state.LastOthersTime = c.CreatedAt.Time
+			if c.CreatedAt != nil {
+				if c.CreatedAt.After(state.LastOthersTime) {
+					state.LastOthersTime = c.CreatedAt.Time
+				}
+				if c.CreatedAt.After(lastOtherIssueAt) {
+					lastOtherIssueAt = c.CreatedAt.Time
+				}
 			}
 		}
 	}
-	if iParticipated && state.LastOthersTime.After(state.LastMeTime) {
+	if iParticipated && lastOtherIssueAt.After(state.LastMeTime) {
 		state.HasUnrespondedComments = true
 	}
 
@@ -970,6 +1012,13 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 const (
 	interactionPageSize = 100
 	interactionMaxPages = 5
+
+	// interactionStateConcurrency bounds how many candidate PRs have their
+	// interaction state fetched at once. Each GetInteractionState call fans
+	// out four HTTP requests of its own, so this caps a filter pass at ~4×
+	// this many in-flight calls instead of four per candidate PR — a burst
+	// that trips GitHub's secondary rate limits on large repos.
+	interactionStateConcurrency = 8
 )
 
 // listAllPages walks the paginated endpoint fetch until it runs out of pages
@@ -1199,14 +1248,38 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 		return []*github.PullRequest{}
 	}
 
-	// Process PRs concurrently to avoid sequential API calls
+	// A PR is "Waiting on me" if:
+	// 1. I have a pending review request on it, OR
+	// 2. my last review was dismissed (so I owe a re-review), OR
+	// 3. I have unresponded comments.
+	//
+	// Case 1 is deliberately unconditional. GitHub clears a review request
+	// the moment the requested reviewer submits a review, and "re-request
+	// review" puts them back into RequestedReviewers — so a login sitting in
+	// RequestedReviewers *now* always means an outstanding request, however
+	// recently that person reviewed or commented. This used to be gated on
+	// "have I acted since the last push / last other action", which hid
+	// exactly the re-review case: the prior review is newer than both the
+	// last commit and the last comment, so every re-request was filtered out.
+	//
+	// Case 1 is also free: RequestedReviewers rides along on the PR list we
+	// already fetched. Cases 2 and 3 need GetInteractionState's four fetches,
+	// but both require some past review or comment of mine, so the
+	// interaction set (two search calls, shared and cached — see
+	// interaction_prefilter.go) rules them out for most PRs without fetching
+	// anything. Only PRs that pass the prefilter pay for a state fetch.
+	interacted := SearchMyOpenInteractions(myLogin)
+
+	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
 		pr           *github.PullRequest
 		shouldFilter bool
+		prefiltered  bool
 	}
 
 	resultChan := make(chan prResult)
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, interactionStateConcurrency)
 
 	for _, pr := range prs {
 		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
@@ -1217,28 +1290,30 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
 
+			// Case 1: open review request, no API calls needed.
+			if reviewRequestedFrom(pr, myLogin) {
+				slog.Debug("FilterWaitingOnMe",
+					"repo", *pr.Base.Repo.Name, "number", *pr.Number,
+					"included", true, "requested", true)
+				resultChan <- prResult{pr: pr, shouldFilter: true}
+				return
+			}
+
+			// Cases 2 and 3 are impossible without a past interaction of mine.
+			if !interacted.MayHaveInteracted(pr) {
+				resultChan <- prResult{pr: pr, shouldFilter: false, prefiltered: true}
+				return
+			}
+
+			sem <- struct{}{}
 			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			<-sem
 
-			isRequested := reviewRequestedFrom(pr, myLogin)
-
-			// A PR is "Waiting on me" if:
-			// 1. I have a pending review request on it, OR
-			// 2. my last review was dismissed (so I owe a re-review), OR
-			// 3. I have unresponded comments.
-			//
-			// Case 1 is deliberately unconditional. GitHub clears a review request
-			// the moment the requested reviewer submits a review, and "re-request
-			// review" puts them back into RequestedReviewers — so a login sitting in
-			// RequestedReviewers *now* always means an outstanding request, however
-			// recently that person reviewed or commented. This used to be gated on
-			// "have I acted since the last push / last other action", which hid
-			// exactly the re-review case: the prior review is newer than both the
-			// last commit and the last comment, so every re-request was filtered out.
-			shouldFilter := isRequested || state.MyReviewDismissed || state.HasUnrespondedComments
+			shouldFilter := state.MyReviewDismissed || state.HasUnrespondedComments
 
 			slog.Debug("FilterWaitingOnMe",
 				"repo", *pr.Base.Repo.Name, "number", *pr.Number, "included", shouldFilter,
-				"requested", isRequested, "review_dismissed", state.MyReviewDismissed,
+				"requested", false, "review_dismissed", state.MyReviewDismissed,
 				"unresponded_comments", state.HasUnrespondedComments,
 				"last_me", state.LastMeTime, "last_others", state.LastOthersTime,
 				"last_commit", state.LastCommitTime)
@@ -1255,15 +1330,23 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 
 	// Collect results
 	filtered := []*github.PullRequest{}
+	prefiltered := 0
 	for result := range resultChan {
 		if result.shouldFilter {
 			filtered = append(filtered, result.pr)
+		}
+		if result.prefiltered {
+			prefiltered++
 		}
 	}
 
 	// One line per cycle saying how many PRs survived. An empty section is
 	// otherwise indistinguishable from a section nobody asked a review on.
-	slog.Info("FilterWaitingOnMe", "user", myLogin, "candidates", len(prs), "matched", len(filtered))
+	// prefilter_skipped says how many candidates were decided without any
+	// per-PR API calls; ~0 on a big candidate list means the prefilter is
+	// failing open (see the error log in SearchMyOpenInteractions).
+	slog.Info("FilterWaitingOnMe", "user", myLogin, "candidates", len(prs),
+		"matched", len(filtered), "prefilter_skipped", prefiltered)
 
 	return filtered
 }
@@ -1289,7 +1372,21 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 		return []*github.PullRequest{}
 	}
 
-	// Process PRs concurrently to avoid sequential API calls
+	// "Waiting on the author" means I acted last and nothing new has come
+	// back since. As in filterWaitingOnMe, two cheap checks decide most PRs
+	// before paying for a GetInteractionState fetch:
+	//
+	//   - An open review request on me (free to check) outranks the
+	//     timestamps: the ball is back in my court, not the author's. Without
+	//     this a re-requested PR would show up in both the "Waiting on Me"
+	//     and "Waiting on Author" sections.
+	//   - "I acted last" requires that I acted at all: actedSinceOthers needs
+	//     a nonzero LastMeTime, and only a review or comment of mine sets it.
+	//     A PR outside the interaction set (see interaction_prefilter.go)
+	//     cannot match, so its state fetch is skipped.
+	interacted := SearchMyOpenInteractions(myLogin)
+
+	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
 		pr           *github.PullRequest
 		shouldFilter bool
@@ -1297,6 +1394,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 
 	resultChan := make(chan prResult)
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, interactionStateConcurrency)
 
 	for _, pr := range prs {
 		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
@@ -1307,16 +1405,25 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
 
+			if reviewRequestedFrom(pr, myLogin) {
+				resultChan <- prResult{pr: pr, shouldFilter: false}
+				return
+			}
+
+			if !interacted.MayHaveInteracted(pr) {
+				resultChan <- prResult{pr: pr, shouldFilter: false}
+				return
+			}
+
+			sem <- struct{}{}
 			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			<-sem
+
 			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)
 
-			// An open review request on me — or a dismissal of my last review —
-			// outranks the timestamps: the ball is back in my court, not the
-			// author's. Without this a re-requested PR would show up in both the
-			// "Waiting on Me" and "Waiting on Author" sections.
-			owedByMe := reviewRequestedFrom(pr, myLogin) || state.MyReviewDismissed
-
-			resultChan <- prResult{pr: pr, shouldFilter: actedSinceOthers && !owedByMe}
+			// A dismissal of my last review also puts the ball back in my
+			// court (the open-request case was already handled above).
+			resultChan <- prResult{pr: pr, shouldFilter: actedSinceOthers && !state.MyReviewDismissed}
 		}(pr)
 	}
 

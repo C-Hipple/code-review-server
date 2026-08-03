@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
 import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
-import { resolvePluginBody, sortedAnnotations, type PluginResult } from '../plugin_utils';
+import {
+    canRerunPlugin,
+    resolvePluginBody,
+    sortedAnnotations,
+    type PluginResult,
+} from '../plugin_utils';
 import PluginAnnotations from './PluginAnnotations';
 import PluginBodyView from './PluginBodyView';
 
@@ -159,6 +164,17 @@ export default function PluginOutput({
                                             gap: '10px',
                                         }}
                                     >
+                                        {canRerunPlugin(plugin) && (
+                                            <Button
+                                                onClick={() => executePlugin(pluginName)}
+                                                loading={executingPlugins.has(pluginName)}
+                                                variant="secondary"
+                                                size="sm"
+                                                title={`Re-run ${pluginName}`}
+                                            >
+                                                Re-run
+                                            </Button>
+                                        )}
                                         <Badge variant={mapStatusToVariant(plugin.status)}>
                                             {plugin.status}
                                         </Badge>

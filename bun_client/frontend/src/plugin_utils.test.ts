@@ -1,6 +1,7 @@
 import { expect, test, describe } from 'bun:test';
 import {
     annotationSeverityVariant,
+    canRerunPlugin,
     resolvePluginBody,
     sortedAnnotations,
     totalAnnotationCount,
@@ -126,6 +127,26 @@ describe('annotationSeverityVariant', () => {
     test('falls back to neutral for free-form severities', () => {
         expect(annotationSeverityVariant('nitpick')).toBe('neutral');
         expect(annotationSeverityVariant('')).toBe('neutral');
+    });
+});
+
+describe('canRerunPlugin', () => {
+    test('offers a re-run for plugins that finished executing', () => {
+        expect(canRerunPlugin({ result: 'summary', status: 'success' })).toBe(true);
+        expect(canRerunPlugin({ result: 'Error: boom', status: 'error' })).toBe(true);
+    });
+
+    test('does not offer a re-run for a deferred plugin that never ran', () => {
+        expect(canRerunPlugin({ result: '', status: 'deferred' })).toBe(false);
+        expect(canRerunPlugin({ result: '', status: 'DEFERRED' })).toBe(false);
+    });
+
+    test('does not offer a re-run while a plugin is still in flight', () => {
+        expect(canRerunPlugin({ result: '', status: 'pending' })).toBe(false);
+    });
+
+    test('treats a missing status as not re-runnable', () => {
+        expect(canRerunPlugin({ result: '', status: '' })).toBe(false);
     });
 });
 

@@ -62,6 +62,26 @@
   "Face for commit entries in the conversation timeline."
   :group 'my-custom-highlights)
 
+(defface washer-annotation-face
+  '((t (:foreground "#af87d7" :weight bold)))
+  "Face for compact plugin annotation indicators <A: plugin>."
+  :group 'my-custom-highlights)
+
+(defface washer-annotation-error-face
+  '((t (:foreground "#dc322f" :weight bold)))
+  "Face for [error] severity tags in plugin annotation blocks."
+  :group 'my-custom-highlights)
+
+(defface washer-annotation-warning-face
+  '((t (:foreground "#b58900" :weight bold)))
+  "Face for [warning] severity tags in plugin annotation blocks."
+  :group 'my-custom-highlights)
+
+(defface washer-annotation-info-face
+  '((t (:foreground "#268bd2" :weight bold)))
+  "Face for [info] severity tags in plugin annotation blocks."
+  :group 'my-custom-highlights)
+
 (defun highlight-review-comments ()
   "Highlight review comment blocks and file headers."
   (interactive)
@@ -80,7 +100,11 @@
                             ("^\\(Description\\|Your Review Feedback\\|Conversation\\|Commits .*\\|Files changed .*\\)$" 0 'washer-section-heading-face t)
                             ("^Commit by .*$" 0 'washer-commit-face t)
                             ("^PR contains [0-9]+ \\(outdated comments\\)$" 1 'washer-outdated-face t)
-                            ("<C: [^>]+>" 0 'washer-compact-comment-face t)))
+                            ("<C: [^>]+>" 0 'washer-compact-comment-face t)
+                            ("<A: [^>]+>" 0 'washer-annotation-face t)
+                            ("^    │ \\(\\[error\\]\\)" 1 'washer-annotation-error-face t)
+                            ("^    │ \\(\\[warning\\]\\)" 1 'washer-annotation-warning-face t)
+                            ("^    │ \\(\\[info\\]\\)" 1 'washer-annotation-info-face t)))
   (goto-address-mode 1)
   (font-lock-flush))
 

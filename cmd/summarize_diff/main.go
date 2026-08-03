@@ -1,114 +1,84 @@
 package main
 
 import (
-	"bytes"
+	"crs/cmd/internal/pluginkit"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
+	"strings"
 )
 
-type GeminiPart struct {
-	Text string `json:"text"`
+// summarize_diff emits the plugin response contract described in
+// docs/plugins.md: a markdown body holding the summary, plus line-level
+// annotations anchored to the head side of the PR's diff.
+
+// maxAnnotations is what the model is asked for. A summary plugin that flags
+// every other line is noise once the annotations render inline.
+const maxAnnotations = 6
+
+// modelOutput is the shape Gemini is asked to return, mirroring
+// responseSchema below.
+type modelOutput struct {
+	Summary     string                 `json:"summary"`
+	Annotations []pluginkit.Annotation `json:"annotations"`
 }
 
-type GeminiContent struct {
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
-}
-
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-type PRMetadata struct {
-	Number      int      `json:"number"`
-	Title       string   `json:"title"`
-	Author      string   `json:"author"`
-	BaseRef     string   `json:"base_ref"`
-	HeadRef     string   `json:"head_ref"`
-	State       string   `json:"state"`
-	Milestone   string   `json:"milestone"`
-	Labels      []string `json:"labels"`
-	Assignees   []string `json:"assignees"`
-	Reviewers   []string `json:"reviewers"`
-	Draft       bool     `json:"draft"`
-	CIStatus    string   `json:"ci_status"`
-		CIFailures         []string `json:"ci_failures"`
-		Body               string   `json:"body"`
-		URL                string   `json:"url"`
-		WorktreePath       string   `json:"worktree_path"`
+// responseSchema constrains Gemini's reply to the summary and annotations we
+// know how to turn into a plugin response.
+func responseSchema() *pluginkit.Schema {
+	return &pluginkit.Schema{
+		Type: "OBJECT",
+		Properties: map[string]*pluginkit.Schema{
+			"summary": {
+				Type:        "STRING",
+				Description: "Terse markdown summary of the PR.",
+			},
+			"annotations": pluginkit.AnnotationsSchema(maxAnnotations),
+		},
+		PropertyOrdering: []string{"summary", "annotations"},
+		Required:         []string{"summary", "annotations"},
 	}
+}
 
-func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, error) {
-	// Using gemini-2.0-flash
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + geminiToken
+func buildPrompt(diff string, metadata pluginkit.PRMetadata) string {
+	rendered, fileList := pluginkit.PromptDiff(diff)
 
-	var contextInfo string
-	if metadata.Title != "" {
-		contextInfo += fmt.Sprintf("PR Title: %s\n", metadata.Title)
-	}
-	if metadata.Body != "" {
-		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Body)
-	}
+	return fmt.Sprintf(`Summarize this PR, and flag the specific lines a reviewer should look at.
 
-	prompt := fmt.Sprintf(`Summarize this PR as briefly as possible.
-- 2-4 bullet points on key changes (one line each)
-- 1-2 brief suggestions if any
+summary: 2-4 bullet points on key changes (one line each), then 1-2 brief
+suggestions if any. Markdown. Be terse. No fluff.
 
-Be terse. No fluff.
+annotations: at most %d remarks, each anchored to one line of the diff. Only
+annotate a line that genuinely warrants a reviewer's attention; an empty list
+is fine.
+- filename: one of the paths listed under Files, copied exactly.
+- line: the number shown beside that line in the diff. Lines marked "-" were
+  removed and have no number, so they cannot be annotated.
+- severity: %s, %s or %s.
+- content: one or two sentences.
+
+Files:
+%s
+
+%s
 
 %sDiff:
 %s
-`, contextInfo, diff)
+`, maxAnnotations, pluginkit.SeverityInfo, pluginkit.SeverityWarning, pluginkit.SeverityError,
+		fileList, pluginkit.DiffLegend, metadata.Context(), rendered)
+}
 
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Parts: []GeminiPart{
-					{Text: prompt},
-				},
-			},
-		},
+// responseFor turns Gemini's reply into a plugin response. A reply that isn't
+// the JSON we asked for becomes the body verbatim, which is what this plugin
+// emitted before it spoke the contract.
+func responseFor(reply string) pluginkit.Response {
+	var parsed modelOutput
+	if err := json.Unmarshal([]byte(pluginkit.TrimCodeFence(reply)), &parsed); err != nil || strings.TrimSpace(parsed.Summary) == "" {
+		return pluginkit.MarkdownResponse(reply, nil)
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", err
-	}
-
-	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
-	}
-
-	return "", fmt.Errorf("no content in response")
+	return pluginkit.MarkdownResponse(strings.TrimSpace(parsed.Summary), parsed.Annotations)
 }
 
 func main() {
@@ -127,7 +97,7 @@ func main() {
 	_ = number
 	_ = commentsJSON
 
-	var metadata PRMetadata
+	var metadata pluginkit.PRMetadata
 	if *headersJSON != "" {
 		if err := json.Unmarshal([]byte(*headersJSON), &metadata); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to parse headers: %v\n", err)
@@ -145,11 +115,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	summary, err := callGemini(*diff, metadata, geminiToken)
+	summary, err := pluginkit.Generate(buildPrompt(*diff, metadata), responseSchema(), geminiToken)
 	if err != nil {
 		fmt.Printf("Error calling Gemini: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println(summary)
+	if err := pluginkit.EncodeResponse(os.Stdout, responseFor(summary)); err != nil {
+		fmt.Printf("Error encoding plugin response: %v\n", err)
+		os.Exit(1)
+	}
 }

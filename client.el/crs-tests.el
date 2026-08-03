@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'crs-client)
 
 ;;; --- Wiring: the loader pulls in every module ---
@@ -35,6 +36,7 @@
                 crs-submit-review crs-approve-review crs-comment-review
                 crs-request-changes-review crs-set-review-feedback
                 crs-expand-hunk-before crs-expand-hunk-after
+                crs-toggle-annotations
                 crs-sync-pr crs-checkout-current-project
                 crs-get-plugin-output crs-rerun-plugin crs-run-on-demand-plugin
                 crs-get-rate-limit-status))
@@ -47,7 +49,13 @@
                 crs--get-comment-context crs--get-current-review-info
                 crs--review-buffer-name crs--parse-hunk-header
                 crs--ensure-html crs--make-html-placeholder
-                crs--process-html-placeholders crs--strip-comments-tree))
+                crs--process-html-placeholders crs--strip-comments-tree
+                crs--index-annotations crs--render-annotation-block
+                crs--insert-annotations-into-buffer
+                crs--format-compact-annotation-indicator
+                crs--annotations-on-current-line
+                crs--annotations-minibuffer-summary
+                crs--insert-plugin-output-entry))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -55,6 +63,7 @@
   (dolist (var '(crs--process crs--pending-requests crs-reviews-buffer-name
                  crs--buffer-owner crs--buffer-diff crs--buffer-comments
                  crs--buffer-metadata crs--buffer-show-comments
+                 crs--buffer-annotations crs--buffer-show-annotations
                  crs--comment-owner crs--comment-filename crs--comment-position
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map))
     (should (boundp var))))
@@ -117,6 +126,207 @@
     (should-not (string-match-p "a comment" stripped))
     (should (string-match-p "PR one" stripped))
     (should (string-match-p "PR two" stripped))))
+
+;;; --- Plugin annotations ---
+
+(defconst crs-test--annotation-diff
+  (concat "diff --git a/test.py b/test.py\n"
+          "--- a/test.py\n"
+          "+++ b/test.py\n"
+          "@@ -1,3 +1,4 @@\n"
+          " line one\n"
+          "+line two\n"
+          " line three\n"
+          " line four\n")
+  "A raw single-file diff; head-side lines 1-4 are visible.")
+
+(defconst crs-test--annotations
+  (vector '((filename . "./test.py") (line . 2) (severity . "warning")
+            (content . "this line looks wrong") (plugin . "Security Check"))
+          '((filename . "test.py") (line . 99) (severity . "info")
+            (content . "outside the hunk") (plugin . "Style"))
+          '((filename . "missing.py") (line . 1) (severity . "error")
+            (content . "not in the diff") (plugin . "Style")))
+  "Annotations as decoded from a GetPR reply: one anchorable, one whose
+line the diff does not show, and one for a file outside the diff.")
+
+(ert-deftest crs-test-index-annotations ()
+  "Annotations index by \"file:line\" with a leading ./ normalized away."
+  (let ((map (crs--index-annotations crs-test--annotations)))
+    (should (= (hash-table-count map) 3))
+    (should (= (length (gethash "test.py:2" map)) 1))
+    (should (gethash "test.py:99" map))
+    (should (gethash "missing.py:1" map))))
+
+(ert-deftest crs-test-compact-annotation-indicator ()
+  (should (equal (crs--format-compact-annotation-indicator
+                  '(((plugin . "A")) ((plugin . "B")) ((plugin . "A"))))
+                 "<A: A, B>")))
+
+(ert-deftest crs-test-insert-annotations-collapsed ()
+  "Collapsed annotations append <A: ...> indicators without touching the diff lines."
+  (with-temp-buffer
+    (insert crs-test--annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations nil)
+    ;; The head-line-2 annotation lands on \"+line two\"...
+    (goto-char (point-min))
+    (search-forward "+line two")
+    (should (string-match-p "<A: Security Check>"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    ;; ...carrying its annotations in a text property for the echo-area preview.
+    (let ((found (crs--annotations-on-current-line)))
+      (should found)
+      (should (equal (cdr (assq 'content (car found))) "this line looks wrong")))
+    ;; The out-of-hunk annotation attaches to the file's first hunk header.
+    (goto-char (point-min))
+    (search-forward "@@ -1,3 +1,4 @@")
+    (should (string-match-p "<A: Style>"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    ;; The annotation for a file not in the diff is dropped.
+    (should-not (string-match-p "<A: [^>]*>[^\n]*not in the diff" (buffer-string)))
+    (should-not (text-property-any (point-min) (point-max)
+                                   'crs-annotations
+                                   (list (aref crs-test--annotations 2))))))
+
+(ert-deftest crs-test-insert-annotations-expanded ()
+  "Expanded annotations render full blocks beneath the annotated lines."
+  (with-temp-buffer
+    (insert crs-test--annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations t)
+    (goto-char (point-min))
+    (search-forward "+line two")
+    (forward-line 1)
+    (should (string-match-p "┌─ PLUGIN ANNOTATION"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (let ((text (buffer-string)))
+      (should (string-match-p "\\[warning\\] Security Check" text))
+      (should (string-match-p "this line looks wrong" text))
+      ;; The unanchorable annotation renders before the hunk header, naming its line.
+      (should (string-match-p "\\[info\\] Style @ line 99" text))
+      (should (< (string-match "Style @ line 99" text)
+                 (string-match "@@ -1,3 \\+1,4 @@" text)))
+      (should-not (string-match-p "not in the diff" text)))))
+
+(ert-deftest crs-test-annotations-do-not-shift-comment-positions ()
+  "Expanded annotation blocks are invisible to diff-position counting."
+  (with-temp-buffer
+    (insert crs-test--annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations t)
+    ;; \" line three\" is diff position 3 (line one=1, +line two=2).
+    (let ((found (crs--find-position-in-diff "test.py" 3)))
+      (should found)
+      (goto-char (point-min))
+      (forward-line (1- found))
+      (should (string-match-p "line three"
+                              (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position)))))))
+
+(ert-deftest crs-test-annotations-minibuffer-summary ()
+  (should (equal (crs--annotations-minibuffer-summary
+                  '(((plugin . "Sec") (severity . "warning")
+                     (content . "bad line\nsecond line"))))
+                 "1 annotation: [Sec/warning]: bad line")))
+
+(ert-deftest crs-test-insert-plugin-output-entry ()
+  "Plugin output entries prefer the parsed body and list annotations sorted."
+  ;; Contract output: parsed body shown instead of the raw JSON result.
+  (with-temp-buffer
+    (crs--insert-plugin-output-entry
+     "Security Check"
+     '((result . "{\"body\":{\"body_type\":\"markdown\",\"body_content\":\"All clear.\"}}")
+       (status . "success")
+       (body . ((body_type . "markdown") (body_content . "All clear.")))
+       (annotations . [((filename . "b.py") (line . 2) (severity . "warning") (content . "hm"))
+                       ((filename . "a.py") (line . 5) (severity . "") (content . "note"))])))
+    (let ((text (buffer-string)))
+      (should (string-match-p (regexp-quote "# Plugin: Security Check (Status: success)") text))
+      (should (string-match-p (regexp-quote "All clear.") text))
+      (should-not (string-match-p "body_type" text))
+      (should (string-match-p (regexp-quote "## Annotations (2)") text))
+      (should (< (string-match (regexp-quote "a.py:5") text)
+                 (string-match (regexp-quote "b.py:2 [warning]") text)))))
+  ;; Legacy output: no body object, the raw result is shown verbatim.
+  (with-temp-buffer
+    (crs--insert-plugin-output-entry
+     "Legacy" '((result . "plain text output") (status . "success")))
+    (should (string-match-p "plain text output" (buffer-string)))))
+
+;;; --- JSON-RPC transport ---
+
+(defun crs-tests--filter-lines (chunks)
+  "Feed CHUNKS through `crs--process-filter', returning the lines dispatched."
+  (let ((got nil))
+    (setq crs--response-pending nil)
+    (cl-letf (((symbol-function 'crs--handle-response)
+               (lambda (line) (push line got))))
+      (dolist (chunk chunks)
+        (crs--process-filter nil chunk)))
+    (nreverse got)))
+
+(ert-deftest crs-test-process-filter-reassembles-chunks ()
+  "Complete lines are dispatched however the output is chunked."
+  ;; One chunk, one line.
+  (should (equal (crs-tests--filter-lines '("{\"id\":1}\n")) '("{\"id\":1}")))
+  ;; A line split across several chunks is dispatched once, intact.
+  (should (equal (crs-tests--filter-lines '("{\"id" "\":1}" "\n"))
+                 '("{\"id\":1}")))
+  ;; Several lines arriving in a single chunk are dispatched in order.
+  (should (equal (crs-tests--filter-lines '("a\nb\nc\n")) '("a" "b" "c")))
+  ;; A newline landing mid-chunk splits correctly.
+  (should (equal (crs-tests--filter-lines '("a\nb" "c\n")) '("a" "bc")))
+  ;; Empty lines are skipped, matching the previous behavior.
+  (should (equal (crs-tests--filter-lines '("a\n\n\nb\n")) '("a" "b"))))
+
+(ert-deftest crs-test-process-filter-holds-partial-line ()
+  "A trailing partial line is buffered until its newline arrives."
+  ;; Nothing dispatched while the line is incomplete.
+  (should (equal (crs-tests--filter-lines '("{\"id\":1}")) nil))
+  (should crs--response-pending)
+  ;; The buffered remainder is prepended to the next chunk.
+  (setq crs--response-pending nil)
+  (let ((got nil))
+    (cl-letf (((symbol-function 'crs--handle-response)
+               (lambda (line) (push line got))))
+      (crs--process-filter nil "{\"id\"")
+      (should (null got))
+      (crs--process-filter nil ":1}\nnext")
+      (should (equal got '("{\"id\":1}")))
+      ;; "next" is still pending, not dispatched.
+      (crs--process-filter nil "-line\n")
+      (should (equal (nreverse got) '("{\"id\":1}" "next-line")))))
+  (should-not crs--response-pending))
+
+(ert-deftest crs-test-process-filter-large-payload-roundtrip ()
+  "A large single-line reply survives chunking byte-for-byte.
+This is the shape that made the old filter quadratic: many chunks with no
+newline until the very end."
+  (let* ((payload (json-encode `((jsonrpc . "2.0") (id . 1)
+                                 (result . ((content . ,(make-string 200000 ?x)))))))
+         (chunks nil)
+         (i 0))
+    (while (< i (length payload))
+      (push (substring payload i (min (length payload) (+ i 4096))) chunks)
+      (setq i (+ i 4096)))
+    (setq chunks (nreverse (cons "\n" chunks)))
+    (should (equal (crs-tests--filter-lines chunks) (list payload)))))
+
+(ert-deftest crs-test-parse-json-matches-json-read ()
+  "`crs--parse-json' reproduces `json-read-from-string' semantics."
+  (dolist (doc '("{\"a\":1,\"b\":[1,2,3]}"
+                 "{\"t\":true,\"f\":false,\"n\":null}"
+                 "{\"nested\":{\"deep\":[{\"k\":\"v\"}]}}"
+                 "{\"unicode\":\"caf\\u00e9 \\u2014 ok\"}"
+                 "{\"empty_arr\":[],\"empty_obj\":{}}"
+                 "[1,\"two\",false]"))
+    (should (equal (crs--parse-json doc) (json-read-from-string doc))))
+  ;; Arrays stay vectors and false stays :json-false, which callers rely on.
+  (let ((parsed (crs--parse-json "{\"items\":[1,2],\"ok\":false}")))
+    (should (vectorp (cdr (assq 'items parsed))))
+    (should (eq (cdr (assq 'ok parsed)) :json-false))
+    (should (eq (cdr (assq 'missing parsed)) nil))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

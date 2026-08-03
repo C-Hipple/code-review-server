@@ -122,8 +122,25 @@ func sortEntries(entries []sectionEntry, sortMethod string, configured bool) {
 	}
 }
 
+// RenderOptions controls which of an item's heavy detail subtrees are
+// serialized into the org text. The zero value renders the compact dashboard
+// form — headline, metadata and CI status — which is all a list view needs;
+// clients that display a full PR fetch it with GetPR instead. Diffs and
+// comment threads dominate the payload (they were ~98% of it), so they are
+// opt-in rather than opt-out.
+type RenderOptions struct {
+	IncludeDiff     bool
+	IncludeComments bool
+}
+
+// FullRenderOptions renders every detail subtree, for callers that want the
+// complete org export rather than the dashboard list.
+func FullRenderOptions() RenderOptions {
+	return RenderOptions{IncludeDiff: true, IncludeComments: true}
+}
+
 // renderSectionViews serializes the pipeline output to the org-mode text form.
-func (r *OrgRenderer) renderSectionViews(views []sectionView) string {
+func (r *OrgRenderer) renderSectionViews(views []sectionView, opts RenderOptions) string {
 	var content strings.Builder
 	for _, view := range views {
 		items := make([]*database.Item, len(view.entries))
@@ -135,7 +152,7 @@ func (r *OrgRenderer) renderSectionViews(views []sectionView) string {
 		content.WriteString("\n")
 
 		for _, item := range items {
-			for _, line := range r.buildItemLines(item, 2) {
+			for _, line := range r.buildItemLines(item, 2, opts) {
 				content.WriteString(line)
 				if !strings.HasSuffix(line, "\n") {
 					content.WriteString("\n")
@@ -159,20 +176,22 @@ func reviewItemsFromViews(views []sectionView) []ReviewItem {
 	return reviewItems
 }
 
+// RenderAllSectionsToString renders the complete org export, including diffs
+// and comment threads.
 func (r *OrgRenderer) RenderAllSectionsToString() (string, error) {
 	views, err := r.collectSections()
 	if err != nil {
 		return "", err
 	}
-	return r.renderSectionViews(views), nil
+	return r.renderSectionViews(views, FullRenderOptions()), nil
 }
 
-func (r *OrgRenderer) RenderAndGetItems() (string, []ReviewItem, error) {
+func (r *OrgRenderer) RenderAndGetItems(opts RenderOptions) (string, []ReviewItem, error) {
 	views, err := r.collectSections()
 	if err != nil {
 		return "", nil, err
 	}
-	return r.renderSectionViews(views), reviewItemsFromViews(views), nil
+	return r.renderSectionViews(views, opts), reviewItemsFromViews(views), nil
 }
 
 // ReviewItem represents a single PR review item with structured metadata
@@ -314,7 +333,24 @@ func (r *OrgRenderer) buildSectionHeader(section *database.Section, items []*dat
 	return fmt.Sprintf("%s %s %s %s", indentStars, status, section.SectionName, ratio)
 }
 
-func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []string {
+// detailSubtree returns the heading text of the subtree a detail element
+// opens (e.g. "Diff", "Comments [4]"), or "" when the element is ordinary
+// content and therefore inherits the enclosing subtree's keep/skip decision.
+// Detail elements are stored one-per-subtree-chunk, so a diff's body is a
+// single element and never mistaken for a heading.
+func detailSubtree(detail string) string {
+	if !strings.HasPrefix(detail, "*") {
+		return ""
+	}
+	rest := strings.TrimLeft(detail, "*")
+	if !strings.HasPrefix(rest, " ") {
+		return ""
+	}
+	heading, _, _ := strings.Cut(rest, "\n")
+	return strings.TrimSpace(heading)
+}
+
+func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int, opts RenderOptions) []string {
 	details, err := item.GetDetails()
 	if err != nil {
 		slog.Error("Error getting item details", "error", err, "item_id", item.ID)
@@ -348,9 +384,25 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int) []str
 		titleLine += "\t\t" + tagStr
 	}
 
+	// Walk the detail elements, dropping whole subtrees the caller did not
+	// ask for. keep carries across non-heading elements so a subtree's body
+	// follows its heading in or out.
 	lines := []string{titleLine + "\n"}
+	keep := true
 	for _, d := range details {
-		if !strings.HasPrefix(d, "*** BODY") {
+		if heading := detailSubtree(d); heading != "" {
+			switch {
+			case strings.HasPrefix(heading, "BODY"):
+				keep = false
+			case strings.HasPrefix(heading, "Diff"):
+				keep = opts.IncludeDiff
+			case strings.HasPrefix(heading, "Comments"):
+				keep = opts.IncludeComments
+			default:
+				keep = true
+			}
+		}
+		if keep {
 			lines = append(lines, d)
 		}
 	}

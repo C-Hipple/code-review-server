@@ -585,12 +585,15 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		slog.Error("Error deleting local comments after submission", "error", err)
 	}
 
-	// 5. Remove the item from all sections in the database
-	// The identifier is constructed as RepoName + PRNumber (matching PRToOrgBridge.Identifier)
-	identifier := fmt.Sprintf("%s%d", args.Repo, args.Number)
-	err = config.C().DB.DeleteItemByIdentifier(identifier)
-	if err != nil {
-		slog.Error("Error removing item from sections after review", "identifier", identifier, "error", err)
+	// 5. Re-run the PR through the workflows that target its repo so the
+	// dashboard reflects the review immediately instead of at the next cycle.
+	// Every targeting workflow is consulted, not just the ones holding the PR:
+	// a review can move a PR into a section ("waiting on author") as easily as
+	// out of one ("needs review"). Failures are logged rather than returned —
+	// the review itself already succeeded, and the next cycle re-syncs anyway.
+	if err := workflows.ReprocessPR(args.Owner, args.Repo, args.Number); err != nil {
+		slog.Error("Error reprocessing PR through workflows after review",
+			"owner", args.Owner, "repo", args.Repo, "pr", args.Number, "error", err)
 	}
 
 	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)

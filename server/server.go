@@ -247,7 +247,7 @@ func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*P
 // hookDispatchTTL is how long a (PR, head SHA) pair is considered recently
 // dispatched. Within this window repeated reads of the same PR revision skip
 // re-dispatching the post-update hooks entirely; the per-plugin SHA check in
-// executePluginForce remains the durable guard against duplicate work.
+// executePlugin remains the durable guard against duplicate work.
 const hookDispatchTTL = time.Minute
 
 var recentHookDispatches sync.Map // "owner/repo#number@sha" -> time.Time

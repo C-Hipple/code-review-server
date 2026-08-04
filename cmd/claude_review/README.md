@@ -33,6 +33,7 @@ IncludeComments = true
 
 ```
 claude_review --owner <owner> --repo <repo> --number <number>
+              [--call-type automatic|explicit|rerun]
               [--diff <unified-diff>]
               [--headers <pr-metadata-json>]
               [--comments <comments-json>]
@@ -42,6 +43,8 @@ claude_review --owner <owner> --repo <repo> --number <number>
 - `--diff`, `--headers`, `--comments` — when the server is configured with
   the corresponding `Include*` options, the values are injected into the
   prompt so the agent doesn't have to re-fetch them.
+- `--call-type` — why the server triggered this run. Accepted and ignored;
+  the review is the same either way. See [Call Types](../../docs/plugins.md#call-types).
 - `--post-review` — after producing the review, post it to GitHub as a
   comment-style PR review via `gh pr review`. Requires `gh` on `$PATH`
   with `repo` scope.

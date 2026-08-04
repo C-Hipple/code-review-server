@@ -60,7 +60,34 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 - **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
-Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
+Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, `--call-type`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
+
+## Call Types
+
+Every invocation carries a `--call-type` flag naming why the plugin is being run, so a plugin can behave differently on a rerun than it does on the server's own scheduled runs.
+
+| Value       | When it's passed                                                                       |
+|-------------|----------------------------------------------------------------------------------------|
+| `automatic` | The server triggered the run itself, because a PR was fetched or its head SHA changed. |
+| `explicit`  | A deferred (`OnlyOnDemand = true`) plugin was requested by name via `RerunPlugins`. These plugins never run automatically, so any run of one is an explicit request. |
+| `rerun`     | A plugin that would otherwise run automatically was rerun via `RerunPlugins`. |
+
+`--call-type` is passed on **every** invocation, alongside `--owner`, `--repo` and `--number`, with no configuration option to turn it off. A plugin that rejects unknown flags — anything using Go's `flag` package, Python's `argparse`, or similar — must therefore declare it, even if it ignores the value. Plugins that parse flags loosely need no change.
+
+Both `explicit` and `rerun` mean a person asked for this run, which is the signal worth acting on: skip a cached result, spend a larger model budget, or re-fetch external state that an `automatic` run would have reused. The distinction between the two says whether the plugin is expensive-by-configuration (`explicit`) or was rerun on top of work it does routinely (`rerun`).
+
+Go plugins in this repository can use `cmd/internal/pluginkit` rather than parsing the value by hand:
+
+```go
+callType := pluginkit.RegisterCallTypeFlag() // declares --call-type
+flag.Parse()
+
+if callType().Requested() {
+    // A person asked for this run — redo the expensive work.
+}
+```
+
+`ParseCallType` maps an unrecognised or empty value to `automatic`, so a plugin built against a different server version keeps working. Plugins that don't act on the value can still call `pluginkit.RegisterCallTypeFlag()` and discard the result, purely so `flag.Parse` accepts the flag — that's what the bundled `summarize_diff`, `security_check`, `style_guidelines` and `claude_review` plugins do.
 
 ## Writing a Plugin
 
@@ -148,6 +175,7 @@ To avoid unnecessary costs, you can mark a plugin as `OnlyOnDemand = true` in th
 - **Not run automatically** when a PR is fetched or updated
 - Receive a `"deferred"` status in the database
 - **Only execute when explicitly requested** via the RerunPlugins RPC method with their name in the plugin list
+- Always be invoked with `--call-type explicit`, since a deferred plugin has no automatic runs to distinguish a rerun from (see [Call Types](#call-types))
 
 This allows cost control while keeping expensive plugins available for on-demand use.
 
@@ -192,6 +220,8 @@ By default, plugins only run once per PR commit (SHA). To force plugins to rerun
 ```
 
 The rerun bypasses the SHA cache check, allowing you to reprocess the same PR commit with potentially updated plugin logic or external dependencies.
+
+Reruns are also visible to the plugin itself: a plugin invoked through `RerunPlugins` receives `--call-type rerun`, or `--call-type explicit` if it is deferred, instead of the `automatic` it gets from the server's own runs. See [Call Types](#call-types).
 
 ## Style Guidelines Plugin
 

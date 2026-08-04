@@ -13,6 +13,37 @@ import (
 
 const pluginTimeout = 5 * time.Minute
 
+// PluginCallType describes why a plugin is being executed. It is handed to the
+// plugin binary via the --call-type flag so a plugin can adapt its behaviour to
+// the situation - for instance skipping cached work on an automatic run but
+// redoing it from scratch when a reviewer asked for a rerun.
+type PluginCallType string
+
+const (
+	// PluginCallAutomatic is a run the server triggered on its own, when a PR
+	// was fetched or its head SHA changed.
+	PluginCallAutomatic PluginCallType = "automatic"
+	// PluginCallExplicit is a run of a deferred (OnlyOnDemand) plugin, which
+	// only ever executes because someone asked for it by name.
+	PluginCallExplicit PluginCallType = "explicit"
+	// PluginCallRerun is a requested rerun of a plugin that would otherwise
+	// have run automatically.
+	PluginCallRerun PluginCallType = "rerun"
+)
+
+// callTypeFor maps a plugin and the way RunPluginsForce was invoked onto the
+// call type reported to the plugin. Automatic runs never reach deferred
+// plugins, so a forced run of one is always an explicit request for it.
+func callTypeFor(plugin config.Plugin, force bool) PluginCallType {
+	if !force {
+		return PluginCallAutomatic
+	}
+	if plugin.OnlyOnDemand {
+		return PluginCallExplicit
+	}
+	return PluginCallRerun
+}
+
 // RunPlugins executes all configured plugins for a given PR.
 // It is intended to run asynchronously.
 // Plugins are only executed if the current SHA differs from the SHA for which they were last run.
@@ -53,18 +84,19 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 					slog.Error("Plugin runner panicked", "plugin", p.Name, "panic", r)
 				}
 			}()
-			executePluginForce(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, force)
+			executePlugin(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, callTypeFor(p, force))
 		}(plugin)
 	}
 
 	wg.Wait()
 }
 
-func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
-	executePluginForce(plugin, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false)
-}
+// executePlugin runs a single plugin binary and stores its result. callType
+// says why the run was triggered; anything other than PluginCallAutomatic
+// bypasses the per-SHA skip so a requested run always executes.
+func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, callType PluginCallType) {
+	force := callType != PluginCallAutomatic
 
-func executePluginForce(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool) {
 	// Check if we need to rerun this plugin
 	storedSHA, err := config.C().DB.GetPluginResultSHA(owner, repo, number, plugin.Name)
 	if err != nil {
@@ -79,7 +111,7 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 	}
 
 	if force {
-		slog.Info("Forcing plugin execution", "plugin", plugin.Name)
+		slog.Info("Forcing plugin execution", "plugin", plugin.Name, "call_type", callType)
 	}
 
 	// Set status to pending
@@ -93,6 +125,7 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 		"--owner", owner,
 		"--repo", repo,
 		"--number", fmt.Sprintf("%d", number),
+		"--call-type", string(callType),
 	}
 
 	if plugin.IncludeDiff {
@@ -121,14 +154,14 @@ func executePluginForce(plugin config.Plugin, owner, repo string, number int, sh
 		slog.Warn("Plugin stderr", "plugin", plugin.Name, "stderr", stderrBuf.String())
 	}
 	if err != nil {
-		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "stderr", stderrBuf.String())
+		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "call_type", callType, "stderr", stderrBuf.String())
 		if upsertErr := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, stderrBuf.String(), resultStr), "error", sha); upsertErr != nil {
 			slog.Error("Failed to store plugin error result", "plugin", plugin.Name, "error", upsertErr)
 		}
 		return
 	}
 
-	slog.Info("Plugin executed", "plugin", plugin.Name, "result_len", len(resultStr), "sha", sha)
+	slog.Info("Plugin executed", "plugin", plugin.Name, "result_len", len(resultStr), "sha", sha, "call_type", callType)
 
 	// Store result
 	err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)

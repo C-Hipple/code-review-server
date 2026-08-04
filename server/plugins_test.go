@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setupTestDB(t *testing.T) *database.DB {
@@ -206,6 +207,55 @@ func TestRunPluginsForce_PassesExplicitCallTypeForDeferredPlugin(t *testing.T) {
 
 	if args := recordedArgs(t, argsPath); !strings.Contains(args, "--call-type explicit") {
 		t.Errorf("expected --call-type explicit in plugin args, got %q", args)
+	}
+}
+
+// fillAutomaticPluginSlots takes every automatic-run slot for the duration of
+// the test, simulating a background fan-out already saturating the cap.
+func fillAutomaticPluginSlots(t *testing.T) {
+	t.Helper()
+	for i := 0; i < maxAutomaticPluginProcs; i++ {
+		automaticPluginSlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < maxAutomaticPluginProcs; i++ {
+			<-automaticPluginSlots
+		}
+	})
+}
+
+func TestRunPluginsForce_ExplicitRunIsNotQueuedBehindAutomaticRuns(t *testing.T) {
+	// A rerun someone asked for has a person waiting on it, so it must not
+	// wait for the automatic background runs to drain.
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "plugin.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "normal-plugin", Command: script}},
+	})
+
+	fillAutomaticPluginSlots(t)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "main", true, []string{"normal-plugin"})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("explicit plugin rerun blocked behind the automatic-run cap")
+	}
+
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Error("expected the explicitly requested plugin to run")
 	}
 }
 

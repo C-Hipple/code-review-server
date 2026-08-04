@@ -228,18 +228,27 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 // plugins or LLM analysis — callers that want those side effects invoke
 // ensurePostUpdateHooks explicitly.
 func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
+	fetchStart := time.Now()
 	details, err := GetPRDetails(owner, repo, number, skipCache)
 	if err != nil {
 		slog.Error("Error fetching PR details", "error", err)
 		return nil, "", err
 	}
+	fetchMS := time.Since(fetchStart).Milliseconds()
 
 	// Get the full formatted response for the UI.
 	// We pass the already fetched details to avoid redundant API calls.
+	renderStart := time.Now()
 	content, err := GetFullPRResponse(owner, repo, number, false, details)
 	if err != nil {
 		slog.Error("Error building formatted PR response", "repo", repo, "pr", number, "error", err)
 	}
+
+	// Timed because this is what a reviewer waits on when opening a PR: a slow
+	// open shows up here as either fetch time (a cache miss going to GitHub) or
+	// render time, rather than having to be guessed at from surrounding logs.
+	slog.Info("Served PR", "repo", repo, "pr", number, "skip_cache", skipCache,
+		"fetch_ms", fetchMS, "render_ms", time.Since(renderStart).Milliseconds())
 
 	return details, content, nil
 }
@@ -1226,25 +1235,27 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 		slog.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
 	}
 
-	// Fetch PR details and trigger plugins
-	details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
-	if err != nil {
-		slog.Error("Error fetching PR details for plugin rerun", "error", err)
-		return err
-	}
+	// Gather the plugin inputs and run them, all in the background: fetching
+	// the details can reach GitHub on a cache miss, and the caller only needs
+	// to know the rerun was accepted. Results arrive through GetPluginOutput.
+	go func() {
+		details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+		if err != nil {
+			slog.Error("Error fetching PR details for plugin rerun", "repo", args.Repo, "pr", args.Number, "error", err)
+			return
+		}
 
-	// Get PR metadata and diff
-	commentsJSON := "[]"
-	rawComments, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
-	if rawComments != "" {
-		commentsJSON = rawComments
-	}
+		commentsJSON := "[]"
+		rawComments, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+		if rawComments != "" {
+			commentsJSON = rawComments
+		}
 
-	_, sha, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+		_, sha, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
 
-	// Run plugins with force flag
-	metadataJSON, _ := json.Marshal(details.Metadata)
-	go RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, true, args.Plugins)
+		metadataJSON, _ := json.Marshal(details.Metadata)
+		RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, true, args.Plugins)
+	}()
 
 	reply.Okay = true
 	if len(args.Plugins) == 0 {
@@ -1281,6 +1292,12 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 // experimental LLM ordering when enabled, otherwise to the default sort that
 // places test files last. LLM orderings are cached per PR SHA so the LLM is
 // queried at most once per revision.
+//
+// Rendering never waits on the LLM. On a cache miss the analysis is kicked off
+// in the background and this render falls back to the default sort; the
+// ordering is in place for the next render of the same revision. Blocking here
+// would put a multi-second network round trip in front of opening a review,
+// which is precisely the delay this path must not have.
 func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha string) []*utils.DiffFile {
 	if !config.C().ExperimentalLLMFileOrdering {
 		return sortFilesTestsLast(files)
@@ -1288,8 +1305,9 @@ func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha stri
 	if len(files) < 2 {
 		return files
 	}
-	if ordered, ok := llm.OrderedDiffFiles(files, repo, prNumber, sha); ok {
+	if ordered, ok := llm.CachedOrderedDiffFiles(files, repo, prNumber, sha); ok {
 		return ordered
 	}
+	go llm.EnsureDiffAnalysis(files, repo, prNumber, sha, llm.TriggerRender)
 	return sortFilesTestsLast(files)
 }

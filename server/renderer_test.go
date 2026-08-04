@@ -961,6 +961,35 @@ func TestOrderDiffFilesUsesCachedOrdering(t *testing.T) {
 	}
 }
 
+func TestOrderDiffFilesFallsBackWithoutWaitingOnLLM(t *testing.T) {
+	// With the flag on and nothing cached for the SHA, the render must not
+	// block on the analysis: it falls back to the tests-last sort and leaves
+	// the LLM call to the background dispatch.
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("GEMINI_API_KEY", "")
+
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db, ExperimentalLLMFileOrdering: true})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	files := []*utils.DiffFile{
+		{NewName: "a_test.go"},
+		{NewName: "main.go"},
+	}
+
+	done := make(chan []*utils.DiffFile, 1)
+	go func() { done <- orderDiffFiles(files, "code-review-server", 12, "sha-uncached") }()
+
+	select {
+	case got := <-done:
+		if got[0].NewName != "main.go" || got[1].NewName != "a_test.go" {
+			t.Errorf("expected tests-last fallback, got %q, %q", got[0].NewName, got[1].NewName)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("orderDiffFiles blocked on a cache miss instead of falling back")
+	}
+}
+
 func TestReviewEaseCacheRoundtrip(t *testing.T) {
 	db := setupTestDB(t)
 

@@ -38,5 +38,5 @@ func ensureDiffAnalysis(repo string, prNumber int, sha, diff string) {
 		slog.Warn("Failed to parse diff for LLM diff analysis hook", "repo", repo, "pr", prNumber, "error", err)
 		return
 	}
-	llm.EnsureDiffAnalysis(parsed.Files, repo, prNumber, sha)
+	llm.EnsureDiffAnalysis(parsed.Files, repo, prNumber, sha, llm.TriggerPostUpdateHook)
 }

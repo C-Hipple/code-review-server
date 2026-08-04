@@ -13,6 +13,17 @@ import (
 
 const pluginTimeout = 5 * time.Minute
 
+// maxAutomaticPluginProcs caps how many automatic plugin runs execute at once.
+// Automatic runs are fan-out work: opening the dashboard warms every visible
+// PR, so without a cap one page load can launch dozens of plugin processes,
+// each competing for CPU and for the server's single SQLite connection with
+// the request the reviewer is actually waiting on. Explicit runs (a rerun, or
+// an on-demand plugin someone asked for by name) are never queued behind this
+// - someone is watching those.
+const maxAutomaticPluginProcs = 4
+
+var automaticPluginSlots = make(chan struct{}, maxAutomaticPluginProcs)
+
 // PluginCallType describes why a plugin is being executed. It is handed to the
 // plugin binary via the --call-type flag so a plugin can adapt its behaviour to
 // the situation - for instance skipping cached work on an automatic run but
@@ -112,6 +123,11 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 
 	if force {
 		slog.Info("Forcing plugin execution", "plugin", plugin.Name, "call_type", callType)
+	} else {
+		// Automatic runs wait their turn so a burst of them can't starve the
+		// foreground. The slot is held only for the subprocess itself.
+		automaticPluginSlots <- struct{}{}
+		defer func() { <-automaticPluginSlots }()
 	}
 
 	// Set status to pending

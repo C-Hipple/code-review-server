@@ -62,7 +62,7 @@ func TestCallLogMissingAPIKey(t *testing.T) {
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
 	files := []*utils.DiffFile{{NewName: "main.go"}, {NewName: "helper.go"}}
-	EnsureDiffAnalysis(files, "code-review-server", 42, "sha-42")
+	EnsureDiffAnalysis(files, "code-review-server", 42, "sha-42", TriggerPostUpdateHook)
 
 	log := readCallLog(t, crsHome)
 	for _, want := range []string{
@@ -96,7 +96,7 @@ func TestCallLogPartialParseKeepsOrderingAndLogsProblem(t *testing.T) {
 	useFakeClient(t, &fakeClient{text: "helper.go\nmain.go\n"}, nil)
 
 	files := []*utils.DiffFile{{NewName: "main.go"}, {NewName: "helper.go"}}
-	EnsureDiffAnalysis(files, "code-review-server", 7, "sha-7")
+	EnsureDiffAnalysis(files, "code-review-server", 7, "sha-7", TriggerPostUpdateHook)
 
 	// The ordering must still have been cached; the rating must not have been.
 	if ordering, err := db.GetDiffFileOrdering(7, "code-review-server", "sha-7"); err != nil || ordering == "" {
@@ -132,7 +132,7 @@ func TestCallLogSuccess(t *testing.T) {
 	useFakeClient(t, &fakeClient{text: "REVIEW_EASE: hard\n"}, nil)
 
 	files := []*utils.DiffFile{{NewName: "main.go"}}
-	EnsureDiffAnalysis(files, "code-review-server", 9, "sha-9")
+	EnsureDiffAnalysis(files, "code-review-server", 9, "sha-9", TriggerPostUpdateHook)
 
 	if ease, _ := db.GetReviewEase(9, "code-review-server", "sha-9"); ease != "hard" {
 		t.Errorf("expected cached review ease %q, got %q", "hard", ease)

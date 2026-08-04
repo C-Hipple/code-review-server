@@ -218,7 +218,7 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 	if err != nil {
 		return err
 	}
-	h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
@@ -270,15 +270,25 @@ func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
 			return false
 		}
 	}
+	// Keys are per revision and every workflow cycle mints new ones, so drop
+	// the expired entries rather than letting the map grow for the life of the
+	// process. Anything past the TTL can no longer debounce anything.
+	recentHookDispatches.Range(func(k, v any) bool {
+		if last, ok := v.(time.Time); ok && now.Sub(last) >= hookDispatchTTL {
+			recentHookDispatches.Delete(k)
+		}
+		return true
+	})
 	recentHookDispatches.Store(key, now)
 	return true
 }
 
 // ensurePostUpdateHooks dispatches the async post-update hooks (plugins and
-// the experimental LLM diff analysis) for a PR. Only methods that represent
-// "the client is looking at fresh PR content" call this; local-comment
-// mutations do not, since they never change the PR's head SHA.
-func (h *RPCHandler) ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
+// the experimental LLM diff analysis) for a PR, reading the hooks' inputs from
+// the DB caches. RPC methods that represent "the client is looking at fresh PR
+// content" call this; local-comment mutations do not, since they never change
+// the PR's head SHA. The workflow layer reaches it through WarmPRAnalysis.
+func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
 	_, sha, err := config.C().DB.GetPullRequest(number, repo)
 	if err != nil {
 		slog.Warn("Error reading cached PR SHA for hook dispatch", "repo", repo, "pr", number, "error", err)
@@ -365,7 +375,7 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 	if err != nil {
 		return err
 	}
-	h.ensurePostUpdateHooks(adjacent.Owner, adjacent.Repo, adjacent.Number, details)
+	ensurePostUpdateHooks(adjacent.Owner, adjacent.Repo, adjacent.Number, details)
 
 	reply.AdjacentOwner = adjacent.Owner
 	reply.AdjacentRepo = adjacent.Repo
@@ -654,7 +664,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	if err != nil {
 		return err
 	}
-	h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 
 	_, newSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
 	newCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
@@ -1190,7 +1200,7 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 				slog.Error("Error fetching PR details for plugin trigger", "repo", args.Repo, "pr", args.Number, "error", err)
 				return
 			}
-			h.ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+			ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 		}()
 	}
 

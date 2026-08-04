@@ -16,6 +16,13 @@ The review environment is fully functional. You can:
 - **Add Comments**: Start a review, add pending comments, and submit them all at once.
 - **Reply to Threads**: Engage in discussions directly from the interface.
 
+### Sections Update As Soon As You Submit
+Submitting a review re-runs that pull request through the filters of every
+workflow that targets its repository, so the dashboard reflects the review
+right away instead of at the next background cycle. A PR drops out of a
+"needs review" section the moment its filters stop matching, and appears in
+any section whose filters now match it.
+
 ![Bun Review Interface](img/bun-review-1.png)
 ![Bun Review File Tree](img/bun-review-filetree.png)
 

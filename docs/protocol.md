@@ -393,6 +393,12 @@ Submits a review to GitHub. This will:
 2. Submit reply comments individually to maintain threading
 3. Submit top-level comments as part of a GitHub review
 4. Delete all local comments after successful submission
+5. Re-evaluate the PR against every workflow that targets its repo, updating the
+   PR's membership in those workflows' sections immediately rather than at the
+   next workflow cycle. A PR that no longer matches a section's filters (e.g. a
+   "needs review" section, now that the review request is gone) drops out of it;
+   one that now matches a section it wasn't in is added. Reprocessing failures
+   are logged, not returned — the review itself has already been submitted.
 
 **Arguments** (`SubmitReviewArgs`):
 | Field    | Type   | Required | Description                                              |

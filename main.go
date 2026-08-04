@@ -86,6 +86,13 @@ func main() {
 	ms.Initialize()
 
 	if *serverFlag {
+		// Compute plugin results and the LLM diff analysis off the back of the
+		// workflow cycle that added or refreshed a PR, so opening a review
+		// finds them already cached. Only registered in server mode: a
+		// workflow-only process exits when its cycle ends and would kill the
+		// hooks mid-run.
+		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
+
 		go func() {
 			slog.Info("Starting pprof server", "addr", "localhost:6061")
 			if err := http.ListenAndServe("localhost:6061", nil); err != nil {

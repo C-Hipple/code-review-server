@@ -55,8 +55,11 @@ RPC handlers serve data to clients (web UI, Emacs).
 
 1. **Workflow fetch**: GitHub API → filter PRs → `ProcessPRsDB` upserts into `sections`/`items` tables
 2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written)
-3. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
-4. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
+3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins and the LLM diff analysis in the background so they're cached before anyone opens the review
+4. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
+5. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
+
+Nothing on the read path waits for a plugin or an LLM call: `ensurePostUpdateHooks` dispatches them in goroutines, and `orderDiffFiles` uses the cached LLM ordering or falls back to `sortFilesTestsLast`. The workflow layer cannot import `server` (`server` imports `workflows`), which is why step 3 goes through a registered callback wired up in `main.go`.
 
 ## Cache Key Convention
 

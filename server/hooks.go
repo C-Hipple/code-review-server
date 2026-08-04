@@ -21,6 +21,24 @@ func RunPostUpdatePRHooks(owner, repo string, number int, sha string, diff strin
 	go ensureDiffAnalysis(repo, number, sha, diff)
 }
 
+// WarmPRAnalysis runs the post-update hooks for a PR whose caches a workflow
+// has just filled, so the plugin results and the LLM diff analysis are already
+// computed by the time anyone opens the review. It is the entry point the
+// workflow layer is wired to (see workflows.SetPRUpdatedHook): workflows
+// cannot call into this package directly, because server imports workflows.
+//
+// Everything the hooks need was written to the DB by the workflow that
+// triggered this, so the GetPRDetails call below is expected to be all cache
+// hits. It blocks for that read, so callers run it in a goroutine.
+func WarmPRAnalysis(owner, repo string, number int) {
+	details, err := GetPRDetails(owner, repo, number, false)
+	if err != nil {
+		slog.Warn("Error loading PR details to warm post-update hooks", "repo", repo, "pr", number, "error", err)
+		return
+	}
+	ensurePostUpdateHooks(owner, repo, number, details)
+}
+
 // ensureDiffAnalysis pre-computes and caches the LLM diff analysis (file
 // ordering and review-ease rating, per the enabled config flags) for a PR SHA
 // so subsequent renders hit the cache. The underlying analysis is cache-first
@@ -38,5 +56,5 @@ func ensureDiffAnalysis(repo string, prNumber int, sha, diff string) {
 		slog.Warn("Failed to parse diff for LLM diff analysis hook", "repo", repo, "pr", prNumber, "error", err)
 		return
 	}
-	llm.EnsureDiffAnalysis(parsed.Files, repo, prNumber, sha)
+	llm.EnsureDiffAnalysis(parsed.Files, repo, prNumber, sha, llm.TriggerPostUpdateHook)
 }

@@ -3,7 +3,10 @@ package workflows
 import (
 	"crs/database"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v74/github"
 )
@@ -121,5 +124,69 @@ func TestApplyCacheWarmRequirements(t *testing.T) {
 		if got := reqs[key]; got != (AuxDataRequirement{}) {
 			t.Errorf("unchanged PR should not be warmed, got %+v", got)
 		}
+	})
+
+	t.Run("reports only the warmed PRs", func(t *testing.T) {
+		// The returned keys drive the post-update hooks, so an unchanged PR
+		// appearing here would rerun plugins for a revision already handled.
+		db := warmTestDB(t)
+		unchanged := PRKey{Owner: "owner", Repo: repo, Number: 200}
+		if err := db.UpsertPullRequest(unchanged.Number, repo, "sha1", "", "cached diff"); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		prObjects := map[PRKey]*github.PullRequest{
+			key:       prWithHeadSHA("sha1"),
+			unchanged: prWithHeadSHA("sha1"),
+		}
+
+		warmed := applyCacheWarmRequirements(db, prObjects, map[PRKey]AuxDataRequirement{})
+
+		if len(warmed) != 1 || warmed[0] != key {
+			t.Errorf("got warmed %+v, want only %+v", warmed, key)
+		}
+	})
+}
+
+func TestNotifyPRsUpdated(t *testing.T) {
+	key := PRKey{Owner: "owner", Repo: "code-review-server", Number: 100}
+
+	t.Run("fires the hook once per warmed PR", func(t *testing.T) {
+		var mu sync.Mutex
+		var got []PRKey
+		done := make(chan struct{}, 2)
+
+		SetPRUpdatedHook(func(owner, repo string, number int) {
+			mu.Lock()
+			got = append(got, PRKey{Owner: owner, Repo: repo, Number: number})
+			mu.Unlock()
+			done <- struct{}{}
+		})
+		t.Cleanup(func() { SetPRUpdatedHook(nil) })
+
+		other := PRKey{Owner: "owner", Repo: "code-review-server", Number: 200}
+		notifyPRsUpdated([]PRKey{key, other})
+
+		// The hooks run in their own goroutines; wait for both.
+		for i := 0; i < 2; i++ {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for the PR-updated hooks to fire")
+			}
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(got) != 2 {
+			t.Fatalf("got %d hook calls, want 2", len(got))
+		}
+		if !slices.Contains(got, key) || !slices.Contains(got, other) {
+			t.Errorf("hook called with %+v, want both %+v and %+v", got, key, other)
+		}
+	})
+
+	t.Run("no hook registered is a no-op", func(t *testing.T) {
+		SetPRUpdatedHook(nil)
+		notifyPRsUpdated([]PRKey{key})
 	})
 }

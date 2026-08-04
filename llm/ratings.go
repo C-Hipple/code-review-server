@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -85,10 +86,28 @@ type DiffAnalysis struct {
 	ReviewEase string
 }
 
+// Triggers recorded in the call log, naming what caused an analysis call.
+const (
+	// TriggerPostUpdateHook is the analysis the post-update hook runs after a
+	// PR is fetched or its head SHA changes.
+	TriggerPostUpdateHook = "post-update hook"
+	// TriggerRender is the analysis a render kicks off in the background when
+	// it finds no cached ordering. The render itself does not wait for it.
+	TriggerRender = "render (background)"
+)
+
+// inflightAnalysis tracks the (repo, PR, SHA) triples an analysis is currently
+// running for, so the render-triggered dispatch and the post-update hook
+// firing for the same revision collapse into a single LLM call instead of two.
+var inflightAnalysis sync.Map // "repo#pr@sha" -> struct{}
+
 // EnsureDiffAnalysis makes sure the LLM-derived values enabled in config
 // (the diff file ordering and the review-ease rating) are cached for the PR
-// SHA, calling the LLM at most once if anything is missing.
-func EnsureDiffAnalysis(files []*utils.DiffFile, repo string, prNumber int, sha string) {
+// SHA, calling the LLM at most once if anything is missing. It blocks for the
+// duration of the LLM call, so callers on a request path must run it in a
+// goroutine. Concurrent calls for the same PR SHA collapse into one: the
+// first runs the analysis and the rest return immediately.
+func EnsureDiffAnalysis(files []*utils.DiffFile, repo string, prNumber int, sha, trigger string) {
 	cfg := config.C()
 	needOrdering := cfg.ExperimentalLLMFileOrdering && len(files) >= 2 &&
 		cachedFileOrdering(repo, prNumber, sha) == nil
@@ -97,7 +116,14 @@ func EnsureDiffAnalysis(files []*utils.DiffFile, repo string, prNumber int, sha 
 		return
 	}
 
-	ctx := callContext{repo: repo, prNumber: prNumber, sha: sha, trigger: "post-update hook"}
+	key := fmt.Sprintf("%s#%d@%s", repo, prNumber, sha)
+	if _, running := inflightAnalysis.LoadOrStore(key, struct{}{}); running {
+		slog.Debug("LLM diff analysis already running for revision, skipping", "repo", repo, "pr", prNumber, "sha", sha)
+		return
+	}
+	defer inflightAnalysis.Delete(key)
+
+	ctx := callContext{repo: repo, prNumber: prNumber, sha: sha, trigger: trigger}
 	analysis, err := analyzeDiff(files, needOrdering, needEase, ctx)
 	if err != nil {
 		slog.Warn("LLM diff analysis failed", "repo", repo, "pr", prNumber, "error", err)
@@ -106,24 +132,20 @@ func EnsureDiffAnalysis(files []*utils.DiffFile, repo string, prNumber int, sha 
 	storeDiffAnalysis(repo, prNumber, sha, analysis)
 }
 
-// OrderedDiffFiles returns files in the LLM-derived display order for the PR
-// SHA, from cache when available and by calling the LLM otherwise. The
-// second return is false when no ordering could be produced and the caller
-// should fall back to its default sort.
-func OrderedDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha string) ([]*utils.DiffFile, bool) {
-	if names := cachedFileOrdering(repo, prNumber, sha); names != nil {
-		return reorderFilesByNames(files, names), true
-	}
-
-	ctx := callContext{repo: repo, prNumber: prNumber, sha: sha, trigger: "render"}
-	analysis, err := analyzeDiff(files, true, config.C().ExperimentalLLMReviewEase, ctx)
-	if err != nil {
-		slog.Warn("LLM diff analysis failed, falling back to default sort", "error", err)
+// CachedOrderedDiffFiles returns files in the LLM-derived display order for
+// the PR SHA when that ordering is already cached. It never calls the LLM:
+// rendering a PR is on the critical path of opening a review, and an LLM
+// round trip there is a delay the reviewer waits on. Producing the ordering
+// is EnsureDiffAnalysis's job, which callers run in the background.
+//
+// The second return is false when nothing is cached and the caller should
+// fall back to its default sort.
+func CachedOrderedDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha string) ([]*utils.DiffFile, bool) {
+	names := cachedFileOrdering(repo, prNumber, sha)
+	if names == nil {
 		return nil, false
 	}
-
-	storeDiffAnalysis(repo, prNumber, sha, analysis)
-	return reorderFilesByNames(files, analysis.Ordering), true
+	return reorderFilesByNames(files, names), true
 }
 
 // analyzeDiff asks the LLM for the requested analysis values: the file

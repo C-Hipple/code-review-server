@@ -22,6 +22,29 @@ import (
 	"github.com/google/go-github/v74/github"
 )
 
+// prUpdatedHook is called once per PR that a cycle newly added or re-fetched
+// after a push, after that PR's aux data has been written to the DB caches.
+// The server registers server.WarmPRAnalysis here so plugins and the LLM diff
+// analysis are computed off the back of the workflow rather than when a
+// reviewer opens the PR. It is a registered callback rather than a direct call
+// because server imports this package, so the dependency cannot run both ways.
+//
+// Nil when nothing is registered — a workflow-only process (`--oneoff` without
+// `--server`) exits as soon as the cycle finishes and would kill any hook work
+// in flight, leaving plugin results stuck at "pending" for that head SHA.
+var prUpdatedHook atomic.Pointer[func(owner, repo string, number int)]
+
+// SetPRUpdatedHook registers the callback invoked for each PR a cycle added or
+// updated. Call it during startup, before the manager runs. A nil fn clears
+// any registered hook.
+func SetPRUpdatedHook(fn func(owner, repo string, number int)) {
+	if fn == nil {
+		prUpdatedHook.Store(nil)
+		return
+	}
+	prUpdatedHook.Store(&fn)
+}
+
 // apiCallCounter tracks GitHub API calls by type for a single RunOnce cycle.
 type apiCallCounter struct {
 	PRList         atomic.Int64
@@ -802,7 +825,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		}
 	}
 
-	applyCacheWarmRequirements(config.C().DB, prObjects, prRequirements)
+	warmed := applyCacheWarmRequirements(config.C().DB, prObjects, prRequirements)
 
 	// Fetch aux data in parallel, but bounded (see prefetchConcurrency).
 	var wg sync.WaitGroup
@@ -825,7 +848,26 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	wg.Wait()
 
 	slog.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
+	notifyPRsUpdated(warmed)
 	return store
+}
+
+// notifyPRsUpdated fires the registered PR-updated hook for each PR this cycle
+// warmed. It runs after the aux fetches have finished, so the hook finds the
+// diff, comments and metadata it needs already in the DB.
+//
+// Each hook call gets its own goroutine and the cycle does not wait for them:
+// the hooks fan out to plugin subprocesses and LLM calls, which are slow by
+// nature and must not hold up the next workflow run.
+func notifyPRsUpdated(warmed []PRKey) {
+	hook := prUpdatedHook.Load()
+	if hook == nil || len(warmed) == 0 {
+		return
+	}
+	slog.Info("Dispatching post-update hooks for updated PRs", "pr_count", len(warmed))
+	for _, key := range warmed {
+		go (*hook)(key.Owner, key.Repo, key.Number)
+	}
 }
 
 // applyCacheWarmRequirements turns on the aux fields a reviewer needs to open a
@@ -840,10 +882,15 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 // forces Reviews on for open non-draft PRs: that override skips drafts and
 // closed PRs, so without this pass those PRs never get a PRReviews row written
 // by a workflow and every open of one logs a "reviews" cache miss.
+//
+// It returns the PRs it turned the warm on for. Those are exactly the ones
+// whose plugin results and LLM analysis are stale too, so the caller fires the
+// PR-updated hook for them once the fetches land.
 func applyCacheWarmRequirements(db *database.DB,
 	prObjects map[PRKey]*github.PullRequest,
-	prRequirements map[PRKey]AuxDataRequirement) {
+	prRequirements map[PRKey]AuxDataRequirement) []PRKey {
 
+	warmed := []PRKey{}
 	for key, pr := range prObjects {
 		if !prNeedsCacheWarm(db, key, pr) {
 			continue
@@ -854,7 +901,9 @@ func applyCacheWarmRequirements(db *database.DB,
 		req.Reviews = true
 		req.Comments = true
 		prRequirements[key] = req
+		warmed = append(warmed, key)
 	}
+	return warmed
 }
 
 // prNeedsCacheWarm reports whether we should proactively warm the caches for a

@@ -6,6 +6,8 @@ Code Review Server ships with a web client, an Emacs client, and a TUI client, b
 
 The web client is packaged with bun, and has a bun backend with a react frontend. If you build and run the bun backend, you'll get a working webserver on `localhost:3000` which lists all of your PRs.
 
+For a full inventory of what this client does — architecture, HTTP surface, every feature, and the protocol details a reimplementation needs to get right — see [Web Client Features](web_client_features.md).
+
 ### Installation
 
 1. `cd` to `bun_client`

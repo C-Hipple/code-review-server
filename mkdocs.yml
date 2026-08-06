@@ -24,6 +24,7 @@ nav:
   - Reviewing Code: reviewing.md
   - Protocol: protocol.md
   - Building Clients: building_clients.md
+  - Web Client Features: web_client_features.md
   - GitHub API Notes: github_api_notes.md
 
 markdown_extensions:

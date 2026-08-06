@@ -76,28 +76,33 @@ Fetches all review sections from the local database, rendered as org-mode format
 
 ---
 
-### `RPCHandler.GetPR`
+### The PR Payload
 
-Fetches a pull request from GitHub and returns it as rendered content (including diff, comments, conversations).
+Every method that returns a pull request's full state replies with the same shared
+body, described here once:
 
-**Arguments** (`GetPRstructArgs`):
-| Field    | Type   | Required | Description                          |
-|----------|--------|----------|--------------------------------------|
-| `Owner`  | string | Yes      | Repository owner (e.g., `"octocat"`) |
-| `Repo`   | string | Yes      | Repository name (e.g., `"hello"`)    |
-| `Number` | int    | Yes      | Pull request number                  |
+`GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`, `DeleteComment`,
+`SetFeedback`, `RemovePRComments`, and `SubmitReview`.
 
-**Reply** (`GetPRReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if the request succeeded                 |
-| `Content`  | string       | Formatted PR response (diff, comments, metadata)|
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
-| `annotations` | []PRAnnotation | Diff annotations aggregated from every plugin that has already executed successfully for this PR (see [Plugins](plugins.md#plugin-response-contract)) |
+Some of those methods add fields on top of it; those extras are listed with each
+method below. The payload is always complete — a mutation like `AddComment` returns
+the PR's whole refreshed state, not just the part that changed, so clients can apply
+the reply wholesale instead of patching local state.
+
+| Field               | Type           | Description                                                                 |
+|---------------------|----------------|-----------------------------------------------------------------------------|
+| `okay`              | bool           | `true` if the request succeeded                                             |
+| `content`           | string         | Formatted PR response (diff, comments, metadata)                            |
+| `metadata`          | PRMetadata     | Structured PR metadata                                                      |
+| `diff`              | string         | Raw diff content                                                            |
+| `comments`          | []CommentJSON  | Structured PR active comments                                               |
+| `outdated_comments` | []CommentJSON  | Structured PR outdated comments                                             |
+| `reviews`           | []ReviewJSON   | Submitted reviews                                                           |
+| `commits`           | []CommitJSON   | Commits on the PR                                                           |
+| `feedback`          | string         | The locally saved review feedback draft for this PR (see `SetFeedback`); empty when none has been saved |
+| `annotations`       | []PRAnnotation | Diff annotations aggregated from every plugin that has already executed successfully for this PR (see [Plugins](plugins.md#plugin-response-contract)) |
+
+Slice fields are normalized before sending: a client always sees `[]`, never `null`.
 
 #### PRAnnotation Object
 
@@ -132,9 +137,13 @@ Fetches a pull request from GitHub and returns it as rendered content (including
 | `ci_failures`          | []string | List of failed CI check names and messages                |
 | `body`                 | string   | PR description body                                       |
 | `url`                  | string   | GitHub HTML URL                                           |
+| `repo_path`            | string   | Absolute path to the local clone of the repository, when one exists under the configured `RepoLocation`. Empty when the repo isn't checked out locally. Distinct from `worktree_path`: this is the repository itself, not the PR's worktree. Clients use it to gate features that need local source, such as language-server lookups or a file browser |
 | `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
 | `release_status`       | string   | Release status from the configured release check command, if any |
 | `review_ease`          | string   | LLM rating of how easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the config and a rating has been computed |
+| `changed_files`        | int      | Number of files changed by the PR                         |
+| `additions`            | int      | Lines added by the PR                                     |
+| `deletions`            | int      | Lines removed by the PR                                   |
 
 #### Using the Worktree
 
@@ -162,6 +171,20 @@ Comments are rendered inline within the diff or at the file headers. They use a 
 
 Each comment block includes the file path, timestamp, author(s), and comment ID, followed by the conversation thread.
 
+#### Comment Object (`CommentJSON`)
+
+| Field         | Type   | Description                                                                 |
+|---------------|--------|-----------------------------------------------------------------------------|
+| `id`          | string | Comment ID. For a local (pending) comment this is the local ID accepted by `EditComment` / `DeleteComment` |
+| `author`      | string | GitHub login of the author, or `local` for a pending comment not yet submitted |
+| `body`        | string | Comment body text                                                           |
+| `path`        | string | File the comment is attached to                                             |
+| `position`    | string | Position within the diff (not a file line number). `0` means the comment is on the file as a whole |
+| `in_reply_to` | int64  | ID of the comment this one replies to; `0` for a thread root                 |
+| `created_at`  | Time   | Creation timestamp                                                          |
+| `outdated`    | bool   | Whether the comment refers to a version of the code the current diff no longer matches |
+| `diff_hunk`   | string | The diff context the comment was made against — the only way to show an outdated comment in place |
+
 #### Review Object
 
 Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
@@ -174,6 +197,34 @@ Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 | `state`        | string    | Review state (APPROVED, CHANGES_REQUESTED, etc.) |
 | `submitted_at` | Time      | Timestamp when the review was submitted          |
 | `html_url`     | string    | Link to the review on GitHub                     |
+
+#### Commit Object (`CommitJSON`)
+
+| Field     | Type   | Description                        |
+|-----------|--------|------------------------------------|
+| `sha`     | string | Commit SHA                         |
+| `message` | string | Commit message                     |
+| `author`  | string | Commit author                      |
+| `date`    | string | Commit date                        |
+| `url`     | string | Link to the commit on GitHub       |
+
+---
+
+### `RPCHandler.GetPR`
+
+Fetches a pull request from GitHub and returns it as rendered content (including diff, comments, conversations). Cached data is used where available; see `SyncPR` for a forced refresh.
+
+This is a read-only query as far as the caller is concerned: it never blocks on plugin execution or LLM analysis. Those are dispatched in the background, and their results arrive through `GetPluginOutput` (or on a later `GetPR`'s `annotations`).
+
+**Arguments** (`GetPRstructArgs`):
+| Field       | Type   | Required | Description                          |
+|-------------|--------|----------|--------------------------------------|
+| `Owner`     | string | Yes      | Repository owner (e.g., `"octocat"`) |
+| `Repo`      | string | Yes      | Repository name (e.g., `"hello"`)    |
+| `Number`    | int    | Yes      | Pull request number                  |
+| `SkipCache` | bool   | No       | If `true`, bypass the DB caches and fetch from GitHub |
+
+**Reply** (`GetPRReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
 ---
 
@@ -190,9 +241,7 @@ Fetches the next or previous pull request relative to the given PR in the sorted
 | `SkipCache`| bool   | No       | If `true`, bypass cached data for the adjacent PR        |
 | `Previous` | bool   | No       | If `true`, return the previous PR; if `false` (default), return the next PR |
 
-**Reply** (`GetAdjacentPRReply`):
-
-All fields from `GetPRReply` (see above), plus:
+**Reply** (`GetAdjacentPRReply`): [the PR payload](#the-pr-payload), plus:
 
 | Field              | Type   | Description                                           |
 |--------------------|--------|-------------------------------------------------------|
@@ -224,7 +273,10 @@ All fields from `GetPRReply` (see above), plus:
     "diff": "...",
     "comments": [],
     "outdated_comments": [],
-    "reviews": []
+    "reviews": [],
+    "commits": [],
+    "feedback": "",
+    "annotations": []
   },
   "error": null,
   "id": 2
@@ -244,17 +296,63 @@ Forces a fresh fetch of the pull request from GitHub, bypassing any cache.
 | `Repo`   | string | Yes      | Repository name                      |
 | `Number` | int    | Yes      | Pull request number                  |
 
-**Reply** (`SyncPRReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if the request succeeded                 |
-| `updated`  | bool         | `true` if the sync pulled in a new head SHA or new comments compared to the previously cached state |
-| `Content`  | string       | Formatted PR response (freshly fetched)         |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`SyncPRReply`): [the PR payload](#the-pr-payload), freshly fetched, plus:
+
+| Field     | Type | Description                                                                                         |
+|-----------|------|-----------------------------------------------------------------------------------------------------|
+| `updated` | bool | `true` if the sync pulled in a new head SHA or new comments compared to the previously cached state |
+
+---
+
+### `RPCHandler.GetHunkContext`
+
+Returns extra context lines immediately before or after a hunk boundary, so a client can expand the visible context around a diff without fetching the whole file.
+
+The lines come back as plain text, without the leading space that marks a context line in a unified diff — a client splicing them into a diff adds that itself. They are **not** part of the PR's canonical diff, so they must not consume a comment `position`: counting them would shift the position of every line below the expansion, and comments created while expanded would be stored against a position that no longer exists once the canonical diff is restored.
+
+**Arguments** (`GetHunkContextArgs`):
+| Field        | Type   | Required | Description                                                                 |
+|--------------|--------|----------|-----------------------------------------------------------------------------|
+| `Owner`      | string | Yes      | Repository owner                                                            |
+| `Repo`       | string | Yes      | Repository name                                                             |
+| `Number`     | int    | Yes      | Pull request number                                                         |
+| `Filename`   | string | Yes      | Path of the file within the repo                                            |
+| `Side`       | string | Yes      | Which version of the file to read from: `"old"` or `"new"`                   |
+| `AnchorLine` | int    | Yes      | 1-based line number **in the file** (not a diff position) to expand from. With `Direction: "before"`, lines above it are returned; with `"after"`, lines below it |
+| `Direction`  | string | Yes      | `"before"` or `"after"`                                                     |
+| `Count`      | int    | No       | Number of extra lines to fetch. Defaults to 20, capped at 100                |
+| `OrigStart`  | int    | Yes      | Current hunk's `@@ -OrigStart,OrigLength`                                    |
+| `OrigLength` | int    | Yes      | Current hunk's old-side length                                              |
+| `NewStart`   | int    | Yes      | Current hunk's `@@ +NewStart,NewLength`                                      |
+| `NewLength`  | int    | Yes      | Current hunk's new-side length                                              |
+| `HunkHeader` | string | No       | Text after the `@@` in the current hunk header (e.g. the enclosing function), preserved in the rewritten header |
+
+The four range fields and `HunkHeader` describe the hunk as it currently stands; the server uses them to compute the header the hunk should carry once expanded.
+
+**Reply** (`GetHunkContextReply`):
+| Field          | Type     | Description                                                        |
+|----------------|----------|--------------------------------------------------------------------|
+| `lines`        | []string | The extra context lines                                            |
+| `start_line`   | int      | 1-based line number of the first returned line                     |
+| `end_line`     | int      | 1-based line number of the last returned line                      |
+| `range_header` | string   | Updated `@@ -a,b +c,d @@` header for the expanded hunk; a client replaces the existing hunk header with this |
+
+`Direction` and `Side` are validated, and `AnchorLine` must be at least 1 — anything else is returned as an RPC error.
+
+**Example Request** (20 lines above a hunk starting at line 42 of the head file):
+```json
+{
+  "method": "RPCHandler.GetHunkContext",
+  "params": [{
+    "Owner": "octocat", "Repo": "Hello-World", "Number": 42,
+    "Filename": "server/server.go",
+    "Side": "new", "AnchorLine": 42, "Direction": "before", "Count": 20,
+    "OrigStart": 40, "OrigLength": 6, "NewStart": 42, "NewLength": 8,
+    "HunkHeader": "func (h *RPCHandler) GetPR("
+  }],
+  "id": 9
+}
+```
 
 ---
 
@@ -273,16 +371,11 @@ Adds a new local (pending) comment to a pull request. The comment is stored loca
 | `Body`      | string  | Yes      | Comment body text                                        |
 | `ReplyToID` | *int64  | No       | If replying to an existing comment, the comment ID       |
 
-**Reply** (`AddCommentReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `ID`       | int64        | Local ID of the newly created comment           |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`AddCommentReply`): [the PR payload](#the-pr-payload), plus:
+
+| Field | Type  | Description                           |
+|-------|-------|---------------------------------------|
+| `id`  | int64 | Local ID of the newly created comment |
 
 ---
 
@@ -299,16 +392,7 @@ Edits an existing local (pending) comment.
 | `ID`     | int64  | Yes      | Local comment ID to edit             |
 | `Body`   | string | Yes      | New body text for the comment        |
 
-**Reply** (`EditCommentReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if the edit succeeded                    |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`EditCommentReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
 ---
 
@@ -324,16 +408,7 @@ Deletes a local (pending) comment.
 | `Number` | int    | Yes      | Pull request number                  |
 | `ID`     | int64  | Yes      | Local comment ID to delete           |
 
-**Reply** (`DeleteCommentReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if deletion succeeded                    |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`DeleteCommentReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
 ---
 
@@ -349,16 +424,11 @@ Sets the top-level feedback/review body for a pull request.
 | `Number` | int    | Yes      | Pull request number                  |
 | `Body`   | string | Yes      | Feedback/review body text            |
 
-**Reply** (`SetFeedbackReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `ID`       | int64        | ID of the feedback entry                        |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`SetFeedbackReply`): [the PR payload](#the-pr-payload) — whose `feedback` field carries the body just saved — plus:
+
+| Field | Type  | Description              |
+|-------|-------|--------------------------|
+| `id`  | int64 | ID of the feedback entry |
 
 ---
 
@@ -373,16 +443,7 @@ Removes all local (pending) comments for a specific pull request.
 | `Repo`   | string | Yes      | Repository name                      |
 | `Number` | int    | Yes      | Pull request number                  |
 
-**Reply** (`RemovePRCommentsReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if removal succeeded                     |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`RemovePRCommentsReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
 ---
 
@@ -409,16 +470,7 @@ Submits a review to GitHub. This will:
 | `Event`  | string | Yes      | Review event type: `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` |
 | `Body`   | string | No       | Top-level review body (optional)                         |
 
-**Reply** (`SubmitReviewReply`):
-| Field      | Type         | Description                                     |
-|------------|--------------|-------------------------------------------------|
-| `Okay`     | bool         | `true` if submission succeeded                  |
-| `Content`  | string       | Formatted updated PR content                    |
-| `metadata` | PRMetadata   | Structured PR metadata                          |
-| `diff`     | string       | Raw diff content                                |
-| `comments` | []CommentJSON| List of structured PR active comments           |
-| `outdated_comments` | []CommentJSON| List of structured PR outdated comments   |
-| `reviews`  | []ReviewJSON | List of submitted reviews                       |
+**Reply** (`SubmitReviewReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
 ---
 
@@ -538,6 +590,40 @@ Retrieves the output and status of all plugins for a specific pull request.
 | `line`     | int    | 1-based line number the annotation applies to        |
 | `severity` | string | Free-form severity, e.g. `info`, `warning`, `error`  |
 | `content`  | string | The annotation text                                  |
+
+---
+
+### `RPCHandler.RerunPlugins`
+
+Clears cached plugin results for a pull request and runs the plugins again, bypassing the head-SHA cache check that normally makes a plugin skip a PR it has already seen.
+
+Execution happens in the background: the reply means the rerun was **accepted**, not that it finished. Poll `GetPluginOutput` for results — a plugin that is still running reports `pending`.
+
+**Arguments** (`RerunPluginsArgs`):
+| Field     | Type     | Required | Description                                                           |
+|-----------|----------|----------|------------------------------------------------------------------------|
+| `Owner`   | string   | Yes      | Repository owner                                                      |
+| `Repo`    | string   | Yes      | Repository name                                                       |
+| `Number`  | int      | Yes      | Pull request number                                                   |
+| `Plugins` | []string | No       | Names of specific plugins to rerun. Omitted or empty reruns all of them |
+
+**Reply** (`RerunPluginsReply`):
+| Field     | Type                    | Description                                              |
+|-----------|-------------------------|-----------------------------------------------------------|
+| `okay`    | bool                    | `true` if the rerun was accepted                          |
+| `message` | string                  | Human-readable status                                     |
+| `output`  | map[string]PluginOutput | Plugin results as they stood when the rerun was dispatched; see `GetPluginOutput` |
+
+Because dispatch is asynchronous, `output` will generally still show the cleared or previous state. Treat `GetPluginOutput` as the source of truth once the rerun has been accepted.
+
+**Example Request** (rerun a single plugin):
+```json
+{
+  "method": "RPCHandler.RerunPlugins",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "Plugins": ["security_check"]}],
+  "id": 10
+}
+```
 
 ---
 
@@ -777,6 +863,13 @@ A typical code review workflow using this API:
 6. **Sync**: Use `SyncPR` to fetch the latest state after submission
 7. **Navigate**: Use `GetAdjacentPR` to move to the next or previous PR in the review queue without returning to the list; navigation wraps around at both ends
 
+Alongside that loop:
+
+- **Expand context**: `GetHunkContext` fetches lines around a hunk boundary when the diff's own context isn't enough to judge a change.
+- **Plugin results**: `GetPluginOutput` polls for plugin results, which arrive asynchronously; `RerunPlugins` forces a re-execution.
+
+Steps 2–5 each return [the PR payload](#the-pr-payload) in full, so a client can apply the reply directly rather than tracking which parts of its local state a mutation invalidated.
+
 ---
 
 ## Error Handling
@@ -811,8 +904,9 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
       "title": "Example PR",
       "author": "octocat",
       "state": "open",
-      "worktree_path": "/home/user/code/repo_worktrees/42_branch",
-      "description": "PR description..."
+      "body": "PR description...",
+      "repo_path": "/home/user/code/Hello-World",
+      "worktree_path": "/home/user/code/repo_worktrees/42_branch"
     },
     "diff": "--- a/file.txt\n+++ b/file.txt\n...",
     "comments": [
@@ -835,6 +929,25 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "state": "APPROVED",
         "submitted_at": "2023-01-01T12:05:00Z",
         "html_url": "https://github.com/..."
+      }
+    ],
+    "commits": [
+      {
+        "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+        "message": "Fix the thing",
+        "author": "octocat",
+        "date": "2023-01-01T11:00:00Z",
+        "url": "https://github.com/..."
+      }
+    ],
+    "feedback": "Draft review body saved locally, not yet submitted",
+    "annotations": [
+      {
+        "plugin": "security_check",
+        "filename": "file.txt",
+        "line": 12,
+        "severity": "warning",
+        "content": "Unvalidated input reaches the query"
       }
     ]
   },

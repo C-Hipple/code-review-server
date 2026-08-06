@@ -8,14 +8,10 @@ It is a **feature list**, not an API spec. Every server call named here is defin
 the [Protocol](protocol.md); read that document alongside this one. The general rules
 for spawning and talking to the server live in [Building Clients](building_clients.md).
 
-Two things worth knowing before you start:
-
-- The Go server speaks **JSON-RPC 1.0 over stdio only**. There is no HTTP server in
-  the Go binary. Any web client needs a process that owns the child process and
-  bridges it to the browser — that is what `bun_client/server.ts` is.
-- A handful of methods the web client relies on (`GetHunkContext`, `RerunPlugins`)
-  are not yet in [protocol.md](protocol.md); they are documented in
-  [Calls not yet in protocol.md](#calls-not-yet-in-protocolmd) below.
+One thing worth knowing before you start: the Go server speaks **JSON-RPC 1.0 over
+stdio only**. There is no HTTP server in the Go binary. Any web client needs a
+process that owns the child process and bridges it to the browser — that is what
+`bun_client/server.ts` is.
 
 ---
 
@@ -434,38 +430,29 @@ gaps if you're building a more complete one:
 | `Hello` | Health check / connection probe. |
 | `RemovePRComments` | "Discard all pending comments" button. |
 
-### Calls not yet in protocol.md
+### Two calls beyond the core review loop
 
-Two methods the web client depends on are missing from [protocol.md](protocol.md).
-Until it catches up, `server/server.go` is the source of truth.
+Both are documented in the protocol, but are easy to miss when scanning it for the
+basics:
 
-**`RPCHandler.GetHunkContext`** — extra context lines around a hunk boundary, so a
-client can expand a diff without fetching the whole file.
+- [`GetHunkContext`](protocol.md#rpchandlergethunkcontext) — extra context lines
+  around a hunk boundary, so a diff can be expanded without fetching the whole file.
+  Powers the ↑/↓ buttons on hunk headers.
+- [`RerunPlugins`](protocol.md#rpchandlerrerunplugins) — clears cached plugin results
+  and re-executes. The reply means "accepted", not "finished": poll
+  `GetPluginOutput` for results.
 
-Args: `Owner`, `Repo`, `Number`, `Filename`, `Side` (`"old"` or `"new"`),
-`AnchorLine` (1-based, in the file, not the diff), `Direction` (`"before"` or
-`"after"`), `Count` (defaults to 20, capped at 100), plus the current hunk range
-(`OrigStart`, `OrigLength`, `NewStart`, `NewLength`, `HunkHeader`) so the server can
-compute the updated header.
+### Reply fields worth knowing about
 
-Reply: `lines` (`[]string`), `start_line`, `end_line`, `range_header` (the rewritten
-`@@ -a,b +c,d @@` line for the expanded hunk).
-
-**`RPCHandler.RerunPlugins`** — clears cached plugin results and re-executes.
-
-Args: `Owner`, `Repo`, `Number`, `Plugins` (optional; empty means all).
-Reply: `okay`, `message`, `output`. Execution happens in a background goroutine — the
-reply means "accepted", not "finished", so poll `GetPluginOutput` for results.
-
-### Reply fields the client relies on
-
-Two fields the client depends on aren't in protocol.md's `PRMetadata` /
-`GetPRReply` tables either:
-
-- `metadata.repo_path` — absolute path to the local clone. The client uses it to gate
-  LSP and the code viewer; distinct from the documented `worktree_path`.
-- `feedback` (top level) — the saved review feedback draft, returned alongside the PR
-  so the client can restore it.
+- [`metadata.repo_path`](protocol.md#prmetadata-object) — absolute path to the local
+  clone, distinct from `worktree_path`. The client uses it to gate LSP and the code
+  viewer.
+- [`feedback`](protocol.md#the-pr-payload) — the saved review feedback draft,
+  returned with every PR payload so the client can restore the in-progress draft.
+- [`annotations`](protocol.md#the-pr-payload) — plugin annotations aggregated
+  server-side. The client derives its own from the plugin outputs instead (see
+  [3.10](#310-plugin-annotations-in-the-diff-annotation_utilsts)), but this field is
+  there for clients that don't poll plugins separately.
 
 ---
 

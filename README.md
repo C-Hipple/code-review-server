@@ -30,14 +30,20 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
 2.  **Configure environment**
 
-    Create your config at `~/.config/codereviewserver.toml` (see [Configuration](docs/configuration.md)).
-
     ```bash
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
     export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
     ```
 
-    Minimal `~/.config/codereviewserver.toml`:
+    That token is the only required setup. With no config file, the server runs a built-in default configuration — a **Waiting On Me** section and a **Review Requested** section, found through GitHub search and identified by whoever the token belongs to. No repo list, no username.
+
+    To customize, start from those defaults and edit (see [Configuration](docs/configuration.md)):
+
+    ```bash
+    codereviewserver -print-default-config > ~/.config/codereviewserver.toml
+    ```
+
+    A fuller `~/.config/codereviewserver.toml`, once you know which repos you care about:
     ```toml
     Repos = ["owner/repo"]
     GithubUsername = "your-username"

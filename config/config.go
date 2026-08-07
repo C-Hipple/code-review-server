@@ -2,10 +2,12 @@ package config
 
 import (
 	"crs/database"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -75,8 +77,21 @@ type Config struct {
 	// file ordering. The rating is exposed as the review_ease field in PR
 	// metadata and review list items. Off by default; requires GEMINI_API_KEY.
 	ExperimentalLLMReviewEase bool
-	DB                        *database.DB
+	// UsingDefaults is true when no config file exists and the server is
+	// running DefaultConfigTOML. Nothing behaves differently because of it; it
+	// exists so clients can say so.
+	UsingDefaults bool
+	DB            *database.DB
 }
+
+// LoginResolver looks up the GitHub login the configured API token belongs to,
+// so a config that never names a user still has an identity for the filters
+// that compare PRs against "me". main wires this to
+// git_tools.GetAuthenticatedLogin; it is a variable because config cannot
+// import git_tools (git_tools reads config). A nil resolver, or one that
+// returns "", simply leaves GithubUsername empty — the behavior before this
+// existed.
+var LoginResolver func() string
 
 var (
 	c  Config
@@ -172,6 +187,17 @@ func parseConfig(data []byte) (*Config, error) {
 		pluginNames[p.Name] = true
 	}
 
+	// Fill in who "me" is from the API token when the config doesn't say. This
+	// runs before the per-workflow copy below, so a resolved login reaches the
+	// identity filters the same way a configured one does. Nothing is written
+	// back to disk: the file stays as the user wrote it.
+	if intermediate_config.GithubUsername == "" && LoginResolver != nil {
+		if login := strings.TrimSpace(LoginResolver()); login != "" {
+			slog.Debug("Using the API token's user as GithubUsername", "login", login)
+			intermediate_config.GithubUsername = login
+		}
+	}
+
 	for i := range intermediate_config.Workflows {
 		if intermediate_config.Workflows[i].GithubUsername == "" {
 			intermediate_config.Workflows[i].GithubUsername = intermediate_config.GithubUsername
@@ -221,6 +247,17 @@ func loadConfig() (*Config, error) {
 
 	the_bytes, err := os.ReadFile(configPath)
 	if err != nil {
+		// A missing config file is a first run, not a failure: the built-in
+		// defaults need nothing but a token, so the server comes up and starts
+		// filling a dashboard instead of exiting with a message about a file
+		// the user has never heard of.
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Warn("No configuration file found; running with the built-in defaults",
+				"path", configPath,
+				"sections", "Waiting On Me, Review Requested",
+				"customize", "codereviewserver -print-default-config > "+configPath)
+			return DefaultConfig()
+		}
 		return nil, fmt.Errorf("failed to read config file at %s: %w", configPath, err)
 	}
 

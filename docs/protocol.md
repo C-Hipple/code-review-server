@@ -643,10 +643,13 @@ Returns the server's configuration file, re-read from disk so the client sees ed
 | `message`        | string             | Empty on success; explains the problem when the file can't be read |
 | `path`           | string             | Absolute path of the TOML file being read and written              |
 | `config`         | Config             | The current configuration (see below)                              |
+| `using_defaults` | bool               | `true` when no file exists at `path` and the built-in defaults are running |
 | `workflow_types` | []WorkflowTypeInfo | Workflow types this server can run                                 |
 | `filters`        | []FilterInfo       | Filters a workflow may use                                         |
 
 If the file on disk no longer parses, `okay` is `false` and `config` describes the configuration still running in memory.
+
+When `using_defaults` is `true` there is no file yet; `config` describes the built-in defaults (see [Configuration](configuration.md#running-without-a-config-file)). Any `UpdateConfig` call writes them out along with the change, so a client can present them as an ordinary editable configuration.
 
 #### `Config` Object
 

@@ -786,10 +786,14 @@ func newConfigView(cfg config.Config) ConfigView {
 // ConfigPayload is the shared body of the config replies, so GetConfig and
 // UpdateConfig hand back the same shape and a client can render either one.
 type ConfigPayload struct {
-	Okay          bool                         `json:"okay"`
-	Message       string                       `json:"message"`
-	Path          string                       `json:"path"`
-	Config        ConfigView                   `json:"config"`
+	Okay    bool       `json:"okay"`
+	Message string     `json:"message"`
+	Path    string     `json:"path"`
+	Config  ConfigView `json:"config"`
+	// UsingDefaults is true when no file exists at Path and the server is
+	// running the built-in defaults. Saving any change writes the file, at
+	// which point what a client shows becomes what is on disk.
+	UsingDefaults bool                         `json:"using_defaults"`
 	WorkflowTypes []workflows.WorkflowTypeInfo `json:"workflow_types"`
 	Filters       []workflows.FilterInfo       `json:"filters"`
 }
@@ -797,6 +801,7 @@ type ConfigPayload struct {
 func (p *ConfigPayload) populate(cfg config.Config) {
 	p.Okay = true
 	p.Config = newConfigView(cfg)
+	p.UsingDefaults = cfg.UsingDefaults
 	p.WorkflowTypes = workflows.WorkflowTypes()
 	p.Filters = workflows.FilterTypes()
 

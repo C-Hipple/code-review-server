@@ -2,6 +2,7 @@ package main
 
 import (
 	"crs/config"
+	"crs/git_tools"
 	"crs/logger"
 	"crs/server"
 	"crs/workflows"
@@ -21,20 +22,32 @@ func main() {
 	slog.SetDefault(log)
 	slog.Info("starting")
 
-	// Initialize configuration
-	if err := config.Initialize(); err != nil {
-		slog.Error("Failed to initialize configuration", "error", err)
-		os.Exit(1)
-	}
-	defer config.C().DB.Close()
-
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	serverFlag := flag.Bool("server", false, "Run as an RPC server")
 	testFlag := flag.Bool("test", false, "Run in test mode")
 	listPRs := flag.Bool("list-prs", false, "List all PRs from the database")
 	listSections := flag.Bool("list-sections", false, "List all sections from the database")
 	getPRFlag := flag.String("pr", "", "Get cached details for a specific PR (format: owner/repo/number)")
+	printDefaultConfig := flag.Bool("print-default-config", false, "Print the built-in default configuration and exit")
 	flag.Parse()
+
+	// Printing the defaults is what someone does before they have a config, a
+	// database, or a token, so it happens before anything is initialized.
+	if *printDefaultConfig {
+		fmt.Print(config.DefaultConfigTOML)
+		return
+	}
+
+	// Lets a config that never names a GithubUsername still know who "me" is.
+	// Set before Initialize so the very first parse can use it.
+	config.LoginResolver = git_tools.GetAuthenticatedLogin
+
+	// Initialize configuration
+	if err := config.Initialize(); err != nil {
+		slog.Error("Failed to initialize configuration", "error", err)
+		os.Exit(1)
+	}
+	defer config.C().DB.Close()
 
 	if *testFlag {
 		content, err := server.GetFullPRResponse("C-Hipple", "gtdbot", 9, false, nil)

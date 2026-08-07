@@ -79,6 +79,8 @@ export interface ConfigReply {
     message: string;
     path: string;
     config: ServerConfig;
+    /** True when no config file exists yet and the server is running its defaults. */
+    using_defaults?: boolean;
     workflow_types: WorkflowTypeInfo[];
     filters: FilterInfo[];
     /** Only present on UpdateConfig replies. */

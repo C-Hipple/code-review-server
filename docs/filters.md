@@ -21,9 +21,11 @@ Each workflow can use the available filters to customize which PRs are included.
 
 ## Filters that need your GitHub username
 
-`FilterMyReviewRequested`, `FilterMyPRs`, `FilterNotMyPRs`, `FilterWaitingOnMe` and `FilterWaitingOnAuthor` compare each PR against *your* GitHub login. They read `GithubUsername` from the workflow, falling back to the root-level setting.
+`FilterMyReviewRequested`, `FilterMyPRs`, `FilterNotMyPRs`, `FilterWaitingOnMe` and `FilterWaitingOnAuthor` compare each PR against *your* GitHub login. They read `GithubUsername` from the workflow, falling back to the root-level setting, and finally to the user your `CRS_GITHUB_TOKEN` belongs to — looked up from the GitHub API and never written to your config file.
 
-If neither is set, a workflow using one of these filters is **skipped at startup** with an explanatory log line, and the config editor reports the same problem. (Previously the filter simply matched nothing, leaving the section silently empty.)
+So in the common case you don't have to set `GithubUsername` at all. Set it anyway when the token belongs to a bot or a shared account, since an explicit value wins.
+
+If none of the three yields a login — no `GithubUsername` and no usable token — a workflow using one of these filters is **skipped at startup** with an explanatory log line, and the config editor reports the same problem. (Previously the filter simply matched nothing, leaving the section silently empty.)
 
 To see what the filter decides for each of your open PRs, run:
 

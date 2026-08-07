@@ -192,19 +192,16 @@ function App() {
     return (
         <div
             className="app-container"
-            style={{ minHeight: '100vh', padding: isMobile ? '12px' : '20px' }}
+            style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
         >
             <header
-                style={{
-                    marginBottom: isMobile ? '16px' : '30px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                }}
+                className="app-topbar"
+                // Only the list pins its bar: the review view's own sticky
+                // toolbar measures itself against the viewport top, so a pinned
+                // bar there would cover it.
+                style={{ position: view === 'LIST' ? 'sticky' : 'static', top: 0 }}
             >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 0 }}>
                     <a
                         href="/"
                         onClick={e => {
@@ -225,20 +222,79 @@ function App() {
                         <h1
                             style={{
                                 margin: 0,
-                                fontSize: '24px',
+                                fontSize: '18px',
                                 fontWeight: 600,
                                 cursor: 'pointer',
+                                whiteSpace: 'nowrap',
                             }}
                         >
                             <span style={{ color: 'var(--accent)' }}>Code</span>Review
                         </h1>
                     </a>
+                    {view === 'LIST' && !isMobile && <span className="app-tab">Pull Requests</span>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {view === 'REVIEW' && (
+                        <>
+                            <button
+                                onClick={() => handleNavigatePR(true)}
+                                disabled={navigating}
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    padding: '6px 12px',
+                                    borderRadius: '6px',
+                                    fontSize: '14px',
+                                    cursor: navigating ? 'not-allowed' : 'pointer',
+                                    opacity: navigating ? 0.5 : 1,
+                                }}
+                                title="Previous PR"
+                            >
+                                {isMobile ? '←' : '← Prev PR'}
+                            </button>
+                            <button
+                                onClick={() => handleNavigatePR(false)}
+                                disabled={navigating}
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    padding: '6px 12px',
+                                    borderRadius: '6px',
+                                    fontSize: '14px',
+                                    cursor: navigating ? 'not-allowed' : 'pointer',
+                                    opacity: navigating ? 0.5 : 1,
+                                }}
+                                title="Next PR"
+                            >
+                                {isMobile ? '→' : 'Next PR →'}
+                            </button>
+                        </>
+                    )}
+                    {(view === 'REVIEW' || view === 'PLUGIN_OUTPUT') && (
+                        <button
+                            onClick={handleBack}
+                            style={{
+                                background: 'transparent',
+                                border: '1px solid var(--border)',
+                                color: 'var(--text-secondary)',
+                                padding: '6px 12px',
+                                borderRadius: '6px',
+                                fontSize: '14px',
+                                cursor: 'pointer',
+                            }}
+                            title="Back to list"
+                        >
+                            {isMobile ? '☰ List' : '← Back to List'}
+                        </button>
+                    )}
                     <button
                         onClick={() => setShowPrefs(true)}
                         style={{
                             background: 'transparent',
                             border: 'none',
-                            fontSize: '20px',
+                            fontSize: '18px',
                             cursor: 'pointer',
                             color: 'var(--text-secondary)',
                             display: 'flex',
@@ -251,66 +307,15 @@ function App() {
                         ⚙️
                     </button>
                 </div>
-                {(view === 'REVIEW' || view === 'PLUGIN_OUTPUT') && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {view === 'REVIEW' && (
-                            <>
-                                <button
-                                    onClick={() => handleNavigatePR(true)}
-                                    disabled={navigating}
-                                    style={{
-                                        background: 'transparent',
-                                        border: '1px solid var(--border)',
-                                        color: 'var(--text-secondary)',
-                                        padding: '8px 16px',
-                                        borderRadius: '6px',
-                                        fontSize: '14px',
-                                        cursor: navigating ? 'not-allowed' : 'pointer',
-                                        opacity: navigating ? 0.5 : 1,
-                                    }}
-                                    title="Previous PR"
-                                >
-                                    {isMobile ? '←' : '← Prev PR'}
-                                </button>
-                                <button
-                                    onClick={() => handleNavigatePR(false)}
-                                    disabled={navigating}
-                                    style={{
-                                        background: 'transparent',
-                                        border: '1px solid var(--border)',
-                                        color: 'var(--text-secondary)',
-                                        padding: '8px 16px',
-                                        borderRadius: '6px',
-                                        fontSize: '14px',
-                                        cursor: navigating ? 'not-allowed' : 'pointer',
-                                        opacity: navigating ? 0.5 : 1,
-                                    }}
-                                    title="Next PR"
-                                >
-                                    {isMobile ? '→' : 'Next PR →'}
-                                </button>
-                            </>
-                        )}
-                        <button
-                            onClick={handleBack}
-                            style={{
-                                background: 'transparent',
-                                border: '1px solid var(--border)',
-                                color: 'var(--text-secondary)',
-                                padding: '8px 16px',
-                                borderRadius: '6px',
-                                fontSize: '14px',
-                                cursor: 'pointer',
-                            }}
-                            title="Back to list"
-                        >
-                            {isMobile ? '☰ List' : '← Back to List'}
-                        </button>
-                    </div>
-                )}
             </header>
 
-            <main>
+            <main
+                style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: view === 'LIST' ? 0 : isMobile ? '12px' : '20px',
+                }}
+            >
                 {view === 'LIST' && (
                     <PRList
                         onOpenReview={handleOpenReview}

@@ -15,6 +15,9 @@ codereviewserver -list-sections
 
 # Get details for a specific PR
 codereviewserver -pr owner/repo/123
+
+# Print the built-in default configuration
+codereviewserver -print-default-config
 ```
 
 ## Flags
@@ -75,6 +78,16 @@ URL: https://github.com/myorg/myrepo/pull/123
 State: open
 ...
 ```
+
+### `-print-default-config`
+
+Prints the configuration the server runs when `~/.config/codereviewserver.toml` does not exist (see [Configuration](configuration.md#running-without-a-config-file)) and exits. Unlike the other flags this one touches neither the config file nor the database, so it works on a machine that has neither — which is the point:
+
+```bash
+codereviewserver -print-default-config > ~/.config/codereviewserver.toml
+```
+
+Logs go to stderr, so the redirect above captures only TOML.
 
 ## Use Cases
 

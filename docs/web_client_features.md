@@ -131,24 +131,44 @@ The WebSocket handlers translate between browser JSON messages and LSP's
 The landing view. Backed by a single `GetAllReviews` call; the client uses the
 structured `items` array (not the org-mode `content` string).
 
+Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
+
+- **State sidebar** — Open / Draft / Merged / Closed / Everything, each with a live
+  count. The state is derived client-side from `status` + `tags`, mirroring the
+  server's own bucketing (`prStatusOrder`): `TODO` is open, `WAITING` is a draft,
+  `DONE` is merged when tagged `merged` and closed otherwise; anything else falls
+  back to the tags and then to open, so no item is ever dropped. The list opens on
+  **Open** and remembers the last choice in `localStorage`.
 - **Sectioned list** — items grouped by `item.section`, ungrouped items land in
-  "Other". Each section is collapsible, with a count badge, plus global
-  Collapse All / Expand All.
-- **Per-item card** — status badge (`TODO` / `WAITING` / `DONE`, mapped to a color
-  variant), `review_ease` badge when the LLM rating is enabled, title,
-  `owner/repo #number`, and author.
+  "Other", in the order the server sent them. Each section is a collapsible header
+  with its own count, plus a global collapse/expand toggle in the toolbar.
+- **Per-item row** — lifecycle pill (open / draft / merged / closed, in a fixed-width
+  column so titles align), title, `review_ease` pill when the LLM rating is enabled,
+  and a meta line of repo, `#number`, author login, and a relative timestamp from
+  `created_at` (full timestamp on hover).
 - **Non-PR items** — items with `number <= 0` render as "Non-PR item" and are not
   clickable.
-- **Actions per row** — Review (open in-app), Plugins (open the plugin view),
-  GitHub (open `item.url` in a new tab).
-- **Text filter** — matches title, author, owner, or repo.
+- **Actions per row** — revealed on hover or keyboard focus: Plugins (open the plugin
+  view) plus whichever of Review / GitHub the row click doesn't already go to, which
+  depends on the Preferred Review Location preference.
+- **Text filter** — matches title, repo, owner, author, and PR number (with or
+  without a leading `#`, by prefix). A "N of M" counter sits beside it.
 - **GitHub URL paste** — pasting `https://github.com/{owner}/{repo}/pull/{n}` into the
   filter box opens that review directly instead of filtering.
-- **Faceted dropdowns** — Status (static list) plus Author / Owner / Repo, whose
-  options are derived from the loaded items. Clear-all button and a
-  "Showing N of M items" counter appear when any filter is active.
-- **Manual open form** — owner / repo / number, for PRs not in any section.
-- **Refresh** — re-issues `GetAllReviews`.
+- **Repo / author narrowing** — a checkable list per field, each value shown with its
+  open-PR count and ordered by it (busiest first, alphabetical within a tie); ten rows
+  are visible before the list scrolls. Counts are row counts over all items, like the
+  state counts, and are computed independently of the current filters so checking a
+  box never reorders the list under the pointer. Several boxes OR together within a
+  field and AND across fields. The All repos / All authors dropdowns above them are
+  single-value shortcuts into the same selection — picking one replaces the selection,
+  and they read "N repos selected" when the list holds more than one — so the two
+  controls can't disagree. Narrowing (and the text filter) is applied before the state
+  counts, so the sidebar describes what the current search holds. On phones both lists
+  fold into disclosures so they don't bury the reviews.
+- **Manual open form** — a collapsed disclosure in the sidebar taking owner / repo /
+  number, for PRs not in any section.
+- **Refresh** — re-issues `GetAllReviews`; a failed load offers a retry.
 - **Plugin warm-up** — after loading, the list fires a `GetPluginOutput` call for
   every visible PR and ignores the results. This is deliberate: it starts deferred
   plugin execution server-side so output is ready by the time a PR is opened.
@@ -168,6 +188,10 @@ structured `items` array (not the org-mode `content` string).
   both ends.
 - **Dynamic document title** — `Code Review` on the list, `{title} (#{number})` in a
   review, `Plugins {owner}/{repo}::{number}` in the plugin view.
+- **Top bar** — wordmark, the active view's tab, the prev / next / back controls, and
+  preferences. Pinned on the list (whose sidebar and toolbar stick beneath it, offset
+  by `--topbar-height`); static in the review view, whose own sticky toolbar measures
+  itself against the viewport top.
 
 ### 3.3 PR header (`PRHeader.tsx`)
 
@@ -397,7 +421,9 @@ Client-side only, persisted in `localStorage`:
 `useMediaQuery` / `useIsMobile` drive real behavioral changes, not just CSS: line
 wrapping defaults on, the diff becomes horizontally scrollable, line-number gutters
 are hidden, split view is disabled, the code viewer goes full-screen, inline cards
-stick to the left edge, and the bottom review action bar appears.
+stick to the left edge, and the bottom review action bar appears. The review list
+restacks in CSS alone: the sidebar becomes a header, its state buckets a horizontally
+scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ### 3.16 Miscellaneous
 

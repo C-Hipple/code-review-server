@@ -5,6 +5,10 @@
         'JetBrains Mono', 'Fira Code', source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
         monospace;
 
+    /* Height of the app's top bar. The review list pins its sidebar and
+       toolbar directly beneath it, so both read this rather than a literal. */
+    --topbar-height: 52px;
+
     /* Cross-theme fallbacks; individual themes can override these */
     --diff-line-no-bg: rgba(127, 127, 127, 0.04);
     --diff-line-no-color: rgba(127, 127, 127, 0.85);

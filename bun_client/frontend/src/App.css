@@ -3,31 +3,536 @@
     outline: 1px solid var(--border);
 }
 
-.pr-item-card:hover {
-    border-color: var(--accent) !important;
-    transform: translateY(-2px);
-    background: var(--bg-tertiary) !important;
-    box-shadow: var(--shadow-md);
+/* ============================================================
+   App chrome — top bar shared by every view
+   ============================================================ */
+
+.app-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: var(--topbar-height);
+    padding: 0 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    z-index: 20;
+}
+
+/* Active-view tab, styled after the underlined nav in the reference design.
+   It sits flush with the bar's bottom border, so it needs the bar's height. */
+.app-tab {
+    display: inline-flex;
+    align-items: center;
+    height: var(--topbar-height);
+    margin-bottom: -1px;
+    padding: 0 2px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--accent);
+}
+
+/* ============================================================
+   Review list — sidebar + dense, borderless PR rows
+   ============================================================ */
+
+.crs-list {
+    display: flex;
+    align-items: flex-start;
+    min-height: calc(100vh - var(--topbar-height));
+}
+
+.crs-sidebar {
+    position: sticky;
+    top: var(--topbar-height);
+    flex: 0 0 260px;
+    width: 260px;
+    height: calc(100vh - var(--topbar-height));
+    overflow-y: auto;
+    padding: 16px 12px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+}
+
+.crs-sidebar-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px 14px;
+}
+
+.crs-sidebar-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.crs-sidebar-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.crs-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.crs-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 10px;
+    background: transparent;
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    transition:
+        background 0.12s ease,
+        color 0.12s ease;
+}
+
+.crs-nav-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.crs-nav-item[aria-current='true'] {
+    background: var(--bg-tertiary);
+    border-left-color: var(--accent);
+    border-radius: 0 6px 6px 0;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.crs-nav-count {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+}
+
+.crs-sidebar-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.crs-sidebar-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 2px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    cursor: default;
+}
+
+details > summary.crs-sidebar-label {
+    cursor: pointer;
+    list-style: none;
+}
+
+details > summary.crs-sidebar-label::-webkit-details-marker {
+    display: none;
+}
+
+/* The default disclosure triangle is dropped by `display: flex` on the
+   summary, so the marker is drawn explicitly. */
+details > summary.crs-sidebar-label::after {
+    content: '▸';
+    margin-left: auto;
+    font-size: 10px;
+}
+
+details[open] > summary.crs-sidebar-label::after {
+    content: '▾';
+}
+
+.crs-narrow,
+.crs-goto-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.crs-narrow select {
+    width: 100%;
+}
+
+/* Checkable repo / author lists. Ten rows fit; the rest scroll. */
+.crs-facet {
+    --facet-row-height: 28px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(10 * var(--facet-row-height));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.crs-facet-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    height: var(--facet-row-height);
+    padding: 0 6px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 13px;
     cursor: pointer;
 }
 
-.pr-item-card button:hover {
-    filter: brightness(1.1);
-    transform: scale(1.05);
+.crs-facet-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
 }
 
-.pr-title {
+.crs-facet-item:has(input:checked) {
+    color: var(--text-primary);
+}
+
+.crs-facet-item input {
+    flex: 0 0 auto;
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: var(--accent);
     cursor: pointer;
-    transition: color 0.2s ease;
 }
 
-.pr-title:hover {
+.crs-facet-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Stands in for the clear link when the list is folded into a disclosure. */
+.crs-facet-selected {
+    margin-left: auto;
     color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+}
+
+.crs-facet-count {
+    margin-left: auto;
+    padding-left: 6px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.crs-link-btn {
+    margin-left: auto;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.crs-link-btn:hover {
     text-decoration: underline;
 }
 
-.pr-item-card button:active {
-    transform: scale(0.95);
+.crs-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.crs-toolbar {
+    position: sticky;
+    top: var(--topbar-height);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+}
+
+.crs-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.crs-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.crs-icon-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.crs-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.crs-spin {
+    display: inline-flex;
+    animation: spin 0.9s linear infinite;
+}
+
+.crs-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    text-align: left;
+    cursor: pointer;
+}
+
+.crs-section-header:hover {
+    color: var(--text-primary);
+}
+
+.crs-chevron {
+    display: inline-flex;
+    transition: transform 0.15s ease;
+}
+
+.crs-section-count {
+    margin-left: auto;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+}
+
+.crs-row {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+}
+
+.crs-row:hover {
+    background: var(--bg-secondary);
+}
+
+.crs-row-link {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    flex: 1;
+    min-width: 0;
+    padding: 10px 16px;
+    color: inherit;
+    text-decoration: none;
+}
+
+/* Fixed-width state column so every title starts on the same vertical line. */
+.crs-row-state {
+    flex: 0 0 62px;
+    margin-top: 1px;
+    padding: 2px 0;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 11px;
+    text-align: center;
+    text-transform: lowercase;
+}
+
+.crs-row-body {
+    min-width: 0;
+}
+
+.crs-row-title-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.crs-row-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.crs-row:hover .crs-row-title {
+    color: var(--accent);
+}
+
+.crs-row-ease {
+    padding: 1px 6px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.crs-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.crs-row-repo {
+    font-family: var(--font-mono);
+}
+
+.crs-row-number {
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Row actions stay out of the way until the row is hovered or tabbed into.
+   `pointer-events: none` while hidden so an invisible button can't swallow a
+   click meant for the row; keyboard focus still reveals them. */
+.crs-row-actions {
+    display: flex;
+    gap: 4px;
+    padding-right: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+.crs-row:hover .crs-row-actions,
+.crs-row:focus-within .crs-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.crs-empty {
+    padding: 48px 20px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.crs-empty-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.crs-empty-actions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+@media (max-width: 768px) {
+    .crs-list {
+        flex-direction: column;
+    }
+
+    .crs-sidebar {
+        position: static;
+        flex: none;
+        width: 100%;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    /* State buckets become a horizontally scrolling strip above the list. */
+    .crs-nav {
+        flex-direction: row;
+        gap: 6px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+
+    .crs-nav-item {
+        flex: 0 0 auto;
+        width: auto;
+        border-left: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 6px;
+    }
+
+    .crs-nav-item[aria-current='true'] {
+        border-left: none;
+        border-bottom-color: var(--accent);
+        border-radius: 6px;
+    }
+
+    .crs-nav-count {
+        margin-left: 4px;
+    }
+
+    .crs-narrow {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .crs-narrow > * {
+        flex: 1 1 140px;
+    }
+
+    /* Finger-sized facet rows, and a shorter list so the sidebar doesn't push
+       the reviews themselves off the screen. */
+    .crs-facet {
+        --facet-row-height: 36px;
+        max-height: calc(6 * var(--facet-row-height));
+    }
+
+    .crs-facet-item input {
+        width: 16px;
+        height: 16px;
+    }
+
+    .crs-toolbar {
+        position: static;
+    }
+
+    .crs-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .crs-row-actions {
+        opacity: 1;
+        pointer-events: auto;
+        padding: 0 12px 10px 92px;
+    }
 }
 
 /* Plugin output markdown styling */

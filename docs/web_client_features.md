@@ -389,6 +389,9 @@ Configuration tab. Built on `GetConfig` / `UpdateConfig`.
 
 - Global settings: repos, sync interval, GitHub username, repo location, Jira domain,
   auto-worktree, desktop notifications.
+- **Defaults banner** — when the reply's `using_defaults` is true there is no config file
+  yet and the editor is showing the server's built-in defaults; the usual "editing
+  `<path>`" line is replaced by one saying that saving is what creates the file.
 - Workflow list: collapsible cards, add / delete (with confirmation) / reorder.
 - **Pickers are built from the reply's `workflow_types` and `filters` registries**, not
   hard-coded — so the editor keeps working when the server gains a type or filter.

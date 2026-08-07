@@ -27,6 +27,10 @@ import (
 )
 
 func main() {
+	// Same identity fallback the server uses, so this tool diagnoses the
+	// configuration that actually runs rather than the file's literal contents.
+	config.LoginResolver = git_tools.GetAuthenticatedLogin
+
 	if err := config.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize configuration: %v\n", err)
 		os.Exit(1)
@@ -36,13 +40,17 @@ func main() {
 	cfg := config.C()
 
 	fmt.Println("== Configuration ==")
+	if cfg.UsingDefaults {
+		fmt.Println("No config file — running the built-in defaults.")
+	}
 	fmt.Printf("GithubUsername (root): %q\n", cfg.GithubUsername)
 	if cfg.GithubUsername == "" {
-		fmt.Println("  !! Not set. Every identity filter (FilterWaitingOnMe, FilterMyPRs,")
-		fmt.Println("     FilterNotMyPRs, FilterMyReviewRequested) compares PRs against an empty")
-		fmt.Println("     login, so they match nothing and their sections stay empty.")
+		fmt.Println("  !! No login available: GithubUsername is unset and the API token could")
+		fmt.Println("     not be resolved to a user. Every identity filter (FilterWaitingOnMe,")
+		fmt.Println("     FilterMyPRs, FilterNotMyPRs, FilterMyReviewRequested) then compares")
+		fmt.Println("     PRs against an empty login, matching nothing.")
 	}
-	hasToken := os.Getenv("CRS_GITHUB_TOKEN") != ""
+	hasToken := git_tools.HasToken()
 	if !hasToken {
 		fmt.Println("  !! CRS_GITHUB_TOKEN is not set in this shell.")
 	}
@@ -53,10 +61,9 @@ func main() {
 	if len(repos) == 0 {
 		repos = resolveRepos(cfg)
 	}
-	if len(repos) == 0 {
-		fmt.Println("\nNo repositories configured. Set a root-level Repos list or pass owner/repo arguments.")
-		return
-	}
+	// No repos is normal now: WaitingOnMeWorkflow finds its PRs by search
+	// instead, so fall back to the same candidate set it uses.
+	useSearch := len(repos) == 0
 	if login == "" {
 		login = cfg.GithubUsername
 	}
@@ -88,6 +95,20 @@ func main() {
 	client := git_tools.GetGithubClient()
 	totalPRs, totalMatched := 0, 0
 
+	if useSearch {
+		fmt.Println("\nNo repositories configured, so these are the search candidates")
+		fmt.Println("WaitingOnMeWorkflow works from. Pass owner/repo arguments to scan a")
+		fmt.Println("repository's whole open PR list instead.")
+		prs, err := searchCandidates(login)
+		if err != nil {
+			fmt.Printf("\nSEARCH FAILED — %v\n", err)
+			fmt.Println("A workflow hitting this leaves its section untouched for the cycle.")
+			os.Exit(1)
+		}
+		matched, total := printDecisions("search candidates", prs, login, interacted)
+		totalMatched, totalPRs = matched, total
+	}
+
 	for _, entry := range repos {
 		owner, repo, err := git_tools.ParseRepoName(entry)
 		if err != nil {
@@ -106,26 +127,8 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("\n%s: %d open PRs\n", entry, len(prs))
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "  MATCH\t#\tAUTHOR\tREQUESTED REVIEWERS\tTEAMS\tREASON")
-		matched := 0
-		for _, pr := range prs {
-			decision, reason := explain(pr, login, interacted)
-			if decision {
-				matched++
-			}
-			mark := "-"
-			if decision {
-				mark = "YES"
-			}
-			fmt.Fprintf(w, "  %s\t%d\t%s\t%s\t%s\t%s\n",
-				mark, pr.GetNumber(), pr.GetUser().GetLogin(),
-				joinReviewers(pr), joinTeams(pr), reason)
-		}
-		w.Flush()
-		fmt.Printf("  %d of %d matched\n", matched, len(prs))
-		totalPRs += len(prs)
+		matched, total := printDecisions(entry, prs, login, interacted)
+		totalPRs += total
 		totalMatched += matched
 	}
 
@@ -136,6 +139,29 @@ func main() {
 		fmt.Println("TEAMS instead and FilterWaitingOnMe does not match it (use the workflow's")
 		fmt.Println("Teams field for that).")
 	}
+}
+
+// printDecisions prints one table of per-PR decisions and returns how many
+// matched out of how many were checked.
+func printDecisions(label string, prs []*github.PullRequest, login string, interacted git_tools.InteractionSet) (int, int) {
+	fmt.Printf("\n%s: %d open PRs\n", label, len(prs))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  MATCH\t#\tAUTHOR\tREQUESTED REVIEWERS\tTEAMS\tREASON")
+	matched := 0
+	for _, pr := range prs {
+		decision, reason := explain(pr, login, interacted)
+		mark := "-"
+		if decision {
+			matched++
+			mark = "YES"
+		}
+		fmt.Fprintf(w, "  %s\t%d\t%s\t%s\t%s\t%s\n",
+			mark, pr.GetNumber(), pr.GetUser().GetLogin(),
+			joinReviewers(pr), joinTeams(pr), reason)
+	}
+	w.Flush()
+	fmt.Printf("  %d of %d matched\n", matched, len(prs))
+	return matched, len(prs)
 }
 
 // explain reruns the filter's checks for one PR — in the same order the
@@ -178,6 +204,22 @@ func explain(pr *github.PullRequest, login string, interacted git_tools.Interact
 	return true, strings.Join(reasons, "; ")
 }
 
+// usesWaitingOnMe reports whether a workflow applies FilterWaitingOnMe, either
+// because it lists the filter or because it is the search-driven workflow type
+// built around it.
+func usesWaitingOnMe(raw config.RawWorkflow) bool {
+	if raw.WorkflowType == "WaitingOnMeWorkflow" {
+		return true
+	}
+	for _, entry := range raw.Filters {
+		name, _ := workflows.ParseFilterString(strings.TrimSpace(entry))
+		if name == "FilterWaitingOnMe" {
+			return true
+		}
+	}
+	return false
+}
+
 // reportWorkflows prints the workflows that use FilterWaitingOnMe and returns
 // the login the first of them would filter with.
 func reportWorkflows(cfg config.Config) string {
@@ -185,15 +227,7 @@ func reportWorkflows(cfg config.Config) string {
 	login := ""
 	found := 0
 	for _, raw := range cfg.RawWorkflows {
-		uses := false
-		for _, entry := range raw.Filters {
-			name, _ := workflows.ParseFilterString(strings.TrimSpace(entry))
-			if name == "FilterWaitingOnMe" {
-				uses = true
-				break
-			}
-		}
-		if !uses {
+		if !usesWaitingOnMe(raw) {
 			continue
 		}
 		found++
@@ -228,16 +262,13 @@ func resolveRepos(cfg config.Config) []string {
 	seen := map[string]bool{}
 	repos := []string{}
 	for _, raw := range cfg.RawWorkflows {
-		for _, entry := range raw.Filters {
-			name, _ := workflows.ParseFilterString(strings.TrimSpace(entry))
-			if name != "FilterWaitingOnMe" {
-				continue
-			}
-			for _, r := range workflowRepos(raw, cfg) {
-				if !seen[r] {
-					seen[r] = true
-					repos = append(repos, r)
-				}
+		if !usesWaitingOnMe(raw) {
+			continue
+		}
+		for _, r := range workflowRepos(raw, cfg) {
+			if !seen[r] {
+				seen[r] = true
+				repos = append(repos, r)
 			}
 		}
 	}
@@ -245,6 +276,24 @@ func resolveRepos(cfg config.Config) []string {
 		return cfg.Repos
 	}
 	return repos
+}
+
+// searchCandidates is the candidate set WaitingOnMeWorkflow works from when no
+// repositories are configured: open review requests (mine and my teams') plus
+// every open PR I have reviewed or commented on.
+func searchCandidates(login string) ([]*github.PullRequest, error) {
+	requested, err := git_tools.ReviewRequestedRefs(login)
+	if err != nil {
+		return nil, err
+	}
+	interacted, err := git_tools.MyInteractionRefs(login)
+	if err != nil {
+		return nil, err
+	}
+	refs := git_tools.DedupeRefs(append(requested, interacted...))
+	fmt.Printf("Search found %d candidate PRs (%d review requests, %d with my reviews or comments).\n",
+		len(refs), len(requested), len(interacted))
+	return git_tools.GetPRsForRefs(git_tools.GetGithubClient(), refs)
 }
 
 func joinReviewers(pr *github.PullRequest) string {

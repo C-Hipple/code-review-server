@@ -46,6 +46,9 @@ export default function ConfigManager() {
     const [workflowTypes, setWorkflowTypes] = useState<WorkflowTypeInfo[]>([]);
     const [filters, setFilters] = useState<FilterInfo[]>([]);
     const [path, setPath] = useState('');
+    // No config file yet: what's shown is the server's built-in default, and
+    // saving is what creates the file.
+    const [usingDefaults, setUsingDefaults] = useState(false);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [loadError, setLoadError] = useState('');
@@ -67,6 +70,7 @@ export default function ConfigManager() {
             setWorkflowTypes(reply.workflow_types ?? []);
             setFilters(reply.filters ?? []);
             setPath(reply.path);
+            setUsingDefaults(reply.using_defaults ?? false);
             setServerProblems([]);
             setShowProblems(false);
             setStatus(reply.okay ? null : { kind: 'error', text: reply.message });
@@ -178,6 +182,7 @@ export default function ConfigManager() {
             setSaved(applied);
             setServerProblems([]);
             setPath(reply.path);
+            setUsingDefaults(reply.using_defaults ?? false);
             setStatus({
                 kind: 'ok',
                 text: `${reply.message}. Workflow changes take effect on the next sync.`,
@@ -211,10 +216,18 @@ export default function ConfigManager() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xl }}>
-            <div style={{ fontSize: fontSize.sm, color: colors.textTertiary }}>
-                Editing <code>{path}</code>. The previous file is kept alongside it as{' '}
-                <code>.bak</code>; comments in the file are not preserved.
-            </div>
+            {usingDefaults ? (
+                <div style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
+                    No config file yet — these are the server&apos;s built-in defaults, which need
+                    nothing but a GitHub token. Saving writes them, along with your changes, to{' '}
+                    <code>{path}</code>.
+                </div>
+            ) : (
+                <div style={{ fontSize: fontSize.sm, color: colors.textTertiary }}>
+                    Editing <code>{path}</code>. The previous file is kept alongside it as{' '}
+                    <code>.bak</code>; comments in the file are not preserved.
+                </div>
+            )}
 
             <section style={{ display: 'flex', flexDirection: 'column', gap: spacing.md }}>
                 <SectionHeading>Global Settings</SectionHeading>

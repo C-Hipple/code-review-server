@@ -47,6 +47,18 @@ var workflowTypes = []WorkflowTypeInfo{
 		OptionalFields: []string{"Repos", "Filters", "PRState", "IncludeDiff", "DesktopNotifications"},
 	},
 	{
+		Name:           "WaitingOnMeWorkflow",
+		Description:    "PRs that are in your court right now — an open review request (yours or your team's), a dismissed approval, or a thread waiting on your reply. Found through GitHub search, so it needs no Repos; identity comes from GithubUsername or, failing that, the API token's own user.",
+		RequiredFields: []string{},
+		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications"},
+	},
+	{
+		Name:           "MyReviewRequestsWorkflow",
+		Description:    "Every open PR whose review was requested from you or from a team you belong to — the same list as github.com's \"Review requests\". Found through GitHub search, so it needs no Repos; identity comes from GithubUsername or, failing that, the API token's own user.",
+		RequiredFields: []string{},
+		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications"},
+	},
+	{
 		Name:           "ProjectListWorkflow",
 		Description:    "Sync the pull requests linked to the children of a Jira epic. Repos takes a list, so one workflow can cover a project spanning several repositories. Requires JiraDomain plus the JIRA_API_TOKEN and JIRA_API_EMAIL environment variables.",
 		RequiredFields: []string{"JiraEpic"},

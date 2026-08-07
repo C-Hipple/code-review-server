@@ -6,6 +6,37 @@ code-review-server works from a toml config expected at the path `~/.config/code
 export CRS_GITHUB_TOKEN="Github Token"
 ```
 
+## Running Without a Config File
+
+The config file is optional. With a token set and no `~/.config/codereviewserver.toml`, the server logs a warning naming the path it looked at and runs a built-in default configuration:
+
+| Section | What it holds |
+| --- | --- |
+| **Waiting On Me** | PRs in your court right now: an open review request (yours or one of your teams'), an approval that CODEOWNERS dismissed, or a comment thread waiting on your reply. |
+| **Review Requested** | Everything you or your teams have been asked to review, whether or not it is your turn — the same list as github.com's "Review requests". |
+
+Neither default names a repository or a user. They find their PRs through GitHub search rather than by listing configured repos, and the login they search for comes from the API token (see [Identity](#identity)), so a token is the only setup step.
+
+Print the defaults to start your own config from them:
+
+```bash
+codereviewserver -print-default-config > ~/.config/codereviewserver.toml
+```
+
+Editing the config from a client while running on defaults writes the same thing: the first save materializes the default workflows alongside whatever you changed, so nothing disappears out from under you.
+
+Note that a config file which *exists* but can't be parsed is still an error — the defaults are only a fallback for "no file at all", never a silent replacement for a config you meant to work.
+
+## Identity
+
+Several filters, and both default workflows, compare pull requests against *you*. That identity is resolved in this order:
+
+1. The workflow's own `GithubUsername`.
+2. The root-level `GithubUsername`.
+3. The user the `CRS_GITHUB_TOKEN` belongs to, looked up from the GitHub API at startup and cached.
+
+The looked-up login is never written to your config file. Setting `GithubUsername` explicitly is still worth doing if the token belongs to a bot or a shared account, since it takes precedence.
+
 ## General Fields
 
 The basic format is root level config for general fields:
@@ -57,7 +88,7 @@ Per workflow:
 - A filter is not one this server knows, an argument-taking filter (`FilterByLabel`, `FilterByAuthor`, `FilterExcludeAuthor`) is missing its argument, or an argument is given to a filter that takes none.
 - A `Repos` entry is not in `owner/repo` form, or a `Teams` entry is empty.
 - `PRState` is set to something other than `open`, `closed`, or `all`.
-- The workflow has no repositories to work with: neither its own `Repos` nor a root-level `Repos` list.
+- The workflow has no repositories to work with: neither its own `Repos` nor a root-level `Repos` list. (The search-driven types — `WaitingOnMeWorkflow` and `MyReviewRequestsWorkflow` — need no repositories and are exempt.)
 - `ProjectListWorkflow` is missing `JiraEpic`, or `SingleRepoSyncReviewRequestsWorkflow` is missing a valid `Repo`.
 
 ## Workflows
@@ -84,6 +115,8 @@ The `GithubUsername` can be set at the top level of the config file. If a workfl
 
 The WorkflowType is one of the following strings:
 - `SyncReviewRequestsWorkflow`
+- `WaitingOnMeWorkflow`
+- `MyReviewRequestsWorkflow`
 - `SingleRepoSyncReviewRequestsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with single-element `Repos`)
 - `ListMyPRsWorkflow` (deprecated, use `SyncReviewRequestsWorkflow` with `FilterMyPRs` in filters)
 - `ProjectListWorkflow`
@@ -95,6 +128,27 @@ The WorkflowType is one of the following strings:
 > This will make the file get very long very quickly. I recommend only using this for specific workflows which target your non-main reviews org file.
 
 ### Workflow Specific Configurations
+
+#### WaitingOnMeWorkflow and MyReviewRequestsWorkflow (search-driven)
+
+These are the two workflows the [default configuration](#running-without-a-config-file) runs, and they are ordinary workflow types you can put in your own config:
+
+```toml
+[[Workflows]]
+WorkflowType = "MyReviewRequestsWorkflow"
+Name = "review-requested"
+SectionTitle = "Review Requested"
+Filters = ["FilterNotDraft"]   # optional, further narrows the section
+```
+
+They take no `Repos`, `Teams`, or `PRState`. Instead of listing the open PRs of configured repositories, they ask GitHub search:
+
+- `MyReviewRequestsWorkflow` runs `review-requested:<you>` plus `team-review-requested:<org>/<team>` for every team you belong to, since the direct qualifier does not expand to team membership. Archived repos are excluded, matching github.com's own list. Teams past the first ten are skipped, to stay inside the search API's 30-requests-per-minute budget.
+- `WaitingOnMeWorkflow` takes those same review requests plus `reviewed-by:<you>` and `commenter:<you>` as its candidates, then applies `FilterWaitingOnMe` (the same filter you can use in any other workflow) to keep only the PRs actually in your court.
+
+Search results carry no reviewer or branch data, so each candidate PR is then fetched individually — one API call per candidate, capped at 250 per cycle. That is more per-PR traffic than listing a repo, and the reason to prefer an explicit `Repos` list with `SyncReviewRequestsWorkflow` once you know exactly which repositories you care about.
+
+If a search fails (rate limit, outage), the workflow logs the failure and leaves its section exactly as it was rather than treating "no results" as "everything went away".
 
 #### SingleRepoSyncReviewRequestsWorkflow (Deprecated)
 

@@ -24,6 +24,10 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 			wf, err = BuildListMyPRsWorkflow(&raw_workflow, repos)
 		case "ProjectListWorkflow":
 			wf, err = BuildProjectListWorkflow(&raw_workflow, repos, jiraDomain)
+		case "WaitingOnMeWorkflow":
+			wf, err = BuildSearchWorkflow(&raw_workflow, ModeWaitingOnMe)
+		case "MyReviewRequestsWorkflow":
+			wf, err = BuildSearchWorkflow(&raw_workflow, ModeReviewRequested)
 		default:
 			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "type", raw_workflow.WorkflowType)
 			continue
@@ -110,6 +114,37 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 		IncludeDiff:          raw.IncludeDiff,
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
+		DesktopNotifications: raw.DesktopNotifications,
+	}
+	return wf, nil
+}
+
+// BuildSearchWorkflow builds the workflows that find their PRs through GitHub
+// search instead of a repository list. They need no Repos, and their identity
+// falls back to the API token's user (config.parseConfig fills GithubUsername
+// in when the file leaves it out), so both work with an empty configuration.
+func BuildSearchWorkflow(raw *config.RawWorkflow, mode SearchMode) (Workflow, error) {
+	filters, err := BuildFiltersList(raw)
+	if err != nil {
+		return nil, err
+	}
+	wf := SearchWorkflow{
+		Name:         raw.Name,
+		SectionTitle: raw.SectionTitle,
+		Mode:         mode,
+		Login:        strings.TrimSpace(raw.GithubUsername),
+		Filters:      filters,
+		IncludeDiff:  raw.IncludeDiff,
+		AuxDataReq:   computeAuxRequirements(raw.Filters, false),
+		// The candidate set here is already a review queue rather than every
+		// open PR in a repo, but the display data is still only worth fetching
+		// for the PRs that make it into the section.
+		PostFilterAux: AuxDataRequirement{
+			Comments: true,
+			Reviews:  true,
+			Commits:  true,
+			Diff:     raw.IncludeDiff,
+		},
 		DesktopNotifications: raw.DesktopNotifications,
 	}
 	return wf, nil

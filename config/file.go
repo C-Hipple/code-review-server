@@ -77,13 +77,18 @@ func (u Update) Render() ([]byte, *Config, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf("failed to read config file at %s: %w", path, err)
 	}
-	if err == nil {
-		if err := toml.Unmarshal(existing, &doc); err != nil {
-			return nil, nil, fmt.Errorf("failed to parse config file at %s: %w", path, err)
-		}
-		if doc == nil {
-			doc = map[string]any{}
-		}
+	if os.IsNotExist(err) {
+		// There is no file yet, so the server is running the built-in defaults.
+		// Seed the document with them: the first save has to materialize the
+		// configuration the user has been looking at, otherwise changing one
+		// unrelated setting would silently drop the default workflows.
+		existing = []byte(DefaultConfigTOML)
+	}
+	if err := toml.Unmarshal(existing, &doc); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse config file at %s: %w", path, err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
 	}
 
 	setKey(doc, "Repos", u.Repos)

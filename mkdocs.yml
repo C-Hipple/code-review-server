@@ -26,6 +26,7 @@ nav:
   - Building Clients: building_clients.md
   - Web Client Features: web_client_features.md
   - GitHub API Notes: github_api_notes.md
+  - Hosted Service Tradeoffs: hosted_service_tradeoffs.md
 
 markdown_extensions:
   - pymdownx.highlight:

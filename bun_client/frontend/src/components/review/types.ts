@@ -24,6 +24,17 @@ export interface Comment {
     created_at: string;
     outdated: boolean;
     diff_hunk: string;
+    // The review this comment was submitted with (0 for standalone issue
+    // comments and unsubmitted local comments). Lets the discussion panel group
+    // "alice requested changes" together with the four comments she left.
+    review_id?: number;
+    html_url?: string;
+    // Review-thread resolution, which only GitHub's GraphQL API reports. Absent
+    // when the server could not fetch it, so treat undefined as "unknown", not
+    // "unresolved".
+    thread_id?: string;
+    resolved?: boolean;
+    resolved_by?: string;
 }
 
 export interface ReviewData {

@@ -489,18 +489,21 @@ func parseRetryAfter(headers http.Header) time.Duration {
 	return 0
 }
 
-func GetGithubClient() *github.Client {
-	ctx := context.Background()
+// newAuthedHTTPClient builds the token-authenticated, rate-limited HTTP client
+// that both the REST client and the GraphQL client (see review_threads.go) use,
+// so GraphQL calls share the same throttling and API-call logging as REST ones.
+// Returns an error rather than exiting when no token is configured; callers that
+// cannot proceed without one (GetGithubClient) still exit.
+func newAuthedHTTPClient() (*http.Client, error) {
 	token := os.Getenv("CRS_GITHUB_TOKEN")
 	if token == "" {
-		slog.Error("Error! No Github Token!")
-		os.Exit(1)
+		return nil, fmt.Errorf("CRS_GITHUB_TOKEN is not set")
 	}
 
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: token},
 	)
-	tc := oauth2.NewClient(ctx, ts)
+	tc := oauth2.NewClient(context.Background(), ts)
 	next := tc.Transport
 	if next == nil {
 		next = http.DefaultTransport
@@ -508,6 +511,15 @@ func GetGithubClient() *github.Client {
 	tc.Transport = &rateLimitedRoundTripper{
 		next:    next,
 		manager: globalRateLimitManager,
+	}
+	return tc, nil
+}
+
+func GetGithubClient() *github.Client {
+	tc, err := newAuthedHTTPClient()
+	if err != nil {
+		slog.Error("Error! No Github Token!")
+		os.Exit(1)
 	}
 	return github.NewClient(tc)
 }

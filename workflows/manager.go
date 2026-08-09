@@ -1130,6 +1130,13 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "comments")
+				// Thread resolution state lives in GraphQL, which this REST-only
+				// fetch does not cover. Drop the cached copy so it is refetched
+				// alongside these comments the next time someone opens the PR,
+				// rather than fetching it for every PR on every cycle.
+				if err := db.DeletePRReviewThreads(key.Number, key.Repo); err != nil {
+					slog.Error("Failed to invalidate cached review threads", "pr", key.Number, "repo", key.Repo, "error", err)
+				}
 			}
 		}
 	}

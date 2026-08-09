@@ -41,7 +41,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 ### Supporting Packages
 - `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`)
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
-- `git_tools/` — GitHub API wrapper using go-github v48
+- `git_tools/` — GitHub API wrapper using go-github. Mostly REST; `review_threads.go` is the one GraphQL call, because review-thread resolution (`isResolved`) has no REST equivalent
 - `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface; Gemini is the only backend today. Appends every call to `~/.crs/llm_calls.log`
 - `org/` — org-mode serialization for the Emacs client
 - `utils/` — diff parsing utilities

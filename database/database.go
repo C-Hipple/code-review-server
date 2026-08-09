@@ -162,6 +162,13 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRReviewThreads (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		threads_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS CIStatus (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -1482,6 +1489,44 @@ func (db *DB) UpsertPRCommits(prNumber int, repo, commitsJSON string) error {
 func (db *DB) DeletePRCommits(prNumber int, repo string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM PRCommits WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
+// Review-thread resolution state comes from GitHub's GraphQL API (the REST API
+// does not expose it), so it gets its own cache alongside the other PR caches.
+
+func (db *DB) GetPRReviewThreads(prNumber int, repo string) (string, error) {
+	var threadsJSON string
+	err := db.conn.QueryRow(
+		"SELECT threads_json FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&threadsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return threadsJSON, nil
+}
+
+func (db *DB) UpsertPRReviewThreads(prNumber int, repo, threadsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRReviewThreads (pr_number, repo, threads_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			threads_json = excluded.threads_json`,
+		prNumber, repo, threadsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
 		prNumber, repo,
 	)
 	return err

@@ -184,6 +184,37 @@ Each comment block includes the file path, timestamp, author(s), and comment ID,
 | `created_at`  | Time   | Creation timestamp                                                          |
 | `outdated`    | bool   | Whether the comment refers to a version of the code the current diff no longer matches |
 | `diff_hunk`   | string | The diff context the comment was made against — the only way to show an outdated comment in place |
+| `review_id`   | int64  | The review this comment was submitted with; `0` for a standalone issue comment or a local (pending) comment |
+| `html_url`    | string | Link to the comment on GitHub; empty for local comments |
+| `thread_id`   | string | GraphQL node ID of the review thread this comment belongs to (see [Review thread resolution](#review-thread-resolution)) |
+| `resolved`    | bool   | Whether the thread has been marked resolved on GitHub |
+| `resolved_by` | string | GitHub login of whoever resolved the thread; empty when unresolved |
+
+##### Review thread resolution
+
+`thread_id`, `resolved`, and `resolved_by` come from GitHub's GraphQL
+`reviewThreads` connection, which the server fetches on the client's behalf —
+**clients never call GitHub directly**. The REST comment endpoints do not report
+resolution at all, so this is the only source for it.
+
+Two consequences for clients:
+
+- **Resolution is a property of the thread, not the comment.** Every comment in
+  a resolved thread carries `resolved: true`, including replies. Reading it off
+  the thread root is enough.
+- **`resolved: false` means "not resolved *or* not known".** If the GraphQL
+  fetch is skipped or fails, the server logs it, leaves all three fields zeroed,
+  and still returns the PR. Render the absence as "no information", not as an
+  explicit "unresolved" — the web client does this by only ever showing a
+  *Resolved* badge and never an *Unresolved* one.
+
+`outdated` and `resolved` are **independent, and frequently both true**: a
+conversation gets resolved, then later pushes rewrite the lines it pointed at.
+A client that presents them as one status, or that sums the two counts, will
+double-count those threads. When the thread data is available, `outdated`
+reflects GitHub's own judgement for the whole thread rather than a single
+comment's position mapping, and it also decides whether a comment lands in
+`comments` or in `outdated_comments`.
 
 #### Review Object
 
@@ -920,7 +951,12 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "path": "file.txt",
         "position": "5",
         "created_at": "2023-01-01T12:00:00Z",
-        "outdated": false
+        "outdated": false,
+        "review_id": 98765,
+        "html_url": "https://github.com/octocat/Hello-World/pull/42#discussion_r12345",
+        "thread_id": "PRRT_kwDOA...",
+        "resolved": true,
+        "resolved_by": "coder1"
       }
     ],
     "outdated_comments": [],

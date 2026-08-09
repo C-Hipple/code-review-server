@@ -300,32 +300,47 @@ export function buildDiscussionTimeline(
     return entries;
 }
 
-/** Counts for the collapsed header, so it says something before you open it. */
+/**
+ * Counts for the collapsed header, so it says something before you open it.
+ *
+ * Resolved and outdated are independent: a thread can be both, and often is
+ * (you resolve a conversation, then the lines it pointed at get rewritten). So
+ * resolved/unresolved is the partition — every thread is in exactly one — and
+ * outdated is reported as a qualifier on each side rather than a third bucket.
+ */
 export interface DiscussionSummary {
     entries: number;
     threads: number;
     resolvedThreads: number;
-    outdatedThreads: number;
     unresolvedThreads: number;
+    /** Outdated threads that are still unresolved — the ones needing attention. */
+    unresolvedOutdatedThreads: number;
+    /** Every outdated thread, resolved or not. */
+    outdatedThreads: number;
 }
 
 export function summarizeDiscussion(entries: TimelineEntry[]): DiscussionSummary {
     let threads = 0;
     let resolvedThreads = 0;
     let outdatedThreads = 0;
+    let unresolvedOutdatedThreads = 0;
     for (const e of entries) {
         for (const t of e.threads) {
             threads++;
             if (t.resolved) resolvedThreads++;
-            if (t.outdated) outdatedThreads++;
+            if (t.outdated) {
+                outdatedThreads++;
+                if (!t.resolved) unresolvedOutdatedThreads++;
+            }
         }
     }
     return {
         entries: entries.length,
         threads,
         resolvedThreads,
-        outdatedThreads,
         unresolvedThreads: threads - resolvedThreads,
+        unresolvedOutdatedThreads,
+        outdatedThreads,
     };
 }
 

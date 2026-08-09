@@ -67,17 +67,32 @@ const stateChipStyle = (state: string) => {
     };
 };
 
-// "4 comments · 3 resolved · 1 outdated" — the one-line verdict on a review,
-// which is the thing you actually want when scanning back through a PR.
+// "4 comments · 3 resolved · 1 open (outdated)" — the one-line verdict on a
+// review, which is the thing you actually want when scanning back through a PR.
+//
+// A thread can be resolved *and* outdated, so counting the two side by side
+// would double-count it. Resolved vs open is the partition; outdated is only
+// reported against the open ones, because an outdated thread you already
+// resolved needs nothing from you. Per-thread badges still show both states.
 function threadCounts(threads: ThreadSummary[]): string {
     if (threads.length === 0) return '';
     const parts = [`${threads.length} ${threads.length === 1 ? 'comment' : 'comments'}`];
     const resolved = threads.filter(t => t.resolved).length;
-    const outdated = threads.filter(t => t.outdated).length;
+    const open = threads.filter(t => !t.resolved);
+    const openOutdated = open.filter(t => t.outdated).length;
     if (resolved > 0) {
         parts.push(resolved === threads.length ? 'all resolved' : `${resolved} resolved`);
     }
-    if (outdated > 0) parts.push(`${outdated} outdated`);
+    if (open.length > 0 && resolved > 0) {
+        parts.push(
+            openOutdated > 0
+                ? `${open.length} open (${openOutdated} outdated)`
+                : `${open.length} open`
+        );
+    } else if (openOutdated > 0) {
+        // Nothing is resolved, so "N open" would just restate the total.
+        parts.push(`${openOutdated} outdated`);
+    }
     return parts.join(' · ');
 }
 
@@ -298,18 +313,32 @@ export default function PRDiscussion({
 
     if (timeline.length === 0) return null;
 
-    // The "N open" chip below already carries the unresolved count, so this line
-    // stays to the totals.
+    // Totals only; the "N open" chip below carries the unresolved count. Note
+    // resolved and outdated overlap, so they are never summed here — the chip's
+    // outdated count is scoped to open threads (see openChipLabel).
     const headline = [
         `${summary.entries} ${summary.entries === 1 ? 'entry' : 'entries'}`,
         summary.threads > 0
             ? `${summary.threads} ${summary.threads === 1 ? 'thread' : 'threads'}`
             : '',
         summary.resolvedThreads > 0 ? `${summary.resolvedThreads} resolved` : '',
-        summary.outdatedThreads > 0 ? `${summary.outdatedThreads} outdated` : '',
     ]
         .filter(Boolean)
         .join(' · ');
+
+    const openChipLabel =
+        summary.unresolvedOutdatedThreads > 0
+            ? `${summary.unresolvedThreads} open · ${summary.unresolvedOutdatedThreads} outdated`
+            : `${summary.unresolvedThreads} open`;
+    // Spell the overlap out on hover rather than trying to fit it in the chip.
+    const openChipTitle =
+        `${summary.unresolvedThreads} of ${summary.threads} threads are unresolved` +
+        (summary.unresolvedOutdatedThreads > 0
+            ? `, ${summary.unresolvedOutdatedThreads} of them on lines no longer in the diff`
+            : '') +
+        (summary.outdatedThreads > summary.unresolvedOutdatedThreads
+            ? `. ${summary.outdatedThreads - summary.unresolvedOutdatedThreads} resolved thread(s) are also outdated.`
+            : '');
 
     return (
         <div
@@ -360,6 +389,7 @@ export default function PRDiscussion({
                 </span>
                 {summary.unresolvedThreads > 0 && (
                     <span
+                        title={openChipTitle}
                         style={{
                             fontSize: '10px',
                             fontWeight: 600,
@@ -370,7 +400,7 @@ export default function PRDiscussion({
                             border: `1px solid ${colors.borderWarningDim}`,
                         }}
                     >
-                        {summary.unresolvedThreads} open
+                        {openChipLabel}
                     </span>
                 )}
             </button>

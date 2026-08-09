@@ -269,6 +269,48 @@ describe('summarizeDiscussion', () => {
         expect(summary.unresolvedThreads).toBe(1);
         expect(summary.outdatedThreads).toBe(1);
     });
+
+    // Resolved and outdated overlap, so they can never be summed. Only the
+    // unresolved-outdated count describes threads that still want attention.
+    test('separates outdated threads that are resolved from ones that are not', () => {
+        const timeline = buildDiscussionTimeline(
+            [review({ id: 900, body: 'changes', state: 'CHANGES_REQUESTED' })],
+            [comment({ id: '1', review_id: 900, path: 'live.ts' })],
+            [
+                comment({
+                    id: '2',
+                    review_id: 900,
+                    path: 'settled.ts',
+                    outdated: true,
+                    resolved: true,
+                }),
+                comment({ id: '3', review_id: 900, path: 'stale.ts', outdated: true }),
+            ]
+        );
+        const summary = summarizeDiscussion(timeline);
+        expect(summary.threads).toBe(3);
+        expect(summary.outdatedThreads).toBe(2);
+        // Only the unresolved one of the two outdated threads still needs a look.
+        expect(summary.unresolvedOutdatedThreads).toBe(1);
+        expect(summary.resolvedThreads).toBe(1);
+        expect(summary.unresolvedThreads).toBe(2);
+        // The partition holds even though the qualifier overlaps it.
+        expect(summary.resolvedThreads + summary.unresolvedThreads).toBe(summary.threads);
+    });
+
+    test('reports a thread that is both resolved and outdated in both totals', () => {
+        const timeline = buildDiscussionTimeline(
+            [review({ id: 900, body: 'changes' })],
+            [],
+            [comment({ id: '1', review_id: 900, outdated: true, resolved: true })]
+        );
+        const summary = summarizeDiscussion(timeline);
+        expect(summary.threads).toBe(1);
+        expect(summary.resolvedThreads).toBe(1);
+        expect(summary.outdatedThreads).toBe(1);
+        expect(summary.unresolvedOutdatedThreads).toBe(0);
+        expect(summary.unresolvedThreads).toBe(0);
+    });
 });
 
 describe('relativeTime', () => {

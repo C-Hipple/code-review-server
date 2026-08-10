@@ -261,6 +261,7 @@ func (db *DB) initSchema() error {
 		combined_status INTEGER NOT NULL DEFAULT 0,
 		check_runs INTEGER NOT NULL DEFAULT 0,
 		commits INTEGER NOT NULL DEFAULT 0,
+		review_threads INTEGER NOT NULL DEFAULT 0,
 		total INTEGER NOT NULL DEFAULT 0
 	);
 	`
@@ -413,6 +414,17 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN rate_limit_reset_at TEXT NOT NULL DEFAULT ''")
 		if err != nil {
 			slog.Warn("Error adding rate_limit_reset_at column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: Add the review_threads counter to APICallStats. Review-thread
+	// resolution is a GraphQL call, but it spends the same rate limit budget as
+	// the REST ones, so it belongs in the same accounting.
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='review_threads'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN review_threads INTEGER NOT NULL DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding review_threads column to APICallStats", "error", err)
 		}
 	}
 
@@ -1546,13 +1558,13 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 
 // LogAPICallStats persists per-type GitHub API call counts and post-cycle rate limit
 // status for a completed workflow cycle.
-func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
-	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits
+func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
+	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads
 	_, err := db.conn.Exec(
 		`INSERT INTO APICallStats
-			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, total,
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, total,
 		rateLimitRemaining, rateLimitLimit, rateLimitResetAt,
 	)
 	return err

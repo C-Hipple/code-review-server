@@ -30,7 +30,7 @@ Periodic background jobs fetch PRs from GitHub, apply filters, and persist resul
 - `manager.go` — `ManagerService` runs workflows on a schedule (configurable, default 10 min)
 - `logic.go` — `PRToOrgBridge` converts `github.PullRequest` → `FileChanges`, applies filters, upserts into DB sections
 - `builders.go` — builds `FileChanges` structs from PR data
-- `auxdata.go` — in-memory auxiliary data (reviews, commits, CI status) used during workflow display
+- `auxdata.go` — in-memory auxiliary data (reviews, commits, CI status, review threads) used during workflow display
 
 ### Server Layer (`server/`)
 RPC handlers serve data to clients (web UI, Emacs).
@@ -54,7 +54,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 ## Key Data Flow
 
 1. **Workflow fetch**: GitHub API → filter PRs → `ProcessPRsDB` upserts into `sections`/`items` tables
-2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written)
+2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI/review-threads and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written). What gets fetched is the union of what the workflows' filters asked for and what `applyCacheWarmRequirements` adds for a PR that is new or has a new head SHA — the warm covers every field `GetPRDetails` reads, so opening a review is a pure cache hit
 3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins and the LLM diff analysis in the background so they're cached before anyone opens the review
 4. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
 5. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON

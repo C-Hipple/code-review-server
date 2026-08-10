@@ -103,7 +103,9 @@ type reviewThreadsResponse struct {
 // Errors are returned rather than swallowed; callers treat a failure as "no
 // resolution info available" and still render the PR.
 func GetReviewThreads(owner, repo string, number int) ([]ReviewThread, error) {
-	httpClient, err := newAuthedHTTPClient()
+	// trackBudget=false: GraphQL is metered separately from REST, so its
+	// X-RateLimit-* headers must not overwrite the REST budget reading.
+	httpClient, err := newAuthedHTTPClient(false)
 	if err != nil {
 		return nil, err
 	}

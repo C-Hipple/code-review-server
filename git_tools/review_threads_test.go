@@ -105,6 +105,41 @@ func TestGetReviewThreadsSurfacesGraphQLErrors(t *testing.T) {
 	}
 }
 
+// GitHub meters GraphQL against its own budget but reports it under the same
+// X-RateLimit-* headers as REST. If the GraphQL transport fed those into the
+// shared manager, a healthy GraphQL reading would mask an exhausted REST quota.
+func TestGetReviewThreadsDoesNotOverwriteTheRESTRateLimitBudget(t *testing.T) {
+	withFakeGraphQL(t, func(w http.ResponseWriter, r *http.Request) {
+		// A fresh GraphQL budget, which must not be mistaken for the REST one.
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "4999")
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{
+			"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}`)
+	})
+
+	// Stand in for a REST budget that is nearly spent.
+	globalRateLimitManager.UpdateFromHeaders(http.Header{
+		"X-Ratelimit-Limit":     []string{"5000"},
+		"X-Ratelimit-Remaining": []string{"37"},
+	})
+	before := globalRateLimitManager.GetStatus()
+
+	if _, err := GetReviewThreads("o", "r", 7); err != nil {
+		t.Fatalf("GetReviewThreads returned an error: %v", err)
+	}
+
+	after := globalRateLimitManager.GetStatus()
+	if after.Remaining != before.Remaining {
+		t.Errorf("REST remaining went from %d to %d; the GraphQL budget leaked into it",
+			before.Remaining, after.Remaining)
+	}
+	// The call is still counted and still queued behind the shared throttle.
+	if after.TotalRequests <= before.TotalRequests {
+		t.Errorf("total_requests = %d, want it to include the GraphQL call", after.TotalRequests)
+	}
+}
+
 func TestGetReviewThreadsSurfacesHTTPErrors(t *testing.T) {
 	withFakeGraphQL(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

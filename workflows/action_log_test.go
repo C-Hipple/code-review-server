@@ -3,6 +3,8 @@ package workflows
 import (
 	"crs/config"
 	"crs/database"
+	"crs/git_tools"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/go-github/v74/github"
@@ -148,6 +150,75 @@ func TestPersistPRCacheDataLogsWrittenFields(t *testing.T) {
 	// about why a later read misses.
 	if contains(fields, "comments") || contains(fields, "commits") || contains(fields, "metadata") {
 		t.Errorf("fields = %v, want no comments/commits/metadata", fields)
+	}
+	if contains(fields, "review_threads") {
+		t.Errorf("fields = %v, want no review_threads when none were fetched", fields)
+	}
+}
+
+func TestPersistPRCacheDataCachesReviewThreads(t *testing.T) {
+	db := warmTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	key := PRKey{Owner: "C-hipple", Repo: "code-review-server", Number: 208}
+	auxData := &PRAuxData{
+		HeadSHA: "abc123",
+		ReviewThreads: []git_tools.ReviewThread{
+			{ID: "T1", IsResolved: true, ResolvedBy: "alice", CommentIDs: []int64{11, 12}},
+		},
+	}
+
+	persistPRCacheData("review_requests", key, nil, auxData, nil, nil, nil, nil, nil)
+
+	// The row has to be readable back through the same accessor GetPRDetails
+	// uses, in the shape it expects, or the warm buys nothing.
+	cached, err := db.GetPRReviewThreads(key.Number, key.Repo)
+	if err != nil {
+		t.Fatalf("GetPRReviewThreads: %v", err)
+	}
+	var threads []git_tools.ReviewThread
+	if err := json.Unmarshal([]byte(cached), &threads); err != nil {
+		t.Fatalf("cached review threads are not readable: %v", err)
+	}
+	if len(threads) != 1 || threads[0].ID != "T1" || !threads[0].IsResolved {
+		t.Fatalf("cached threads = %+v, want the resolved T1 thread", threads)
+	}
+	if len(threads[0].CommentIDs) != 2 {
+		t.Errorf("comment ids = %v, want both preserved", threads[0].CommentIDs)
+	}
+
+	latest, err := db.GetLatestWorkflowAction(key.Owner, key.Repo, key.Number)
+	if err != nil {
+		t.Fatalf("GetLatestWorkflowAction: %v", err)
+	}
+	if latest == nil || !contains(latest.FieldsWritten, "review_threads") {
+		t.Errorf("fields = %v, want review_threads recorded", latest)
+	}
+}
+
+// A failed or unrequested GraphQL fetch leaves ReviewThreads nil. Blanking the
+// cache row in that case would turn a transient error into lost resolution
+// state for everyone who opens the PR before the next successful cycle.
+func TestPersistPRCacheDataKeepsReviewThreadsWhenNotFetched(t *testing.T) {
+	db := warmTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	key := PRKey{Owner: "C-hipple", Repo: "code-review-server", Number: 209}
+	if err := db.UpsertPRReviewThreads(key.Number, key.Repo, `[{"id":"T1","is_resolved":true}]`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	persistPRCacheData("review_requests", key,
+		nil, &PRAuxData{HeadSHA: "abc123"}, nil, nil, nil, nil, nil)
+
+	cached, err := db.GetPRReviewThreads(key.Number, key.Repo)
+	if err != nil {
+		t.Fatalf("GetPRReviewThreads: %v", err)
+	}
+	if cached != `[{"id":"T1","is_resolved":true}]` {
+		t.Errorf("cached = %q, want the previously cached row left intact", cached)
 	}
 }
 

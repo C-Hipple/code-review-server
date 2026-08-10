@@ -36,6 +36,9 @@ type AuxDataRequirement struct {
 	Diff     bool // PR diff content
 	Reviews  bool // PR reviews (approved_by, changes_requested_by, commented_by)
 	Commits  bool // PR commits
+	// ReviewThreads is the GraphQL review-thread resolution state. No workflow
+	// filter needs it, but GetPRDetails does, so the cache warm asks for it.
+	ReviewThreads bool
 }
 
 // PRAuxData holds pre-fetched auxiliary data for a PR
@@ -47,6 +50,7 @@ type PRAuxData struct {
 	Diff              string
 	DiffLines         []string
 	Reviews           []*github.PullRequestReview // PR reviews (for approved_by / changes_requested_by / commented_by)
+	ReviewThreads     []git_tools.ReviewThread    // Review-thread resolution state, for the DB cache
 	HeadSHA           string                      // SHA of the PR head for DB storage
 	BaseSHA           string                      // SHA of the PR base for DB storage
 }

@@ -391,6 +391,14 @@ var globalRateLimitManager = NewRateLimitManager()
 type rateLimitedRoundTripper struct {
 	next    http.RoundTripper
 	manager *RateLimitManager
+	// trackBudget controls whether this transport's responses update the
+	// manager's remaining/limit/reset view. GitHub meters GraphQL against a
+	// budget entirely separate from REST but reports it under the same
+	// X-RateLimit-* header names, so letting GraphQL replies write into the
+	// shared manager would overwrite the REST reading with an unrelated number —
+	// and a nearly-exhausted REST quota would look healthy. GraphQL still waits
+	// on the semaphore and the REST throttle, which only makes it more cautious.
+	trackBudget bool
 }
 
 func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -422,7 +430,9 @@ func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		}
 
 		// 5. Update rate limit state from response headers
-		r.manager.UpdateFromHeaders(resp.Header)
+		if r.trackBudget {
+			r.manager.UpdateFromHeaders(resp.Header)
+		}
 
 		// 6. Handle rate limit errors (429 or 403 with rate limit message)
 		if resp.StatusCode == 429 || (resp.StatusCode == 403 && isRateLimitError(resp)) {
@@ -492,9 +502,12 @@ func parseRetryAfter(headers http.Header) time.Duration {
 // newAuthedHTTPClient builds the token-authenticated, rate-limited HTTP client
 // that both the REST client and the GraphQL client (see review_threads.go) use,
 // so GraphQL calls share the same throttling and API-call logging as REST ones.
+//
+// trackBudget must be false for GraphQL — see rateLimitedRoundTripper.
+//
 // Returns an error rather than exiting when no token is configured; callers that
 // cannot proceed without one (GetGithubClient) still exit.
-func newAuthedHTTPClient() (*http.Client, error) {
+func newAuthedHTTPClient(trackBudget bool) (*http.Client, error) {
 	token := os.Getenv("CRS_GITHUB_TOKEN")
 	if token == "" {
 		return nil, fmt.Errorf("CRS_GITHUB_TOKEN is not set")
@@ -509,14 +522,15 @@ func newAuthedHTTPClient() (*http.Client, error) {
 		next = http.DefaultTransport
 	}
 	tc.Transport = &rateLimitedRoundTripper{
-		next:    next,
-		manager: globalRateLimitManager,
+		next:        next,
+		manager:     globalRateLimitManager,
+		trackBudget: trackBudget,
 	}
 	return tc, nil
 }
 
 func GetGithubClient() *github.Client {
-	tc, err := newAuthedHTTPClient()
+	tc, err := newAuthedHTTPClient(true)
 	if err != nil {
 		slog.Error("Error! No Github Token!")
 		os.Exit(1)

@@ -57,13 +57,14 @@ type apiCallCounter struct {
 	CombinedStatus atomic.Int64
 	CheckRuns      atomic.Int64
 	Commits        atomic.Int64
+	ReviewThreads  atomic.Int64
 }
 
 func (c *apiCallCounter) total() int64 {
 	return c.PRList.Load() + c.PRSpecific.Load() + c.Comments.Load() +
 		c.IssueComments.Load() + c.CIStatus.Load() + c.Diff.Load() +
 		c.Reviews.Load() + c.CombinedStatus.Load() + c.CheckRuns.Load() +
-		c.Commits.Load()
+		c.Commits.Load() + c.ReviewThreads.Load()
 }
 
 func (c *apiCallCounter) log() {
@@ -78,6 +79,7 @@ func (c *apiCallCounter) log() {
 		"combined_status", c.CombinedStatus.Load(),
 		"check_runs", c.CheckRuns.Load(),
 		"commits", c.Commits.Load(),
+		"review_threads", c.ReviewThreads.Load(),
 		"total", c.total(),
 	)
 }
@@ -596,6 +598,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		apiCalls.CombinedStatus.Load(),
 		apiCalls.CheckRuns.Load(),
 		apiCalls.Commits.Load(),
+		apiCalls.ReviewThreads.Load(),
 		rlRemaining,
 		rlLimit,
 		rlResetAtStr,
@@ -815,6 +818,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				existing.Diff = existing.Diff || req.AuxData.Diff
 				existing.Reviews = existing.Reviews || req.AuxData.Reviews
 				existing.Commits = existing.Commits || req.AuxData.Commits
+				existing.ReviewThreads = existing.ReviewThreads || req.AuxData.ReviewThreads
 				// Always fetch reviews for open non-draft PRs so Details() can
 				// display who has approved / requested changes / commented.
 				if pr.State != nil && *pr.State == "open" && (pr.Draft == nil || !*pr.Draft) {
@@ -832,7 +836,8 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	sem := make(chan struct{}, prefetchConcurrency)
 	for key, auxReq := range prRequirements {
 		// Skip if no aux data is needed
-		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews && !auxReq.Commits {
+		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews &&
+			!auxReq.Commits && !auxReq.ReviewThreads {
 			continue
 		}
 
@@ -900,6 +905,10 @@ func applyCacheWarmRequirements(db *database.DB,
 		req.Commits = true
 		req.Reviews = true
 		req.Comments = true
+		// Resolution state is only ever read by the review view, so nothing else
+		// would populate it; without warming it here the first person to open the
+		// PR pays for the GraphQL call.
+		req.ReviewThreads = true
 		prRequirements[key] = req
 		warmed = append(warmed, key)
 	}
@@ -1083,6 +1092,23 @@ func fetchAuxDataForPR(client *github.Client,
 		}()
 	}
 
+	// 7. Review threads (GraphQL — resolution state has no REST equivalent).
+	// Nothing in the workflow filters reads this; it is fetched purely so the
+	// review view opens against a warm cache.
+	if req.ReviewThreads {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			apiCalls.ReviewThreads.Add(1)
+			threads, err := git_tools.GetReviewThreads(key.Owner, key.Repo, key.Number)
+			if err != nil {
+				slog.Warn("Failed to fetch review threads for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				return
+			}
+			auxData.ReviewThreads = threads
+		}()
+	}
+
 	wg.Wait()
 
 	// Persist all fetched data to DB so GetPRDetails finds it cached
@@ -1130,13 +1156,6 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "comments")
-				// Thread resolution state lives in GraphQL, which this REST-only
-				// fetch does not cover. Drop the cached copy so it is refetched
-				// alongside these comments the next time someone opens the PR,
-				// rather than fetching it for every PR on every cycle.
-				if err := db.DeletePRReviewThreads(key.Number, key.Repo); err != nil {
-					slog.Error("Failed to invalidate cached review threads", "pr", key.Number, "repo", key.Repo, "error", err)
-				}
 			}
 		}
 	}
@@ -1248,6 +1267,19 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				slog.Error("Failed to cache PR commits", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "commits")
+			}
+		}
+	}
+
+	// 6b. Review threads (resolution state; same JSON shape GetPRReviewThreads
+	// reads). Nil means the fetch was not requested or failed, in which case the
+	// previously cached row is left alone rather than being blanked.
+	if auxData.ReviewThreads != nil {
+		if j, err := json.Marshal(auxData.ReviewThreads); err == nil {
+			if err := db.UpsertPRReviewThreads(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR review threads", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "review_threads")
 			}
 		}
 	}

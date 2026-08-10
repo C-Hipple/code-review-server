@@ -197,6 +197,11 @@ Each comment block includes the file path, timestamp, author(s), and comment ID,
 **clients never call GitHub directly**. The REST comment endpoints do not report
 resolution at all, so this is the only source for it.
 
+Like every other part of the PR payload, it is cached in SQLite (the
+`PRReviewThreads` table) and warmed by the background workflow cycle whenever a
+PR is added to a section or its head SHA changes, so a `GetPR` normally answers
+from cache without any GraphQL call. `SyncPR` forces a refetch.
+
 Two consequences for clients:
 
 - **Resolution is a property of the thread, not the comment.** Every comment in

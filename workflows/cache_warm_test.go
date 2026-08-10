@@ -93,7 +93,11 @@ func TestApplyCacheWarmRequirements(t *testing.T) {
 		got := reqs[key]
 		// Reviews and comments especially: a draft or closed PR gets no other
 		// chance at a PRReviews row, and that shows up as a "reviews" miss.
-		want := AuxDataRequirement{Diff: true, Commits: true, Reviews: true, Comments: true}
+		// ReviewThreads has no filter that would ever request it, so the warm is
+		// its only chance to land before someone opens the review.
+		want := AuxDataRequirement{
+			Diff: true, Commits: true, Reviews: true, Comments: true, ReviewThreads: true,
+		}
 		if got != want {
 			t.Errorf("got %+v, want %+v", got, want)
 		}

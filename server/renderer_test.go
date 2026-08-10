@@ -3,6 +3,7 @@ package server
 import (
 	"crs/config"
 	"crs/database"
+	"crs/git_tools"
 	"crs/utils"
 	"encoding/json"
 	"sort"
@@ -618,7 +619,7 @@ func TestSplitComments(t *testing.T) {
 	}
 
 	comments := convertToPRComments([]*github.PullRequestComment{root, reply, activeRoot})
-	active, outdated := splitComments(comments)
+	active, outdated := splitComments(comments, nil)
 
 	if len(outdated) != 2 {
 		t.Errorf("Expected 2 outdated comments, got %d", len(outdated))
@@ -650,6 +651,76 @@ func TestSplitComments(t *testing.T) {
 	}
 	if !foundActive {
 		t.Errorf("Active root (ID 3) not found in active list")
+	}
+}
+
+func TestSplitCommentsAppliesReviewThreadState(t *testing.T) {
+	root := &github.PullRequestComment{
+		ID:                  github.Int64(1),
+		PullRequestReviewID: github.Int64(900),
+		User:                &github.User{Login: github.String("alice")},
+		Body:                github.String("please rename this"),
+		Position:            github.Int(5),
+		Line:                github.Int(5),
+		HTMLURL:             github.String("https://github.com/o/r/pull/1#discussion_r1"),
+	}
+	reply := &github.PullRequestComment{
+		ID:        github.Int64(2),
+		InReplyTo: github.Int64(1),
+		User:      &github.User{Login: github.String("bob")},
+		Body:      github.String("done"),
+		Position:  github.Int(5),
+		Line:      github.Int(5),
+	}
+	// Position-wise this looks live, but GitHub says the thread is outdated —
+	// GitHub's judgement should win and move it to the outdated bucket.
+	staleRoot := &github.PullRequestComment{
+		ID:       github.Int64(3),
+		User:     &github.User{Login: github.String("alice")},
+		Body:     github.String("stale"),
+		Position: github.Int(9),
+		Line:     github.Int(9),
+	}
+
+	threads := []git_tools.ReviewThread{
+		{ID: "T1", IsResolved: true, ResolvedBy: "alice", CommentIDs: []int64{1, 2}},
+		{ID: "T2", IsResolved: false, IsOutdated: true, CommentIDs: []int64{3}},
+	}
+
+	comments := convertToPRComments([]*github.PullRequestComment{root, reply, staleRoot})
+	active, outdated := splitComments(comments, threads)
+
+	byID := map[string]CommentJSON{}
+	for _, c := range append(append([]CommentJSON{}, active...), outdated...) {
+		byID[c.ID] = c
+	}
+
+	if got := byID["1"]; !got.Resolved || got.ResolvedBy != "alice" || got.ThreadID != "T1" {
+		t.Errorf("comment 1 = %+v, want resolved by alice in thread T1", got)
+	}
+	if got := byID["1"].ReviewID; got != 900 {
+		t.Errorf("comment 1 review_id = %d, want 900", got)
+	}
+	if got := byID["1"].HTMLURL; got != "https://github.com/o/r/pull/1#discussion_r1" {
+		t.Errorf("comment 1 html_url = %q, want the GitHub URL", got)
+	}
+	// Replies inherit resolution because GraphQL lists them in the same thread.
+	if got := byID["2"]; !got.Resolved || got.ThreadID != "T1" {
+		t.Errorf("reply 2 = %+v, want resolved in thread T1", got)
+	}
+	if got := byID["3"]; got.Resolved {
+		t.Errorf("comment 3 = %+v, want unresolved", got)
+	}
+
+	outdatedIDs := map[string]bool{}
+	for _, c := range outdated {
+		outdatedIDs[c.ID] = true
+	}
+	if !outdatedIDs["3"] {
+		t.Errorf("comment 3 should be outdated because GitHub marked its thread outdated")
+	}
+	if outdatedIDs["1"] || outdatedIDs["2"] {
+		t.Errorf("thread T1 is not outdated, but %v landed in the outdated bucket", outdatedIDs)
 	}
 }
 

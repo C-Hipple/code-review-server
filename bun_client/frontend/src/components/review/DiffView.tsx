@@ -3,6 +3,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { colors } from '../../design';
 import { fileAnnotationKey, lineAnnotationKey, type AnnotationIndex } from '../../annotation_utils';
 import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
+import { groupIntoThreads } from '../../discussion_utils';
 import { getClickColumn } from '../../utils/dom';
 import type { PRAnnotation } from '../../plugin_utils';
 import type { LspData } from '../../hooks/useLsp';
@@ -219,30 +220,23 @@ export default function DiffView({
               )
             : [];
 
-    const rootCommentsForLine = (item: ParsedLine): Comment[] => {
-        const lineComments = commentsForLine(item);
-        return lineComments.filter(c => !c.in_reply_to);
-    };
-
-    const threadForRoot = (rc: Comment, lineComments: Comment[]): Comment[] => [
-        rc,
-        ...lineComments.filter(c => c.in_reply_to === parseInt(rc.id, 10)),
-    ];
+    // Threads on a line, each one a root comment plus its whole reply subtree.
+    // Grouping transitively matters: replying to a thread targets its *last*
+    // comment, so a reply to a reply would otherwise never be rendered.
+    const threadsOnLine = (item: ParsedLine): Comment[][] =>
+        groupIntoThreads(commentsForLine(item));
 
     const threadsForLine = (item: ParsedLine, idx: number, stickyOnMobile: boolean) => {
-        const lineComments = commentsForLine(item);
-        const rootComments = rootCommentsForLine(item);
-        return rootComments
-            .filter(rc => visibleThreadIds.has(rc.id))
-            .map(rc => {
-                const thread = threadForRoot(rc, lineComments);
+        return threadsOnLine(item)
+            .filter(thread => visibleThreadIds.has(thread[0].id))
+            .map(thread => {
                 const isReplyingToThread =
                     (replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId)) ||
                     (editingCommentId !== null &&
                         thread.some(c => parseInt(c.id, 10) === editingCommentId));
                 return (
                     <CommentThread
-                        key={rc.id}
+                        key={thread[0].id}
                         thread={thread}
                         isActive={isReplyingToThread}
                         stickyOnMobile={stickyOnMobile}
@@ -260,16 +254,14 @@ export default function DiffView({
     // Indicator badge shown next to a commented line/file; toggles all of that
     // line's threads open/closed together and previews them all on hover.
     const commentIndicatorForLine = (item: ParsedLine) => {
-        const rootComments = rootCommentsForLine(item);
-        if (rootComments.length === 0) return null;
-        const lineComments = commentsForLine(item);
-        const rootIds = rootComments.map(rc => rc.id);
+        const threads = threadsOnLine(item);
+        if (threads.length === 0) return null;
+        const rootIds = threads.map(t => t[0].id);
         const allVisible = rootIds.every(id => visibleThreadIds.has(id));
-        const allThreadComments = rootComments.flatMap(rc => threadForRoot(rc, lineComments));
         return (
             <span onClick={e => e.stopPropagation()}>
                 <CommentIndicator
-                    thread={allThreadComments}
+                    thread={threads.flat()}
                     visible={allVisible}
                     onToggle={() => onToggleThreadsVisible(rootIds)}
                 />

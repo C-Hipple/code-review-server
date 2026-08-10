@@ -207,11 +207,35 @@ Rendered from `GetPR`'s `metadata`:
 - CI failure list when `ci_failures` is non-empty.
 - Links out: GitHub button and Copy URL button.
 
-### 3.4 Review discussion (`ReviewDiscussion.tsx`)
+### 3.4 PR discussion (`PRDiscussion.tsx`, `discussion_utils.ts`)
 
-Chronological list of submitted reviews from `reviews[]` that have a body, rendered
-as markdown with the reviewer's state. Collapsed by default so the diff stays near
-the top.
+The PR's conversation history, collapsed by default so the diff stays near the top.
+Where the earlier version only listed review bodies, this joins `reviews[]` to the
+comments each review was submitted with — via `review_id` — and lays them out
+chronologically, the way GitHub's review UI does:
+
+- **One row per timeline entry**, oldest first: a submitted review with its threads,
+  or a standalone comment belonging to no review. The row header reads
+  `@author · requested changes · with 4 comments · 2 resolved · 2 open (1 outdated) · yesterday`.
+- **Reviews the API didn't return still appear**, reconstructed from their comments'
+  `review_id`, rather than their threads being dropped.
+- **Empty bookkeeping reviews are hidden** — GitHub creates a bodiless review row
+  behind a single inline comment, which is noise in a timeline.
+- **Threads are collapsible and state-badged**; resolved ones start folded, since
+  that is what resolving them meant. Clicking a thread's file path jumps the diff to
+  that file.
+- `comments` and `outdated_comments` are merged before grouping, because a single
+  review's threads routinely span both.
+
+Counting rule, which is easy to get wrong: **resolved and outdated overlap.** A
+thread can be both, so the summary treats resolved/open as the partition and reports
+outdated only against the open threads — an outdated thread you already resolved
+needs nothing from you. Individual threads still show both badges. See
+`summarizeDiscussion` in `discussion_utils.ts`, which exposes
+`unresolvedOutdatedThreads` alongside the `outdatedThreads` total.
+
+All of this is derived from one `GetPR` payload; the client makes no extra request
+for it.
 
 ### 3.5 Diff rendering (`DiffView.tsx`, `diff_utils.ts`)
 
@@ -275,8 +299,16 @@ client treats `author === 'local'` as "mine, still editable".
 - **File-level comment** — clicking a file header comments on the file (position 0).
 - **Free-form comment modal** — the toolbar's `+ Comment` opens a modal where file
   and position are typed manually.
-- **Threading** — comments are grouped by root (`in_reply_to`). Clicking a thread
-  replies to its last comment; clicking a local thread edits it instead.
+- **Threading** — comments are grouped into threads by walking `in_reply_to` up to
+  the root, and rendered as a tree with each reply indented under the comment it
+  answered. Grouping must be **transitive**: replying to a thread targets its *last*
+  comment, so a "root plus its direct children" grouping silently drops replies to
+  replies. A reply whose parent is missing starts its own thread instead of
+  vanishing. See `groupIntoThreads` / `buildReplyTree` in `discussion_utils.ts`.
+  Clicking a thread replies to its last comment; clicking a local thread edits it.
+- **Resolved threads** are faded and badged from the `resolved` / `resolved_by`
+  fields. Absence of the field means "unknown", so no *Unresolved* badge is ever
+  rendered — only a *Resolved* one.
 - **Collapsed by default** — threads render as a small indicator badge next to the
   line, in a fixed-width gutter left of the line numbers so the diff never shifts.
   Hovering previews the thread; clicking expands every thread on that row.
@@ -482,6 +514,14 @@ basics:
   server-side. The client derives its own from the plugin outputs instead (see
   [3.10](#310-plugin-annotations-in-the-diff-annotation_utilsts)), but this field is
   there for clients that don't poll plugins separately.
+- [`comments[].review_id`](protocol.md#comment-object-commentjson) — ties a comment
+  to the review that submitted it, which is what makes the discussion timeline in
+  [3.4](#34-pr-discussion-prdiscussiontsx-discussion_utilsts) possible.
+- [`comments[].resolved` / `resolved_by` / `thread_id`](protocol.md#review-thread-resolution)
+  — review-thread resolution. The server fetches this from GitHub's GraphQL API
+  (REST has no equivalent) and folds it into the same payload, so a client gets it
+  for free and **must not** call GitHub itself. All three are zero when the server
+  could not fetch them, which means "unknown", not "unresolved".
 
 ---
 
@@ -502,19 +542,25 @@ Ordered roughly by how much time they'll cost you if missed.
 4. **Mutations return the whole PR.** `AddComment`, `EditComment`, `DeleteComment`,
    `SetFeedback`, `SubmitReview` all reply with a full payload. Applying it wholesale
    is simpler and less error-prone than patching local state.
-5. **`GetAdjacentPR` tells you where you landed.** Use `adjacent_owner` /
+5. **Group comment threads transitively.** A reply targets the thread's *last*
+   comment, not its root, so grouping by "direct children of the root" drops replies
+   to replies entirely — they render nowhere at all.
+6. **`resolved` and `outdated` overlap.** A thread is often both. Never sum the two
+   counts, and never present them as one status. Partition on resolved/open, and
+   qualify with outdated within each side.
+7. **`GetAdjacentPR` tells you where you landed.** Use `adjacent_owner` /
    `adjacent_repo` / `adjacent_number`, not `metadata.url`.
-6. **`UpdateConfig` rejections are not RPC errors.** A refused config comes back
+8. **`UpdateConfig` rejections are not RPC errors.** A refused config comes back
    `okay: false` with `errors`. Treat it as field-level validation feedback.
-7. **`UpdateConfig` is partial, except `Workflows`.** Omitted fields keep their
+9. **`UpdateConfig` is partial, except `Workflows`.** Omitted fields keep their
    on-disk value; sending `Workflows` replaces the entire list.
-8. **Build config pickers from the registries.** `workflow_types` and `filters` come
+10. **Build config pickers from the registries.** `workflow_types` and `filters` come
    with every `GetConfig` reply; hard-coded lists rot.
-9. **Framing.** One JSON object per line on stdout; buffer partial reads. Monitor
+11. **Framing.** One JSON object per line on stdout; buffer partial reads. Monitor
    `stderr` — the server logs there.
-10. **Plugin bodies can legitimately be empty.** Only fall back to raw `result` when
+12. **Plugin bodies can legitimately be empty.** Only fall back to raw `result` when
     `body_type` is missing or unrecognized.
-11. **Annotations anchor to head-side line numbers**, and need a fallback bucket for
+13. **Annotations anchor to head-side line numbers**, and need a fallback bucket for
     lines the diff doesn't render.
 
 ---

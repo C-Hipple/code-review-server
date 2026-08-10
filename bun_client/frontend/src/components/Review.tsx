@@ -23,7 +23,7 @@ import MobileReviewBar from './review/MobileReviewBar';
 import OutdatedCommentsPanel from './review/OutdatedCommentsPanel';
 import PluginsPanel from './review/PluginsPanel';
 import PRHeader from './review/PRHeader';
-import ReviewDiscussion from './review/ReviewDiscussion';
+import PRDiscussion from './review/PRDiscussion';
 import ReviewSubmitModal from './review/ReviewSubmitModal';
 import { buildDiffTheme } from './review/diff_theme';
 import {
@@ -822,8 +822,13 @@ export default function Review({
                 />
             )}
 
-            {/* Review Discussion */}
-            <ReviewDiscussion reviews={reviews} />
+            {/* PR discussion: reviews and their comment threads, chronologically */}
+            <PRDiscussion
+                reviews={reviews}
+                comments={comments}
+                outdatedComments={outdatedComments}
+                onJumpToFile={scrollToFile}
+            />
 
             {/* Toolbar */}
             <div

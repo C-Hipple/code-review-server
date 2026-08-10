@@ -479,6 +479,10 @@ type PRComment interface {
 	IsOutdated() bool
 	GetCommitID() string
 	GetDiffHunk() string
+	// GetReviewID is the ID of the review this comment was submitted with, or 0
+	// for standalone issue comments and local (unsubmitted) comments.
+	GetReviewID() int64
+	GetHTMLURL() string
 }
 
 type CommentJSON struct {
@@ -491,6 +495,17 @@ type CommentJSON struct {
 	CreatedAt time.Time `json:"created_at"`
 	Outdated  bool      `json:"outdated"`
 	DiffHunk  string    `json:"diff_hunk"`
+	// ReviewID ties a review comment back to the review that submitted it, so
+	// clients can show "alice requested changes with these four comments" rather
+	// than a flat list. 0 for issue comments and unsubmitted local comments.
+	ReviewID int64  `json:"review_id"`
+	HTMLURL  string `json:"html_url"`
+	// The remaining fields come from GitHub's GraphQL reviewThreads connection
+	// (see git_tools.GetReviewThreads) and are zero when that fetch was skipped
+	// or failed — resolution state has no REST equivalent.
+	ThreadID   string `json:"thread_id"`
+	Resolved   bool   `json:"resolved"`
+	ResolvedBy string `json:"resolved_by"`
 }
 
 type ReviewJSON struct {
@@ -625,6 +640,14 @@ func (c *GitHubPRComment) GetDiffHunk() string {
 	return ""
 }
 
+func (c *GitHubPRComment) GetReviewID() int64 {
+	return c.PullRequestComment.GetPullRequestReviewID()
+}
+
+func (c *GitHubPRComment) GetHTMLURL() string {
+	return c.PullRequestComment.GetHTMLURL()
+}
+
 // LocalPRComment wraps database.LocalComment to implement PRComment interface
 type LocalPRComment struct {
 	*database.LocalComment
@@ -680,6 +703,16 @@ func (c *LocalPRComment) GetCommitID() string {
 }
 
 func (c *LocalPRComment) GetDiffHunk() string {
+	return ""
+}
+
+// Local comments have not been submitted yet, so they belong to no review and
+// have no URL on GitHub.
+func (c *LocalPRComment) GetReviewID() int64 {
+	return 0
+}
+
+func (c *LocalPRComment) GetHTMLURL() string {
 	return ""
 }
 
@@ -1239,7 +1272,11 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 	comments = append(comments, convertLocalCommentsToPRComments(localComments)...)
 
-	commentJSONs, outdatedCommentJSONs := splitComments(comments)
+	// Resolution state is GraphQL-only, so it is fetched separately from the
+	// REST comments above and merged in during the split.
+	reviewThreads := GetPRReviewThreads(owner, repo, number, skipCache)
+
+	commentJSONs, outdatedCommentJSONs := splitComments(comments, reviewThreads)
 
 	// 5. Load Reviews (with caching)
 	if !reviewsLoaded {
@@ -1679,6 +1716,8 @@ func (c *JSONPRComment) GetCreatedAt() time.Time { return c.CreatedAt }
 func (c *JSONPRComment) IsOutdated() bool        { return c.Outdated }
 func (c *JSONPRComment) GetCommitID() string     { return "" } // Not in JSON currently
 func (c *JSONPRComment) GetDiffHunk() string     { return c.DiffHunk }
+func (c *JSONPRComment) GetReviewID() int64      { return c.ReviewID }
+func (c *JSONPRComment) GetHTMLURL() string      { return c.HTMLURL }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
 	client := git_tools.GetGithubClient()
@@ -2090,7 +2129,37 @@ func cleanEmptyEndingLines(lines *[]string) []string {
 	return (*lines)[:i+1]
 }
 
-func splitComments(comments []PRComment) ([]CommentJSON, []CommentJSON) {
+// threadInfo is the per-comment view of GitHub's review-thread state, keyed by
+// comment ID. Built from the GraphQL reviewThreads connection.
+type threadInfo struct {
+	ThreadID   string
+	Resolved   bool
+	ResolvedBy string
+	Outdated   bool
+}
+
+// indexReviewThreads flattens review threads into a comment-ID keyed lookup.
+// Passing nil threads yields an empty map, which leaves splitComments behaving
+// exactly as it did before resolution state existed.
+func indexReviewThreads(threads []git_tools.ReviewThread) map[string]threadInfo {
+	byComment := make(map[string]threadInfo)
+	for _, t := range threads {
+		info := threadInfo{
+			ThreadID:   t.ID,
+			Resolved:   t.IsResolved,
+			ResolvedBy: t.ResolvedBy,
+			Outdated:   t.IsOutdated,
+		}
+		for _, id := range t.CommentIDs {
+			byComment[strconv.FormatInt(id, 10)] = info
+		}
+	}
+	return byComment
+}
+
+func splitComments(comments []PRComment, threads []git_tools.ReviewThread) ([]CommentJSON, []CommentJSON) {
+	threadByComment := indexReviewThreads(threads)
+
 	// Map to track if a comment (by ID) is outdated, including inherited status from parents
 	isIDOutdated := make(map[string]bool)
 
@@ -2145,16 +2214,30 @@ func splitComments(comments []PRComment) ([]CommentJSON, []CommentJSON) {
 			}
 		}
 
+		// When GitHub told us about this comment's thread, its own outdated
+		// judgement is authoritative: it accounts for the thread as a whole,
+		// while the REST-derived flag above only looks at a single comment's
+		// position mapping.
+		info, hasThread := threadByComment[c.GetID()]
+		if hasThread {
+			isOutdated = info.Outdated
+		}
+
 		item := CommentJSON{
-			ID:        c.GetID(),
-			Author:    c.GetLogin(),
-			Body:      c.GetBody(),
-			Path:      path,
-			Position:  position,
-			InReplyTo: c.GetInReplyTo(),
-			CreatedAt: c.GetCreatedAt(),
-			Outdated:  isOutdated,
-			DiffHunk:  c.GetDiffHunk(),
+			ID:         c.GetID(),
+			Author:     c.GetLogin(),
+			Body:       c.GetBody(),
+			Path:       path,
+			Position:   position,
+			InReplyTo:  c.GetInReplyTo(),
+			CreatedAt:  c.GetCreatedAt(),
+			Outdated:   isOutdated,
+			DiffHunk:   c.GetDiffHunk(),
+			ReviewID:   c.GetReviewID(),
+			HTMLURL:    c.GetHTMLURL(),
+			ThreadID:   info.ThreadID,
+			Resolved:   info.Resolved,
+			ResolvedBy: info.ResolvedBy,
 		}
 		if isOutdated {
 			outdated = append(outdated, item)
@@ -2264,6 +2347,39 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 	}
 
 	return reviews, nil
+}
+
+// GetPRReviewThreads returns the PR's review-thread resolution state, reading
+// the DB cache first. A GraphQL failure is logged and reported as an empty set
+// rather than an error so the PR still renders without resolution badges.
+func GetPRReviewThreads(owner, repo string, number int, skipCache bool) []git_tools.ReviewThread {
+	if !skipCache {
+		cached, err := config.C().DB.GetPRReviewThreads(number, repo)
+		if err != nil {
+			slog.Error("Error checking database for PR review threads", "pr", number, "repo", repo, "error", err)
+		} else if cached != "" {
+			var threads []git_tools.ReviewThread
+			if err := json.Unmarshal([]byte(cached), &threads); err != nil {
+				slog.Error("Error unmarshaling cached review threads", "pr", number, "repo", repo, "error", err)
+			} else {
+				return threads
+			}
+		}
+	}
+
+	threads, err := git_tools.GetReviewThreads(owner, repo, number)
+	if err != nil {
+		slog.Error("Error fetching review threads", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+
+	if threadsJSON, err := json.Marshal(threads); err != nil {
+		slog.Error("Error marshaling review threads for storage", "error", err)
+	} else if err := config.C().DB.UpsertPRReviewThreads(number, repo, string(threadsJSON)); err != nil {
+		slog.Error("Error storing review threads in database", "pr", number, "repo", repo, "error", err)
+	}
+
+	return threads
 }
 
 type CombinedPRStatus struct {

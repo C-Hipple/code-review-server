@@ -36,5 +36,8 @@
 
 - **List PRs**: View list of reviews (from `GetAllReviews`).
 - **Review PR**: View PR details, diffs, and comments (from `GetPR`).
+- **Embedded images**: Screenshots in descriptions, reviews and comments render
+  inline. Attachments on a private repo are fetched with `CRS_GITHUB_TOKEN` through
+  `GET /api/github-image`, since the browser can't authenticate to GitHub itself.
 - **Add Comments**: Add inline comments by specifying filename and position.
 - **Submit Review**: Approve, Comment, or Request Changes.

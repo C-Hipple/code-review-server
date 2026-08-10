@@ -1,5 +1,5 @@
-import Markdown from 'react-markdown';
 import { colors } from '../../design';
+import GitHubMarkdown from '../GitHubMarkdown';
 import CopyUrlButton from './CopyUrlButton';
 import { type PRMetadata, stripHtmlComments } from './types';
 
@@ -539,7 +539,7 @@ export default function PRHeader({
                                 padding: '0 20px 16px',
                             }}
                         >
-                            <Markdown>{stripHtmlComments(metadata.body)}</Markdown>
+                            <GitHubMarkdown>{stripHtmlComments(metadata.body)}</GitHubMarkdown>
                         </div>
                     )}
                 </div>

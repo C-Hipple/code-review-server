@@ -1,6 +1,6 @@
-import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { Button, colors, shadows } from '../../design';
+import GitHubMarkdown from '../GitHubMarkdown';
 import type { DiffTheme } from './diff_theme';
 import type { Comment } from './types';
 
@@ -172,7 +172,7 @@ export default function OutdatedCommentsPanel({
                                             color: 'var(--text-primary)',
                                         }}
                                     >
-                                        <Markdown>{c.body}</Markdown>
+                                        <GitHubMarkdown>{c.body}</GitHubMarkdown>
                                     </div>
                                 </div>
                             ))}

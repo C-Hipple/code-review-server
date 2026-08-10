@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
+import { fetchGitHubImage, parseGitHubImageUrl } from './github_images';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -319,6 +320,52 @@ Bun.serve<{
                     headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 }
             );
+        }
+
+        // Fetch a GitHub-hosted image on the page's behalf, so screenshots
+        // embedded in comments and reviews load. Attachments on a private repo
+        // need the review server's token, which the browser cannot send.
+        if (url.pathname === '/api/github-image' && req.method === 'GET') {
+            const target = parseGitHubImageUrl(url.searchParams.get('url'));
+            if (!target) {
+                return new Response('Not a GitHub image URL', {
+                    status: 400,
+                    headers: CORS_HEADERS,
+                });
+            }
+            try {
+                const upstream = await fetchGitHubImage(target, process.env.CRS_GITHUB_TOKEN || '');
+                if (!upstream.ok) {
+                    console.error(`[Image] ${upstream.status} fetching ${target.href}`);
+                    return new Response(`Upstream returned ${upstream.status}`, {
+                        status: 502,
+                        headers: CORS_HEADERS,
+                    });
+                }
+                // An HTML sign-in page is a failure dressed as a 200, and
+                // passing non-image bytes through would make this a general
+                // purpose fetcher.
+                const contentType = upstream.headers.get('content-type') || '';
+                if (!contentType.startsWith('image/')) {
+                    console.error(`[Image] non-image ${contentType} from ${target.href}`);
+                    return new Response('Upstream did not return an image', {
+                        status: 502,
+                        headers: CORS_HEADERS,
+                    });
+                }
+                return new Response(upstream.body, {
+                    headers: {
+                        ...CORS_HEADERS,
+                        'Content-Type': contentType,
+                        // The same screenshot re-renders on every keystroke in
+                        // a reply box.
+                        'Cache-Control': 'private, max-age=600',
+                    },
+                });
+            } catch (err) {
+                console.error(`[Image] proxy failed for ${target.href}:`, err);
+                return new Response('Image proxy failed', { status: 502, headers: CORS_HEADERS });
+            }
         }
 
         // Read file contents from repository

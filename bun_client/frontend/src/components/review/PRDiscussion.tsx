@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import Markdown from 'react-markdown';
 import { colors } from '../../design';
 import {
     buildDiscussionTimeline,
@@ -10,6 +9,7 @@ import {
     type ThreadSummary,
     type TimelineEntry,
 } from '../../discussion_utils';
+import GitHubMarkdown from '../GitHubMarkdown';
 import ThreadStateBadges from './ThreadStateBadges';
 import { type Comment, type ReviewData, stripHtmlComments } from './types';
 
@@ -211,7 +211,7 @@ function TimelineThread({
                             className="markdown-content"
                             style={{ fontSize: '13px', lineHeight: 1.55 }}
                         >
-                            <Markdown>{stripHtmlComments(c.body)}</Markdown>
+                            <GitHubMarkdown>{stripHtmlComments(c.body)}</GitHubMarkdown>
                         </div>
                     </div>
                 ))}
@@ -280,7 +280,7 @@ function TimelineRow({
                     className="pr-description"
                     style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--text-primary)' }}
                 >
-                    <Markdown>{stripHtmlComments(entry.body)}</Markdown>
+                    <GitHubMarkdown>{stripHtmlComments(entry.body)}</GitHubMarkdown>
                 </div>
             )}
             {entry.threads.length > 0 && (

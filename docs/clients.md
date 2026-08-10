@@ -137,6 +137,17 @@ several modules; `crs-client.el` is the entry point that loads them all
 
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
 
+### Embedded screenshots
+
+Descriptions, reviews and comments are rendered with `shr`, and screenshots in
+them display inline in graphical Emacs. The client does not fetch those images
+itself: an attachment on a private repository is served only to a request
+carrying a GitHub token, which `shr` has no way to send. The server downloads
+them instead and the reply's `images` field says where each one landed, so the
+client points the `<img>` tag at that local file. An image the server did not
+cache — anything hosted off GitHub, or one that has not been downloaded yet — is
+left for `shr` to fetch as before.
+
 ### Configuration
 
 The following customizable variables control client behavior. Set them in your Emacs init file or via `M-x customize-group RET crs RET`.

@@ -111,7 +111,7 @@ browser cannot. Reproduce them if you want the corresponding features.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/github-image?url=` | Fetches a GitHub-hosted image with the server's token and streams it back, so screenshots embedded in comments load. Only `github.com` and `*.githubusercontent.com` are accepted, redirects are re-checked against the same list, and a non-image response is refused. |
+| `GET /api/github-image?url=` | Serves a GitHub-hosted image embedded in a comment or review. The bridge does not fetch it: it calls `GetImage`, which downloads with the server's token and caches, and streams back the file that comes out. Only `github.com` and `*.githubusercontent.com` are accepted. |
 | `POST /api/read-file` | Read a file from disk. Accepts an absolute `filePath`, or `repoPath` + relative `filePath` (rejects paths that escape `repoPath`). Powers the code viewer. |
 | `POST /api/list-files` | Recursive file listing under `repoPath`, skipping `node_modules`, `.git`, `.next`, `dist`. Powers the code viewer's file tree. |
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
@@ -335,12 +335,14 @@ markdown is not just markdown:
   from anyone who can comment, so `rehype-sanitize` runs *after* `rehype-raw` (that
   order matters) with its default GitHub-derived schema: `script`, event handlers,
   inline styles and non-http(s) URLs are stripped.
-- **Images load through the bridge**, via `/api/github-image`. Attachment URLs
-  redirect to a signed CDN URL that GitHub only issues to an authenticated request
-  on a private repo, and a browser's github.com cookie is not sent on a cross-site
-  image load — so a direct `<img src>` renders broken for everyone on the team. If
-  the proxy fails the client retries the original URL, which still works for public
-  repositories.
+- **Images come from the server**, via `/api/github-image` → `GetImage`. Attachment
+  URLs redirect to a signed CDN URL that GitHub only issues to an authenticated
+  request on a private repo, and a browser's github.com cookie is not sent on a
+  cross-site image load — so a direct `<img src>` renders broken for everyone on
+  the team. The Go server downloads them with its token and caches them under
+  `$CRS_HOME/images`, which is also what lets the Emacs client render the same
+  screenshots; the bridge just serves the cached file. If that fails the page
+  retries the original URL, which still works for public repositories.
 - **Sizing and clicks**: GitHub stamps the screenshot's natural size (often ~1900px)
   onto the tag, so images are clamped to the card width; clicking one opens the
   original on github.com rather than the thread's reply box.
@@ -587,9 +589,9 @@ Ordered roughly by how much time they'll cost you if missed.
 14. **Comment bodies contain raw HTML, and their images need your token.** A markdown
     renderer that ignores HTML throws away every pasted screenshot; one that renders
     it without sanitizing is an XSS hole, since the body is written by whoever
-    commented. And on a private repo the image bytes are only served to an
-    authenticated request, which the browser cannot make cross-site — fetch them
-    server-side. See the body-rendering notes in [3.6](#36-comments).
+    commented. The image bytes you can get for free: the payload's `images` list
+    maps each URL to a file the server already downloaded, and `GetImage` fetches
+    one on demand. See the body-rendering notes in [3.6](#36-comments).
 
 ---
 

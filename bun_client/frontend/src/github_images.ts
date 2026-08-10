@@ -8,9 +8,9 @@ import { API_BASE } from './api';
  * signed CDN URL. On a private repository GitHub only issues that redirect to
  * an authenticated request, and the browser's github.com session cookie is not
  * sent on a cross-site image load — so the image renders broken no matter who
- * is looking at it. The bridge holds `CRS_GITHUB_TOKEN`, so it fetches the
- * bytes instead (see `bun_client/github_images.ts`, which re-checks every URL
- * this module hands it).
+ * is looking at it. The Go server holds `CRS_GITHUB_TOKEN` and downloads them
+ * (which is also what lets the Emacs client show the same screenshots); the
+ * bridge route serves whatever it cached.
  *
  * Anything not on a GitHub host is left alone and loaded directly.
  */

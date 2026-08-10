@@ -49,6 +49,7 @@
                 crs--get-comment-context crs--get-current-review-info
                 crs--review-buffer-name crs--parse-hunk-header
                 crs--ensure-html crs--make-html-placeholder
+                crs--localize-image-srcs crs--image-cache-path
                 crs--process-html-placeholders crs--strip-comments-tree
                 crs--index-annotations crs--render-annotation-block
                 crs--insert-annotations-into-buffer
@@ -64,6 +65,7 @@
                  crs--buffer-owner crs--buffer-diff crs--buffer-comments
                  crs--buffer-metadata crs--buffer-show-comments
                  crs--buffer-annotations crs--buffer-show-annotations
+                 crs--buffer-images
                  crs--comment-owner crs--comment-filename crs--comment-position
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map))
     (should (boundp var))))
@@ -108,6 +110,43 @@
     (should (string-prefix-p "<p>" out)))
   ;; Content that already looks like HTML is left structurally intact.
   (should (equal (crs--ensure-html "<div>hi</div>") "<div>hi</div>")))
+
+(ert-deftest crs-test-ensure-html-keeps-embedded-images ()
+  "A screenshot in an otherwise-prose body survives as a tag, not as text."
+  (let* ((body "Mid race: <img width=\"1905\" src=\"https://github.com/user-attachments/assets/one\" />\n\nEnd: <img src=\"https://github.com/user-attachments/assets/two\">")
+         (out (crs--ensure-html body)))
+    (should (string-match-p "<img width=\"1905\" src=\"https://github.com/user-attachments/assets/one\" />" out))
+    (should (string-match-p "<img src=\"https://github.com/user-attachments/assets/two\">" out))
+    ;; The prose around them is still escaped and paragraphed.
+    (should (string-prefix-p "<p>" out))
+    (should-not (string-match-p "&lt;img" out)))
+  ;; Prose that merely mentions a tag is still escaped.
+  (should (string-match-p "&lt;div&gt;" (crs--ensure-html "use <div> here"))))
+
+(ert-deftest crs-test-localize-image-srcs ()
+  "Images the server cached are rendered from disk; the rest are left alone."
+  (let* ((cached (make-temp-file "crs-image" nil ".png"))
+         (crs--buffer-images
+          (vector `((url . "https://github.com/user-attachments/assets/one")
+                    (path . ,cached)
+                    (cached . t))
+                  ;; Not downloaded yet: no path to point at.
+                  `((url . "https://github.com/user-attachments/assets/two")
+                    (path . "")
+                    (cached . :json-false)))))
+    (unwind-protect
+        (let ((out (crs--localize-image-srcs
+                    (concat "<img src=\"https://github.com/user-attachments/assets/one\">"
+                            "<img src=\"https://github.com/user-attachments/assets/two\">"
+                            "<img src=\"https://img.shields.io/badge.svg\">"))))
+          (should (string-match-p (concat "src=\"file://" (regexp-quote cached) "\"") out))
+          (should (string-match-p "src=\"https://github.com/user-attachments/assets/two\"" out))
+          (should (string-match-p "src=\"https://img.shields.io/badge.svg\"" out)))
+      (delete-file cached)))
+  ;; With nothing cached the body comes back untouched.
+  (let ((crs--buffer-images nil))
+    (should (equal (crs--localize-image-srcs "<img src=\"https://github.com/x\">")
+                   "<img src=\"https://github.com/x\">"))))
 
 (ert-deftest crs-test-html-placeholder-roundtrip ()
   ;; Empty content yields the no-content sentinel, not a placeholder.

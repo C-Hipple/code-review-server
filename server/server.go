@@ -167,6 +167,10 @@ type PRPayload struct {
 	Commits          []CommitJSON   `json:"commits"`
 	Feedback         string         `json:"feedback"`
 	Annotations      []PRAnnotation `json:"annotations"`
+	// Images maps every image embedded in the text above to the copy the
+	// server downloaded, so clients can render screenshots without holding a
+	// GitHub token of their own. See ImageJSON.
+	Images []ImageJSON `json:"images"`
 }
 
 // populate fills the payload from fetched PR details, normalizing nil slices
@@ -207,6 +211,8 @@ func (p *PRPayload) populate(details *PRDetails, content string, owner, repo str
 		annotations = []PRAnnotation{}
 	}
 	p.Annotations = annotations
+
+	p.Images = imagesForPR(details)
 }
 
 type GetPRReply struct {
@@ -289,6 +295,11 @@ func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
 // content" call this; local-comment mutations do not, since they never change
 // the PR's head SHA. The workflow layer reaches it through WarmPRAnalysis.
 func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
+	// Deliberately ahead of the SHA debounce below: a new comment carrying a
+	// screenshot doesn't change the head SHA, and it is exactly the case where
+	// an image is missing from the cache.
+	prefetchPRImages(repo, number, details)
+
 	_, sha, err := config.C().DB.GetPullRequest(number, repo)
 	if err != nil {
 		slog.Warn("Error reading cached PR SHA for hook dispatch", "repo", repo, "pr", number, "error", err)

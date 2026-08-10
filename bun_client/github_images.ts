@@ -1,21 +1,27 @@
 /**
- * The bridge half of the GitHub image proxy.
+ * URL checking for the bridge's image route.
  *
- * Comments and reviews embed screenshots as `<img>` tags pointing at
- * github.com/user-attachments or *.githubusercontent.com. Those URLs redirect
- * to a signed CDN URL, and on a private repository the redirect is only issued
- * to an authenticated request — which a browser loading the image cross-site
- * cannot make, since its github.com cookie is not sent. The bridge already has
- * `CRS_GITHUB_TOKEN`, so it fetches the bytes and hands them to the page.
+ * The downloading itself belongs to the Go server: it holds `CRS_GITHUB_TOKEN`,
+ * which a private repository's attachments require, and caching there means the
+ * Emacs client and anything else render the same images rather than each client
+ * reimplementing the fetch. The bridge asks for one over `RPCHandler.GetImage`
+ * and serves the file that comes back.
  *
- * `frontend/src/github_images.ts` decides which URLs to send here; this module
- * is the trust boundary. It re-checks the requested URL and every redirect
- * target, so the endpoint can't be turned into an open proxy by a crafted
- * comment body.
+ * This check is only a fast rejection so an obviously wrong URL doesn't cost a
+ * round trip; the Go server validates again, and it is the one that matters.
+ * `frontend/src/github_images.ts` decides which URLs get routed here at all.
  */
 
-/** How many redirects to follow before giving up. */
-export const MAX_REDIRECTS = 5;
+/** The reply shape of the Go server's RPCHandler.GetImage. */
+export interface GetImageReply {
+    okay: boolean;
+    url: string;
+    path: string;
+    content_type: string;
+    size: number;
+    cached: boolean;
+    error: string;
+}
 
 /** True for the hosts GitHub serves attachments and repository content from. */
 export function isGitHubImageHost(host: string): boolean {
@@ -43,52 +49,4 @@ export function parseGitHubImageUrl(raw: string | null | undefined): URL | null 
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
     if (!isGitHubImageHost(url.hostname)) return null;
     return url;
-}
-
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
-
-/**
- * Fetch a GitHub-hosted image, following redirects by hand.
- *
- * Two reasons not to let `fetch` follow them: every hop has to be re-checked
- * against the host allowlist, and the token must be dropped after the first
- * one. GitHub's redirect target carries its own signature in the query string,
- * and rejects the request outright if an `Authorization` header rides along
- * with it.
- */
-export async function fetchGitHubImage(
-    target: URL,
-    token: string,
-    fetchImpl: FetchLike = fetch
-): Promise<Response> {
-    let current = target;
-    let authorization = token ? `Bearer ${token}` : '';
-
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        const headers: Record<string, string> = {
-            Accept: 'image/*',
-            'User-Agent': 'code-review-server',
-        };
-        if (authorization) headers.Authorization = authorization;
-
-        const response = await fetchImpl(current.href, { redirect: 'manual', headers });
-        if (response.status < 300 || response.status >= 400) return response;
-
-        const location = response.headers.get('location');
-        if (!location) return response;
-
-        let next: URL;
-        try {
-            next = new URL(location, current);
-        } catch {
-            throw new Error(`unparseable redirect from ${current.hostname}`);
-        }
-        if (!isGitHubImageHost(next.hostname)) {
-            throw new Error(`redirect off GitHub to ${next.hostname}`);
-        }
-        current = next;
-        authorization = '';
-    }
-
-    throw new Error(`too many redirects fetching ${target.href}`);
 }

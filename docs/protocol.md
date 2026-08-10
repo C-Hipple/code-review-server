@@ -101,8 +101,32 @@ the reply wholesale instead of patching local state.
 | `commits`           | []CommitJSON   | Commits on the PR                                                           |
 | `feedback`          | string         | The locally saved review feedback draft for this PR (see `SetFeedback`); empty when none has been saved |
 | `annotations`       | []PRAnnotation | Diff annotations aggregated from every plugin that has already executed successfully for this PR (see [Plugins](plugins.md#plugin-response-contract)) |
+| `images`            | []ImageJSON    | Every GitHub-hosted image embedded in the description, reviews and comments, with the local file the server downloaded it to |
 
 Slice fields are normalized before sending: a client always sees `[]`, never `null`.
+
+#### Image Object (`ImageJSON`)
+
+Screenshots are how reviewers explain a bug, and they arrive in a body as raw
+`<img>` tags — that is what GitHub's upload widget writes. A client cannot fetch
+one itself on a private repository: the attachment URL redirects to a signed URL
+that GitHub issues only to an authenticated request. The server downloads them
+with its own token instead, so every client renders the same images from disk.
+
+| Field          | Type   | Description                                                                 |
+|----------------|--------|-----------------------------------------------------------------------------|
+| `url`          | string | The image URL as it appears in the body — match on this to rewrite the tag  |
+| `path`         | string | Absolute path of the downloaded file, or `""` when it isn't cached yet      |
+| `content_type` | string | MIME type of the cached file; empty alongside an empty `path`               |
+| `size`         | int64  | Size of the cached file in bytes                                            |
+| `cached`       | bool   | `true` when `path` points at a file that exists                             |
+
+The download is asynchronous, so a body can be served before its images have
+landed — `path` is empty until they do. A client that meets an empty `path` asks
+for that one image with [`GetImage`](#rpchandlergetimage), which downloads it on
+the spot. Images hosted anywhere other than `github.com` or
+`*.githubusercontent.com` are absent from this list entirely: they need no
+credentials, so clients load them directly.
 
 #### PRAnnotation Object
 
@@ -387,6 +411,68 @@ The four range fields and `HunkHeader` describe the hunk as it currently stands;
     "HunkHeader": "func (h *RPCHandler) GetPR("
   }],
   "id": 9
+}
+```
+
+---
+
+### `RPCHandler.GetImage`
+
+Returns the local file holding an image embedded in a PR's description, reviews
+or comments, downloading it first if it isn't cached yet.
+
+This is the fallback behind the payload's [`images`](#image-object-imagejson)
+list. Most images are already on disk by the time a client asks — the server
+downloads them whenever it loads a PR's discussion — so this normally costs a
+`stat`. A comment posted since the last fetch is the case that goes to GitHub,
+and this call blocks for it, unlike the rest of the read path.
+
+**Args** (`GetImageArgs`):
+| Field | Type   | Required | Description                                        |
+|-------|--------|----------|----------------------------------------------------|
+| `URL` | string | Yes      | The image URL exactly as it appears in the body    |
+
+**Reply** (`GetImageReply`):
+| Field          | Type   | Description                                                        |
+|----------------|--------|--------------------------------------------------------------------|
+| `okay`         | bool   | `true` when the image is on disk                                   |
+| `url`          | string | The URL that was resolved                                          |
+| `path`         | string | Absolute path of the cached file                                   |
+| `content_type` | string | MIME type of the cached file                                       |
+| `size`         | int64  | Size of the cached file in bytes                                   |
+| `cached`       | bool   | `false` when this call had to download the image                   |
+| `error`        | string | Why it could not be served, when `okay` is `false`                 |
+
+A URL that isn't on `github.com` or `*.githubusercontent.com` comes back with
+`okay: false` rather than as an RPC error — the client should load it directly,
+since images elsewhere need no credentials. The server only fetches GitHub hosts
+on purpose: bodies are written by whoever commented on the PR, and following
+every URL in one would make the review server issue requests wherever a
+commenter pointed it. Redirects are re-checked against the same allowlist,
+responses that aren't images are refused, and downloads are capped at 25 MB.
+
+Cached files live in `$CRS_HOME/images`, named by the SHA-256 of their URL, and
+are safe to delete — they are re-downloaded on demand.
+
+**Example Request**:
+```json
+{
+  "method": "RPCHandler.GetImage",
+  "params": [{ "URL": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af" }],
+  "id": 11
+}
+```
+
+**Example Reply**:
+```json
+{
+  "okay": true,
+  "url": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af",
+  "path": "/home/you/.crs/images/c33e7f4874...458b.png",
+  "content_type": "image/png",
+  "size": 26186,
+  "cached": true,
+  "error": ""
 }
 ```
 

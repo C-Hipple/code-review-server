@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
-import { fetchGitHubImage, parseGitHubImageUrl } from './github_images';
+import { type GetImageReply, parseGitHubImageUrl } from './github_images';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -322,9 +322,10 @@ Bun.serve<{
             );
         }
 
-        // Fetch a GitHub-hosted image on the page's behalf, so screenshots
-        // embedded in comments and reviews load. Attachments on a private repo
-        // need the review server's token, which the browser cannot send.
+        // Serve a GitHub-hosted image embedded in a comment or review. The Go
+        // server owns the download — it holds the token a private repo's
+        // attachments require, and caching there means every client gets the
+        // same images — so this hands back the file it cached.
         if (url.pathname === '/api/github-image' && req.method === 'GET') {
             const target = parseGitHubImageUrl(url.searchParams.get('url'));
             if (!target) {
@@ -334,37 +335,36 @@ Bun.serve<{
                 });
             }
             try {
-                const upstream = await fetchGitHubImage(target, process.env.CRS_GITHUB_TOKEN || '');
-                if (!upstream.ok) {
-                    console.error(`[Image] ${upstream.status} fetching ${target.href}`);
-                    return new Response(`Upstream returned ${upstream.status}`, {
+                const image = (await bridge.call('RPCHandler.GetImage', [
+                    { URL: target.href },
+                ])) as GetImageReply;
+                if (!image?.okay || !image.path) {
+                    console.error(`[Image] ${image?.error || 'no path'} for ${target.href}`);
+                    return new Response('Image unavailable', {
                         status: 502,
                         headers: CORS_HEADERS,
                     });
                 }
-                // An HTML sign-in page is a failure dressed as a 200, and
-                // passing non-image bytes through would make this a general
-                // purpose fetcher.
-                const contentType = upstream.headers.get('content-type') || '';
-                if (!contentType.startsWith('image/')) {
-                    console.error(`[Image] non-image ${contentType} from ${target.href}`);
-                    return new Response('Upstream did not return an image', {
+                const file = Bun.file(image.path);
+                if (!(await file.exists())) {
+                    console.error(`[Image] cached file is gone: ${image.path}`);
+                    return new Response('Image unavailable', {
                         status: 502,
                         headers: CORS_HEADERS,
                     });
                 }
-                return new Response(upstream.body, {
+                return new Response(file, {
                     headers: {
                         ...CORS_HEADERS,
-                        'Content-Type': contentType,
+                        'Content-Type': image.content_type || 'application/octet-stream',
                         // The same screenshot re-renders on every keystroke in
                         // a reply box.
                         'Cache-Control': 'private, max-age=600',
                     },
                 });
             } catch (err) {
-                console.error(`[Image] proxy failed for ${target.href}:`, err);
-                return new Response('Image proxy failed', { status: 502, headers: CORS_HEADERS });
+                console.error(`[Image] could not load ${target.href}:`, err);
+                return new Response('Image unavailable', { status: 502, headers: CORS_HEADERS });
             }
         }
 

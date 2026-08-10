@@ -6,23 +6,84 @@
 
 ;;; Code:
 
+(require 'seq)
 (require 'shr)
 (require 'crs-vars)
+
+(defconst crs--image-tag-regexp "<\\(?:img\\|source\\)\\b[^>]*>"
+  "Matches the image tags GitHub embeds in a body.
+A pasted screenshot arrives as a raw <img> tag — that is what GitHub's
+upload widget writes — rather than as Markdown image syntax.")
+
+(defconst crs--img-src-regexp "\\(<img[^>]*\\bsrc=\\)\\([\"']\\)\\([^\"']*\\)\\2"
+  "Matches the src attribute of an <img> tag, capturing the URL in group 3.")
+
+(defun crs--image-cache-path (url)
+  "Return the local file the server cached URL at, or nil if there isn't one.
+Reads `crs--buffer-images', which the review buffer fills from the
+GetPR reply."
+  (let ((wanted (replace-regexp-in-string "&amp;" "&" url t t)))
+    (seq-some (lambda (image)
+                (let ((image-url (cdr (assq 'url image)))
+                      (path (cdr (assq 'path image))))
+                  (when (and (stringp image-url) (stringp path)
+                             (string= image-url wanted)
+                             (not (string-empty-p path))
+                             (file-readable-p path))
+                    path)))
+              (or crs--buffer-images []))))
+
+(defun crs--localize-image-srcs (html)
+  "Point each <img> in HTML at the copy of the image the server cached.
+An attachment on a private repository is served only to a request
+carrying a GitHub token, which shr has no way to send — so without this
+the screenshot in a review comment cannot render at all.  Images the
+server did not cache are left alone for shr to fetch itself."
+  (if (seq-empty-p (or crs--buffer-images []))
+      html
+    (replace-regexp-in-string
+     crs--img-src-regexp
+     (lambda (match)
+       (let ((path (crs--image-cache-path (match-string 3 match))))
+         (if path
+             (concat (match-string 1 match) (match-string 2 match)
+                     "file://" path (match-string 2 match))
+           match)))
+     html t t)))
 
 (defun crs--ensure-html (text)
   "Return TEXT as HTML suitable for shr rendering.
 If TEXT already looks like HTML (starts with a tag), bare newlines are
 replaced with <br> elements so shr preserves the visual line structure.
 Otherwise convert plain text/Markdown line breaks to HTML paragraphs and
-br elements so that shr preserves the visual line structure."
-  (if (string-match-p "\\`[[:space:]]*<" text)
-      (replace-regexp-in-string "\n" "<br>" text)
-    (let* ((escaped (replace-regexp-in-string "&" "&amp;" text))
-           (escaped (replace-regexp-in-string "<" "&lt;" escaped))
-           (escaped (replace-regexp-in-string ">" "&gt;" escaped))
-           (with-paras (replace-regexp-in-string "\n\n+" "</p><p>" escaped))
-           (with-brs (replace-regexp-in-string "\n" "<br>" with-paras)))
-      (concat "<p>" with-brs "</p>"))))
+br elements so that shr preserves the visual line structure.
+
+Image tags survive that escaping.  A body is mostly prose, so it takes
+the escaping branch, and escaping a screenshot's <img> tag would render
+the tag itself as text instead of the picture."
+  (crs--localize-image-srcs
+   (if (string-match-p "\\`[[:space:]]*<" text)
+       (replace-regexp-in-string "\n" "<br>" text)
+     (let* ((tags nil)
+            (protected (replace-regexp-in-string
+                        crs--image-tag-regexp
+                        (lambda (tag)
+                          (push tag tags)
+                          (format "\0crs-image-%d\0" (1- (length tags))))
+                        text t t))
+            (escaped (replace-regexp-in-string "&" "&amp;" protected))
+            (escaped (replace-regexp-in-string "<" "&lt;" escaped))
+            (escaped (replace-regexp-in-string ">" "&gt;" escaped))
+            (with-paras (replace-regexp-in-string "\n\n+" "</p><p>" escaped))
+            (with-brs (replace-regexp-in-string "\n" "<br>" with-paras))
+            (restored (replace-regexp-in-string
+                       "\0crs-image-\\([0-9]+\\)\0"
+                       (lambda (marker)
+                         (nth (- (length tags) 1
+                                 (string-to-number (match-string 1 marker)))
+                              tags))
+                       with-brs t t)))
+       (concat "<p>" restored "</p>")))))
 
 (defun crs--shr-render (html-string start)
   "Render HTML-STRING with shr, starting from buffer position START.

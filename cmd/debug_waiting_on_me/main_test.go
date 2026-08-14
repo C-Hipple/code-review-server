@@ -32,6 +32,16 @@ func TestExplain(t *testing.T) {
 		}
 	}
 
+	withTeams := func(pr *github.PullRequest, slugs ...string) *github.PullRequest {
+		for _, slug := range slugs {
+			pr.RequestedTeams = append(pr.RequestedTeams, &github.Team{Slug: github.String(slug)})
+		}
+		return pr
+	}
+
+	// The teams the tool believes I am in, in GetMyTeamRefs' "org/slug" form.
+	myTeams := []string{owner + "/my-team"}
+
 	// A nil set (fail-open) unless the case says otherwise; cases exercising
 	// the prefilter pass an explicit set, mirroring the filter's paths.
 	inSet := func(numbers ...int) git_tools.InteractionSet {
@@ -90,6 +100,22 @@ func TestExplain(t *testing.T) {
 			wantReason: "incomplete PR data",
 		},
 		{
+			// The tool used to report this as unmatched, correctly describing a
+			// filter that ignored team requests. Both now match.
+			name:       "requested through one of my teams",
+			pr:         withTeams(makePR(9), "my-team"),
+			interacted: inSet(),
+			wantMatch:  true,
+			wantReason: "review requested from one of your teams",
+		},
+		{
+			name:       "requested through a team I am not in",
+			pr:         withTeams(makePR(10), "some-other-team"),
+			interacted: inSet(),
+			wantMatch:  false,
+			wantReason: "prefiltered",
+		},
+		{
 			// Same dismissed state as the "dismissed review" case, but the
 			// search set doesn't contain the PR — the prefilter's decision
 			// must win, and the reason must say so.
@@ -115,7 +141,7 @@ func TestExplain(t *testing.T) {
 			key := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, tt.pr.GetNumber())
 			git_tools.GlobalCache.Set(key, tt.state, time.Hour)
 
-			match, reason := explain(tt.pr, login, tt.interacted)
+			match, reason := explain(tt.pr, login, myTeams, tt.interacted)
 			if match != tt.wantMatch {
 				t.Errorf("match: expected %v, got %v (%s)", tt.wantMatch, match, reason)
 			}

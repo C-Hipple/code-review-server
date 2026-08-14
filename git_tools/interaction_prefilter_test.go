@@ -10,16 +10,20 @@ import (
 	"github.com/google/go-github/v74/github"
 )
 
-// TestMain makes the interaction searches fail for the whole package: unit
-// tests must never reach the real search API (CRS_GITHUB_TOKEN is usually set
-// in dev shells, so a live call would otherwise succeed silently). A failed
-// fetch fails open — a nil set — which preserves the pre-prefilter behavior
-// the older filter tests were written against. Tests that exercise the
-// prefilter itself seed the GlobalCache entry for their login instead.
+// TestMain cuts the whole package off from the live GitHub API: unit tests must
+// never reach it (CRS_GITHUB_TOKEN is usually set in dev shells, so a live call
+// would otherwise succeed silently).
+//
+// The interaction searches fail, which fails open — a nil set — preserving the
+// pre-prefilter behavior the older filter tests were written against. Tests
+// that exercise the prefilter itself seed the GlobalCache entry for their login
+// instead. The team lookup returns nothing, so team review requests match only
+// where a test says which teams it is standing in for.
 func TestMain(m *testing.M) {
 	fetchInteractionSet = func(login string) (InteractionSet, error) {
 		return nil, errors.New("interaction search disabled in tests")
 	}
+	myTeamRefs = func() []string { return nil }
 	os.Exit(m.Run())
 }
 

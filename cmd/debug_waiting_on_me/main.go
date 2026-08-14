@@ -80,6 +80,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The teams whose review requests count as mine. An empty list here with a
+	// populated TEAMS column below is the signature of a token that cannot read
+	// org membership, which silently costs you every CODEOWNERS review request.
+	teamRefs := git_tools.GetMyTeamRefs()
+	fmt.Printf("\nYour teams (team review requests match these): %s\n", joinOrDash(teamRefs))
+	if len(teamRefs) == 0 {
+		fmt.Println("  !! No teams found. If your organization requests reviews from teams, the")
+		fmt.Println("     token needs the read:org scope (classic) or Members: Read (fine-grained),")
+		fmt.Println("     and SSO authorization for the org if it enforces SAML.")
+	}
+
 	// The same two-search interaction set the filter consults; a nil set means
 	// the filter is running in its fail-open mode (checking every PR).
 	interacted := git_tools.SearchMyOpenInteractions(login)
@@ -105,7 +116,7 @@ func main() {
 			fmt.Println("A workflow hitting this leaves its section untouched for the cycle.")
 			os.Exit(1)
 		}
-		matched, total := printDecisions("search candidates", prs, login, interacted)
+		matched, total := printDecisions("search candidates", prs, login, teamRefs, interacted)
 		totalMatched, totalPRs = matched, total
 	}
 
@@ -127,29 +138,28 @@ func main() {
 			continue
 		}
 
-		matched, total := printDecisions(entry, prs, login, interacted)
+		matched, total := printDecisions(entry, prs, login, teamRefs, interacted)
 		totalPRs += total
 		totalMatched += matched
 	}
 
 	fmt.Printf("\n== Summary ==\n%d of %d open PRs are waiting on %s\n", totalMatched, totalPRs, login)
 	if totalMatched == 0 && totalPRs > 0 {
-		fmt.Println("\nNothing matched. Check that the logins in the REQUESTED REVIEWERS column")
-		fmt.Println("include yours — if your review was requested through a team, it shows in")
-		fmt.Println("TEAMS instead and FilterWaitingOnMe does not match it (use the workflow's")
-		fmt.Println("Teams field for that).")
+		fmt.Println("\nNothing matched. Check that the REQUESTED REVIEWERS column includes your")
+		fmt.Println("login, or that the TEAMS column names one of the teams listed above — a")
+		fmt.Println("team request only matches when the token can see that you are in the team.")
 	}
 }
 
 // printDecisions prints one table of per-PR decisions and returns how many
 // matched out of how many were checked.
-func printDecisions(label string, prs []*github.PullRequest, login string, interacted git_tools.InteractionSet) (int, int) {
+func printDecisions(label string, prs []*github.PullRequest, login string, teamRefs []string, interacted git_tools.InteractionSet) (int, int) {
 	fmt.Printf("\n%s: %d open PRs\n", label, len(prs))
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "  MATCH\t#\tAUTHOR\tREQUESTED REVIEWERS\tTEAMS\tREASON")
 	matched := 0
 	for _, pr := range prs {
-		decision, reason := explain(pr, login, interacted)
+		decision, reason := explain(pr, login, teamRefs, interacted)
 		mark := "-"
 		if decision {
 			matched++
@@ -168,21 +178,18 @@ func printDecisions(label string, prs []*github.PullRequest, login string, inter
 // filter takes them, so a PR the prefilter skips is reported as skipped even
 // if a full interaction-state check would have matched it (that divergence is
 // exactly the thing worth surfacing when debugging a missing PR).
-func explain(pr *github.PullRequest, login string, interacted git_tools.InteractionSet) (bool, string) {
-	if pr == nil || pr.Base == nil || pr.Base.Repo == nil ||
+func explain(pr *github.PullRequest, login string, teamRefs []string, interacted git_tools.InteractionSet) (bool, string) {
+	if pr == nil || pr.Number == nil || pr.Base == nil || pr.Base.Repo == nil ||
 		pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
 		return false, "incomplete PR data"
 	}
 
-	requested := false
-	for _, r := range pr.RequestedReviewers {
-		if r != nil && r.Login != nil && strings.EqualFold(*r.Login, login) {
-			requested = true
-			break
-		}
-	}
-	if requested {
+	// The filter's own check, not a copy of it.
+	switch personal, team := git_tools.ReviewRequestedFromMe(pr, login, teamRefs); {
+	case personal:
 		return true, "review requested from you"
+	case team:
+		return true, "review requested from one of your teams"
 	}
 
 	if !interacted.MayHaveInteracted(pr) {
@@ -307,6 +314,15 @@ func joinReviewers(pr *github.PullRequest) string {
 		return "-"
 	}
 	return strings.Join(names, ",")
+}
+
+// joinOrDash renders a list for the header lines, matching the "-" the table
+// columns use for empty.
+func joinOrDash(values []string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	return strings.Join(values, ", ")
 }
 
 func joinTeams(pr *github.PullRequest) string {

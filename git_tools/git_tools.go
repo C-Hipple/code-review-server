@@ -889,6 +889,14 @@ func FilterNotStale(prs []*github.PullRequest) []*github.PullRequest {
 	return filtered
 }
 
+// isReviewVerdict reports whether a review state is one that judges the PR as a
+// whole. DISMISSED counts: it is what a verdict becomes when it is withdrawn,
+// so it is the only trace left of an approval that no longer stands. COMMENTED
+// and PENDING do not.
+func isReviewVerdict(state string) bool {
+	return state == "APPROVED" || state == "CHANGES_REQUESTED" || state == "DISMISSED"
+}
+
 type InteractionState struct {
 	LastMeTime             time.Time
 	LastOthersTime         time.Time
@@ -922,15 +930,25 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	// dismissal rewrites the review's state to DISMISSED, so a dismissed
 	// verdict stops clearing anything and MyReviewDismissed flags the PR
 	// instead.
-	var myLatestReview *github.PullRequestReview
+	var myLatestVerdict *github.PullRequestReview
 	var myVerdictTime time.Time
 	for _, r := range reviews {
 		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
 			continue
 		}
 		if strings.EqualFold(*r.User.Login, myLogin) {
-			if myLatestReview == nil || r.SubmittedAt.After(myLatestReview.SubmittedAt.Time) {
-				myLatestReview = r
+			// Only verdicts can answer "does my review still stand?", for the
+			// same reason they are the only thing that clears a thread: a
+			// COMMENTED review is usually not a review at all, just the wrapper
+			// GitHub puts around a standalone inline comment. Ranking every
+			// review together let one such comment after a dismissal hide the
+			// dismissal — the PR left Waiting On Me while I still owed the
+			// re-review, and nothing would put it back until someone replied to
+			// a thread. A dismissal keeps the review's original SubmittedAt, so
+			// comparing submission times still orders these correctly.
+			if isReviewVerdict(r.GetState()) &&
+				(myLatestVerdict == nil || r.SubmittedAt.After(myLatestVerdict.SubmittedAt.Time)) {
+				myLatestVerdict = r
 			}
 			if (r.GetState() == "APPROVED" || r.GetState() == "CHANGES_REQUESTED") && r.SubmittedAt.After(myVerdictTime) {
 				myVerdictTime = r.SubmittedAt.Time
@@ -944,7 +962,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 			}
 		}
 	}
-	state.MyReviewDismissed = myLatestReview != nil && myLatestReview.GetState() == "DISMISSED"
+	state.MyReviewDismissed = myLatestVerdict.GetState() == "DISMISSED"
 
 	// Fetch Review Comments
 	// Group comments by their "thread", remembering who spoke last and when.
@@ -1198,13 +1216,25 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	// Set LastCommitTime from commits
 	state.LastCommitTime = latestCommitTime(commits)
 
-	// Cache the result even if there were errors (with shorter TTL)
-	// This prevents retry storms
-	ttl := 10 * time.Minute
+	// A state built from a failed fetch is not just incomplete, it is
+	// systematically wrong in one direction. All four endpoints return
+	// oldest-first and listAllPages keeps what it got before the error, so a
+	// failure drops the *newest* reviews and comments — my latest review's
+	// dismissal, the reply that is waiting on me — which is precisely what
+	// this state is read for. The answer that survives is "nothing is
+	// outstanding", and caching it would keep the PR out of Waiting On Me for
+	// the whole TTL with nothing in the section to hint at why.
+	//
+	// So a failed fetch is used for this pass (it is still the best guess
+	// available) but never stored: the next pass pays for the calls again and
+	// gets the real answer. That is the same trade the interaction prefilter
+	// makes — extra requests are recoverable, a quietly missing PR is not.
 	if hasError {
-		ttl = 2 * time.Minute // Shorter cache for partial/error states
+		slog.Warn("Interaction state fetched with errors; not caching it, and this PR may be missing from Waiting On Me until the next cycle",
+			"owner", owner, "repo", repo, "number", *pr.Number)
+		return state
 	}
-	GlobalCache.Set(cacheKey, state, ttl)
+	GlobalCache.Set(cacheKey, state, 10*time.Minute)
 	return state
 }
 
@@ -1249,6 +1279,69 @@ func reviewRequestedFrom(pr *github.PullRequest, login string) bool {
 	return false
 }
 
+// ReviewRequestedFromMe reports the two ways a PR can carry an open review
+// request on login: personal is one made of them directly, team is one made of
+// a team in teamRefs (the "org/team-slug" list GetMyTeamRefs returns). Either
+// puts the PR in their court, and the identity filters treat them alike.
+//
+// Exported so cmd/debug_waiting_on_me can answer "does this PR match, and
+// why?" with the filter's own code. It used to re-implement the personal half
+// inline, which is how it came to report team-requested PRs correctly as
+// unmatched while the workflow description promised otherwise.
+func ReviewRequestedFromMe(pr *github.PullRequest, login string, teamRefs []string) (personal, team bool) {
+	if pr == nil {
+		return false, false
+	}
+	return reviewRequestedFrom(pr, login), teamReviewRequestedFrom(pr, teamRefs)
+}
+
+// teamReviewRequestedFrom reports whether one of teamRefs — my teams, in the
+// "org/team-slug" form GetMyTeamRefs returns — has an open review request on
+// the PR.
+//
+// This is the other half of an open review request, and for anyone working in
+// an organization it is usually the larger half: most orgs route reviews
+// through CODEOWNERS, which requests a team rather than a person. GitHub keeps
+// those in RequestedTeams and never copies them into RequestedReviewers, so a
+// check that only reads RequestedReviewers misses them all. WaitingOnMeWorkflow
+// searches team-review-requested: for exactly these PRs (see pr_search.go), so
+// leaving them out here threw away candidates the search had already paid for.
+//
+// A PR's requested_teams payload carries each team's slug but not its
+// organization, so the org half of a ref is matched against the repository's
+// owner. That is exact rather than a guess: teams are org-scoped and GitHub
+// only lets a repository request review from teams in the organization that
+// owns it, so a slug on this PR can only mean the team of that name in this
+// repo's org. Matching on the bare slug instead would show me every PR whose
+// reviewers include some other organization's "backend" team.
+func teamReviewRequestedFrom(pr *github.PullRequest, teamRefs []string) bool {
+	if len(teamRefs) == 0 || len(pr.RequestedTeams) == 0 ||
+		pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil {
+		return false
+	}
+	for _, team := range pr.RequestedTeams {
+		if team == nil || team.GetSlug() == "" {
+			continue
+		}
+		// The repository's owner is the team's org, unless the payload
+		// happens to name the organization itself.
+		org := pr.Base.Repo.Owner.GetLogin()
+		if team.GetOrganization().GetLogin() != "" {
+			org = team.GetOrganization().GetLogin()
+		}
+		if org == "" {
+			continue
+		}
+		for _, ref := range teamRefs {
+			// Org names and team slugs are both case-insensitive.
+			if strings.EqualFold(ref, org+"/"+team.GetSlug()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // FilterWaitingOnMe filters against the root-level GithubUsername. Workflows
 // build their filters with MakeWaitingOnMeFilter so a per-workflow
 // GithubUsername is honored and an unset one is caught at build time.
@@ -1275,7 +1368,7 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 	}
 
 	// A PR is "Waiting on me" if:
-	// 1. I have a pending review request on it, OR
+	// 1. I have a pending review request on it — mine or one of my teams' — OR
 	// 2. my last review was dismissed (so I owe a re-review), OR
 	// 3. I have unresponded comments.
 	//
@@ -1288,13 +1381,20 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 	// exactly the re-review case: the prior review is newer than both the
 	// last commit and the last comment, so every re-request was filtered out.
 	//
-	// Case 1 is also free: RequestedReviewers rides along on the PR list we
-	// already fetched. Cases 2 and 3 need GetInteractionState's four fetches,
-	// but both require some past review or comment of mine, so the
-	// interaction set (two search calls, shared and cached — see
-	// interaction_prefilter.go) rules them out for most PRs without fetching
-	// anything. Only PRs that pass the prefilter pay for a state fetch.
+	// Case 1 is also free: RequestedReviewers and RequestedTeams both ride
+	// along on the PR list we already fetched, and the team list behind
+	// teamReviewRequestedFrom is one cached lookup per half hour. Cases 2 and
+	// 3 need GetInteractionState's four fetches, but both require some past
+	// review or comment of mine, so the interaction set (two search calls,
+	// shared and cached — see interaction_prefilter.go) rules them out for
+	// most PRs without fetching anything. Only PRs that pass the prefilter pay
+	// for a state fetch.
 	interacted := SearchMyOpenInteractions(myLogin)
+	// Fetched once for the whole pass rather than per PR. As in
+	// ReviewRequestedRefs, these are the teams of the user the API token
+	// belongs to, which is who myLogin identifies in every configuration that
+	// doesn't override GithubUsername per workflow.
+	teamRefs := myTeamRefs()
 
 	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
@@ -1308,7 +1408,10 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 	sem := make(chan struct{}, interactionStateConcurrency)
 
 	for _, pr := range prs {
-		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
+		// pr.Number is part of the guard because every branch below reads it,
+		// and a nil dereference in one of these goroutines is unrecoverable:
+		// it takes the whole server down, not just this filter pass.
+		if pr == nil || pr.Number == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
 			continue
 		}
 
@@ -1317,10 +1420,10 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 			defer wg.Done()
 
 			// Case 1: open review request, no API calls needed.
-			if reviewRequestedFrom(pr, myLogin) {
+			if requested, team := ReviewRequestedFromMe(pr, myLogin, teamRefs); requested || team {
 				slog.Debug("FilterWaitingOnMe",
 					"repo", *pr.Base.Repo.Name, "number", *pr.Number,
-					"included", true, "requested", true)
+					"included", true, "requested", requested, "team_requested", team)
 				resultChan <- prResult{pr: pr, shouldFilter: true}
 				return
 			}
@@ -1339,7 +1442,7 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 
 			slog.Debug("FilterWaitingOnMe",
 				"repo", *pr.Base.Repo.Name, "number", *pr.Number, "included", shouldFilter,
-				"requested", false, "review_dismissed", state.MyReviewDismissed,
+				"requested", false, "team_requested", false, "review_dismissed", state.MyReviewDismissed,
 				"unresponded_comments", state.HasUnrespondedComments,
 				"last_me", state.LastMeTime, "last_others", state.LastOthersTime,
 				"last_commit", state.LastCommitTime)
@@ -1405,12 +1508,16 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 	//   - An open review request on me (free to check) outranks the
 	//     timestamps: the ball is back in my court, not the author's. Without
 	//     this a re-requested PR would show up in both the "Waiting on Me"
-	//     and "Waiting on Author" sections.
+	//     and "Waiting on Author" sections. A request made of one of my teams
+	//     counts the same way, for the same reason — filterWaitingOnMe treats
+	//     the two alike, so this has to as well or the double-listing comes
+	//     back for team requests only.
 	//   - "I acted last" requires that I acted at all: actedSinceOthers needs
 	//     a nonzero LastMeTime, and only a review or comment of mine sets it.
 	//     A PR outside the interaction set (see interaction_prefilter.go)
 	//     cannot match, so its state fetch is skipped.
 	interacted := SearchMyOpenInteractions(myLogin)
+	teamRefs := myTeamRefs()
 
 	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
@@ -1423,7 +1530,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 	sem := make(chan struct{}, interactionStateConcurrency)
 
 	for _, pr := range prs {
-		if pr == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
+		if pr == nil || pr.Number == nil || pr.Base == nil || pr.Base.Repo == nil || pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
 			continue
 		}
 
@@ -1431,7 +1538,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
 
-			if reviewRequestedFrom(pr, myLogin) {
+			if personal, team := ReviewRequestedFromMe(pr, myLogin, teamRefs); personal || team {
 				resultChan <- prResult{pr: pr, shouldFilter: false}
 				return
 			}

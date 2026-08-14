@@ -585,6 +585,45 @@ func TestCalculateInteractionStateReviewDismissed(t *testing.T) {
 			},
 			expectDismissed: false,
 		},
+		{
+			// A COMMENTED review is what GitHub creates for a standalone inline
+			// comment, so this is one drive-by remark after my approval was
+			// dismissed — not a re-review. Ranking it as my latest review used
+			// to clear the dismissal and drop the PR out of Waiting On Me while
+			// I still owed the re-review.
+			name: "Dismissed, then I left an inline comment",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "DISMISSED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "COMMENTED", now.Add(-time.Hour)),
+			},
+			expectDismissed: true,
+		},
+		{
+			name: "Dismissed, then I commented, then I re-approved",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "DISMISSED", now.Add(-3*time.Hour)),
+				makeReview(myLogin, "COMMENTED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "APPROVED", now.Add(-time.Hour)),
+			},
+			expectDismissed: false,
+		},
+		{
+			// The dismissal is the newer verdict here: I requested changes, the
+			// author pushed, and that dismissed the review.
+			name: "Requested changes, then a later approval of mine was dismissed",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "CHANGES_REQUESTED", now.Add(-3*time.Hour)),
+				makeReview(myLogin, "DISMISSED", now.Add(-time.Hour)),
+			},
+			expectDismissed: true,
+		},
+		{
+			name: "Only a COMMENTED review of mine",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "COMMENTED", now.Add(-time.Hour)),
+			},
+			expectDismissed: false,
+		},
 	}
 
 	for _, tt := range tests {

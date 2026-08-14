@@ -89,7 +89,12 @@ func GetMyTeamRefs() []string {
 		return GetGithubClient().Teams.ListUserTeams(ctx, opts)
 	})
 	if err != nil {
+		// Cached briefly, like the login lookup above: this is now on the hot
+		// path of every FilterWaitingOnMe pass as well as the candidate
+		// searches, and an org that denies the token read:org would otherwise
+		// re-ask on each one.
 		slog.Error("Failed to list the teams you belong to; team review requests will be missed", "error", err)
+		GlobalCache.Set(cacheKey, []string(nil), authenticatedLoginErrTTL)
 		return nil
 	}
 

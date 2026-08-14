@@ -40,13 +40,22 @@ It prints your resolved username, any configuration problems, per-repo fetch err
 
 A PR is included when any of the following is true:
 
-1.  **You have an open review request.** GitHub clears a review request as soon as you submit a review, and re-requesting a review puts you back in the PR's requested reviewers — so being listed there means the request is outstanding, no matter how recently you reviewed or commented. This is what makes re-review requests show up.
-2.  **Your most recent review was dismissed.** Stale-review dismissal and CODEOWNERS re-requests throw away your approval *without* adding you back to the requested reviewers, so this is the only signal that you owe a re-review.
+1.  **You have an open review request** — made of you directly, or of a team you belong to. GitHub clears a review request as soon as you submit a review, and re-requesting a review puts you back in the PR's requested reviewers — so being listed there means the request is outstanding, no matter how recently you reviewed or commented. This is what makes re-review requests show up.
+2.  **Your most recent review verdict was dismissed.** Stale-review dismissal and CODEOWNERS re-requests throw away your approval *without* adding you back to the requested reviewers, so this is the only signal that you owe a re-review. Only approvals and change requests count as verdicts here; leaving an inline comment afterwards does not mean you have re-reviewed, so it does not clear the dismissal.
 3.  **You have unresponded comments.** You participated in a review thread (or the PR conversation) and someone else replied after you.
 
-`FilterWaitingOnAuthor` is the complement: it excludes PRs where you have an open request or a dismissed review, so a PR never lands in both sections.
+`FilterWaitingOnAuthor` is the complement: it excludes PRs where you have an open request (personal or team) or a dismissed review, so a PR never lands in both sections.
 
-Only *personal* review requests count. If your review is requested through a team, use the `Teams` field described below to build a section for it.
+### Team review requests
+
+Most organizations request reviews through CODEOWNERS, which asks a *team* rather than a person. Those requests count for `FilterWaitingOnMe` under case 1, matched against the teams you belong to — so you do not need to name your teams in the config for the "Waiting On Me" section to see them.
+
+Two things are worth knowing:
+
+*   Your teams are read from the GitHub API, so the token needs the `read:org` scope (classic) or `Members: Read` permission (fine-grained), plus SSO authorization for any organization that enforces SAML. Without it the lookup returns nothing and team requests silently stop matching — `debug_waiting_on_me` prints the teams it found for exactly this reason.
+*   A team is matched as `organization/slug`, so another organization's team with the same slug (a second `backend`, say) does not match.
+
+The `Teams` field described below is a different, narrower tool: it restricts a repo-list workflow to PRs requesting specific teams, whether or not you are in them.
 
 ## Team-Based Filtering
 

@@ -311,11 +311,13 @@ instead; annotations for files not in the diff are dropped (they remain
 visible in the plugin output buffers).
 
 SHOW-FULL non-nil inserts full annotation blocks beneath each annotated
-line; otherwise a compact <A: plugin> indicator is appended to the line,
-carrying the annotation list in a `crs-annotations' text property so the
-echo-area preview can find it.  Must run after `delta-wash' and after
-`crs--insert-comments-into-buffer' so line positions are final and the
-washer's painting is untouched."
+line; otherwise a compact <A: plugin> indicator is appended to the line.
+Either way the annotation list is stored in a `crs-annotations' text
+property — on the indicator when collapsed, and on both the block and its
+anchor line when expanded — so the echo-area preview and
+`crs-add-annotation-as-comment' can find it from either spot.  Must run
+after `delta-wash' and after `crs--insert-comments-into-buffer' so line
+positions are final and the washer's painting is untouched."
   (when (> (length (or annotations [])) 0)
     (let ((annotation-map (crs--index-annotations annotations))
           (anchored (make-hash-table :test 'equal))
@@ -367,8 +369,10 @@ washer's painting is untouched."
                     (puthash key t anchored)
                     (push (cons line-end
                                 (if show-full
-                                    (concat "\n" (string-trim-right
-                                                  (crs--render-annotation-block line-annotations)))
+                                    (list 'block
+                                          (concat "\n" (string-trim-right
+                                                        (crs--render-annotation-block line-annotations)))
+                                          line-annotations line-start line-end)
                                   (list 'indicator line-annotations)))
                           insertions)))
                 (setq head-line (1+ head-line))))))
@@ -393,28 +397,45 @@ washer's painting is untouched."
                                     (or (cdr (assq 'line b)) 0)))))
                  (hunk-pos (gethash file first-hunks)))
              (push (if show-full
-                       (cons (car hunk-pos) (crs--render-annotation-block sorted t))
+                       (cons (car hunk-pos)
+                             (list 'block (crs--render-annotation-block sorted t)
+                                   sorted (car hunk-pos) (cdr hunk-pos)))
                      (cons (cdr hunk-pos) (list 'indicator sorted)))
                    insertions)))
          leftovers))
 
-      ;; Execute insertions (sorted by point descending).  Indicators are
-      ;; inserted at line end without touching the line itself, so text
-      ;; properties applied by the washer survive.
+      ;; Execute insertions (sorted by point descending).  Nothing rewrites an
+      ;; existing line: indicators are inserted at line end and blocks around
+      ;; it, so text properties applied by the washer survive.  The only
+      ;; property added to a diff line is `crs-annotations', which marks the
+      ;; anchor of an expanded block.
       (setq insertions (sort insertions (lambda (a b) (> (car a) (car b)))))
       (save-excursion
         (dolist (ins insertions)
           (goto-char (car ins))
           (let ((content (cdr ins)))
-            (if (and (listp content) (eq (car content) 'indicator))
-                (let* ((line-annotations (cadr content))
-                       (indicator (propertize
-                                   (crs--format-compact-annotation-indicator line-annotations)
-                                   'crs-annotations line-annotations))
-                       (line-length (- (point) (line-beginning-position)))
-                       (padding (max (- 120 line-length) 1)))
-                  (insert (make-string padding ?\s) indicator))
-              (insert content))))))))
+            (cond
+             ((eq (car content) 'indicator)
+              (let* ((line-annotations (nth 1 content))
+                     (indicator (propertize
+                                 (crs--format-compact-annotation-indicator line-annotations)
+                                 'crs-annotations line-annotations))
+                     (line-length (- (point) (line-beginning-position)))
+                     (padding (max (- 120 line-length) 1)))
+                (insert (make-string padding ?\s) indicator)))
+             ((eq (car content) 'block)
+              (let* ((text (nth 1 content))
+                     (line-annotations (nth 2 content))
+                     (anchor-beg (nth 3 content))
+                     (anchor-end (nth 4 content))
+                     (start (point)))
+                (insert (propertize text 'crs-annotations line-annotations))
+                ;; A block anchored to a diff line is inserted after it, so the
+                ;; line keeps its positions; an unanchored block is inserted
+                ;; above its hunk header, which shifts by the block's length.
+                (let ((shift (if (>= anchor-beg start) (- (point) start) 0)))
+                  (put-text-property (+ anchor-beg shift) (+ anchor-end shift)
+                                     'crs-annotations line-annotations)))))))))))
 
 (defun crs--annotations-on-current-line ()
   "Return the plugin annotations attached to the current line, or nil.

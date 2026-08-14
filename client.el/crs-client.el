@@ -45,6 +45,7 @@
   "TAB" #'crs-toggle-section
   "<tab>" #'crs-toggle-section
   "<backtab>" #'crs-collapse-all-sections
+  "a" #'crs-add-annotation-as-comment
   "c" #'crs-add-or-edit-comment
   "d" #'crs-delete-local-comment
   "C-c C-c" #'crs-submit-review
@@ -108,6 +109,7 @@
     (kbd "TAB") #'crs-toggle-section
     (kbd "<tab>") #'crs-toggle-section
     (kbd "<backtab>") #'crs-collapse-all-sections
+    "a" #'crs-add-annotation-as-comment
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
     (kbd "C-c C-c") #'crs-submit-review
@@ -135,6 +137,7 @@
     (kbd "TAB") #'crs-toggle-section
     (kbd "<tab>") #'crs-toggle-section
     (kbd "<backtab>") #'crs-collapse-all-sections
+    "a" #'crs-add-annotation-as-comment
     "c" #'crs-add-or-edit-comment
     "d" #'crs-delete-local-comment
     (kbd "C-c C-c") #'crs-submit-review

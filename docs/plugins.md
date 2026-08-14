@@ -169,6 +169,16 @@ Annotations also render inline in the review buffer's diff, from the `annotation
 
 As in the web client, an annotation anchors to the line matching its `line` on the PR's head side, landing on an added or unchanged line of the diff. Annotations the diff can't show a row for attach to their file's first hunk header, labelled with the line they point at. Annotations naming a file that isn't in the diff at all appear only in the plugin output buffers.
 
+An annotation can also be promoted to review feedback. With the cursor on an annotated line — on the collapsed `<A: plugin>` indicator, or anywhere inside an expanded annotation block — `a` (`crs-add-annotation-as-comment`) files that annotation as a local comment at the same diff position, without opening a comment buffer. The body is:
+
+```
+Automated comment by <plugin name>
+
+<annotation content>
+```
+
+A line carrying several annotations prompts for which one to file. Annotations that collapsed onto a file's hunk header are refused: the line they name is not in the diff, so there is no position for a comment to anchor to. The comment is an ordinary local comment from there on — editable with `c`, deletable with `d`, and posted by `crs-submit-review` like any other.
+
 ## On-Demand Plugins
 
 By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini or Claude).

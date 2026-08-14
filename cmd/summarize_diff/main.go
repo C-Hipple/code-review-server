@@ -10,12 +10,14 @@ import (
 )
 
 // summarize_diff emits the plugin response contract described in
-// docs/plugins.md: a markdown body holding the summary, plus line-level
-// annotations anchored to the head side of the PR's diff.
+// docs/plugins.md: a markdown body explaining what the PR is trying to do,
+// plus annotations marking the hotspots — the lines carrying the PR's real
+// implementation or business logic — anchored to the head side of the diff.
 
-// maxAnnotations is what the model is asked for. A summary plugin that flags
-// every other line is noise once the annotations render inline.
-const maxAnnotations = 6
+// maxHotspots is what the model is asked for. Annotating anything a reviewer
+// could see for themselves buries the few lines that actually decide whether
+// the PR is correct, so the cap is deliberately tight.
+const maxHotspots = 4
 
 // modelOutput is the shape Gemini is asked to return, mirroring
 // responseSchema below.
@@ -32,9 +34,9 @@ func responseSchema() *pluginkit.Schema {
 		Properties: map[string]*pluginkit.Schema{
 			"summary": {
 				Type:        "STRING",
-				Description: "Terse markdown summary of the PR.",
+				Description: "Terse markdown summary of what the PR is trying to accomplish and how.",
 			},
-			"annotations": pluginkit.AnnotationsSchema(maxAnnotations),
+			"annotations": pluginkit.AnnotationsSchema(maxHotspots),
 		},
 		PropertyOrdering: []string{"summary", "annotations"},
 		Required:         []string{"summary", "annotations"},
@@ -44,19 +46,38 @@ func responseSchema() *pluginkit.Schema {
 func buildPrompt(diff string, metadata pluginkit.PRMetadata) string {
 	rendered, fileList := pluginkit.PromptDiff(diff)
 
-	return fmt.Sprintf(`Summarize this PR, and flag the specific lines a reviewer should look at.
+	return fmt.Sprintf(`Explain what this PR is trying to accomplish, then mark its hotspots.
 
-summary: 2-4 bullet points on key changes (one line each), then 1-2 brief
-suggestions if any. Markdown. Be terse. No fluff.
+summary: what the PR is for, in markdown. Lead with one or two sentences on the
+goal — the problem it solves or the behaviour it changes, not a list of the
+files it touches. Then 2-4 bullets on how it gets there: the approach taken and
+any design decision, tradeoff or edge case a reviewer would otherwise have to
+reconstruct from the diff. Infer the goal from the changes themselves; the PR
+title and description are a hint, not the answer. Be terse. No fluff.
 
-annotations: at most %d remarks, each anchored to one line of the diff. Only
-annotate a line that genuinely warrants a reviewer's attention; an empty list
-is fine.
+annotations: at most %d hotspots, each anchored to one line of the diff. A
+hotspot is a line carrying the PR's key implementation or business logic — the
+place where, if this PR is wrong, it is wrong. Think: the core algorithm or
+state transition, a condition or boundary that decides behaviour, a change to
+how data is persisted or invalidated, error and concurrency handling, a
+security or permission check, an assumption that holds only if callers behave.
+Pick the load-bearing lines, and pick fewer than the cap when the PR has fewer;
+an empty list is fine for a PR that is genuinely mechanical.
+
+Do not annotate what a reviewer can already see: renames, moved code, imports,
+formatting, logging, comments, generated or vendored files, test scaffolding,
+or a line whose remark would just restate what the line does. One hotspot per
+distinct piece of logic — do not spread several annotations across one
+function.
+
 - filename: one of the paths listed under Files, copied exactly.
 - line: the number shown beside that line in the diff. Lines marked "-" were
   removed and have no number, so they cannot be annotated.
-- severity: %s, %s or %s.
-- content: one or two sentences.
+- severity: %s where the logic is central and a reviewer should follow it
+  closely, %s where it is subtle or easy to get wrong, %s where it looks
+  incorrect or risky as written.
+- content: one or two sentences saying why this line is load-bearing and what
+  specifically to check about it. Do not describe the change.
 
 Files:
 %s
@@ -65,7 +86,7 @@ Files:
 
 %sDiff:
 %s
-`, maxAnnotations, pluginkit.SeverityInfo, pluginkit.SeverityWarning, pluginkit.SeverityError,
+`, maxHotspots, pluginkit.SeverityInfo, pluginkit.SeverityWarning, pluginkit.SeverityError,
 		fileList, pluginkit.DiffLegend, metadata.Context(), rendered)
 }
 

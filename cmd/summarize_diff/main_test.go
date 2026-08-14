@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crs/cmd/internal/pluginkit"
 	"crs/server"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -38,6 +39,24 @@ func TestBuildPromptListsFilesAndContext(t *testing.T) {
 		"server/plugins.go",
 		"README.md",
 		"+    11 | \tfresh := run(ctx)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+// TestBuildPromptAsksForGoalAndHotspots pins the two things this plugin's
+// prompt is for: a summary of what the PR is trying to do, and annotations
+// limited to the lines carrying its key logic rather than everything changed.
+func TestBuildPromptAsksForGoalAndHotspots(t *testing.T) {
+	prompt := buildPrompt(sampleDiff, pluginkit.PRMetadata{})
+
+	for _, want := range []string{
+		"what this PR is trying to accomplish",
+		"hotspot is a line carrying the PR's key implementation or business logic",
+		"Do not annotate what a reviewer can already see",
+		fmt.Sprintf("at most %d hotspots", maxHotspots),
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)

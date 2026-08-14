@@ -105,11 +105,28 @@ SectionTitle: str
 IncludeDiff: bool
 Teams: list[str]
 DesktopNotifications: bool [optional]
+ForceRunOnDemand: bool [optional, default=false]
 ```
 
 The `GithubUsername` can be set at the top level of the config file. If a workflow does not have a `GithubUsername` set, it will inherit the top-level setting. This is useful for setting a default user for all workflows.
 
 `DesktopNotifications` on a workflow overrides the top-level `DesktopNotifications` setting for that workflow only. Omit it to inherit the global value; set it to `true` or `false` to force notifications on or off for this workflow. This lets you keep notifications globally off but opt in on a specific workflow (e.g. review requests) — or vice versa.
+
+### ForceRunOnDemand
+
+`ForceRunOnDemand = true` pre-computes the [on-demand plugins](plugins.md#on-demand-plugins) for every PR the workflow puts in its section, instead of leaving them deferred until someone asks for them by name. Use it on the sections you always open: the expensive plugins are then already cached by the time you get there.
+
+The setting applies to the whole section, not just this workflow's PRs — if several workflows feed one `SectionTitle`, one of them turning it on covers all of them.
+
+The plugins still run only once per head SHA. A PR sitting in the section costs nothing on the cycles where it hasn't changed; a new PR, or a push to one, runs them again.
+
+```toml
+[[Workflows]]
+WorkflowType = "WaitingOnMeWorkflow"
+Name = "Waiting On Me"
+SectionTitle = "Waiting On Me"
+ForceRunOnDemand = true
+```
 
 ### Workflow Types
 

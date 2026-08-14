@@ -159,9 +159,12 @@ func TestNotifyPRsUpdated(t *testing.T) {
 		var got []PRKey
 		done := make(chan struct{}, 2)
 
-		SetPRUpdatedHook(func(owner, repo string, number int) {
+		SetPRUpdatedHook(func(owner, repo string, number int, opts PRUpdateOptions) {
 			mu.Lock()
 			got = append(got, PRKey{Owner: owner, Repo: repo, Number: number})
+			if opts.ForceOnDemandPlugins {
+				t.Errorf("cache-warm dispatch asked for on-demand plugins; section membership is not known yet")
+			}
 			mu.Unlock()
 			done <- struct{}{}
 		})

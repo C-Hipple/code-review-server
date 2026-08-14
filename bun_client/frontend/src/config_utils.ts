@@ -22,6 +22,8 @@ export interface WorkflowEntry {
     Teams?: string[] | null;
     /** null / undefined means "inherit the global setting". */
     DesktopNotifications?: boolean | null;
+    /** Pre-compute the on-demand plugins for every PR in this section. */
+    ForceRunOnDemand?: boolean;
 }
 
 export interface PluginEntry {

@@ -265,3 +265,51 @@ Command = "echo 2"
 		})
 	}
 }
+func TestParseConfigForceRunOnDemand(t *testing.T) {
+	content := `
+[[Workflows]]
+WorkflowType = "WaitingOnMeWorkflow"
+Name = "waiting"
+SectionTitle = "Waiting On Me"
+ForceRunOnDemand = true
+
+[[Workflows]]
+WorkflowType = "MyReviewRequestsWorkflow"
+Name = "requests"
+SectionTitle = "Review Requested"
+`
+	cfg, err := parseConfig([]byte(content))
+	if err != nil {
+		t.Fatalf("parseConfig() error = %v", err)
+	}
+	if !cfg.RawWorkflows[0].ForceRunOnDemand {
+		t.Error("expected ForceRunOnDemand to be parsed as true")
+	}
+	if cfg.RawWorkflows[1].ForceRunOnDemand {
+		t.Error("expected ForceRunOnDemand to default to false")
+	}
+}
+
+func TestSectionForcesOnDemandPlugins(t *testing.T) {
+	cfg := Config{RawWorkflows: []RawWorkflow{
+		{Name: "waiting", SectionTitle: "Waiting On Me", ForceRunOnDemand: true},
+		// A second workflow feeding the same section without the setting does
+		// not turn it back off: it is a property of the section, and one
+		// workflow asking is enough.
+		{Name: "waiting-extra", SectionTitle: "Waiting On Me"},
+		{Name: "requests", SectionTitle: "Review Requested"},
+	}}
+
+	if !cfg.SectionForcesOnDemandPlugins("Waiting On Me") {
+		t.Error("expected Waiting On Me to force the on-demand plugins")
+	}
+	if cfg.SectionForcesOnDemandPlugins("Review Requested") {
+		t.Error("expected Review Requested to leave the on-demand plugins deferred")
+	}
+	if cfg.SectionForcesOnDemandPlugins("") {
+		t.Error("expected an empty section title to force nothing")
+	}
+	if cfg.SectionForcesOnDemandPlugins("Unknown Section") {
+		t.Error("expected an unconfigured section to force nothing")
+	}
+}

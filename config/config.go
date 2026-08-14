@@ -36,6 +36,14 @@ type RawWorkflow struct {
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
 	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
+	// ForceRunOnDemand pre-computes the deferred (OnlyOnDemand) plugins for
+	// every PR this workflow puts in its section, instead of leaving them
+	// waiting for someone to ask for them by name. Set it on the sections you
+	// always open, where paying for the expensive plugins up front beats
+	// waiting on them at review time. It applies to the whole section: if any
+	// workflow feeding a section title sets it, every PR in that section gets
+	// the deferred plugins run.
+	ForceRunOnDemand bool `toml:"ForceRunOnDemand,omitempty"`
 }
 
 // RepoConfig holds per-repository configuration settings.
@@ -110,6 +118,26 @@ func SetC(newCfg Config) {
 	mu.Lock()
 	defer mu.Unlock()
 	c = newCfg
+}
+
+// SectionForcesOnDemandPlugins reports whether the named section is configured
+// to pre-compute the deferred (OnlyOnDemand) plugins for the PRs it holds.
+//
+// The setting lives on the workflow (ForceRunOnDemand) but is answered per
+// section, because that is the unit a reviewer thinks in: several workflows can
+// feed one section title, and a PR that landed there through one of them is
+// just as much "in my high-priority section" as a PR that landed through
+// another. One workflow asking for it therefore turns it on for the section.
+func (c Config) SectionForcesOnDemandPlugins(sectionTitle string) bool {
+	if sectionTitle == "" {
+		return false
+	}
+	for _, wf := range c.RawWorkflows {
+		if wf.ForceRunOnDemand && wf.SectionTitle == sectionTitle {
+			return true
+		}
+	}
+	return false
 }
 
 // GetReleaseCheckCommand returns the release check command for a given repo (owner/repo format).

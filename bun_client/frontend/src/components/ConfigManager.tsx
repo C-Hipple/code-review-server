@@ -618,6 +618,14 @@ function WorkflowCard({
                         />
                     )}
 
+                    {shows('ForceRunOnDemand') && (
+                        <Checkbox
+                            label="Pre-compute on-demand plugins for this section"
+                            checked={!!workflow.ForceRunOnDemand}
+                            onChange={value => onChange({ ForceRunOnDemand: value })}
+                        />
+                    )}
+
                     <ProblemList problems={problems} />
                 </div>
             )}

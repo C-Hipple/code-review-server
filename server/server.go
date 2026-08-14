@@ -262,8 +262,14 @@ const hookDispatchTTL = time.Minute
 var recentHookDispatches sync.Map // "owner/repo#number@sha" -> time.Time
 
 // shouldDispatchHooks debounces post-update hook dispatches per PR head SHA.
-func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
+// The deferred-plugin dispatch is debounced separately from the ordinary one:
+// a PR in a ForceRunOnDemand section gets both, and collapsing them would let
+// the ordinary dispatch swallow the run the deferred plugins were waiting for.
+func shouldDispatchHooks(owner, repo string, number int, sha string, opts PostUpdateOptions) bool {
 	key := fmt.Sprintf("%s/%s#%d@%s", owner, repo, number, sha)
+	if opts.ForceOnDemandPlugins {
+		key += "+ondemand"
+	}
 	now := time.Now()
 	if v, ok := recentHookDispatches.Load(key); ok {
 		if last, ok := v.(time.Time); ok && now.Sub(last) < hookDispatchTTL {
@@ -289,11 +295,17 @@ func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
 // content" call this; local-comment mutations do not, since they never change
 // the PR's head SHA. The workflow layer reaches it through WarmPRAnalysis.
 func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
+	ensurePostUpdateHooksWith(owner, repo, number, details, PostUpdateOptions{})
+}
+
+// ensurePostUpdateHooksWith is ensurePostUpdateHooks with the dispatch options
+// spelled out. Only the workflow path passes anything but the zero value.
+func ensurePostUpdateHooksWith(owner, repo string, number int, details *PRDetails, opts PostUpdateOptions) {
 	_, sha, err := config.C().DB.GetPullRequest(number, repo)
 	if err != nil {
 		slog.Warn("Error reading cached PR SHA for hook dispatch", "repo", repo, "pr", number, "error", err)
 	}
-	if !shouldDispatchHooks(owner, repo, number, sha) {
+	if !shouldDispatchHooks(owner, repo, number, sha, opts) {
 		return
 	}
 
@@ -313,7 +325,7 @@ func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
 	}
 
 	// Each hook runs in its own goroutine so this returns immediately.
-	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef)
+	RunPostUpdatePRHooks(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, opts)
 }
 
 type GetAdjacentPRArgs struct {

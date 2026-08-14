@@ -22,8 +22,20 @@ import (
 	"github.com/google/go-github/v74/github"
 )
 
+// PRUpdateOptions carries what the workflow layer knows about a PR update that
+// the hook cannot work out for itself.
+type PRUpdateOptions struct {
+	// ForceOnDemandPlugins says the PR sits in a section configured with
+	// ForceRunOnDemand, so the deferred (OnlyOnDemand) plugins should be
+	// computed for it now rather than waiting to be asked for. It is set on the
+	// dispatch that follows the item write, because that is the first moment
+	// the PR's section membership is known.
+	ForceOnDemandPlugins bool
+}
+
 // prUpdatedHook is called once per PR that a cycle newly added or re-fetched
-// after a push, after that PR's aux data has been written to the DB caches.
+// after a push, after that PR's aux data has been written to the DB caches, and
+// again for the PRs a cycle placed in a ForceRunOnDemand section.
 // The server registers server.WarmPRAnalysis here so plugins and the LLM diff
 // analysis are computed off the back of the workflow rather than when a
 // reviewer opens the PR. It is a registered callback rather than a direct call
@@ -32,12 +44,12 @@ import (
 // Nil when nothing is registered — a workflow-only process (`--oneoff` without
 // `--server`) exits as soon as the cycle finishes and would kill any hook work
 // in flight, leaving plugin results stuck at "pending" for that head SHA.
-var prUpdatedHook atomic.Pointer[func(owner, repo string, number int)]
+var prUpdatedHook atomic.Pointer[func(owner, repo string, number int, opts PRUpdateOptions)]
 
 // SetPRUpdatedHook registers the callback invoked for each PR a cycle added or
 // updated. Call it during startup, before the manager runs. A nil fn clears
 // any registered hook.
-func SetPRUpdatedHook(fn func(owner, repo string, number int)) {
+func SetPRUpdatedHook(fn func(owner, repo string, number int, opts PRUpdateOptions)) {
 	if fn == nil {
 		prUpdatedHook.Store(nil)
 		return
@@ -194,6 +206,11 @@ func ListenChanges(channel chan FileChanges, wg *sync.WaitGroup) {
 
 func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	changeCount := 0
+	// PRs whose section pre-computes the deferred plugins. Collected here and
+	// dispatched once the channel drains, so a PR that several workflows write
+	// to the same section is dispatched once rather than once per workflow.
+	forcedOnDemand := []PRKey{}
+	seenForced := map[PRKey]bool{}
 	for deserializedChange := range channel {
 		db := config.C().DB
 
@@ -222,6 +239,15 @@ func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 			if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
 				notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
 			}
+			if config.C().SectionForcesOnDemandPlugins(deserializedChange.FileChange.SectionName) {
+				if owner, repo, number, ok := parsePRIdentifier(deserializedChange.FileChange.Identifier); ok {
+					key := PRKey{Owner: owner, Repo: repo, Number: number}
+					if !seenForced[key] {
+						seenForced[key] = true
+						forcedOnDemand = append(forcedOnDemand, key)
+					}
+				}
+			}
 		case "Delete":
 			// "Delete" now means "this workflow no longer claims this item".
 			// The row stays in place; PruneOrphanedItems removes anything
@@ -242,6 +268,7 @@ func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 		wg.Done()
 	}
 	slog.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+	notifyForcedOnDemandPRs(forcedOnDemand)
 }
 
 // logItemAction records an item write (Addition / Update / Delete) in
@@ -871,7 +898,28 @@ func notifyPRsUpdated(warmed []PRKey) {
 	}
 	slog.Info("Dispatching post-update hooks for updated PRs", "pr_count", len(warmed))
 	for _, key := range warmed {
-		go (*hook)(key.Owner, key.Repo, key.Number)
+		go (*hook)(key.Owner, key.Repo, key.Number, PRUpdateOptions{})
+	}
+}
+
+// notifyForcedOnDemandPRs fires the PR-updated hook for the PRs a batch of
+// changes placed in a section configured with ForceRunOnDemand, asking it to
+// pre-compute the deferred plugins.
+//
+// This is a second dispatch on top of notifyPRsUpdated rather than part of it:
+// the cache warm runs before any workflow has decided what belongs in which
+// section, so a PR's membership — and with it whether its section wants the
+// deferred plugins — is only known once the item writes have been applied. The
+// two dispatches are cheap to overlap because every plugin keeps its per-SHA
+// skip, and the hook drops out early when nothing deferred is outstanding.
+func notifyForcedOnDemandPRs(keys []PRKey) {
+	hook := prUpdatedHook.Load()
+	if hook == nil || len(keys) == 0 {
+		return
+	}
+	slog.Info("Dispatching on-demand plugin pre-computation", "pr_count", len(keys))
+	for _, key := range keys {
+		go (*hook)(key.Owner, key.Repo, key.Number, PRUpdateOptions{ForceOnDemandPlugins: true})
 	}
 }
 

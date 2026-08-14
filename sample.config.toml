@@ -31,6 +31,9 @@ Name = "Team Reviews"
 Repo = "my-org/main-repo"
 Teams = ["my-team", "my-other-team"]
 SectionTitle = "Needs My Team's Review"
+# Pre-compute the OnlyOnDemand plugins for every PR in this section, so the
+# expensive ones are already cached by the time you open the review.
+ForceRunOnDemand = true
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

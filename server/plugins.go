@@ -42,9 +42,10 @@ const (
 	PluginCallRerun PluginCallType = "rerun"
 )
 
-// callTypeFor maps a plugin and the way RunPluginsForce was invoked onto the
-// call type reported to the plugin. Automatic runs never reach deferred
-// plugins, so a forced run of one is always an explicit request for it.
+// callTypeFor maps a plugin and the way the run was invoked onto the call type
+// reported to the plugin. A forced run of a deferred plugin is always an
+// explicit request for it; a section-driven pre-computation (includeOnDemand)
+// is not — nobody asked for it, so it reports itself as the automatic run it is.
 func callTypeFor(plugin config.Plugin, force bool) PluginCallType {
 	if !force {
 		return PluginCallAutomatic
@@ -59,13 +60,32 @@ func callTypeFor(plugin config.Plugin, force bool) PluginCallType {
 // It is intended to run asynchronously.
 // Plugins are only executed if the current SHA differs from the SHA for which they were last run.
 func RunPlugins(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
-	RunPluginsForce(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false, nil)
+	runPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false, nil, false)
+}
+
+// RunPluginsIncludingOnDemand is the automatic run for a PR in a section
+// configured with ForceRunOnDemand: the deferred (OnlyOnDemand) plugins are
+// treated as ordinary ones and computed up front, rather than sitting at
+// "deferred" until a reviewer asks for them.
+//
+// It is still an automatic run in every other respect. In particular each
+// plugin keeps its per-SHA skip, so the repeated calls a workflow cycle makes
+// for an unchanged PR cost a couple of DB reads and nothing more.
+func RunPluginsIncludingOnDemand(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string) {
+	runPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, false, nil, true)
 }
 
 // RunPluginsForce executes plugins with optional force rerun and specific plugin selection.
 // force=true bypasses the SHA check and reruns plugins even if SHA hasn't changed.
 // plugins=nil or empty means run all configured plugins; otherwise run only the specified ones.
 func RunPluginsForce(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool, plugins []string) {
+	runPlugins(owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, force, plugins, false)
+}
+
+// runPlugins is the single implementation behind the three entry points above.
+// includeOnDemand promotes the deferred plugins into this run without making it
+// a forced one.
+func runPlugins(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool, plugins []string, includeOnDemand bool) {
 	var wg sync.WaitGroup
 	pluginMap := make(map[string]bool)
 	if len(plugins) > 0 {
@@ -79,12 +99,10 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 		if len(pluginMap) > 0 && !pluginMap[plugin.Name] {
 			continue
 		}
-		// Skip on-demand plugins unless explicitly requested by name
-		if plugin.OnlyOnDemand && !pluginMap[plugin.Name] {
-			// Record a "deferred" status so clients know this plugin exists but hasn't been requested yet
-			if err := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "deferred", sha); err != nil {
-				slog.Error("Failed to record deferred plugin status", "plugin", plugin.Name, "error", err)
-			}
+		// Skip on-demand plugins unless explicitly requested by name, or unless
+		// this run was asked to cover them.
+		if plugin.OnlyOnDemand && !pluginMap[plugin.Name] && !includeOnDemand {
+			markPluginDeferred(owner, repo, number, plugin.Name, sha)
 			continue
 		}
 		wg.Add(1)
@@ -102,6 +120,60 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 	wg.Wait()
 }
 
+// markPluginDeferred records a "deferred" status so clients know the plugin
+// exists but hasn't been requested yet.
+//
+// It leaves an existing row for this SHA alone: in a ForceRunOnDemand section
+// the same PR is dispatched twice — once as an ordinary warm, once to cover the
+// deferred plugins — and the ordinary warm must not stamp "deferred" over a
+// result the other dispatch already produced or is producing.
+func markPluginDeferred(owner, repo string, number int, pluginName string, sha string) {
+	storedSHA, status, err := config.C().DB.GetPluginResultState(owner, repo, number, pluginName)
+	if err != nil {
+		slog.Error("Failed to read plugin state before recording deferred status", "plugin", pluginName, "error", err)
+	} else if storedSHA == sha && status != "" && status != "deferred" {
+		return
+	}
+	if err := config.C().DB.UpsertPluginResult(owner, repo, number, pluginName, "", "deferred", sha); err != nil {
+		slog.Error("Failed to record deferred plugin status", "plugin", pluginName, "error", err)
+	}
+}
+
+// OnDemandPluginsPending reports whether any deferred (OnlyOnDemand) plugin has
+// yet to run for sha. It reads only the DB, so a caller can use it to decide
+// whether a pre-computation dispatch is worth the PR load behind it — which
+// matters because a ForceRunOnDemand section re-emits an "Update" for every PR
+// it holds on every workflow cycle, and the steady-state answer here is no.
+func OnDemandPluginsPending(owner, repo string, number int, sha string) bool {
+	for _, plugin := range config.C().Plugins {
+		if !plugin.OnlyOnDemand {
+			continue
+		}
+		storedSHA, status, err := config.C().DB.GetPluginResultState(owner, repo, number, plugin.Name)
+		if err != nil {
+			slog.Warn("Failed to read plugin state while checking for pending on-demand work",
+				"plugin", plugin.Name, "repo", repo, "pr", number, "error", err)
+			return true
+		}
+		if pluginNeedsRun(storedSHA, status, sha) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginNeedsRun decides whether a plugin whose last row is (storedSHA, status)
+// still has work to do for sha. A "deferred" row is a placeholder rather than a
+// result, so it never counts as done; an "error" row does, for the same reason
+// a successful one does — the automatic path does not retry a revision it has
+// already attempted.
+func pluginNeedsRun(storedSHA, status, sha string) bool {
+	if storedSHA == "" || storedSHA != sha {
+		return true
+	}
+	return status == "deferred"
+}
+
 // executePlugin runs a single plugin binary and stores its result. callType
 // says why the run was triggered; anything other than PluginCallAutomatic
 // bypasses the per-SHA skip so a requested run always executes.
@@ -109,14 +181,16 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	force := callType != PluginCallAutomatic
 
 	// Check if we need to rerun this plugin
-	storedSHA, err := config.C().DB.GetPluginResultSHA(owner, repo, number, plugin.Name)
+	storedSHA, storedStatus, err := config.C().DB.GetPluginResultState(owner, repo, number, plugin.Name)
 	if err != nil {
 		slog.Error("Failed to get stored SHA for plugin", "plugin", plugin.Name, "error", err)
 		// Continue anyway - we'll run the plugin
 	}
 
-	// Skip execution if SHA hasn't changed (unless force is true)
-	if !force && storedSHA != "" && storedSHA == sha {
+	// Skip execution if the plugin already ran for this SHA (unless force is
+	// true). A "deferred" row carries the current SHA but means the opposite —
+	// the plugin was skipped, not run — so it does not stand in for a result.
+	if !force && !pluginNeedsRun(storedSHA, storedStatus, sha) {
 		slog.Debug("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha)
 		return
 	}

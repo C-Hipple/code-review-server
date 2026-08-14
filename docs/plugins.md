@@ -191,6 +191,20 @@ To avoid unnecessary costs, you can mark a plugin as `OnlyOnDemand = true` in th
 
 This allows cost control while keeping expensive plugins available for on-demand use.
 
+### Pre-computing them for a section
+
+Cost control is the right default for a section you rarely open, but not for the one you live in. A workflow configured with `ForceRunOnDemand = true` (see [Workflow configuration](configuration.md#forcerunondemand)) treats the deferred plugins as ordinary ones for the PRs in its section: whenever a PR is added to the section or updated, they run in the background so their results are cached before you open the review.
+
+```toml
+[[Workflows]]
+WorkflowType = "WaitingOnMeWorkflow"
+Name = "Waiting On Me"
+SectionTitle = "Waiting On Me"
+ForceRunOnDemand = true
+```
+
+These runs are automatic, not explicit: the plugin is invoked with `--call-type automatic`, and it keeps its per-SHA skip, so it runs once per head SHA rather than on every workflow cycle. A plugin left at `"deferred"` for a PR outside such a section behaves exactly as before.
+
 ## Rerunning Plugins
 
 By default, plugins only run once per PR commit (SHA). To force plugins to rerun for a PR, use the `RerunPlugins` RPC method.

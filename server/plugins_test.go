@@ -210,6 +210,183 @@ func TestRunPluginsForce_PassesExplicitCallTypeForDeferredPlugin(t *testing.T) {
 	}
 }
 
+func TestRunPluginsIncludingOnDemand_RunsDeferredPluginsAutomatically(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	normalMarker := filepath.Join(dir, "normal_ran")
+
+	normalScript := filepath.Join(dir, "normal.sh")
+	if err := os.WriteFile(normalScript, []byte("#!/bin/sh\ntouch "+normalMarker), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+	onDemandScript := argRecorderScript(t, dir, "ondemand.sh", argsPath)
+
+	config.SetC(config.Config{
+		DB: db,
+		Plugins: []config.Plugin{
+			{Name: "normal-plugin", Command: normalScript},
+			{Name: "expensive-plugin", Command: onDemandScript, OnlyOnDemand: true},
+		},
+	})
+
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	if _, err := os.Stat(normalMarker); os.IsNotExist(err) {
+		t.Error("expected normal plugin to run, but it did not")
+	}
+	// Nobody asked for this one by name, so it is still an automatic run.
+	if args := recordedArgs(t, argsPath); !strings.Contains(args, "--call-type automatic") {
+		t.Errorf("expected --call-type automatic in plugin args, got %q", args)
+	}
+
+	results, err := db.GetPluginResults("owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("failed to get plugin results: %v", err)
+	}
+	if r, ok := results["expensive-plugin"]; !ok {
+		t.Error("expected a result for expensive-plugin, but none found")
+	} else if r.Status != "success" {
+		t.Errorf("expected status 'success' for expensive-plugin, got %q", r.Status)
+	}
+}
+
+func TestRunPluginsIncludingOnDemand_RunsAfterADeferredMarker(t *testing.T) {
+	// The ordinary warm dispatch stamps "deferred" with the current SHA before
+	// the section-driven one arrives. That marker must not read as "already ran
+	// for this SHA" and suppress the run the section asked for.
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ondemand_ran")
+	script := filepath.Join(dir, "ondemand.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "expensive-plugin", Command: script, OnlyOnDemand: true}},
+	})
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("expected the ordinary run to leave the on-demand plugin deferred")
+	}
+
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha123", "", "", "", "main")
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Error("expected the on-demand plugin to run despite the deferred marker")
+	}
+}
+
+func TestRunPluginsIncludingOnDemand_SkipsUnchangedSHA(t *testing.T) {
+	// The forced dispatch arrives on every workflow cycle, so it has to be
+	// idempotent per revision — otherwise the expensive plugins the setting
+	// exists for would rerun every ten minutes.
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "runs")
+	script := filepath.Join(dir, "ondemand.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho x >> "+countPath), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "expensive-plugin", Command: script, OnlyOnDemand: true}},
+	})
+
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha123", "", "", "", "main")
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	runs, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("plugin never ran: %v", err)
+	}
+	if got := strings.Count(string(runs), "x"); got != 1 {
+		t.Errorf("plugin ran %d times for one SHA, want 1", got)
+	}
+
+	// A new head SHA is new work, though.
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha456", "", "", "", "main")
+	runs, err = os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("failed to read run count: %v", err)
+	}
+	if got := strings.Count(string(runs), "x"); got != 2 {
+		t.Errorf("plugin ran %d times across two SHAs, want 2", got)
+	}
+}
+
+func TestRunPlugins_DeferredMarkerDoesNotClobberAResult(t *testing.T) {
+	// Both dispatches land for a PR in a ForceRunOnDemand section, in whichever
+	// order the goroutines happen to run. The ordinary one must not overwrite a
+	// result the other already produced for the same SHA.
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ondemand.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho computed"), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "expensive-plugin", Command: script, OnlyOnDemand: true}},
+	})
+
+	RunPluginsIncludingOnDemand("owner", "repo", 1, "sha123", "", "", "", "main")
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	results, err := db.GetPluginResults("owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("failed to get plugin results: %v", err)
+	}
+	if r := results["expensive-plugin"]; r.Status != "success" || !strings.Contains(r.Result, "computed") {
+		t.Errorf("the deferred marker overwrote the computed result: %+v", r)
+	}
+}
+
+func TestOnDemandPluginsPending(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{
+		DB: db,
+		Plugins: []config.Plugin{
+			{Name: "normal-plugin", Command: "true"},
+			{Name: "expensive-plugin", Command: "true", OnlyOnDemand: true},
+		},
+	})
+
+	if !OnDemandPluginsPending("owner", "repo", 1, "sha123") {
+		t.Error("expected work to be pending when the plugin has never run")
+	}
+
+	if err := db.UpsertPluginResult("owner", "repo", 1, "expensive-plugin", "", "deferred", "sha123"); err != nil {
+		t.Fatalf("failed to record deferred status: %v", err)
+	}
+	if !OnDemandPluginsPending("owner", "repo", 1, "sha123") {
+		t.Error("a deferred marker is not a result; expected work to still be pending")
+	}
+
+	if err := db.UpsertPluginResult("owner", "repo", 1, "expensive-plugin", "out", "success", "sha123"); err != nil {
+		t.Fatalf("failed to record result: %v", err)
+	}
+	if OnDemandPluginsPending("owner", "repo", 1, "sha123") {
+		t.Error("expected no pending work once the plugin ran for this SHA")
+	}
+	if !OnDemandPluginsPending("owner", "repo", 1, "sha456") {
+		t.Error("expected pending work for a new head SHA")
+	}
+
+	// A config with nothing deferred never has anything to pre-compute.
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "normal-plugin", Command: "true"}},
+	})
+	if OnDemandPluginsPending("owner", "repo", 1, "sha999") {
+		t.Error("expected no pending work when no plugin is on-demand")
+	}
+}
+
 // fillAutomaticPluginSlots takes every automatic-run slot for the duration of
 // the test, simulating a background fan-out already saturating the cap.
 func fillAutomaticPluginSlots(t *testing.T) {

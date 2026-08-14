@@ -566,18 +566,29 @@ func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]Plu
 
 // GetPluginResultSHA retrieves the SHA for which a plugin was last run
 func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName string) (string, error) {
-	var sha string
+	sha, _, err := db.GetPluginResultState(owner, repo, prNumber, pluginName)
+	return sha, err
+}
+
+// GetPluginResultState retrieves the SHA a plugin last ran for along with the
+// status recorded with it. The status matters because not every row means the
+// plugin ran: a deferred (OnlyOnDemand) plugin gets a "deferred" row stamped
+// with the current SHA to tell clients it exists but hasn't been requested, and
+// callers deciding whether work is outstanding must not read that as a result.
+// Missing rows come back as empty strings with a nil error.
+func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName string) (string, string, error) {
+	var sha, status string
 	err := db.conn.QueryRow(
-		"SELECT sha FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+		"SELECT sha, status FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
 		owner, repo, prNumber, pluginName,
-	).Scan(&sha)
+	).Scan(&sha, &status)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return sha, nil
+	return sha, status, nil
 }
 
 // DeletePluginResultsForPR clears plugin results for a PR to force rerun

@@ -15,6 +15,7 @@
 (declare-function crs--render-and-update "crs-render")
 (declare-function crs--review-buffer-name "crs-review")
 (declare-function crs--diff-line-marker "crs-render")
+(declare-function crs--annotations-on-current-line "crs-render")
 
 (defun crs-submit-comment ()
   "Submit the comment in the current buffer."
@@ -292,6 +293,103 @@ If called interactively, attempts to guess parameters from context."
 
 ;; Alias for backwards compatibility
 (defalias 'crs-add-comment 'crs-add-or-edit-comment)
+
+;;; Plugin annotations as local comments
+;;
+;; A plugin annotation is client-side only: it is redrawn from the GetPR reply
+;; on every render and never becomes review feedback.  Promoting one to a local
+;; comment turns it into feedback `crs-submit-review' will post, anchored to the
+;; diff position the annotation is already drawn on.
+
+(defun crs--annotation-comment-body (annotation)
+  "Format ANNOTATION as the body of a local comment."
+  (format "Automated comment by %s\n\n%s"
+          (or (cdr (assq 'plugin annotation)) "plugin")
+          (or (cdr (assq 'content annotation)) "")))
+
+(defun crs--annotation-choice-label (index annotation)
+  "Label ANNOTATION as choice INDEX (0-based) for `completing-read'.
+The number keeps labels distinct when one line carries two annotations
+that open with the same text."
+  (let* ((plugin (or (cdr (assq 'plugin annotation)) "plugin"))
+         (severity (or (cdr (assq 'severity annotation)) ""))
+         (content (or (cdr (assq 'content annotation)) ""))
+         (first-line (car (split-string content "\n"))))
+    (format "%d. [%s%s] %s"
+            (1+ index)
+            plugin
+            (if (string-empty-p severity) "" (concat "/" severity))
+            (if (> (length first-line) 60)
+                (concat (substring first-line 0 57) "...")
+              first-line))))
+
+(defun crs--select-annotation (annotations)
+  "Return the one annotation of ANNOTATIONS to turn into a comment.
+Prompts when the line carries more than one."
+  (if (= (length annotations) 1)
+      (car annotations)
+    (let ((choices nil)
+          (index 0))
+      (dolist (annotation annotations)
+        (push (cons (crs--annotation-choice-label index annotation) annotation) choices)
+        (setq index (1+ index)))
+      (setq choices (nreverse choices))
+      (cdr (assoc (completing-read "Annotation to add as a comment: "
+                                   (mapcar #'car choices) nil t)
+                  choices)))))
+
+(defun crs-add-annotation-as-comment ()
+  "Add the plugin annotation at point as a local comment on the same line.
+Point can be on a collapsed <A: plugin> indicator or anywhere inside an
+expanded annotation block; when the line carries several annotations, this
+prompts for which one to add.  The comment is created directly, without
+opening a comment buffer, with the body
+
+  Automated comment by PLUGIN
+
+  ANNOTATION CONTENT"
+  (interactive)
+  (let ((annotations (crs--annotations-on-current-line)))
+    (unless annotations
+      (user-error "No plugin annotation on this line"))
+    (let* ((ctx (crs--get-comment-context))
+           (owner (nth 0 ctx))
+           (repo (nth 1 ctx))
+           (number (nth 2 ctx))
+           (filename (nth 3 ctx))
+           (position (nth 4 ctx))
+           (file-line (nth 8 ctx)))
+      (unless (and owner repo number filename)
+        (user-error "Could not determine the review context for this line"))
+      ;; Position 0 means the annotation hangs off a hunk header because the
+      ;; line it names is not shown in the diff.  GitHub has no such position,
+      ;; and a comment left there would not render back onto any line.
+      (unless (and (integerp position) (> position 0))
+        (user-error "Annotation is not anchored to a line of the diff"))
+      (let* ((annotation (crs--select-annotation annotations))
+             (plugin (or (cdr (assq 'plugin annotation)) "plugin"))
+             (body (crs--annotation-comment-body annotation))
+             (original-line (line-number-at-pos))
+             (original-context (list filename position file-line)))
+        (crs--send-request
+         "RPCHandler.AddComment"
+         (vector (list (cons 'Owner owner)
+                       (cons 'Repo repo)
+                       (cons 'Number number)
+                       (cons 'Filename filename)
+                       (cons 'Position position)
+                       (cons 'ReplyToID nil)
+                       (cons 'Body body)))
+         (lambda (result)
+           (let ((err (cdr (assq 'error result))))
+             (if err
+                 (message "Error adding comment: %s"
+                          (if (stringp err) err (cdr (assq 'message err))))
+               (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
+                 (when review-buffer
+                   (crs--render-and-update review-buffer result original-line original-context))
+                 (message "Added %s annotation as a local comment on %s:%d"
+                          plugin filename position))))))))))
 
 (defun crs--get-local-comment-at-point ()
   "Get the local comment ID at point, or nil if not on a local comment.

@@ -36,7 +36,7 @@
                 crs-submit-review crs-approve-review crs-comment-review
                 crs-request-changes-review crs-set-review-feedback
                 crs-expand-hunk-before crs-expand-hunk-after
-                crs-toggle-annotations
+                crs-toggle-annotations crs-add-annotation-as-comment
                 crs-sync-pr crs-checkout-current-project
                 crs-get-plugin-output crs-rerun-plugin crs-run-on-demand-plugin
                 crs-get-rate-limit-status))
@@ -55,6 +55,8 @@
                 crs--format-compact-annotation-indicator
                 crs--annotations-on-current-line
                 crs--annotations-minibuffer-summary
+                crs--annotation-comment-body crs--annotation-choice-label
+                crs--select-annotation
                 crs--insert-plugin-output-entry))
     (should (fboundp fn))))
 
@@ -229,6 +231,117 @@ line the diff does not show, and one for a file outside the diff.")
                   '(((plugin . "Sec") (severity . "warning")
                      (content . "bad line\nsecond line"))))
                  "1 annotation: [Sec/warning]: bad line")))
+
+(ert-deftest crs-test-expanded-annotations-are-findable-at-point ()
+  "An expanded block and the line it annotates both carry the annotations."
+  (with-temp-buffer
+    (insert crs-test--annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations t)
+    ;; The annotated diff line itself...
+    (goto-char (point-min))
+    (search-forward "+line two")
+    (should (equal (cdr (assq 'content (car (crs--annotations-on-current-line))))
+                   "this line looks wrong"))
+    ;; ...and the block rendered beneath it.
+    (forward-line 2)
+    (should (string-match-p "Security Check"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (should (equal (cdr (assq 'content (car (crs--annotations-on-current-line))))
+                   "this line looks wrong"))
+    ;; The unanchored block hangs above its hunk header, which is marked too.
+    (goto-char (point-min))
+    (search-forward "@@ -1,3 +1,4 @@")
+    (should (equal (cdr (assq 'content (car (crs--annotations-on-current-line))))
+                   "outside the hunk"))))
+
+;;; --- Annotations promoted to local comments ---
+
+(defconst crs-test--washed-annotation-diff
+  (concat "modified test.py\n"
+          "@@ -1,3 +1,4 @@\n"
+          " line one\n"
+          "+line two\n"
+          " line three\n"
+          " line four\n")
+  "`crs-test--annotation-diff' after `crs--simplify-diff-headers'.
+This is the shape a review buffer holds, and the one the comment-context
+parser reads file names from.")
+
+(ert-deftest crs-test-annotation-comment-body ()
+  "The comment body names the plugin, then carries the annotation content."
+  (should (equal (crs--annotation-comment-body
+                  '((plugin . "Security Check") (content . "this line looks wrong")))
+                 "Automated comment by Security Check\n\nthis line looks wrong"))
+  ;; An annotation carrying no plugin name still yields a well-formed body.
+  (should (equal (crs--annotation-comment-body '((content . "hm")))
+                 "Automated comment by plugin\n\nhm")))
+
+(ert-deftest crs-test-select-annotation ()
+  "A lone annotation is taken directly; several are chosen by numbered label."
+  (let ((only '((plugin . "Sec") (content . "x"))))
+    (should (eq (crs--select-annotation (list only)) only)))
+  (should (equal (crs--annotation-choice-label
+                  0 '((plugin . "Sec") (severity . "warning") (content . "bad\nmore")))
+                 "1. [Sec/warning] bad"))
+  (should (equal (crs--annotation-choice-label 1 '((plugin . "Sec") (content . "bad")))
+                 "2. [Sec] bad"))
+  (let* ((a '((plugin . "A") (content . "first")))
+         (b '((plugin . "B") (content . "second")))
+         (offered nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered choices)
+                 (nth 1 choices))))
+      (should (equal (crs--select-annotation (list a b)) b))
+      (should (equal offered '("1. [A] first" "2. [B] second"))))))
+
+(ert-deftest crs-test-add-annotation-as-comment ()
+  "The annotation at point is sent as a local comment at the same position."
+  (with-temp-buffer
+    (insert crs-test--washed-annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations nil)
+    (goto-char (point-min))
+    (search-forward "+line two")
+    (let ((sent nil))
+      (cl-letf (((symbol-function 'crs--get-current-review-info)
+                 (lambda () (list "C-Hipple" "code-review-server" 83)))
+                ((symbol-function 'crs--send-request)
+                 (lambda (method params &optional _callback)
+                   (setq sent (list method params)))))
+        (crs-add-annotation-as-comment))
+      (should sent)
+      (should (equal (nth 0 sent) "RPCHandler.AddComment"))
+      (let ((args (aref (nth 1 sent) 0)))
+        (should (equal (cdr (assq 'Owner args)) "C-Hipple"))
+        (should (equal (cdr (assq 'Repo args)) "code-review-server"))
+        (should (equal (cdr (assq 'Number args)) 83))
+        (should (equal (cdr (assq 'Filename args)) "test.py"))
+        ;; " line one" is diff position 1, so the annotated "+line two" is 2.
+        (should (equal (cdr (assq 'Position args)) 2))
+        (should-not (cdr (assq 'ReplyToID args)))
+        (should (equal (cdr (assq 'Body args))
+                       "Automated comment by Security Check\n\nthis line looks wrong"))))))
+
+(ert-deftest crs-test-add-annotation-as-comment-needs-an-anchored-annotation ()
+  "Lines with no annotation, and unanchored annotations, send nothing."
+  (with-temp-buffer
+    (insert crs-test--washed-annotation-diff)
+    (crs--insert-annotations-into-buffer crs-test--annotations nil)
+    (cl-letf (((symbol-function 'crs--get-current-review-info)
+               (lambda () (list "C-Hipple" "code-review-server" 83)))
+              ((symbol-function 'crs--send-request)
+               (lambda (&rest _) (ert-fail "should not send a request"))))
+      ;; A plain diff line carries no annotation.
+      (goto-char (point-min))
+      (search-forward "line three")
+      (should-error (crs-add-annotation-as-comment) :type 'user-error)
+      ;; The out-of-hunk annotation sits on a hunk header, which has no diff
+      ;; position for a comment to anchor to.
+      (goto-char (point-min))
+      (search-forward "@@ -1,3 +1,4 @@")
+      (should (crs--annotations-on-current-line))
+      (should-error (crs-add-annotation-as-comment) :type 'user-error))))
 
 (ert-deftest crs-test-insert-plugin-output-entry ()
   "Plugin output entries prefer the parsed body and list annotations sorted."

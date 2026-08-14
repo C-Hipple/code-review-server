@@ -118,6 +118,18 @@ export function indexAnnotations(
     return { byLine, byFile, keys, count };
 }
 
+/**
+ * The body of the local comment an annotation turns into when a reviewer adopts
+ * it from the diff.
+ *
+ * The attribution line is part of the body rather than metadata: local comments
+ * carry nothing but a body through the store and on to GitHub, so this is the
+ * only thing that still says which plugin wrote it once the review is posted.
+ */
+export function annotationCommentBody(annotation: PRAnnotation): string {
+    return `Automated comment by ${annotation.plugin}\n\n${annotation.content.trim()}`;
+}
+
 const severityRank: Record<StatusVariant, number> = {
     danger: 4,
     warning: 3,

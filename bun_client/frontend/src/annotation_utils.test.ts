@@ -1,5 +1,6 @@
 import { expect, test, describe } from 'bun:test';
 import {
+    annotationCommentBody,
     collectPRAnnotations,
     fileAnnotationKey,
     indexAnnotations,
@@ -163,5 +164,26 @@ describe('mostSevereVariant', () => {
     test('falls back to neutral for free-form severities', () => {
         expect(mostSevereVariant([annotation({ severity: 'nitpick' })])).toBe('neutral');
         expect(mostSevereVariant([])).toBe('neutral');
+    });
+});
+
+describe('annotationCommentBody', () => {
+    test('attributes the comment to the plugin above the annotation text', () => {
+        expect(
+            annotationCommentBody(
+                annotation({ plugin: 'security_check', content: 'unchecked err' })
+            )
+        ).toBe('Automated comment by security_check\n\nunchecked err');
+    });
+
+    test('trims the annotation text so the attribution line stays flush with it', () => {
+        expect(annotationCommentBody(annotation({ content: '\n  looks wrong  \n' }))).toBe(
+            'Automated comment by linter\n\nlooks wrong'
+        );
+    });
+
+    test('is stable, so a re-rendered card can tell the annotation was adopted', () => {
+        const a = annotation();
+        expect(annotationCommentBody(a)).toBe(annotationCommentBody({ ...a }));
     });
 });

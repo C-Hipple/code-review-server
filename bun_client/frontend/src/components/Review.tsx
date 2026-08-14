@@ -3,7 +3,7 @@ import { rpcCall, getHunkContext } from '../api';
 import { Button, Toast, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
-import { collectPRAnnotations, indexAnnotations } from '../annotation_utils';
+import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import {
     dockViewer as dockViewerState,
@@ -30,6 +30,7 @@ import {
     slugify,
     type Comment,
     type PluginResult,
+    type PRAnnotation,
     type PRMetadata,
     type PRResponse,
 } from './review/types';
@@ -465,6 +466,50 @@ export default function Review({
         }
     };
 
+    // Adopt a plugin annotation as a local comment on the row it annotates, so
+    // it goes out with the review under the reviewer's name, attributed to the
+    // plugin that raised it.
+    const handleAnnotationToComment = async (
+        annotation: PRAnnotation,
+        file: string,
+        pos: number
+    ) => {
+        setIsAddingComment(true);
+        try {
+            const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [
+                {
+                    Owner: owner,
+                    Repo: repo,
+                    Number: number,
+                    Filename: file,
+                    Position: pos,
+                    Body: annotationCommentBody(annotation),
+                },
+            ]);
+            // Only the comments changed, so the diff is left as it is — this is a
+            // one-click action, and reloading the diff would throw away any hunks
+            // the reviewer has expanded around the annotation they just adopted.
+            const prevIds = new Set(comments.map(c => c.id));
+            const added = (res.comments || []).filter(c => !prevIds.has(c.id));
+            if (added.length > 0) {
+                setVisibleThreadIds(prev => {
+                    const next = new Set(prev);
+                    added.forEach(c => next.add(c.id));
+                    return next;
+                });
+            }
+            setComments(res.comments || []);
+            setOutdatedComments(res.outdated_comments || []);
+            setReviews(res.reviews || []);
+            showToast(`Added ${annotation.plugin} annotation as a local comment`, 'success');
+        } catch (e) {
+            console.error(e);
+            showToast('Error adding annotation as a comment', 'danger');
+        } finally {
+            setIsAddingComment(false);
+        }
+    };
+
     const handleDeleteComment = async (id: number) => {
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.DeleteComment', [
@@ -790,6 +835,7 @@ export default function Review({
             lspData={lsp.lspData}
             onToggleThreadsVisible={toggleThreadsVisible}
             onToggleAnnotations={toggleAnnotations}
+            onAnnotationToComment={handleAnnotationToComment}
             onCommentClick={handleCommentClick}
             onCodeClick={handleCodeClick}
             onThreadClick={handleThreadClick}

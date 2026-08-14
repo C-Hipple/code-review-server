@@ -50,6 +50,8 @@ export interface DiffViewProps {
     lspData: LspData | null;
     onToggleThreadsVisible: (rootIds: string[]) => void;
     onToggleAnnotations: (key: string) => void;
+    // Adopt a plugin annotation as a local comment on the row it is anchored to.
+    onAnnotationToComment: (annotation: PRAnnotation, file: string, pos: number) => void;
     onCommentClick: (idx: number, file: string, pos: number) => void;
     onCodeClick: (
         idx: number,
@@ -99,6 +101,7 @@ export default function DiffView({
     lspData,
     onToggleThreadsVisible,
     onToggleAnnotations,
+    onAnnotationToComment,
     onCommentClick,
     onCodeClick,
     onThreadClick,
@@ -338,11 +341,22 @@ export default function DiffView({
     const annotationCardForLine = (item: ParsedLine, stickyOnMobile: boolean) => {
         const anchored = annotationsForLine(item);
         if (!anchored || !visibleAnnotationKeys.has(anchored.key)) return null;
+        // A card only ever renders for a row with a file (see annotationsForLine);
+        // the local binding is what tells the closure below so.
+        const file = item.file;
+        const pos = item.pos;
         return (
             <AnnotationCard
                 annotations={anchored.list}
                 showLines={item.lineType === 'file-header'}
                 stickyOnMobile={stickyOnMobile}
+                existingCommentBodies={new Set(commentsForLine(item).map(c => c.body))}
+                isAddingComment={isAddingComment}
+                onAddAsComment={
+                    file && pos !== null
+                        ? annotation => onAnnotationToComment(annotation, file, pos)
+                        : undefined
+                }
                 onCollapse={() => onToggleAnnotations(anchored.key)}
             />
         );

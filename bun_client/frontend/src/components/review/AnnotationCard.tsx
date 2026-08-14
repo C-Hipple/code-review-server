@@ -1,4 +1,5 @@
 import { getStatusTone } from '../../design';
+import { annotationCommentBody } from '../../annotation_utils';
 import { annotationSeverityVariant, type PRAnnotation } from '../../plugin_utils';
 
 interface AnnotationCardProps {
@@ -11,6 +12,19 @@ interface AnnotationCardProps {
     showLines?: boolean;
     /** Pin the card to the visible left edge while the code scrolls on mobile. */
     stickyOnMobile?: boolean;
+    /**
+     * Bodies of the comments already sitting on this row. An annotation whose
+     * comment body is in here has been adopted already, so it offers no second
+     * button — clicking twice would post the same text twice.
+     */
+    existingCommentBodies?: ReadonlySet<string>;
+    /** A comment write is in flight; hold the adopt buttons until it lands. */
+    isAddingComment?: boolean;
+    /**
+     * Adopt an annotation as a local comment on this row. Omitted when the row
+     * has no comment position to attach one to.
+     */
+    onAddAsComment?: (annotation: PRAnnotation) => void;
     onCollapse: () => void;
 }
 
@@ -20,6 +34,9 @@ export default function AnnotationCard({
     annotations,
     showLines,
     stickyOnMobile,
+    existingCommentBodies,
+    isAddingComment,
+    onAddAsComment,
     onCollapse,
 }: AnnotationCardProps) {
     if (annotations.length === 0) return null;
@@ -81,6 +98,8 @@ export default function AnnotationCard({
             </div>
             {annotations.map((annotation, i) => {
                 const tone = getStatusTone(annotationSeverityVariant(annotation.severity));
+                const adopted =
+                    existingCommentBodies?.has(annotationCommentBody(annotation)) ?? false;
                 return (
                     <div
                         key={`${annotation.plugin}:${annotation.line}:${i}`}
@@ -128,6 +147,43 @@ export default function AnnotationCard({
                                 >
                                     line {annotation.line}
                                 </span>
+                            )}
+                            {adopted ? (
+                                <span
+                                    style={{
+                                        marginLeft: 'auto',
+                                        color: 'var(--text-tertiary)',
+                                        flexShrink: 0,
+                                    }}
+                                >
+                                    ✓ added as comment
+                                </span>
+                            ) : (
+                                onAddAsComment && (
+                                    <button
+                                        onClick={e => {
+                                            e.stopPropagation();
+                                            onAddAsComment(annotation);
+                                        }}
+                                        disabled={isAddingComment}
+                                        style={{
+                                            marginLeft: 'auto',
+                                            flexShrink: 0,
+                                            background: 'transparent',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '4px',
+                                            color: 'var(--text-secondary)',
+                                            padding: '2px 8px',
+                                            fontSize: '11px',
+                                            fontFamily: 'inherit',
+                                            cursor: isAddingComment ? 'default' : 'pointer',
+                                            opacity: isAddingComment ? 0.5 : 1,
+                                        }}
+                                        title={`Add this ${annotation.plugin} annotation as a local comment here`}
+                                    >
+                                        💬 Add as comment
+                                    </button>
+                                )
                             )}
                         </div>
                         <div

@@ -55,7 +55,7 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 
 ## Included Plugins
 
-- **Summarize Diff**: Uses Gemini 2.5 Flash to provide a terse bulleted summary of the changes in a PR. Emits the [response contract](#plugin-response-contract): a markdown body holding the summary, plus up to six annotations anchored to the lines worth a reviewer's attention.
+- **Summarize Diff**: Uses Gemini 2.5 Flash to explain what a PR is trying to accomplish and to mark its hotspots. Emits the [response contract](#plugin-response-contract): a markdown body stating the PR's goal and the approach it takes, plus up to four annotations on the lines carrying the key implementation or business logic — the ones that deserve the closest review. Mechanical changes (renames, moved code, formatting) are deliberately left unannotated.
 - **Security Check**: Uses Gemini 2.5 Flash to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
 - **Style Guidelines**: Uses Gemini 2.5 Flash to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.

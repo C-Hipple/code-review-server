@@ -28,6 +28,30 @@ function item(overrides: Partial<ReviewItem> = {}): ReviewItem {
     };
 }
 
+describe('itemMatchesQuery with required teams', () => {
+    const withTeams = item({
+        required_teams: [
+            {
+                name: 'Platform Eng',
+                slug: 'platform-eng',
+                org: 'acme',
+                status: 'pending',
+                mine: true,
+                personal: false,
+            },
+        ],
+    });
+
+    test('matches a required team by name or slug', () => {
+        expect(itemMatchesQuery(withTeams, 'platform eng')).toBe(true);
+        expect(itemMatchesQuery(withTeams, 'platform-eng')).toBe(true);
+    });
+
+    test('still rejects what no field carries', () => {
+        expect(itemMatchesQuery(withTeams, 'security')).toBe(false);
+    });
+});
+
 describe('parseTags', () => {
     test('splits and normalizes the comma-joined tag string', () => {
         expect(parseTags('code-review-server, Merged ')).toEqual(['code-review-server', 'merged']);

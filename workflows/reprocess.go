@@ -212,12 +212,14 @@ func applyReprocessChanges(changes []FileChanges) {
 }
 
 // reprocessAuxRequirements is the union of what the targeted workflows' filters
-// need, plus comments and reviews unconditionally. Reviews are the data the
-// reprocess exists to act on — the identity filters read them out of the aux
-// store and the section display summarizes them — and comments come along
-// because Details() would otherwise fetch them one PR at a time anyway.
+// need, plus comments, reviews and team standing unconditionally. Reviews are
+// the data the reprocess exists to act on — the identity filters read them out
+// of the aux store and the section display summarizes them — team standing is
+// derived from them, so the review that triggered this reprocess is reflected
+// in the row's team chips, and comments come along because Details() would
+// otherwise fetch them one PR at a time anyway.
 func reprocessAuxRequirements(wfs []Workflow, owner, repo string) AuxDataRequirement {
-	req := AuxDataRequirement{Comments: true, Reviews: true}
+	req := AuxDataRequirement{Comments: true, Reviews: true, Teams: true}
 	for _, wf := range wfs {
 		for _, prReq := range wf.GetPRRequirements() {
 			if !strings.EqualFold(prReq.Owner, owner) || !strings.EqualFold(prReq.Repo, repo) {
@@ -244,6 +246,7 @@ func mergeAuxRequirements(a, b AuxDataRequirement) AuxDataRequirement {
 		Diff:     a.Diff || b.Diff,
 		Reviews:  a.Reviews || b.Reviews,
 		Commits:  a.Commits || b.Commits,
+		Teams:    a.Teams || b.Teams,
 	}
 }
 

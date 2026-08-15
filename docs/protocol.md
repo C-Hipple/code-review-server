@@ -73,6 +73,27 @@ Fetches all review sections from the local database, rendered as org-mode format
 | `release_status`   | string | Release status from the configured release check command, if any  |
 | `review_ease`      | string | LLM rating of how easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the config and a rating has been computed |
 | `created_at`       | Time   | PR creation timestamp                                             |
+| `required_teams`   | []TeamReviewStatus | Teams asked to review the PR, with each one's standing. Empty until a workflow cycle has resolved them |
+
+#### TeamReviewStatus Object
+
+The teams a PR needs a review from, resolved by the workflow layer and served
+from its cache — `GetAllReviews` never calls GitHub for it. The list is a
+high-water mark: GitHub drops a team from a PR's requested teams as soon as one
+of its members reviews, so a team that has already approved stays listed here
+with `approved` rather than disappearing.
+
+| Field      | Type   | Description                                                            |
+|------------|--------|------------------------------------------------------------------------|
+| `name`     | string | Team display name, or the user's own login when `personal` is true      |
+| `slug`     | string | Team slug (empty for a personal request)                                |
+| `org`      | string | Organization that owns the team (empty for a personal request)          |
+| `status`   | string | `pending` (nobody has reviewed), `approved`, `changes_requested`, or `reviewed` — the last meaning GitHub cleared the request but the reviewer could not be tied to the team, typically because the token cannot read the org's team membership |
+| `mine`     | bool   | The current user is on this team; always true for a personal request    |
+| `personal` | bool   | GitHub asked the current user directly rather than through a team       |
+
+Entries are ordered with the personal request first, then the user's own teams,
+then the rest alphabetically.
 
 ---
 

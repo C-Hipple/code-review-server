@@ -39,6 +39,10 @@ type AuxDataRequirement struct {
 	// ReviewThreads is the GraphQL review-thread resolution state. No workflow
 	// filter needs it, but GetPRDetails does, so the cache warm asks for it.
 	ReviewThreads bool
+	// Teams resolves which teams are required to review the PR and where each
+	// one stands, for the chips on the review list's rows. It is derived from
+	// the PR's reviews, so asking for it implies Reviews.
+	Teams bool
 }
 
 // PRAuxData holds pre-fetched auxiliary data for a PR
@@ -51,8 +55,12 @@ type PRAuxData struct {
 	DiffLines         []string
 	Reviews           []*github.PullRequestReview // PR reviews (for approved_by / changes_requested_by / commented_by)
 	ReviewThreads     []git_tools.ReviewThread    // Review-thread resolution state, for the DB cache
-	HeadSHA           string                      // SHA of the PR head for DB storage
-	BaseSHA           string                      // SHA of the PR base for DB storage
+	// TeamReviews is the required-team standing shown on the review list's
+	// rows. Non-nil (possibly empty) once resolved; nil means "not resolved
+	// this pass", which leaves any cached row alone.
+	TeamReviews []git_tools.TeamReviewStatus
+	HeadSHA     string // SHA of the PR head for DB storage
+	BaseSHA     string // SHA of the PR base for DB storage
 }
 
 type Workflow interface {

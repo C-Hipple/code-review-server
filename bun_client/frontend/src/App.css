@@ -420,6 +420,42 @@ details[open] > summary.crs-sidebar-label::after {
     font-variant-numeric: tabular-nums;
 }
 
+/* Required teams. The chip's color carries the review's status (green
+   approved, red changes requested, amber still waiting on one of your teams,
+   grey waiting on somebody else's); the weight and the italic carry the
+   relationship, so the requests that are yours read first at a glance. */
+.crs-row-teams {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+}
+
+.crs-row-team {
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 16px;
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.crs-row-team--mine,
+.crs-row-team--personal {
+    font-weight: 600;
+}
+
+.crs-row-team--personal {
+    font-style: italic;
+}
+
+.crs-row-team--theirs {
+    opacity: 0.75;
+}
+
 /* Row actions stay out of the way until the row is hovered or tabbed into.
    `pointer-events: none` while hidden so an invisible button can't swallow a
    click meant for the row; keyboard focus still reveals them. */

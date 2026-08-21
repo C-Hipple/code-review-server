@@ -586,20 +586,26 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 
 	// 5. Re-run the PR through the workflows that target its repo so the
-	// dashboard reflects the review immediately instead of at the next cycle.
-	// Every targeting workflow is consulted, not just the ones holding the PR:
-	// a review can move a PR into a section ("waiting on author") as easily as
-	// out of one ("needs review"). Failures are logged rather than returned —
-	// the review itself already succeeded, and the next cycle re-syncs anyway.
-	if err := workflows.ReprocessPR(args.Owner, args.Repo, args.Number); err != nil {
-		slog.Error("Error reprocessing PR through workflows after review",
-			"owner", args.Owner, "repo", args.Repo, "pr", args.Number, "error", err)
-	}
+	// dashboard reflects the review well before the next cycle, up to ten
+	// minutes away. Every targeting workflow is consulted, not just the ones
+	// holding the PR: a review can move a PR into a section ("waiting on
+	// author") as easily as out of one ("needs review").
+	//
+	// Dispatched, not awaited. It is a second GitHub fan-out over the same PR,
+	// and the reply below is built from a fresh fetch of its own rather than
+	// from anything the reprocess writes, so waiting for it only adds a round
+	// trip to the submit the reviewer is sitting in front of. The sections it
+	// rewrites are read by the dashboard, which refetches when it is opened.
+	workflows.ReprocessPRAsync(args.Owner, args.Repo, args.Number)
 
 	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
+	// Kept from the sync the client used to run after submitting: the hooks
+	// dispatch in goroutines and are debounced per head SHA, so on the usual
+	// path — a review that changes no commits — this costs nothing.
+	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }

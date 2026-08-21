@@ -555,7 +555,11 @@ export default function Review({
     const handleSubmitReview = async () => {
         setIsSubmittingReview(true);
         try {
-            await rpcCall<PRResponse>('RPCHandler.SubmitReview', [
+            // The reply is the post-submission PR, fetched fresh from GitHub
+            // by the server. Applying it directly is the refresh — calling
+            // handleSync() here would throw this payload away and pay for the
+            // identical forced refetch a second time.
+            const res = await rpcCall<PRResponse>('RPCHandler.SubmitReview', [
                 {
                     Owner: owner,
                     Repo: repo,
@@ -566,8 +570,8 @@ export default function Review({
             ]);
             setSubmitting(false);
             setReviewBody('');
-            // Refresh everything after submission
-            await handleSync();
+            applyPRResponse(res);
+            loadPluginOutputs();
         } catch (e) {
             console.error(e);
             alert('Error submitting review');

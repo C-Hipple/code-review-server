@@ -329,3 +329,38 @@ func (w ProjectListWorkflow) MatchesPR(pr *github.PullRequest, ownedByWorkflow b
 	}
 	return len(git_tools.ApplyPRFilters([]*github.PullRequest{pr}, w.Filters)) > 0
 }
+
+// reprocessInFlight tracks the PRs a background reprocess is currently running
+// for, keyed "owner/repo#number".
+var reprocessInFlight sync.Map
+
+// ReprocessPRAsync runs ReprocessPR in the background and returns immediately.
+//
+// The work is a GitHub fan-out — the PR itself plus its comments, reviews,
+// commits, CI status and review threads — and nothing the caller returns to the
+// client reads its result: an RPC that reprocesses serves its own response from
+// its own fresh fetch, and the dashboard re-reads the sections the next time it
+// is loaded. Running it inline only makes the caller wait out a second round
+// trip to GitHub before answering.
+//
+// A reprocess already in flight for the same PR wins: a second one started
+// behind it would fetch the same post-action state the first is already
+// fetching, so dropping it costs nothing.
+//
+// Errors are logged rather than returned — the caller has already finished by
+// the time they happen, and the next workflow cycle re-syncs the PR anyway.
+func ReprocessPRAsync(owner, repo string, number int) {
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	if _, loaded := reprocessInFlight.LoadOrStore(key, struct{}{}); loaded {
+		slog.Debug("Reprocess already in flight for this PR; skipping duplicate",
+			"owner", owner, "repo", repo, "pr", number)
+		return
+	}
+	go func() {
+		defer reprocessInFlight.Delete(key)
+		if err := ReprocessPR(owner, repo, number); err != nil {
+			slog.Error("Error reprocessing PR through workflows",
+				"owner", owner, "repo", repo, "pr", number, "error", err)
+		}
+	}()
+}

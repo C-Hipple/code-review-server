@@ -1008,8 +1008,7 @@ func fetchAuxDataForPR(client *github.Client,
 			combined := make([]*github.PullRequestComment, len(prComments))
 			copy(combined, prComments)
 			apiCalls.IssueComments.Add(1)
-			issueComments, _, err := client.Issues.ListComments(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			issueComments, err := git_tools.ListAllIssueComments(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err == nil {
 				for _, ic := range issueComments {
 					combined = append(combined, convertIssueToPRComment(ic))
@@ -1062,8 +1061,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Reviews.Add(1)
-			reviews, _, err := client.PullRequests.ListReviews(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			reviews, err := git_tools.ListAllPRReviews(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				// Nothing gets written to PRReviews when this fails, so the next
 				// time the UI opens this PR it logs a "reviews" cache miss.
@@ -1100,8 +1098,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Commits.Add(1)
-			commits, _, err := client.PullRequests.ListCommits(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			commits, err := git_tools.ListAllPRCommits(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
 				return

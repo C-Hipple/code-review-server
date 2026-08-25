@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-
-	"github.com/google/go-github/v74/github"
 )
 
 func main() {
@@ -24,9 +22,8 @@ func main() {
 
 	client := git_tools.GetGithubClient()
 	ctx := context.Background()
-	opts := &github.PullRequestListCommentsOptions{}
 
-	comments, _, err := client.PullRequests.ListComments(ctx, owner, repo, number, opts)
+	comments, err := git_tools.ListAllPRComments(ctx, client, owner, repo, number)
 	if err != nil {
 		fmt.Printf("Error processing PR: %v\n", err)
 		os.Exit(1)

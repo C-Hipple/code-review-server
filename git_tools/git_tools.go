@@ -121,8 +121,7 @@ func GetPRDiff(client *github.Client, owner string, repo string, pr_number int) 
 }
 
 func GetPRComments(client *github.Client, owner string, repo string, number int) ([]*github.PullRequestComment, error) {
-	opts := github.PullRequestListCommentsOptions{}
-	comments, _, err := client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+	comments, err := ListAllPRComments(context.Background(), client, owner, repo, number)
 	if err != nil {
 		// TODO: wump
 		// unwrap in production
@@ -635,16 +634,59 @@ func SubmitReply(client *github.Client, owner string, repo string, number int, b
 	return err
 }
 
+// GetCombinedStatus returns every commit status on a ref. The response is a
+// struct wrapping a paginated Statuses list, so a repo with more contexts than
+// one page would otherwise report CI as incomplete. Only Statuses accumulates;
+// the summary fields come from the first page.
 func GetCombinedStatus(client *github.Client, owner, repo, ref string) (*github.CombinedStatus, error) {
 	ctx := context.Background()
-	status, _, err := client.Repositories.GetCombinedStatus(ctx, owner, repo, ref, nil)
-	return status, err
+	var combined *github.CombinedStatus
+	opts := &github.ListOptions{PerPage: githubPageSize, Page: 1}
+	for i := 0; i < githubMaxPages; i++ {
+		status, resp, err := client.Repositories.GetCombinedStatus(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return combined, err
+		}
+		if combined == nil {
+			combined = status
+		} else if status != nil {
+			combined.Statuses = append(combined.Statuses, status.Statuses...)
+		}
+		if resp == nil || resp.NextPage == 0 {
+			return combined, nil
+		}
+		opts.Page = resp.NextPage
+	}
+	slog.Warn("Paginated fetch hit the page cap; results are truncated",
+		"endpoint", "commits/status", "max_pages", githubMaxPages, "ref", ref)
+	return combined, nil
 }
 
+// GetCheckRuns returns every check run on a ref, for the same reason as
+// GetCombinedStatus: a busy repo has more than one page of checks, and a
+// truncated list silently misreports the PR's CI state.
 func GetCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListCheckRunsResults, error) {
 	ctx := context.Background()
-	checkRuns, _, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, nil)
-	return checkRuns, err
+	var all *github.ListCheckRunsResults
+	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: githubPageSize, Page: 1}}
+	for i := 0; i < githubMaxPages; i++ {
+		checkRuns, resp, err := client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return all, err
+		}
+		if all == nil {
+			all = checkRuns
+		} else if checkRuns != nil {
+			all.CheckRuns = append(all.CheckRuns, checkRuns.CheckRuns...)
+		}
+		if resp == nil || resp.NextPage == 0 {
+			return all, nil
+		}
+		opts.Page = resp.NextPage
+	}
+	slog.Warn("Paginated fetch hit the page cap; results are truncated",
+		"endpoint", "commits/check-runs", "max_pages", githubMaxPages, "ref", ref)
+	return all, nil
 }
 
 func CreateWorktree(repoDir, branch, worktreePath string) error {
@@ -1031,13 +1073,13 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	return state
 }
 
-// interactionPageSize / interactionMaxPages bound the paginated fetches behind
-// GetInteractionState. GitHub caps a PR's commit list at 250 entries, and a PR
-// with more than 500 comments is far past the point where any of this matters,
-// so five pages is plenty while keeping the worst case at five calls per list.
+// githubPageSize / githubMaxPages bound every paginated fetch in this package.
+// GitHub caps a PR's commit list at 250 entries, and a PR with more than 500
+// comments is far past the point where any of this matters, so five pages is
+// plenty while keeping the worst case at five calls per list.
 const (
-	interactionPageSize = 100
-	interactionMaxPages = 5
+	githubPageSize = 100
+	githubMaxPages = 5
 
 	// interactionStateConcurrency bounds how many candidate PRs have their
 	// interaction state fetched at once. Each GetInteractionState call fans
@@ -1047,24 +1089,92 @@ const (
 	interactionStateConcurrency = 8
 )
 
-// listAllPages walks the paginated endpoint fetch until it runs out of pages
-// (or hits interactionMaxPages), returning everything it collected. On error it
-// returns the pages gathered so far alongside the error, so callers can still
-// work with a partial history rather than falling back to nothing.
-func listAllPages[T any](fetch func(opts *github.ListOptions) ([]T, *github.Response, error)) ([]T, error) {
+// ListAllPages walks the paginated endpoint fetch until it runs out of pages (or
+// hits githubMaxPages), returning everything it collected. On error it returns
+// the pages gathered so far alongside the error, so callers can still work with
+// a partial history rather than falling back to nothing.
+//
+// Every GitHub list endpoint is paginated, defaults to 30 items per page, and
+// returns oldest-first. A caller that passes nil options therefore gets the
+// *start* of a PR's history and silently loses the newest entries — the newest
+// review, the latest push — which is the opposite of what any caller wants.
+// Route every list call through here rather than calling the client directly.
+//
+// label names the endpoint for the page-cap warning; truncating at githubMaxPages
+// is the same silent-data-loss failure this helper exists to prevent, so it is
+// logged rather than swallowed.
+func ListAllPages[T any](label string, fetch func(opts *github.ListOptions) ([]T, *github.Response, error)) ([]T, error) {
 	var all []T
-	opts := &github.ListOptions{PerPage: interactionPageSize, Page: 1}
-	for i := 0; i < interactionMaxPages; i++ {
+	opts := &github.ListOptions{PerPage: githubPageSize, Page: 1}
+	for i := 0; i < githubMaxPages; i++ {
 		page, resp, err := fetch(opts)
 		if err != nil {
 			return all, err
 		}
 		all = append(all, page...)
 		if resp == nil || resp.NextPage == 0 {
-			break
+			return all, nil
 		}
 		opts.Page = resp.NextPage
 	}
+	slog.Warn("Paginated fetch hit the page cap; results are truncated",
+		"endpoint", label, "max_pages", githubMaxPages, "per_page", githubPageSize, "collected", len(all))
+	return all, nil
+}
+
+// ListAllPRReviews returns every review on a PR, not just the first page.
+func ListAllPRReviews(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.PullRequestReview, error) {
+	return ListAllPages("pulls/reviews", func(opts *github.ListOptions) ([]*github.PullRequestReview, *github.Response, error) {
+		return client.PullRequests.ListReviews(ctx, owner, repo, number, opts)
+	})
+}
+
+// ListAllPRComments returns every review comment (comment on code) on a PR.
+func ListAllPRComments(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.PullRequestComment, error) {
+	return ListAllPages("pulls/comments", func(opts *github.ListOptions) ([]*github.PullRequestComment, *github.Response, error) {
+		return client.PullRequests.ListComments(ctx, owner, repo, number,
+			&github.PullRequestListCommentsOptions{ListOptions: *opts})
+	})
+}
+
+// ListAllIssueComments returns every conversation comment on a PR.
+func ListAllIssueComments(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.IssueComment, error) {
+	return ListAllPages("issues/comments", func(opts *github.ListOptions) ([]*github.IssueComment, *github.Response, error) {
+		return client.Issues.ListComments(ctx, owner, repo, number,
+			&github.IssueListCommentsOptions{ListOptions: *opts})
+	})
+}
+
+// ListAllPRCommits returns every commit on a PR, up to GitHub's own 250 cap.
+func ListAllPRCommits(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.RepositoryCommit, error) {
+	return ListAllPages("pulls/commits", func(opts *github.ListOptions) ([]*github.RepositoryCommit, *github.Response, error) {
+		return client.PullRequests.ListCommits(ctx, owner, repo, number, opts)
+	})
+}
+
+// ListAllRequestedReviewers returns every pending reviewer on a PR. The endpoint
+// returns a struct holding two slices rather than a single list, so it needs its
+// own accumulation loop instead of ListAllPages.
+func ListAllRequestedReviewers(ctx context.Context, client *github.Client, owner, repo string, number int) (*github.Reviewers, error) {
+	all := &github.Reviewers{}
+	opts := &github.ListOptions{PerPage: githubPageSize, Page: 1}
+	for i := 0; i < githubMaxPages; i++ {
+		page, resp, err := client.PullRequests.ListReviewers(ctx, owner, repo, number, opts)
+		if err != nil {
+			return all, err
+		}
+		if page != nil {
+			all.Users = append(all.Users, page.Users...)
+			all.Teams = append(all.Teams, page.Teams...)
+		}
+		if resp == nil || resp.NextPage == 0 {
+			return all, nil
+		}
+		opts.Page = resp.NextPage
+	}
+	slog.Warn("Paginated fetch hit the page cap; results are truncated",
+		"endpoint", "pulls/requested_reviewers", "max_pages", githubMaxPages,
+		"users", len(all.Users), "teams", len(all.Teams))
 	return all, nil
 }
 
@@ -1115,15 +1225,13 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	resultChan := make(chan result, 4)
 
-	// Every list below is paginated. GitHub's default page size is 30, and all of
-	// these endpoints return oldest-first, so a single unpaginated call on an
-	// active PR hands back only the *start* of its history: my latest review, the
-	// reply that is waiting on me, and the newest commit all fall off the end.
-	// That silently skews every timestamp this state is built from.
+	// Every list below is paginated; see ListAllPages for why calling the client
+	// directly loses the newest entries. These fetches share the timeout ctx above
+	// rather than using the ListAll* helpers, which fetch on context.Background().
 
 	// Fetch Reviews
 	go func() {
-		reviews, err := listAllPages(func(opts *github.ListOptions) ([]*github.PullRequestReview, *github.Response, error) {
+		reviews, err := ListAllPages("pulls/reviews", func(opts *github.ListOptions) ([]*github.PullRequestReview, *github.Response, error) {
 			return client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, opts)
 		})
 		if err != nil {
@@ -1134,7 +1242,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Review Comments
 	go func() {
-		reviewComments, err := listAllPages(func(opts *github.ListOptions) ([]*github.PullRequestComment, *github.Response, error) {
+		reviewComments, err := ListAllPages("pulls/comments", func(opts *github.ListOptions) ([]*github.PullRequestComment, *github.Response, error) {
 			return client.PullRequests.ListComments(ctx, owner, repo, *pr.Number,
 				&github.PullRequestListCommentsOptions{ListOptions: *opts})
 		})
@@ -1146,7 +1254,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Issue Comments
 	go func() {
-		issueComments, err := listAllPages(func(opts *github.ListOptions) ([]*github.IssueComment, *github.Response, error) {
+		issueComments, err := ListAllPages("issues/comments", func(opts *github.ListOptions) ([]*github.IssueComment, *github.Response, error) {
 			return client.Issues.ListComments(ctx, owner, repo, *pr.Number,
 				&github.IssueListCommentsOptions{ListOptions: *opts})
 		})
@@ -1158,7 +1266,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Commits
 	go func() {
-		commits, err := listAllPages(func(opts *github.ListOptions) ([]*github.RepositoryCommit, *github.Response, error) {
+		commits, err := ListAllPages("pulls/commits", func(opts *github.ListOptions) ([]*github.RepositoryCommit, *github.Response, error) {
 			return client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, opts)
 		})
 		if err != nil {

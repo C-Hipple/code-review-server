@@ -85,7 +85,7 @@ func GetMyTeamRefs() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	teams, err := listAllPages(func(opts *github.ListOptions) ([]*github.Team, *github.Response, error) {
+	teams, err := ListAllPages("user/teams", func(opts *github.ListOptions) ([]*github.Team, *github.Response, error) {
 		return GetGithubClient().Teams.ListUserTeams(ctx, opts)
 	})
 	if err != nil {

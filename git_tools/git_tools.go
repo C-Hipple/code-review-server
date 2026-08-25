@@ -791,7 +791,14 @@ func GetCIStatus(owner string, repo string, branch string) CIStatusInfo {
 		return val.(CIStatusInfo)
 	}
 
-	client := GetGithubClient()
+	info := ciStatusWithClient(GetGithubClient(), owner, repo, branch)
+	GlobalCache.Set(cacheKey, info, 5*time.Minute)
+	return info
+}
+
+// ciStatusWithClient holds the fetch itself, split out from the cache lookup so
+// tests can point it at a stub server without reaching for a real token.
+func ciStatusWithClient(client *github.Client, owner string, repo string, branch string) CIStatusInfo {
 	// branch typically comes as "username:branch_name" from GitHub API
 	branchParts := strings.Split(branch, ":")
 	apiBranch := branch
@@ -799,7 +806,23 @@ func GetCIStatus(owner string, repo string, branch string) CIStatusInfo {
 		apiBranch = branchParts[1]
 	}
 
-	opts := github.ListWorkflowRunsOptions{Branch: apiBranch}
+	// Ask for a full page. This endpoint returns runs newest-first, so the
+	// default of 30 is a window over roughly the last handful of pushes: a
+	// workflow that ran early on the branch and has not re-run since falls out
+	// of it and vanishes from the status list entirely, taking its conclusion
+	// out of the hasFailure/allSuccess tally below.
+	//
+	// Deliberately one page rather than a ListAllPages walk. ProcessWorkflowRuns
+	// keeps the latest run per workflow *name* over whatever it is handed, so
+	// walking the branch's full history would resurrect workflows that have
+	// since been deleted from the repo and let their last, possibly failed, run
+	// drive the overall status forever. A single 100-run window is the wider
+	// net that does not reach back that far, and it costs the same one API call
+	// as today.
+	opts := github.ListWorkflowRunsOptions{
+		Branch:      apiBranch,
+		ListOptions: github.ListOptions{PerPage: githubPageSize},
+	}
 	runs, _, err := client.Actions.ListRepositoryWorkflowRuns(context.Background(), owner, repo, &opts)
 
 	if err != nil {
@@ -863,9 +886,7 @@ func GetCIStatus(owner string, repo string, branch string) CIStatusInfo {
 		overallStatus = "DONE"
 	}
 
-	info := CIStatusInfo{Statuses: statuses, OverallStatus: overallStatus}
-	GlobalCache.Set(cacheKey, info, 5*time.Minute)
-	return info
+	return CIStatusInfo{Statuses: statuses, OverallStatus: overallStatus}
 }
 
 func ProcessWorkflowRuns(runs []*github.WorkflowRun) []*github.WorkflowRun {

@@ -1270,6 +1270,59 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	}
 }
 
+func TestReviewItemsCarryRequiredTeams(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	section, err := db.GetOrCreateSection("Test Section", 0)
+	if err != nil {
+		t.Fatalf("failed to create section: %v", err)
+	}
+	details := []string{
+		"83",
+		"Repo: C-Hipple/code-review-server",
+		"https://github.com/C-Hipple/code-review-server/pull/83",
+	}
+	if _, err := db.UpsertItem(section.ID, "83", "TODO", "Debug PR", details, []string{"code-review-server"}, 0); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	r := NewOrgRenderer(db)
+
+	// Nothing resolved yet: the row renders without team chips rather than
+	// failing or waiting on GitHub.
+	items, err := r.GetAllReviewItems()
+	if err != nil {
+		t.Fatalf("GetAllReviewItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if len(items[0].RequiredTeams) != 0 {
+		t.Errorf("required teams = %+v, want none before a workflow resolves them", items[0].RequiredTeams)
+	}
+
+	// The workflow layer caches under the short repo name (see the cache key
+	// convention), which is what the item's Repo field carries.
+	seed := `[{"name":"Platform","slug":"platform","org":"C-Hipple","status":"changes_requested","mine":true,"personal":false}]`
+	if err := db.UpsertPRTeamReviews(83, "code-review-server", seed); err != nil {
+		t.Fatalf("failed to seed team reviews: %v", err)
+	}
+
+	items, err = r.GetAllReviewItems()
+	if err != nil {
+		t.Fatalf("GetAllReviewItems: %v", err)
+	}
+	teams := items[0].RequiredTeams
+	if len(teams) != 1 {
+		t.Fatalf("required teams = %+v, want the cached entry", teams)
+	}
+	if teams[0].Name != "Platform" || teams[0].Status != git_tools.TeamReviewChangesRequested || !teams[0].Mine {
+		t.Errorf("required team = %+v, want Platform/changes_requested/mine", teams[0])
+	}
+}
+
 func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
 	db := setupTestDB(t)
 

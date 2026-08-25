@@ -24,6 +24,7 @@ import {
     uniqueValues,
 } from '../pr_list_utils';
 import type { Facet, PRState, ReviewItem } from '../pr_list_utils';
+import { teamChips } from '../team_utils';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
@@ -682,6 +683,7 @@ function PRRow({ item, reviewLocation, onOpenReview, onOpenPluginOutput }: PRRow
     const ease = mapReviewEase(item.review_ease);
     const easeTone = ease ? getStatusTone(ease.variant) : null;
     const relative = formatRelativeTime(item.created_at);
+    const teams = teamChips(item.required_teams);
     // Rows open wherever the preference points; the action buttons cover the
     // other destination so both are always one click away.
     const rowOpensGitHub = reviewLocation === 'github';
@@ -749,6 +751,27 @@ function PRRow({ item, reviewLocation, onOpenReview, onOpenPluginOutput }: PRRow
                                 {relative && (
                                     <span title={formatAbsoluteTime(item.created_at)}>
                                         {relative}
+                                    </span>
+                                )}
+                                {teams.length > 0 && (
+                                    <span className="crs-row-teams">
+                                        {teams.map(team => {
+                                            const tone = getStatusTone(team.variant);
+                                            return (
+                                                <span
+                                                    key={team.key}
+                                                    className={`crs-row-team crs-row-team--${team.relationship}`}
+                                                    style={{
+                                                        color: tone.fg,
+                                                        background: tone.bg,
+                                                        borderColor: tone.border,
+                                                    }}
+                                                    title={team.title}
+                                                >
+                                                    {team.label}
+                                                </span>
+                                            );
+                                        })}
                                     </span>
                                 )}
                             </>

@@ -212,6 +212,12 @@ type ReviewItem struct {
 	// and a rating has been computed.
 	ReviewEase string    `json:"review_ease"`
 	CreatedAt  time.Time `json:"created_at"`
+	// RequiredTeams are the teams asked to review this PR — including ones
+	// whose request GitHub has already cleared — each with where its review
+	// stands and whether it is one of the current user's teams. Resolved by the
+	// workflow layer and read here from its cache, so the list never waits on
+	// GitHub. Empty when no cycle has resolved this PR yet.
+	RequiredTeams []git_tools.TeamReviewStatus `json:"required_teams"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -291,7 +297,31 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		}
 	}
 
+	if reviewItem.Repo != "" && reviewItem.Number > 0 {
+		reviewItem.RequiredTeams = r.requiredTeams(reviewItem.Number, reviewItem.Repo)
+	}
+
 	return reviewItem
+}
+
+// requiredTeams reads the team standing the workflow layer resolved for a PR.
+// A missing or unreadable row is not an error worth failing a render over — the
+// row simply shows no team chips — so everything here degrades to nil.
+func (r *OrgRenderer) requiredTeams(number int, repo string) []git_tools.TeamReviewStatus {
+	raw, err := r.db.GetPRTeamReviews(number, repo)
+	if err != nil {
+		slog.Warn("Error loading team reviews for review item", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+	if raw == "" {
+		return nil
+	}
+	var teams []git_tools.TeamReviewStatus
+	if err := json.Unmarshal([]byte(raw), &teams); err != nil {
+		slog.Warn("Error decoding cached team reviews", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+	return teams
 }
 
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {

@@ -145,15 +145,23 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   with its own count, plus a global collapse/expand toggle in the toolbar.
 - **Per-item row** — lifecycle pill (open / draft / merged / closed, in a fixed-width
   column so titles align), title, `review_ease` pill when the LLM rating is enabled,
-  and a meta line of repo, `#number`, author login, and a relative timestamp from
-  `created_at` (full timestamp on hover).
+  and a meta line of repo, `#number`, author login, a relative timestamp from
+  `created_at` (full timestamp on hover), and the required-team chips.
+- **Required-team chips** — one per entry in `required_teams`, showing who still owes
+  this PR a review. The color is the team's status: green approved, red changes
+  requested, blue reviewed-but-unattributable, amber still waiting when it is one of
+  your teams, grey when it is somebody else's. The weight and the italic carry the
+  relationship — your teams are bold, a request made of you directly is bold italic
+  and labelled `@login`, other teams are dimmed — and the tooltip spells out both.
+  Chips appear once a workflow cycle has resolved the PR's teams.
 - **Non-PR items** — items with `number <= 0` render as "Non-PR item" and are not
   clickable.
 - **Actions per row** — revealed on hover or keyboard focus: Plugins (open the plugin
   view) plus whichever of Review / GitHub the row click doesn't already go to, which
   depends on the Preferred Review Location preference.
-- **Text filter** — matches title, repo, owner, author, and PR number (with or
-  without a leading `#`, by prefix). A "N of M" counter sits beside it.
+- **Text filter** — matches title, repo, owner, author, required-team name or slug,
+  and PR number (with or without a leading `#`, by prefix). A "N of M" counter sits
+  beside it.
 - **GitHub URL paste** — pasting `https://github.com/{owner}/{repo}/pull/{n}` into the
   filter box opens that review directly instead of filtering.
 - **Repo / author narrowing** — a checkable list per field, each value shown with its

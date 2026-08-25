@@ -169,6 +169,14 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRTeamReviews (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		teams_json TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS CIStatus (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -262,6 +270,7 @@ func (db *DB) initSchema() error {
 		check_runs INTEGER NOT NULL DEFAULT 0,
 		commits INTEGER NOT NULL DEFAULT 0,
 		review_threads INTEGER NOT NULL DEFAULT 0,
+		team_reviews INTEGER NOT NULL DEFAULT 0,
 		total INTEGER NOT NULL DEFAULT 0
 	);
 	`
@@ -425,6 +434,17 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN review_threads INTEGER NOT NULL DEFAULT 0")
 		if err != nil {
 			slog.Warn("Error adding review_threads column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: Add the team_reviews counter to APICallStats. Same story as
+	// review_threads — the review-request history behind the required-team
+	// chips is a GraphQL call spending the same budget.
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='team_reviews'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN team_reviews INTEGER NOT NULL DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding team_reviews column to APICallStats", "error", err)
 		}
 	}
 
@@ -1544,6 +1564,47 @@ func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
 	return err
 }
 
+// GetPRTeamReviews returns the cached required-team review statuses for a PR as
+// JSON. An empty string means no row: the difference between "this PR has never
+// had its teams resolved" and "this PR has no required teams" (which caches as
+// "[]") is what stops the workflow re-asking GitHub for the request history on
+// every cycle.
+func (db *DB) GetPRTeamReviews(prNumber int, repo string) (string, error) {
+	var teamsJSON string
+	err := db.conn.QueryRow(
+		"SELECT teams_json FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&teamsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return teamsJSON, nil
+}
+
+func (db *DB) UpsertPRTeamReviews(prNumber int, repo, teamsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRTeamReviews (pr_number, repo, teams_json, updated_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			teams_json = excluded.teams_json,
+			updated_at = CURRENT_TIMESTAMP`,
+		prNumber, repo, teamsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
 func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
 	return db.conn.Exec(query, args...)
 }
@@ -1558,13 +1619,13 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 
 // LogAPICallStats persists per-type GitHub API call counts and post-cycle rate limit
 // status for a completed workflow cycle.
-func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
-	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads
+func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
+	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads + teamReviews
 	_, err := db.conn.Exec(
 		`INSERT INTO APICallStats
-			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, total,
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, team_reviews, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, total,
 		rateLimitRemaining, rateLimitLimit, rateLimitResetAt,
 	)
 	return err

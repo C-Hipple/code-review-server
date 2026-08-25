@@ -68,6 +68,9 @@ func (s *AuxDataStore) MergeSet(key PRKey, data *PRAuxData) {
 		if data.ReviewThreads == nil {
 			data.ReviewThreads = old.ReviewThreads
 		}
+		if data.TeamReviews == nil {
+			data.TeamReviews = old.TeamReviews
+		}
 	}
 	s.data[key] = data
 }

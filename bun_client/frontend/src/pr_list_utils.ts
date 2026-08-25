@@ -8,6 +8,8 @@
  * derivations can be unit tested without rendering.
  */
 
+import { teamSearchTerms, type RequiredTeam } from './team_utils';
+
 /** Matches the ReviewItem struct from the Go backend. */
 export interface ReviewItem {
     section: string;
@@ -24,6 +26,11 @@ export interface ReviewItem {
     review_ease?: string;
     /** RFC3339 time the item was first recorded by a workflow. */
     created_at?: string;
+    /**
+     * Teams this PR needs a review from, each with its status and its relation
+     * to the current user. Absent until a workflow cycle has resolved them.
+     */
+    required_teams?: RequiredTeam[];
 }
 
 /** The lifecycle states the sidebar buckets PRs into. */
@@ -121,14 +128,20 @@ export function formatAbsoluteTime(iso: string | undefined): string {
 
 /**
  * Free-text match across the fields shown in a row: title, repo, owner, author,
- * and PR number. A numeric query (with or without a leading `#`) matches the
- * number by prefix, so the list narrows as the number is typed.
+ * required teams, and PR number. A numeric query (with or without a leading
+ * `#`) matches the number by prefix, so the list narrows as the number is typed.
  */
 export function itemMatchesQuery(item: ReviewItem, query: string): boolean {
     const needle = query.trim().toLowerCase();
     if (!needle) return true;
 
-    const fields = [item.title, item.repo, item.owner, item.author];
+    const fields = [
+        item.title,
+        item.repo,
+        item.owner,
+        item.author,
+        ...teamSearchTerms(item.required_teams),
+    ];
     if (fields.some(field => (field || '').toLowerCase().includes(needle))) {
         return true;
     }

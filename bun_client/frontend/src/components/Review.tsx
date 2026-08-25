@@ -310,7 +310,7 @@ export default function Review({
             applyPRResponse(res);
             loadPluginOutputs();
             if (res.updated) {
-                showToast('Synced — new commits or comments pulled in', 'success');
+                showToast('Synced — new commits, comments, or reviews pulled in', 'success');
             } else {
                 showToast('Synced — already up to date', 'info');
             }

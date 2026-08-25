@@ -224,7 +224,7 @@ func GetTeamMembers(org, slug string) ([]string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	members, err := listAllPages(func(opts *github.ListOptions) ([]*github.User, *github.Response, error) {
+	members, err := ListAllPages("teams/members", func(opts *github.ListOptions) ([]*github.User, *github.Response, error) {
 		return GetGithubClient().Teams.ListTeamMembersBySlug(ctx, org, slug,
 			&github.TeamListTeamMembersOptions{ListOptions: *opts})
 	})

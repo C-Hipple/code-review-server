@@ -111,6 +111,7 @@ browser cannot. Reproduce them if you want the corresponding features.
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /api/github-image?url=` | Serves a GitHub-hosted image embedded in a comment or review. The bridge does not fetch it: it calls `GetImage`, which downloads with the server's token and caches, and streams back the file that comes out. Only `github.com` and `*.githubusercontent.com` are accepted. |
 | `POST /api/read-file` | Read a file from disk. Accepts an absolute `filePath`, or `repoPath` + relative `filePath` (rejects paths that escape `repoPath`). Powers the code viewer. |
 | `POST /api/list-files` | Recursive file listing under `repoPath`, skipping `node_modules`, `.git`, `.next`, `dist`. Powers the code viewer's file tree. |
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
@@ -203,7 +204,8 @@ Rendered from `GetPR`'s `metadata`:
   approved-by, changes-requested-by, commented-by.
 - Labels, assignees, milestone row.
 - Collapsible markdown description, with HTML comments stripped (PR templates are
-  full of them). Expanded by default.
+  full of them) and embedded images rendered — see
+  [3.6](#36-comments). Expanded by default.
 - CI failure list when `ci_failures` is non-empty.
 - Links out: GitHub button and Copy URL button.
 
@@ -322,6 +324,28 @@ client treats `author === 'local'` as "mine, still editable".
 Calls used: `AddComment`, `EditComment`, `DeleteComment`, `SetFeedback`. Each returns
 a full refreshed PR payload, which the client applies wholesale rather than patching
 local state.
+
+**Body rendering (`GitHubMarkdown.tsx`)** — every body written by a person on the PR
+(description, review body, comment) goes through one component, because GitHub
+markdown is not just markdown:
+
+- **Raw HTML is parsed** (`rehype-raw`). A pasted screenshot arrives in the body as
+  an `<img>` tag, not as `![](…)`, and plain react-markdown drops raw HTML — so
+  screenshots, `<details>` blocks and `<picture>` pairs silently vanish. Bodies come
+  from anyone who can comment, so `rehype-sanitize` runs *after* `rehype-raw` (that
+  order matters) with its default GitHub-derived schema: `script`, event handlers,
+  inline styles and non-http(s) URLs are stripped.
+- **Images come from the server**, via `/api/github-image` → `GetImage`. Attachment
+  URLs redirect to a signed CDN URL that GitHub only issues to an authenticated
+  request on a private repo, and a browser's github.com cookie is not sent on a
+  cross-site image load — so a direct `<img src>` renders broken for everyone on
+  the team. The Go server downloads them with its token and caches them under
+  `$CRS_HOME/images`, which is also what lets the Emacs client render the same
+  screenshots; the bridge just serves the cached file. If that fails the page
+  retries the original URL, which still works for public repositories.
+- **Sizing and clicks**: GitHub stamps the screenshot's natural size (often ~1900px)
+  onto the tag, so images are clamped to the card width; clicking one opens the
+  original on github.com rather than the thread's reply box.
 
 ### 3.7 Submitting a review
 
@@ -562,6 +586,12 @@ Ordered roughly by how much time they'll cost you if missed.
     `body_type` is missing or unrecognized.
 13. **Annotations anchor to head-side line numbers**, and need a fallback bucket for
     lines the diff doesn't render.
+14. **Comment bodies contain raw HTML, and their images need your token.** A markdown
+    renderer that ignores HTML throws away every pasted screenshot; one that renders
+    it without sanitizing is an XSS hole, since the body is written by whoever
+    commented. The image bytes you can get for free: the payload's `images` list
+    maps each URL to a file the server already downloaded, and `GetImage` fetches
+    one on demand. See the body-rendering notes in [3.6](#36-comments).
 
 ---
 

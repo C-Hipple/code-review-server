@@ -36,5 +36,8 @@
 
 - **List PRs**: View list of reviews (from `GetAllReviews`).
 - **Review PR**: View PR details, diffs, and comments (from `GetPR`).
+- **Embedded images**: Screenshots in descriptions, reviews and comments render
+  inline. The browser can't authenticate to GitHub, so `GET /api/github-image` asks
+  the Go server (which holds `CRS_GITHUB_TOKEN`) for the copy it downloaded.
 - **Add Comments**: Add inline comments by specifying filename and position.
 - **Submit Review**: Approve, Comment, or Request Changes.

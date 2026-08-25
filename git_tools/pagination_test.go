@@ -230,3 +230,80 @@ func TestListAllRequestedReviewersAccumulatesPages(t *testing.T) {
 		t.Errorf("got %d teams, want 2 (pages did not accumulate)", len(reviewers.Teams))
 	}
 }
+
+// TestCIStatusRequestsFullPageOfRuns guards the workflow-runs window. This
+// endpoint returns runs newest-first, so unlike the reviews and comments lists
+// the default page size does not drop the *newest* data — it drops the oldest.
+// That still loses a whole workflow: ProcessWorkflowRuns keeps the latest run
+// per name, so a workflow whose most recent run has been pushed past the window
+// by newer runs of other workflows disappears from the status list, and its
+// conclusion stops counting toward the overall status.
+func TestCIStatusRequestsFullPageOfRuns(t *testing.T) {
+	const total = 40
+	// nightlyAt is inside a 100-run page but outside the default 30-run one.
+	const nightlyAt = 35
+
+	var perPages []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		perPages = append(perPages, q.Get("per_page"))
+		if got := q.Get("branch"); got != "feature" {
+			t.Errorf("branch = %q, want %q (the user: prefix must be stripped)", got, "feature")
+		}
+
+		perPage := 30
+		if v := q.Get("per_page"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				perPage = n
+			}
+		}
+		if perPage > total {
+			perPage = total
+		}
+
+		// Index 1 is the newest run, matching GitHub's ordering.
+		runs := []string{}
+		for i := 1; i <= perPage; i++ {
+			name := "CI"
+			if i == nightlyAt {
+				name = "Nightly"
+			}
+			runs = append(runs, fmt.Sprintf(
+				`{"id":%d,"name":%q,"status":"completed","conclusion":"success","created_at":%q}`,
+				i, name, fmt.Sprintf("2026-08-%02dT00:00:00Z", 1+(total-i)%28)))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":[%s]}`, total, strings.Join(runs, ","))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	base, err := url.Parse(server.URL + "/")
+	if err != nil {
+		t.Fatalf("parsing base URL: %v", err)
+	}
+	client := github.NewClient(nil)
+	client.BaseURL = base
+
+	info := ciStatusWithClient(client, "owner", "repo", "someuser:feature")
+
+	for i, pp := range perPages {
+		if pp != strconv.Itoa(githubPageSize) {
+			t.Errorf("request %d sent per_page=%q, want %d (nil ListOptions would send none)", i, pp, githubPageSize)
+		}
+	}
+
+	var sawNightly bool
+	for _, s := range info.Statuses {
+		if strings.Contains(s, "Nightly") {
+			sawNightly = true
+		}
+	}
+	if !sawNightly {
+		t.Errorf("Nightly missing from statuses %v; run %d fell outside the requested page", info.Statuses, nightlyAt)
+	}
+	if info.OverallStatus != "DONE" {
+		t.Errorf("OverallStatus = %q, want DONE (every run succeeded)", info.OverallStatus)
+	}
+}

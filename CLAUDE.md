@@ -42,6 +42,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`)
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
 - `git_tools/` — GitHub API wrapper using go-github. Mostly REST; `review_threads.go` is the one GraphQL call, because review-thread resolution (`isResolved`) has no REST equivalent
+- `images/` — downloads and caches the images embedded in PR bodies, reviews and comments to `$CRS_HOME/images`, content-addressed by URL. Only `github.com` / `*.githubusercontent.com` are fetched, since bodies are attacker-supplied text. Clients render from the cached file rather than from GitHub: a private repo's attachments are served only to a request carrying the server's token
 - `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface; Gemini is the only backend today. Appends every call to `~/.crs/llm_calls.log`
 - `org/` — org-mode serialization for the Emacs client
 - `utils/` — diff parsing utilities
@@ -56,8 +57,9 @@ RPC handlers serve data to clients (web UI, Emacs).
 1. **Workflow fetch**: GitHub API → filter PRs → `ProcessPRsDB` upserts into `sections`/`items` tables
 2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI/review-threads and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written). What gets fetched is the union of what the workflows' filters asked for and what `applyCacheWarmRequirements` adds for a PR that is new or has a new head SHA — the warm covers every field `GetPRDetails` reads, so opening a review is a pure cache hit
 3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins and the LLM diff analysis in the background so they're cached before anyone opens the review
-4. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
-5. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
+4. **Image prefetch**: `ensurePostUpdateHooks` also hands every image URL found in the description, reviews and comments to `images.Store.Prefetch`, ahead of the head-SHA debounce — a new comment carrying a screenshot doesn't change the SHA. `PRPayload.images` then reports where each one landed, and `GetImage` fetches on demand anything the prefetch hasn't reached
+5. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
+6. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
 
 Nothing on the read path waits for a plugin or an LLM call: `ensurePostUpdateHooks` dispatches them in goroutines, and `orderDiffFiles` uses the cached LLM ordering or falls back to `sortFilesTestsLast`. The workflow layer cannot import `server` (`server` imports `workflows`), which is why step 3 goes through a registered callback wired up in `main.go`.
 

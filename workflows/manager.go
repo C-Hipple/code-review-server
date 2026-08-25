@@ -58,13 +58,14 @@ type apiCallCounter struct {
 	CheckRuns      atomic.Int64
 	Commits        atomic.Int64
 	ReviewThreads  atomic.Int64
+	TeamReviews    atomic.Int64
 }
 
 func (c *apiCallCounter) total() int64 {
 	return c.PRList.Load() + c.PRSpecific.Load() + c.Comments.Load() +
 		c.IssueComments.Load() + c.CIStatus.Load() + c.Diff.Load() +
 		c.Reviews.Load() + c.CombinedStatus.Load() + c.CheckRuns.Load() +
-		c.Commits.Load() + c.ReviewThreads.Load()
+		c.Commits.Load() + c.ReviewThreads.Load() + c.TeamReviews.Load()
 }
 
 func (c *apiCallCounter) log() {
@@ -80,6 +81,7 @@ func (c *apiCallCounter) log() {
 		"check_runs", c.CheckRuns.Load(),
 		"commits", c.Commits.Load(),
 		"review_threads", c.ReviewThreads.Load(),
+		"team_reviews", c.TeamReviews.Load(),
 		"total", c.total(),
 	)
 }
@@ -599,6 +601,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		apiCalls.CheckRuns.Load(),
 		apiCalls.Commits.Load(),
 		apiCalls.ReviewThreads.Load(),
+		apiCalls.TeamReviews.Load(),
 		rlRemaining,
 		rlLimit,
 		rlResetAtStr,
@@ -819,10 +822,16 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				existing.Reviews = existing.Reviews || req.AuxData.Reviews
 				existing.Commits = existing.Commits || req.AuxData.Commits
 				existing.ReviewThreads = existing.ReviewThreads || req.AuxData.ReviewThreads
+				existing.Teams = existing.Teams || req.AuxData.Teams
 				// Always fetch reviews for open non-draft PRs so Details() can
 				// display who has approved / requested changes / commented.
 				if pr.State != nil && *pr.State == "open" && (pr.Draft == nil || !*pr.Draft) {
 					existing.Reviews = true
+					// Required-team standing is derived from those same reviews
+					// and is shown on every row of the review list, so it is
+					// refreshed on the same cadence — a team that approves
+					// without anything being pushed still turns green.
+					existing.Teams = true
 				}
 				prRequirements[key] = existing
 			}
@@ -837,7 +846,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	for key, auxReq := range prRequirements {
 		// Skip if no aux data is needed
 		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews &&
-			!auxReq.Commits && !auxReq.ReviewThreads {
+			!auxReq.Commits && !auxReq.ReviewThreads && !auxReq.Teams {
 			continue
 		}
 
@@ -909,6 +918,9 @@ func applyCacheWarmRequirements(db *database.DB,
 		// would populate it; without warming it here the first person to open the
 		// PR pays for the GraphQL call.
 		req.ReviewThreads = true
+		// A draft or closed PR is skipped by the open-PR rule in prefetchAuxData,
+		// so without this it would never get its required teams resolved at all.
+		req.Teams = true
 		prRequirements[key] = req
 		warmed = append(warmed, key)
 	}
@@ -948,6 +960,12 @@ func fetchAuxDataForPR(client *github.Client,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
 
 	auxData := &PRAuxData{}
+
+	// Required-team standing is computed from who has reviewed, so asking for
+	// the teams is asking for the reviews.
+	if req.Teams {
+		req.Reviews = true
+	}
 
 	headSHA := ""
 	if pr != nil && pr.Head != nil && pr.Head.SHA != nil {
@@ -990,8 +1008,7 @@ func fetchAuxDataForPR(client *github.Client,
 			combined := make([]*github.PullRequestComment, len(prComments))
 			copy(combined, prComments)
 			apiCalls.IssueComments.Add(1)
-			issueComments, _, err := client.Issues.ListComments(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			issueComments, err := git_tools.ListAllIssueComments(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err == nil {
 				for _, ic := range issueComments {
 					combined = append(combined, convertIssueToPRComment(ic))
@@ -1044,8 +1061,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Reviews.Add(1)
-			reviews, _, err := client.PullRequests.ListReviews(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			reviews, err := git_tools.ListAllPRReviews(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				// Nothing gets written to PRReviews when this fails, so the next
 				// time the UI opens this PR it logs a "reviews" cache miss.
@@ -1082,8 +1098,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Commits.Add(1)
-			commits, _, err := client.PullRequests.ListCommits(
-				context.Background(), key.Owner, key.Repo, key.Number, nil)
+			commits, err := git_tools.ListAllPRCommits(context.Background(), client, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
 				return
@@ -1110,6 +1125,12 @@ func fetchAuxDataForPR(client *github.Client,
 	}
 
 	wg.Wait()
+
+	// Resolved after the wait rather than alongside the fetches above: it reads
+	// the reviews one of them just returned.
+	if req.Teams {
+		auxData.TeamReviews = resolvePRTeamReviews(apiCalls, key, pr, ghReviews)
+	}
 
 	// Persist all fetched data to DB so GetPRDetails finds it cached
 	persistPRCacheData(workflowName, key, pr, auxData, allCommentsForDB, ghReviews, ghCommits, combinedStatus, checkRunsResult)
@@ -1280,6 +1301,19 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				slog.Error("Failed to cache PR review threads", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "review_threads")
+			}
+		}
+	}
+
+	// 6c. Required-team review status (what the review list's rows show). Nil
+	// means the resolution was not requested or could not be completed, so the
+	// previously cached row stands rather than being blanked.
+	if auxData.TeamReviews != nil {
+		if j, err := json.Marshal(auxData.TeamReviews); err == nil {
+			if err := db.UpsertPRTeamReviews(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR team reviews", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "team_reviews")
 			}
 		}
 	}

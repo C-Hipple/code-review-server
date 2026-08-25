@@ -117,6 +117,12 @@ with `crs-toggle-comments' also uncollapses annotations, and
   "The review feedback for the current PR.")
 (defvar-local crs--buffer-commits nil
   "The commits list for the current PR.")
+(defvar-local crs--buffer-images nil
+  "Images embedded in the current PR, from the GetPR reply's `images'.
+Each entry carries the URL as it appears in a body and the path of the
+copy the server downloaded, which is what makes a screenshot on a private
+repository renderable here: GitHub serves it only to an authenticated
+request, and the server holds the token.")
 
 ;; Buffer-local state for plugin-output buffers.
 (defvar-local crs--plugin-owner nil

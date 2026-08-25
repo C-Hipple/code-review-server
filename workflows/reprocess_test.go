@@ -303,7 +303,7 @@ func TestReprocessAuxRequirementsUnionsWorkflowNeeds(t *testing.T) {
 	}
 
 	got := reprocessAuxRequirements([]Workflow{ci, interaction, elsewhere}, owner, repo)
-	want := AuxDataRequirement{Comments: true, Reviews: true, CIStatus: true, Diff: true, Commits: true}
+	want := AuxDataRequirement{Comments: true, Reviews: true, Teams: true, CIStatus: true, Diff: true, Commits: true}
 	if got != want {
 		t.Errorf("reprocessAuxRequirements = %+v, want %+v", got, want)
 	}

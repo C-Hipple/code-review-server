@@ -964,6 +964,7 @@ for more robust position restoration."
           (new-reviews nil)
           (new-commits nil)
           (new-preamble nil)
+          (new-images nil)
           (new-annotations nil)
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
@@ -982,7 +983,8 @@ for more robust position restoration."
           (existing-reviews crs--buffer-reviews)
           (existing-preamble crs--buffer-preamble)
           (existing-review-feedback crs--buffer-review-feedback)
-          (existing-commits crs--buffer-commits))
+          (existing-commits crs--buffer-commits)
+          (existing-images crs--buffer-images))
 
       ;; If content is a JSON result (alist), extract the components
       (when (and content (listp content) (not (stringp content)))
@@ -995,6 +997,7 @@ for more robust position restoration."
                (metadata (cdr (assq 'metadata content)))
                (reviews (cdr (assq 'reviews content)))
                (commits (cdr (assq 'commits content)))
+               (images (cdr (assq 'images content)))
                (raw-content (cdr (assq 'content content)))
                (preamble (if raw-content
                              (if (string-match "Files changed (.*)\n\n" raw-content)
@@ -1014,6 +1017,7 @@ for more robust position restoration."
           (setq new-metadata metadata)
           (setq new-reviews reviews)
           (setq new-commits commits)
+          (setq new-images images)
           (setq new-preamble preamble)
           (setq new-annotations (cdr (assq 'annotations content)))))
 
@@ -1024,6 +1028,7 @@ for more robust position restoration."
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-commits (or new-commits existing-commits))
+      (setq crs--buffer-images (or new-images existing-images))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-annotations (or new-annotations existing-annotations))
@@ -1095,6 +1100,9 @@ for more robust position restoration."
 
         (my-code-review-mode)))
 
+      ;; The major-mode change above wiped the buffer-locals, and rendering a
+      ;; body needs the cached image paths, so put those back first.
+      (setq crs--buffer-images (or new-images existing-images))
       (crs--process-html-placeholders)
 
       ;; Re-set the buffer-local variables AFTER mode change
@@ -1104,6 +1112,7 @@ for more robust position restoration."
       (setq crs--buffer-metadata (or new-metadata existing-metadata))
       (setq crs--buffer-reviews (or new-reviews existing-reviews))
       (setq crs--buffer-commits (or new-commits existing-commits))
+      (setq crs--buffer-images (or new-images existing-images))
       (setq crs--buffer-preamble (or new-preamble existing-preamble))
       (setq crs--buffer-show-comments new-show-comments)
       (setq crs--buffer-annotations (or new-annotations existing-annotations))

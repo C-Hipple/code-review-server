@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { type Subprocess, spawn } from 'bun';
+import { type GetImageReply, parseGitHubImageUrl } from './github_images';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -319,6 +320,52 @@ Bun.serve<{
                     headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
                 }
             );
+        }
+
+        // Serve a GitHub-hosted image embedded in a comment or review. The Go
+        // server owns the download — it holds the token a private repo's
+        // attachments require, and caching there means every client gets the
+        // same images — so this hands back the file it cached.
+        if (url.pathname === '/api/github-image' && req.method === 'GET') {
+            const target = parseGitHubImageUrl(url.searchParams.get('url'));
+            if (!target) {
+                return new Response('Not a GitHub image URL', {
+                    status: 400,
+                    headers: CORS_HEADERS,
+                });
+            }
+            try {
+                const image = (await bridge.call('RPCHandler.GetImage', [
+                    { URL: target.href },
+                ])) as GetImageReply;
+                if (!image?.okay || !image.path) {
+                    console.error(`[Image] ${image?.error || 'no path'} for ${target.href}`);
+                    return new Response('Image unavailable', {
+                        status: 502,
+                        headers: CORS_HEADERS,
+                    });
+                }
+                const file = Bun.file(image.path);
+                if (!(await file.exists())) {
+                    console.error(`[Image] cached file is gone: ${image.path}`);
+                    return new Response('Image unavailable', {
+                        status: 502,
+                        headers: CORS_HEADERS,
+                    });
+                }
+                return new Response(file, {
+                    headers: {
+                        ...CORS_HEADERS,
+                        'Content-Type': image.content_type || 'application/octet-stream',
+                        // The same screenshot re-renders on every keystroke in
+                        // a reply box.
+                        'Cache-Control': 'private, max-age=600',
+                    },
+                });
+            } catch (err) {
+                console.error(`[Image] could not load ${target.href}:`, err);
+                return new Response('Image unavailable', { status: 502, headers: CORS_HEADERS });
+            }
         }
 
         // Read file contents from repository

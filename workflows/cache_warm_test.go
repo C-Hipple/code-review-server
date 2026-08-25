@@ -94,9 +94,10 @@ func TestApplyCacheWarmRequirements(t *testing.T) {
 		// Reviews and comments especially: a draft or closed PR gets no other
 		// chance at a PRReviews row, and that shows up as a "reviews" miss.
 		// ReviewThreads has no filter that would ever request it, so the warm is
-		// its only chance to land before someone opens the review.
+		// its only chance to land before someone opens the review. Teams is the
+		// same story for draft and closed PRs, which the open-PR rule skips.
 		want := AuxDataRequirement{
-			Diff: true, Commits: true, Reviews: true, Comments: true, ReviewThreads: true,
+			Diff: true, Commits: true, Reviews: true, Comments: true, ReviewThreads: true, Teams: true,
 		}
 		if got != want {
 			t.Errorf("got %+v, want %+v", got, want)

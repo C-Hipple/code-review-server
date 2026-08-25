@@ -212,6 +212,12 @@ type ReviewItem struct {
 	// and a rating has been computed.
 	ReviewEase string    `json:"review_ease"`
 	CreatedAt  time.Time `json:"created_at"`
+	// RequiredTeams are the teams asked to review this PR — including ones
+	// whose request GitHub has already cleared — each with where its review
+	// stands and whether it is one of the current user's teams. Resolved by the
+	// workflow layer and read here from its cache, so the list never waits on
+	// GitHub. Empty when no cycle has resolved this PR yet.
+	RequiredTeams []git_tools.TeamReviewStatus `json:"required_teams"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -291,7 +297,31 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		}
 	}
 
+	if reviewItem.Repo != "" && reviewItem.Number > 0 {
+		reviewItem.RequiredTeams = r.requiredTeams(reviewItem.Number, reviewItem.Repo)
+	}
+
 	return reviewItem
+}
+
+// requiredTeams reads the team standing the workflow layer resolved for a PR.
+// A missing or unreadable row is not an error worth failing a render over — the
+// row simply shows no team chips — so everything here degrades to nil.
+func (r *OrgRenderer) requiredTeams(number int, repo string) []git_tools.TeamReviewStatus {
+	raw, err := r.db.GetPRTeamReviews(number, repo)
+	if err != nil {
+		slog.Warn("Error loading team reviews for review item", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+	if raw == "" {
+		return nil
+	}
+	var teams []git_tools.TeamReviewStatus
+	if err := json.Unmarshal([]byte(raw), &teams); err != nil {
+		slog.Warn("Error decoding cached team reviews", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+	return teams
 }
 
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
@@ -1233,14 +1263,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 	if githubComments == nil {
 		missState.missedFields = append(missState.missedFields, "comments")
-		opts := github.PullRequestListCommentsOptions{}
 		var err error
-		githubComments, _, err = client.PullRequests.ListComments(ctx, owner, repo, number, &opts)
+		githubComments, err = git_tools.ListAllPRComments(ctx, client, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching PR review comments", "pr", number, "repo", repo, "error", err)
 		}
 
-		issueComments, _, err := client.Issues.ListComments(ctx, owner, repo, number, nil)
+		issueComments, err := git_tools.ListAllIssueComments(ctx, client, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching PR issue comments", "pr", number, "repo", repo, "error", err)
 		}
@@ -1298,7 +1327,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 	if commits == nil {
 		missState.missedFields = append(missState.missedFields, "commits")
-		ghCommits, _, err := client.PullRequests.ListCommits(ctx, owner, repo, number, nil)
+		ghCommits, err := git_tools.ListAllPRCommits(ctx, client, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching commits", "error", err)
 		} else {
@@ -1798,9 +1827,8 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 
 	// Not in cache or error occurred, fetch from API
 	if comments == nil {
-		opts := github.PullRequestListCommentsOptions{}
 		var apiErr error
-		githubComments, _, apiErr = client.PullRequests.ListComments(context.Background(), owner, repo, number, &opts)
+		githubComments, apiErr = git_tools.ListAllPRComments(context.Background(), client, owner, repo, number)
 		if apiErr != nil {
 			slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", apiErr)
 			return diff, 0
@@ -2277,7 +2305,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*git
 		}
 	}
 
-	reviewers, _, err := client.PullRequests.ListReviewers(context.Background(), owner, repo, number, nil)
+	reviewers, err := git_tools.ListAllRequestedReviewers(context.Background(), client, owner, repo, number)
 	if err != nil {
 		return nil, err
 	}
@@ -2314,7 +2342,7 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 	}
 
 	client := git_tools.GetGithubClient()
-	ghReviews, _, err := client.PullRequests.ListReviews(context.Background(), owner, repo, number, nil)
+	ghReviews, err := git_tools.ListAllPRReviews(context.Background(), client, owner, repo, number)
 	if err != nil {
 		return nil, err
 	}

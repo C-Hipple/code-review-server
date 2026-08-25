@@ -677,8 +677,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	// Snapshot the cached state so we can tell the client whether the sync
 	// actually pulled in anything new. The fresh fetch below overwrites these
 	// cache entries.
-	_, oldSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
-	oldCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+	before := readSyncSnapshot(args.Repo, args.Number)
 
 	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
 	if err != nil {
@@ -686,27 +685,74 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	}
 	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
 
-	_, newSHA, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
-	newCommentsJSON, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
-	reply.Updated = syncDetectedChanges(oldSHA, newSHA, oldCommentsJSON, newCommentsJSON)
+	reply.Updated = syncDetectedChanges(before, readSyncSnapshot(args.Repo, args.Number))
 
 	reply.populate(details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
-// syncDetectedChanges reports whether a sync brought in a new head SHA or new
-// comments compared to the previously cached state.
-func syncDetectedChanges(oldSHA, newSHA, oldCommentsJSON, newCommentsJSON string) bool {
-	if oldSHA != newSHA {
+// syncSnapshot is the cached state of a PR at a single moment. Grouping the
+// fields keeps the before/after pair from becoming a run of same-typed string
+// arguments that is easy to transpose at the call site.
+type syncSnapshot struct {
+	sha          string
+	commentsJSON string
+	reviewsJSON  string
+}
+
+func readSyncSnapshot(repo string, number int) syncSnapshot {
+	_, sha, _ := config.C().DB.GetPullRequest(number, repo)
+	commentsJSON, _ := config.C().DB.GetPRComments(number, repo)
+	reviewsJSON, _ := config.C().DB.GetPRReviews(number, repo)
+	return syncSnapshot{sha: sha, commentsJSON: commentsJSON, reviewsJSON: reviewsJSON}
+}
+
+// syncDetectedChanges reports whether a sync brought in a new head SHA, a new
+// comment, or a new or changed review.
+//
+// Reviews have to be checked in their own right. A review is not a comment: an
+// approval carries no inline comment and usually no body at all, so it adds no
+// entry to the PRComments cache and, on a PR whose head has not moved, leaves
+// every other input to this function identical. Checking only the SHA and the
+// comment IDs meant the two approvals that landed on an active PR were reported
+// to the client as "already up to date".
+func syncDetectedChanges(before, after syncSnapshot) bool {
+	if before.sha != after.sha {
 		return true
 	}
-	oldIDs := cachedCommentIDs(oldCommentsJSON)
-	for id := range cachedCommentIDs(newCommentsJSON) {
+	oldIDs := cachedCommentIDs(before.commentsJSON)
+	for id := range cachedCommentIDs(after.commentsJSON) {
 		if _, ok := oldIDs[id]; !ok {
 			return true
 		}
 	}
+	// Compare state as well as identity. A dismissal rewrites a review in
+	// place, keeping its ID, and that is exactly the case where the PR is
+	// waiting on the reviewer again — an ID-only check would call it unchanged.
+	oldReviews := cachedReviewStates(before.reviewsJSON)
+	for id, state := range cachedReviewStates(after.reviewsJSON) {
+		if prev, ok := oldReviews[id]; !ok || prev != state {
+			return true
+		}
+	}
 	return false
+}
+
+// cachedReviewStates maps review ID to state from a raw PRReviews cache entry.
+// Returns an empty set for empty or malformed JSON.
+func cachedReviewStates(reviewsJSON string) map[int64]string {
+	states := make(map[int64]string)
+	if reviewsJSON == "" {
+		return states
+	}
+	var reviews []ReviewJSON
+	if err := json.Unmarshal([]byte(reviewsJSON), &reviews); err != nil {
+		return states
+	}
+	for _, r := range reviews {
+		states[r.ID] = r.State
+	}
+	return states
 }
 
 // cachedCommentIDs extracts the GitHub comment IDs from a raw PRComments cache

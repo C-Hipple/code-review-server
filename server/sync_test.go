@@ -25,6 +25,21 @@ func commentsJSONWithIDs(t *testing.T, ids ...int64) string {
 	return string(raw)
 }
 
+// reviewsJSONWith builds a PRReviews cache entry from id/state pairs, matching
+// the format UpsertPRReviews stores.
+func reviewsJSONWith(t *testing.T, idStates map[int64]string) string {
+	t.Helper()
+	reviews := []ReviewJSON{}
+	for id, state := range idStates {
+		reviews = append(reviews, ReviewJSON{ID: id, State: state, User: "reviewer"})
+	}
+	raw, err := json.Marshal(reviews)
+	if err != nil {
+		t.Fatalf("failed to marshal reviews: %v", err)
+	}
+	return string(raw)
+}
+
 func TestSyncDetectedChanges(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -32,6 +47,8 @@ func TestSyncDetectedChanges(t *testing.T) {
 		newSHA          string
 		oldCommentsJSON string
 		newCommentsJSON string
+		oldReviewsJSON  string
+		newReviewsJSON  string
 		expected        bool
 	}{
 		{
@@ -92,13 +109,69 @@ func TestSyncDetectedChanges(t *testing.T) {
 			newCommentsJSON: commentsJSONWithIDs(t, 1, 2),
 			expected:        true,
 		},
+		{
+			// The reported bug: an approval carries no body and no inline
+			// comment, so nothing but the reviews cache changes.
+			name:           "bare approval with no comment and no push",
+			oldSHA:         "abc123",
+			newSHA:         "abc123",
+			oldReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "COMMENTED"}),
+			newReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "COMMENTED", 2: "APPROVED"}),
+			expected:       true,
+		},
+		{
+			name:           "first review on PR with empty cache entry",
+			oldSHA:         "abc123",
+			newSHA:         "abc123",
+			oldReviewsJSON: "",
+			newReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED"}),
+			expected:       true,
+		},
+		{
+			// A dismissal keeps the review's ID and rewrites its state, and it
+			// puts the PR back on the reviewer's plate.
+			name:           "existing review dismissed in place",
+			oldSHA:         "abc123",
+			newSHA:         "abc123",
+			oldReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED"}),
+			newReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "DISMISSED"}),
+			expected:       true,
+		},
+		{
+			name:           "unchanged reviews",
+			oldSHA:         "abc123",
+			newSHA:         "abc123",
+			oldReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED", 2: "COMMENTED"}),
+			newReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED", 2: "COMMENTED"}),
+			expected:       false,
+		},
+		{
+			name:           "review deleted is not an update",
+			oldSHA:         "abc123",
+			newSHA:         "abc123",
+			oldReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED", 2: "COMMENTED"}),
+			newReviewsJSON: reviewsJSONWith(t, map[int64]string{1: "APPROVED"}),
+			expected:       false,
+		},
+		{
+			name:            "comments and reviews both unchanged",
+			oldSHA:          "abc123",
+			newSHA:          "abc123",
+			oldCommentsJSON: commentsJSONWithIDs(t, 1, 2),
+			newCommentsJSON: commentsJSONWithIDs(t, 1, 2),
+			oldReviewsJSON:  reviewsJSONWith(t, map[int64]string{1: "APPROVED"}),
+			newReviewsJSON:  reviewsJSONWith(t, map[int64]string{1: "APPROVED"}),
+			expected:        false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := syncDetectedChanges(tt.oldSHA, tt.newSHA, tt.oldCommentsJSON, tt.newCommentsJSON)
+			before := syncSnapshot{sha: tt.oldSHA, commentsJSON: tt.oldCommentsJSON, reviewsJSON: tt.oldReviewsJSON}
+			after := syncSnapshot{sha: tt.newSHA, commentsJSON: tt.newCommentsJSON, reviewsJSON: tt.newReviewsJSON}
+			got := syncDetectedChanges(before, after)
 			if got != tt.expected {
-				t.Errorf("syncDetectedChanges(%q, %q, ...) = %v, want %v", tt.oldSHA, tt.newSHA, got, tt.expected)
+				t.Errorf("syncDetectedChanges(%q -> %q, ...) = %v, want %v", tt.oldSHA, tt.newSHA, got, tt.expected)
 			}
 		})
 	}

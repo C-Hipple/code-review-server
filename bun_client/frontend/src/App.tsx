@@ -3,6 +3,7 @@ import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
 import ConfigManager from './components/ConfigManager';
+import RateLimitHistory from './components/RateLimitHistory';
 import { rpcCall } from './api';
 import { useIsMobile } from './hooks/useMediaQuery';
 import {
@@ -30,7 +31,7 @@ function App() {
     const [view, setView] = useState<'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT'>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
-    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server'>('appearance');
+    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
     const [theme, setTheme] = useState<Theme>(() => {
@@ -364,6 +365,7 @@ function App() {
                         [
                             ['appearance', 'Appearance'],
                             ['server', 'Server Configuration'],
+                            ['ratelimit', 'Rate Limit'],
                         ] as const
                     ).map(([tab, label]) => (
                         <button
@@ -391,6 +393,8 @@ function App() {
                 </div>
 
                 {prefsTab === 'server' && <ConfigManager />}
+
+                {prefsTab === 'ratelimit' && <RateLimitHistory />}
 
                 <div
                     style={{

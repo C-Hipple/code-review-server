@@ -68,7 +68,7 @@ Things worth knowing before editing the config from a client:
 - **Nothing is written unless it validates.** The server checks the configuration the update would produce and refuses to write one it can't run, reporting each problem against the field that caused it. The rules are listed below.
 - **The previous file is kept as `codereviewserver.toml.bak`.** Comments and the original key ordering are **not** preserved when the server rewrites the file, so keep your own copy if a hand-written config has comments you care about.
 - **Changes apply on the next sync.** The background workflow manager reloads the config at the start of each cycle (`SleepDuration` minutes apart), so a saved workflow starts collecting PRs on the following sync rather than instantly.
-- **Removed workflows leave their PRs behind until the next sync**, at which point items no longer claimed by any workflow are pruned. The section itself stays in the database even when nothing feeds it.
+- **Removed workflows leave their PRs behind until the next sync.** At the end of each cycle the server releases every claim held by a workflow the config no longer defines, then deletes the items nobody claims any more and any section left empty that no workflow writes into. Re-pointing a workflow's `SectionTitle` clears out the old section the same way. A workflow that is still in the file but fails to validate keeps its items — only a workflow actually removed from `Workflows` loses them.
 
 ### Validation Rules
 

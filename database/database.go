@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -910,6 +911,119 @@ func (db *DB) RemoveWorkflowFromItem(sectionID int64, identifier, workflowName s
 		return err
 	}
 	return tx.Commit()
+}
+
+// ReleaseStaleWorkflowOwnership strips ownership entries that the running
+// configuration no longer backs. ownedSections maps each configured workflow
+// name to the section that workflow writes into; an entry survives only if the
+// workflow is still configured AND still writes into the section the item lives
+// in. Anything else is a leftover from a workflow that was deleted from the
+// config or re-pointed at a different section.
+//
+// Without this, such an item is immortal: its owning workflow never runs again,
+// so nothing ever expires it (the TTL sweep in ProcessPRsDB only looks at
+// sections it is running against, and only at items it owns), and
+// PruneOrphanedItems skips it because its ownership list is not empty. A dead
+// name in the list also pins items in sections that are still live, since the
+// list stays non-empty after the surviving workflows release their claims.
+//
+// Returns the number of items whose ownership list changed. Callers must not
+// pass an empty map when the configuration merely failed to load: that releases
+// every item in the database.
+func (db *DB) ReleaseStaleWorkflowOwnership(ownedSections map[string]string) (int64, error) {
+	type ownershipUpdate struct {
+		id        int64
+		workflows string
+	}
+
+	// The read is scoped to its own function so the cursor is closed before the
+	// updates run: SQLite does not want a write transaction opened underneath an
+	// open read.
+	collect := func() ([]ownershipUpdate, error) {
+		rows, err := db.conn.Query(
+			`SELECT i.id, COALESCE(i.workflows, '[]'), s.section_name
+			 FROM items i JOIN sections s ON s.id = i.section_id`,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		updates := []ownershipUpdate{}
+		for rows.Next() {
+			var id int64
+			var workflowsJSON, sectionName string
+			if err := rows.Scan(&id, &workflowsJSON, &sectionName); err != nil {
+				return nil, err
+			}
+			owners := decodeWorkflowList(workflowsJSON)
+			kept := make([]string, 0, len(owners))
+			for _, owner := range owners {
+				if section, configured := ownedSections[owner]; configured && section == sectionName {
+					kept = append(kept, owner)
+				}
+			}
+			if len(kept) == len(owners) {
+				continue
+			}
+			encoded, err := json.Marshal(kept)
+			if err != nil {
+				return nil, err
+			}
+			updates = append(updates, ownershipUpdate{id: id, workflows: string(encoded)})
+		}
+		return updates, rows.Err()
+	}
+
+	updates, err := collect()
+	if err != nil {
+		return 0, err
+	}
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	for _, update := range updates {
+		if _, err := tx.Exec(
+			"UPDATE items SET workflows = ? WHERE id = ?",
+			update.workflows, update.id,
+		); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(updates)), nil
+}
+
+// DeleteEmptySectionsNotIn deletes every section that holds no items and is not
+// named in keep. Sections outlive the config otherwise: nothing removes the row
+// when a workflow is deleted, and the renderer reads every section in the
+// database, so a retired section keeps rendering as an empty heading. Configured
+// sections are kept even when empty, since GetOrCreateSection would recreate
+// them on the next cycle anyway.
+func (db *DB) DeleteEmptySectionsNotIn(keep []string) (int64, error) {
+	query := "DELETE FROM sections WHERE id NOT IN (SELECT section_id FROM items)"
+	args := []any{}
+	if len(keep) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
+		query += " AND section_name NOT IN (" + placeholders + ")"
+		for _, name := range keep {
+			args = append(args, name)
+		}
+	}
+	res, err := db.conn.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // PruneOrphanedItems deletes every item whose workflow ownership list is

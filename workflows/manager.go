@@ -648,7 +648,9 @@ func (ms *ManagerService) Run() {
 		if waitTimeout(&listener_wg, 240*time.Second) {
 			slog.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
+		releaseStaleWorkflowOwnership()
 		pruneOrphanedItems()
+		pruneRetiredSections()
 		pruneWorkflowActionLog()
 	} else {
 		cycle_count := 0
@@ -698,7 +700,9 @@ func (ms *ManagerService) Run() {
 				slog.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 
+			releaseStaleWorkflowOwnership()
 			pruneOrphanedItems()
+			pruneRetiredSections()
 			pruneWorkflowActionLog()
 
 			// Log cycle completion so the throttle check works on next server start.
@@ -711,6 +715,65 @@ func (ms *ManagerService) Run() {
 		}
 	}
 	slog.Info("Exiting Service")
+}
+
+// configuredWorkflowSections maps each configured workflow name to the section
+// it writes into. It reads the raw config rather than the built workflow list on
+// purpose: a workflow that is present in the TOML but fails to build (unknown
+// WorkflowType, bad filter name) is skipped by MatchWorkflows, and treating that
+// as a removal would evict its items over a typo. Only a workflow actually
+// deleted from the config should lose its claims.
+func configuredWorkflowSections() map[string]string {
+	raw := config.C().RawWorkflows
+	sections := make(map[string]string, len(raw))
+	for _, wf := range raw {
+		sections[wf.Name] = wf.SectionTitle
+	}
+	return sections
+}
+
+// releaseStaleWorkflowOwnership drops item ownership held by workflows the
+// config no longer defines, so the items fall to pruneOrphanedItems. Run before
+// it, at the end of a cycle.
+//
+// The empty-config guard matters: config.Reload failing mid-run leaves the
+// previous config in place, but a config that legitimately parses to zero
+// workflows would otherwise release every item in the database.
+func releaseStaleWorkflowOwnership() {
+	ownedSections := configuredWorkflowSections()
+	if len(ownedSections) == 0 {
+		slog.Warn("No workflows configured; skipping stale ownership release")
+		return
+	}
+	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(ownedSections)
+	if err != nil {
+		slog.Error("Failed to release stale workflow ownership", "error", err)
+		return
+	}
+	if released > 0 {
+		slog.Info("Released ownership held by workflows no longer in the config", "items", released)
+	}
+}
+
+// pruneRetiredSections deletes empty sections that no configured workflow writes
+// into. Run after pruneOrphanedItems, which is what empties them.
+func pruneRetiredSections() {
+	ownedSections := configuredWorkflowSections()
+	if len(ownedSections) == 0 {
+		return
+	}
+	keep := make([]string, 0, len(ownedSections))
+	for _, section := range ownedSections {
+		keep = append(keep, section)
+	}
+	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep)
+	if err != nil {
+		slog.Error("Failed to prune retired sections", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("Pruned retired sections", "count", deleted)
+	}
 }
 
 // pruneOrphanedItems deletes any items that are no longer claimed by any

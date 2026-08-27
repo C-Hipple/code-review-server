@@ -1057,6 +1057,124 @@ func (h *RPCHandler) GetRateLimitStatus(args *GetRateLimitStatusArgs, reply *Get
 	return nil
 }
 
+// defaultRateLimitHistoryHours is the lookback used when a client asks for the
+// history without naming a window.
+const defaultRateLimitHistoryHours = 3.0
+
+// maxRateLimitHistoryHours caps the lookback. A month of cycles is already far
+// more than any chart can usefully draw, and the cap keeps a bad client
+// parameter from pulling the whole table into memory.
+const maxRateLimitHistoryHours = 24 * 30.0
+
+type GetRateLimitHistoryArgs struct {
+	// HoursBack is how far back to look. Zero or negative means the default.
+	HoursBack float64 `json:"hours_back"`
+}
+
+// RateLimitHistoryPoint is one workflow cycle: what it spent, and what was left
+// of the hourly budget when it finished.
+type RateLimitHistoryPoint struct {
+	RecordedAt     string `json:"recorded_at"`
+	PRList         int64  `json:"pr_list"`
+	PRSpecific     int64  `json:"pr_specific"`
+	Comments       int64  `json:"comments"`
+	IssueComments  int64  `json:"issue_comments"`
+	CIStatus       int64  `json:"ci_status"`
+	Diff           int64  `json:"diff"`
+	Reviews        int64  `json:"reviews"`
+	CombinedStatus int64  `json:"combined_status"`
+	CheckRuns      int64  `json:"check_runs"`
+	Commits        int64  `json:"commits"`
+	ReviewThreads  int64  `json:"review_threads"`
+	TeamReviews    int64  `json:"team_reviews"`
+	Total          int64  `json:"total"`
+	// Remaining and Limit are -1 when the cycle recorded no usable budget
+	// reading, so a client can leave a gap rather than plotting a zero.
+	Remaining int    `json:"remaining"`
+	Limit     int    `json:"limit"`
+	ResetAt   string `json:"reset_at"`
+	// GapMinutes is the wall-clock distance from the previous cycle in the
+	// window, and CallsPerMinute is Total spread over it. Both are 0 for the
+	// first point, which has no predecessor to measure against.
+	GapMinutes     float64 `json:"gap_minutes"`
+	CallsPerMinute float64 `json:"calls_per_minute"`
+}
+
+type GetRateLimitHistoryReply struct {
+	// HoursBack echoes the window actually used, after defaulting and clamping.
+	HoursBack float64                 `json:"hours_back"`
+	Since     string                  `json:"since"`
+	Points    []RateLimitHistoryPoint `json:"points"`
+}
+
+// GetRateLimitHistory returns the per-cycle GitHub API spend and the rate limit
+// budget left after each cycle, oldest first, for the requested lookback.
+//
+// The workflow manager writes one APICallStats row per completed cycle, so the
+// resolution of this series is the configured sleep duration — there is no
+// sampling here beyond what the cycles themselves record.
+func (h *RPCHandler) GetRateLimitHistory(args *GetRateLimitHistoryArgs, reply *GetRateLimitHistoryReply) error {
+	hours := defaultRateLimitHistoryHours
+	if args != nil && args.HoursBack > 0 {
+		hours = args.HoursBack
+	}
+	if hours > maxRateLimitHistoryHours {
+		hours = maxRateLimitHistoryHours
+	}
+
+	since := time.Now().UTC().Add(-time.Duration(hours * float64(time.Hour)))
+	rows, err := config.C().DB.GetAPICallStatsSince(since)
+	if err != nil {
+		return fmt.Errorf("reading API call stats: %w", err)
+	}
+
+	reply.HoursBack = hours
+	reply.Since = since.Format(time.RFC3339)
+	reply.Points = make([]RateLimitHistoryPoint, 0, len(rows))
+
+	var prev time.Time
+	for _, row := range rows {
+		point := RateLimitHistoryPoint{
+			RecordedAt:     row.RecordedAt.Format(time.RFC3339),
+			PRList:         row.PRList,
+			PRSpecific:     row.PRSpecific,
+			Comments:       row.Comments,
+			IssueComments:  row.IssueComments,
+			CIStatus:       row.CIStatus,
+			Diff:           row.Diff,
+			Reviews:        row.Reviews,
+			CombinedStatus: row.CombinedStatus,
+			CheckRuns:      row.CheckRuns,
+			Commits:        row.Commits,
+			ReviewThreads:  row.ReviewThreads,
+			TeamReviews:    row.TeamReviews,
+			Total:          row.Total,
+			Remaining:      row.RateLimitRemaining,
+			Limit:          row.RateLimitLimit,
+			ResetAt:        row.RateLimitResetAt,
+		}
+		// A cycle that recorded no usable budget reading is reported as
+		// unknown, not as an exhausted one: pre-migration rows already carry
+		// -1, and a failed post-cycle lookup with nothing cached leaves 0.
+		if point.Limit <= 0 {
+			point.Remaining = -1
+			point.Limit = -1
+		}
+		if !prev.IsZero() && !row.RecordedAt.IsZero() {
+			gap := row.RecordedAt.Sub(prev).Minutes()
+			if gap > 0 {
+				point.GapMinutes = gap
+				point.CallsPerMinute = float64(row.Total) / gap
+			}
+		}
+		if !row.RecordedAt.IsZero() {
+			prev = row.RecordedAt
+		}
+		reply.Points = append(reply.Points, point)
+	}
+	return nil
+}
+
 // getFileContentLocal reads a file at a given git ref from the local clone
 // using "git show <ref>:<path>". Returns an error if the repo isn't cloned
 // locally or the ref/path doesn't exist.

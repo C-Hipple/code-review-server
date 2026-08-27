@@ -152,3 +152,54 @@ export async function listFiles(repoPath: string): Promise<string[]> {
     if (data.error) throw new Error(data.error);
     return data.files;
 }
+
+/**
+ * One completed workflow cycle: the GitHub API calls it made, broken down by
+ * call type, and the rate limit budget left when it finished.
+ *
+ * `remaining` and `limit` are -1 when that cycle recorded no usable budget
+ * reading — charts should leave a gap rather than plot it as an exhausted
+ * budget. `gap_minutes` and `calls_per_minute` are 0 for the first point in a
+ * window, which has no predecessor to measure the rate against.
+ */
+export interface RateLimitHistoryPoint {
+    recorded_at: string;
+    pr_list: number;
+    pr_specific: number;
+    comments: number;
+    issue_comments: number;
+    ci_status: number;
+    diff: number;
+    reviews: number;
+    combined_status: number;
+    check_runs: number;
+    commits: number;
+    review_threads: number;
+    team_reviews: number;
+    total: number;
+    remaining: number;
+    limit: number;
+    reset_at: string;
+    gap_minutes: number;
+    calls_per_minute: number;
+}
+
+export interface RateLimitHistoryReply {
+    /** The window the server actually used, after defaulting and clamping. */
+    hours_back: number;
+    since: string;
+    points: RateLimitHistoryPoint[];
+}
+
+/**
+ * Fetches the recorded GitHub API spend and rate limit budget per workflow
+ * cycle, oldest first. The series resolution is the server's configured sleep
+ * duration, since one row is written per completed cycle.
+ *
+ * Omitting `hoursBack` lets the server apply its own default (3 hours).
+ */
+export async function getRateLimitHistory(hoursBack?: number): Promise<RateLimitHistoryReply> {
+    return rpcCall<RateLimitHistoryReply>('RPCHandler.GetRateLimitHistory', [
+        { hours_back: hoursBack ?? 0 },
+    ]);
+}

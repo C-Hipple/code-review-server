@@ -88,9 +88,10 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 if (!data.available || !options.repoPath) return;
 
                 const client = new LspClient();
-                client.connect('/api/lsp');
 
-                // Prepare context for diff-lsp
+                // Prepare context for diff-lsp BEFORE connecting: connecting
+                // spawns the diff-lsp process, which reads its init params
+                // from this tempfile at startup.
                 const path = await client.prepareContext(
                     options.repoName,
                     options.repoPath,
@@ -103,6 +104,8 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                     client.disconnect();
                     return;
                 }
+
+                client.connect(`/api/lsp?tempfile=${encodeURIComponent(path)}`);
 
                 const uri = `file://${path}`;
                 uriRef.current = uri;

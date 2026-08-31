@@ -154,9 +154,20 @@ Bun.serve<{
         if (url.pathname === '/api/lsp') {
             console.log('lsp call happening');
 
+            // The client passes the tempfile it prepared via
+            // /api/prepare-diff-lsp so diff-lsp reads exactly those init
+            // params instead of whatever /tmp/diff_lsp_* file happens to be
+            // newest (another tab or an emacs session may have written one).
+            const tempfile = url.searchParams.get('tempfile');
+            const args: string[] = [];
+            if (tempfile && /^\/tmp\/diff_lsp_[A-Za-z0-9-]+$/.test(tempfile)) {
+                args.push(tempfile);
+            }
+
             const success = server.upgrade(req, {
                 data: {
                     cmd: DIFF_LSP_PATH,
+                    args,
                     envs: process.env as Record<string, string>,
                 },
             });
@@ -475,9 +486,12 @@ Bun.serve<{
         if (url.pathname === '/api/prepare-diff-lsp' && req.method === 'POST') {
             const body = await req.json();
             const { project, root, buffer, type, content, worktree } = body;
+            // Always exactly 5 header lines — the frontend's LSP line offset
+            // depends on it. A missing worktree becomes an empty value
+            // (never the string "undefined"), which diff-lsp ignores.
             const header = `Project: ${project}
 Root: ${root}
-Worktree: ${worktree}
+Worktree: ${worktree || ''}
 Buffer: ${buffer}
 Type: ${type}
 `;

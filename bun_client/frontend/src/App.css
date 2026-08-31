@@ -3,6 +3,24 @@
     outline: 1px solid var(--border);
 }
 
+/* The same hover cue for a row that holds an absolutely positioned popover
+   (the LSP panel), minus the `filter`. A filtered element becomes a stacking
+   context, so the popover would be trapped in the row's own layer and every
+   diff row after it would paint on top: the popover stays visible, but the
+   rows drawn over it swallow the clicks meant for its reference links, and
+   the hover flips between the two as they trade places. `outline` alone
+   creates no stacking context, so the popover keeps its z-index. */
+.hover-line--flat:hover {
+    outline: 1px solid var(--border);
+}
+
+/* Reference/definition entries in the LSP popover — they act as links, so
+   give them a hover cue. Deliberately not `filter`, for the reason above. */
+.hover-link:hover {
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+}
+
 /* ============================================================
    App chrome — top bar shared by every view
    ============================================================ */

@@ -743,7 +743,11 @@ export default function DiffView({
             <RowWrapper key={idx}>
                 <div
                     className={
-                        (item.clickable ? 'hover-line' : '') +
+                        // While this row shows the LSP popover it takes the
+                        // `filter`-free hover cue: filtering the row would make
+                        // it a stacking context, burying the popover under the
+                        // diff rows that follow it (see .hover-line--flat).
+                        (item.clickable ? (isLspActive ? 'hover-line--flat' : 'hover-line') : '') +
                         (isHunkHeader ? ' diff-hunk-row' : '')
                     }
                     style={{

@@ -347,7 +347,10 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 	}
 	repoDir := filepath.Join(repoLocation, repoName)
 	worktreeRoot := filepath.Join(repoLocation, fmt.Sprintf("%s_worktrees", repoName))
-	worktreePath := filepath.Join(worktreeRoot, fmt.Sprintf("%d_%s", prNumber, branchName))
+	// Branch names may contain slashes (feature/foo); keep the worktree a
+	// single directory under the root.
+	worktreeDir := fmt.Sprintf("%d_%s", prNumber, strings.ReplaceAll(branchName, "/", "-"))
+	worktreePath := filepath.Join(worktreeRoot, worktreeDir)
 
 	// Check if repo exists
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
@@ -366,12 +369,26 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			return
 		}
 
-		// Check if it's already in DB or exists on disk
+		// Check if it's already in DB and still on disk
 		existingPath, err := db.GetWorktree(prNumber, repoName, ownerName)
 		if err == nil && existingPath != "" {
-			// Already tracked, maybe check if it still exists? For now assume it's good.
-			// Actually, if branch changed, we might need to handle that, but let's assume one branch per PR for now.
-			return
+			if _, statErr := os.Stat(existingPath); statErr == nil {
+				// Already tracked: keep it in sync with the PR head so the
+				// LSPs aren't looking at stale code after a push.
+				if change.FileChange.ChangeType == "Update" {
+					if err := git_tools.UpdateWorktree(repoDir, branchName, existingPath); err != nil {
+						slog.Warn("Failed to update worktree", "pr", prNumber, "path", existingPath, "error", err)
+					}
+				}
+				return
+			}
+			// The directory was deleted out from under us; drop the record
+			// and recreate below.
+			slog.Info("Recorded worktree is gone from disk, recreating", "pr", prNumber, "path", existingPath)
+			if err := db.RemoveWorktreeRecord(prNumber, repoName, ownerName); err != nil {
+				slog.Error("Failed to remove stale worktree record", "error", err)
+				return
+			}
 		}
 
 		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath); err != nil {

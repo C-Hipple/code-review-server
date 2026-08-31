@@ -771,8 +771,11 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (setq sb (concat sb (format "Author: \t@%s\n" author)))
       (setq sb (concat sb (format "Title: \t%s\n" title)))
       (setq sb (concat sb (format "Refs:  %s ... %s\n" base head)))
+      ;; diff-lsp parses this line to find the worktree; a plain space (no
+      ;; tab) keeps the path clean for older diff-lsp versions that don't
+      ;; trim the value.
       (when (and worktree (not (string-empty-p worktree)))
-        (setq sb (concat sb (format "Worktree: \t%s\n" worktree))))
+        (setq sb (concat sb (format "Worktree: %s\n" worktree))))
       (setq sb (concat sb (format "URL:   %s\n" url)))
       (setq sb (concat sb (format "State: \t%s\n" state)))
       (setq sb (concat sb (format "Draft: \t%s\n" (if (eq draft t) "True" "False"))))

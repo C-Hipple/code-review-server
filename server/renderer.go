@@ -1186,11 +1186,6 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				Deletions:          int(pr.GetDeletions()),
 			}
 
-			// Fetch worktree path if it exists
-			if worktreePath, err := config.C().DB.GetWorktree(number, repo, owner); err == nil {
-				metadata.WorktreePath = worktreePath
-			}
-
 			if pr.Milestone != nil {
 				metadata.Milestone = pr.Milestone.GetTitle()
 			}
@@ -1208,6 +1203,16 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	if path, err := GetLocalRepoPath(repo); err == nil {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			metadata.RepoPath = path
+		}
+	}
+
+	// Same for the worktree: it's usually created by the background workflow
+	// after the metadata was cached, so cached metadata would otherwise never
+	// pick it up. Only report a worktree that actually exists on disk.
+	metadata.WorktreePath = ""
+	if worktreePath, err := config.C().DB.GetWorktree(number, repo, owner); err == nil && worktreePath != "" {
+		if info, err := os.Stat(worktreePath); err == nil && info.IsDir() {
+			metadata.WorktreePath = worktreePath
 		}
 	}
 

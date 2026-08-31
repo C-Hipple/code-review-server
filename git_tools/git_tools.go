@@ -689,24 +689,92 @@ func GetCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListC
 	return all, nil
 }
 
-func CreateWorktree(repoDir, branch, worktreePath string) error {
-	// Ensure the worktree directory doesn't exist (git worktree add will fail if it does, but maybe we want to be clean)
-	// Actually let git handle it.
-
-	// git worktree add <path> <branch>
-	cmd := exec.Command("git", "worktree", "add", worktreePath, branch)
-	cmd.Dir = repoDir
+func runGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(output)), err
+}
+
+func CreateWorktree(repoDir, branch, worktreePath string) error {
+	// Registrations for worktrees whose directories were deleted by hand
+	// block re-adding at the same path, so clear them first.
+	if out, err := runGit(repoDir, "worktree", "prune"); err != nil {
+		slog.Warn("Failed to prune worktrees", "repo", repoDir, "output", out, "error", err)
+	}
+
+	// A PR branch usually only exists on the remote: fetch it so
+	// origin/<branch> resolves. Best-effort — offline still works when the
+	// refs are already present.
+	if out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
+		slog.Warn("Failed to fetch branch before creating worktree", "repo", repoDir, "branch", branch, "output", out, "error", err)
+	}
+
+	// git worktree add <path> <branch>. When <branch> is not a local branch
+	// but origin/<branch> exists, git creates a tracking branch for it.
+	output, err := runGit(repoDir, "worktree", "add", worktreePath, branch)
 	if err != nil {
-		outputStr := string(output)
-		if strings.Contains(outputStr, "already exists") {
+		if strings.Contains(output, "already exists") {
 			slog.Info("Worktree already exists, skipping creation", "repo", repoDir, "branch", branch, "path", worktreePath)
 			return nil
 		}
-		slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", outputStr, "error", err)
-		return fmt.Errorf("git worktree add failed: %s: %w", outputStr, err)
+		// The branch being checked out in the main repo (or another
+		// worktree), or a stale local ref, still shouldn't stop the review
+		// worktree: check out the PR head detached instead.
+		detachOutput, detachErr := runGit(repoDir, "worktree", "add", "--detach", worktreePath, "origin/"+branch)
+		if detachErr != nil {
+			slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", output, "detach_output", detachOutput, "error", err)
+			return fmt.Errorf("git worktree add failed: %s: %w", output, err)
+		}
+		slog.Info("Created detached worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
+		return nil
 	}
+
+	// If the local branch already existed it may be behind the PR head;
+	// fast-forward it to origin best-effort.
+	if out, err := runGit(worktreePath, "merge", "--ff-only", "origin/"+branch); err != nil {
+		slog.Warn("Could not fast-forward worktree to origin", "path", worktreePath, "branch", branch, "output", out, "error", err)
+	}
+
 	slog.Info("Created worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
+	return nil
+}
+
+// UpdateWorktree brings an existing review worktree up to date with the PR
+// head. Best-effort: a dirty worktree (someone is using it) is left alone.
+func UpdateWorktree(repoDir, branch, worktreePath string) error {
+	if out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
+		slog.Warn("Failed to fetch branch before updating worktree", "repo", repoDir, "branch", branch, "output", out, "error", err)
+	}
+
+	if status, err := runGit(worktreePath, "status", "--porcelain"); err != nil {
+		return fmt.Errorf("git status failed in worktree %s: %s: %w", worktreePath, status, err)
+	} else if status != "" {
+		slog.Info("Worktree has local changes, skipping update", "path", worktreePath)
+		return nil
+	}
+
+	if _, err := runGit(worktreePath, "symbolic-ref", "-q", "HEAD"); err != nil {
+		// Detached worktree: move it to the new PR head.
+		if out, err := runGit(worktreePath, "checkout", "--detach", "origin/"+branch); err != nil {
+			return fmt.Errorf("failed to update detached worktree %s: %s: %w", worktreePath, out, err)
+		}
+	} else {
+		// On a branch: fast-forward it. A force-pushed PR branch won't
+		// fast-forward; reset to the PR head then, but never throw away
+		// commits someone made locally in the worktree.
+		if out, err := runGit(worktreePath, "merge", "--ff-only", "origin/"+branch); err != nil {
+			if ahead, err := runGit(worktreePath, "rev-list", "--count", "origin/"+branch+"..HEAD"); err != nil || ahead != "0" {
+				slog.Info("Worktree has local commits, skipping update", "path", worktreePath, "branch", branch, "ahead", ahead)
+				return nil
+			}
+			slog.Info("Fast-forward failed (force push?), resetting worktree to PR head", "path", worktreePath, "branch", branch, "output", out)
+			if out, err := runGit(worktreePath, "reset", "--hard", "origin/"+branch); err != nil {
+				return fmt.Errorf("failed to reset worktree %s: %s: %w", worktreePath, out, err)
+			}
+		}
+	}
+	slog.Info("Updated worktree", "path", worktreePath, "branch", branch)
 	return nil
 }
 

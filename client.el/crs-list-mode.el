@@ -225,53 +225,46 @@ without the overhead of full `org-mode'."
 (defun crs-refresh-reviews ()
   "Refresh the PR list by re-fetching from the server."
   (interactive)
-  (let ((buf (get-buffer crs-reviews-buffer-name)))
-    (when buf
-      (kill-buffer buf))
-    (crs-get-reviews)))
+  (crs-get-reviews))
 
 
 ;;;###autoload
 (defun crs-get-reviews ()
   "Call the GetAllReviews RPC method and display the result in `crs-reviews-buffer-name'.
-If the buffer already exists, switch to it instead of making a new RPC call."
+The buffer is always regenerated from a fresh RPC call: the reply is small
+and quick enough now that reusing a stale list costs more than re-fetching."
   (interactive)
-  (let ((existing-buffer (get-buffer crs-reviews-buffer-name)))
-    (if existing-buffer
-        (progn
-          (display-buffer existing-buffer)
-          (message "Switched to existing '%s' buffer" crs-reviews-buffer-name))
-      (unless (and crs--process
-                   (process-live-p crs--process))
-        (crs-start-server)
-        ;; Give the server a moment to start
-        (sleep-for 0.5))
+  (unless (and crs--process
+               (process-live-p crs--process))
+    (crs-start-server)
+    ;; Give the server a moment to start
+    (sleep-for 0.5))
 
-      (crs--send-request
-       "RPCHandler.GetAllReviews"
-       ;; Ask the server to leave out the per-PR subtrees this buffer never
-       ;; reads.  Diffs alone were ~98% of the reply, and the list only ever
-       ;; parses a PR URL off the current line — `crs-get-review' re-fetches
-       ;; the diff through GetPR when a review is actually opened.
-       (vector (list (cons 'IncludeDiff :json-false)
-                     (cons 'IncludeComments
-                           (if crs-include-comments-tree t :json-false))))
-       (lambda (result)
-         (let* ((content (cdr (assq 'content result)))
-                (rendered (if crs-include-comments-tree
-                              content
-                            (crs--strip-comments-tree content)))
-                (buffer (get-buffer-create crs-reviews-buffer-name)))
-           (with-current-buffer buffer
-             (let ((inhibit-read-only t))
-               (erase-buffer)
-               (insert (or rendered ""))
-               (crs--process-html-placeholders)
-               (goto-char (point-min)))
-             (crs-list-mode)
-             (crs-list-collapse-all))
-           (display-buffer buffer)
-           (message "Reviews loaded into '%s' buffer" crs-reviews-buffer-name)))))))
+  (crs--send-request
+   "RPCHandler.GetAllReviews"
+   ;; Ask the server to leave out the per-PR subtrees this buffer never
+   ;; reads.  Diffs alone were ~98% of the reply, and the list only ever
+   ;; parses a PR URL off the current line — `crs-get-review' re-fetches
+   ;; the diff through GetPR when a review is actually opened.
+   (vector (list (cons 'IncludeDiff :json-false)
+                 (cons 'IncludeComments
+                       (if crs-include-comments-tree t :json-false))))
+   (lambda (result)
+     (let* ((content (cdr (assq 'content result)))
+            (rendered (if crs-include-comments-tree
+                          content
+                        (crs--strip-comments-tree content)))
+            (buffer (get-buffer-create crs-reviews-buffer-name)))
+       (with-current-buffer buffer
+         (let ((inhibit-read-only t))
+           (erase-buffer)
+           (insert (or rendered ""))
+           (crs--process-html-placeholders)
+           (goto-char (point-min)))
+         (crs-list-mode)
+         (crs-list-collapse-all))
+       (display-buffer buffer)
+       (message "Reviews loaded into '%s' buffer" crs-reviews-buffer-name)))))
 
 (provide 'crs-list-mode)
 ;;; crs-list-mode.el ends here

@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
-import { rpcCall, getHunkContext } from '../api';
+import { getConfig, rpcCall, getHunkContext } from '../api';
 import { Button, Toast, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
+import { buildPendingPreviews } from '../review_preview_utils';
 import {
     dockViewer as dockViewerState,
     undockTab as undockTabState,
@@ -173,6 +174,8 @@ export default function Review({
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
+    // The login the review posts as, for the submit preview's verdict line.
+    const [githubUsername, setGithubUsername] = useState('');
 
     // LSP Hook
     const lsp = useLsp({
@@ -208,6 +211,26 @@ export default function Review({
             document.title = `${metadata.title} (#${number})`;
         }
     }, [metadata?.title, number]);
+
+    // The submit preview attributes the review to the configured login. Fetched
+    // the first time the modal opens rather than on mount: the review view has
+    // no other use for the server config, and the preview reads fine without it.
+    useEffect(() => {
+        if (!submitting || githubUsername) return;
+        let cancelled = false;
+        getConfig()
+            .then(reply => {
+                if (!cancelled) setGithubUsername(reply.config?.GithubUsername || '');
+            })
+            .catch(e => {
+                // Not worth interrupting a submit over — the preview just falls
+                // back to an unattributed verdict line.
+                console.error('Could not load the configured GitHub username', e);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [submitting, githubUsername]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -786,6 +809,13 @@ export default function Review({
 
     // Custom Prism theme adjusted for diff context
     const customDiffTheme = useMemo(() => buildDiffTheme(theme), [theme]);
+
+    // What a submit would post: every comment left locally on this PR, each
+    // anchored back to the diff rows it was left on.
+    const pendingPreviews = useMemo(
+        () => buildPendingPreviews(comments, parsedLines),
+        [comments, parsedLines]
+    );
 
     const handleCancelInline = () => {
         setActiveLineIndex(null);
@@ -1496,6 +1526,9 @@ export default function Review({
                 reviewEvent={reviewEvent}
                 reviewBody={reviewBody}
                 isSubmittingReview={isSubmittingReview}
+                pendingPreviews={pendingPreviews}
+                username={githubUsername}
+                diffTheme={customDiffTheme}
                 onChangeReviewEvent={setReviewEvent}
                 onChangeReviewBody={setReviewBody}
                 onClose={() => setSubmitting(false)}

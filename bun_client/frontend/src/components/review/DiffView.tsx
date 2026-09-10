@@ -21,6 +21,7 @@ import {
     slugify,
 } from './types';
 import type { DiffTheme } from './diff_theme';
+import { diffRowStyles, diffRowTint } from './diff_row_style';
 
 export interface DiffViewProps {
     parsedLines: ParsedLine[];
@@ -632,28 +633,6 @@ export default function DiffView({
             );
         }
 
-        let containerStyle: React.CSSProperties = {
-            display: 'flex',
-            alignItems: 'stretch',
-            minHeight: '20px',
-            position: 'relative',
-        };
-
-        let prefixStyle: React.CSSProperties = {
-            width: '20px',
-            minWidth: '20px',
-            textAlign: 'center',
-            userSelect: 'none',
-            color: 'var(--text-tertiary)',
-            borderRight: '1px solid var(--border)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            // Relative to the diff container's font size so the gutter tracks
-            // the Review Diff Font Size preference.
-            fontSize: '0.92em',
-        };
-
         // On mobile, unwrapped lines scroll horizontally as a unit (see the
         // max-content wrapper below). The code span must size to its content
         // and never shrink so the row grows wider than the viewport.
@@ -662,56 +641,22 @@ export default function DiffView({
         // The row's own tint, re-applied behind the annotation badge at the end
         // of the line (see annotationCellForLine). null for context rows, which
         // take the diff's background unchanged.
-        const rowTint = isAddition ? colors.diffAddBg : isDeletion ? colors.diffDelBg : null;
+        const rowTint = diffRowTint(item);
         const annotationCell =
             isCodeLine && !isHunkHeader ? annotationCellForLine(item, rowTint) : null;
 
-        let lineStyle: React.CSSProperties = {
-            flex: mobileScroll ? '1 0 auto' : 1,
-            minWidth: mobileScroll ? 'auto' : 0,
-            padding: '0 8px',
-            whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
-            overflowWrap: wrapLines ? 'anywhere' : 'normal',
-            display: 'flex',
-            alignItems: wrapLines ? 'flex-start' : 'center',
-            // An unwrapped line longer than the viewport spills past its box.
-            // Where a badge caps the row, stop the text at the badge instead of
-            // letting it reappear on the far side of it. Nothing readable is
-            // lost: the page clips that overflow at the viewport edge anyway.
-            ...(annotationCell ? { overflow: 'hidden' } : {}),
-        };
-
-        if (isAddition) {
-            containerStyle = { ...containerStyle, background: colors.diffAddBg };
-            prefixStyle = {
-                ...prefixStyle,
-                color: colors.success,
-                background: colors.diffAddGutterBg,
-            };
-        } else if (isDeletion) {
-            containerStyle = { ...containerStyle, background: colors.diffDelBg };
-            prefixStyle = {
-                ...prefixStyle,
-                color: colors.danger,
-                background: colors.diffDelGutterBg,
-            };
-        } else if (isHunkHeader) {
-            // Let .diff-hunk-row own `position` (sticky on desktop, static on
-            // mobile). An inline `position: relative` here would override the
-            // class's sticky while its `top` offset still applied, painting
-            // the header below its slot and overlapping the rows beneath it.
-            containerStyle = {
-                ...containerStyle,
-                background: colors.diffHunkBg,
-                position: undefined,
-            };
-            lineStyle = {
-                ...lineStyle,
-                color: colors.accent,
-                fontStyle: 'italic',
-                fontSize: '0.92em',
-            };
-        }
+        // Tints, gutter and line box come from the shared row styling, so the
+        // read-only re-renders of these same rows (the review preview's comment
+        // context) look like the diff rather than merely resembling it.
+        let {
+            container: containerStyle,
+            prefix: prefixStyle,
+            line: lineStyle,
+        } = diffRowStyles(item, {
+            wrapLines,
+            mobileScroll,
+            clipLine: !!annotationCell,
+        });
 
         if (item.clickable) {
             containerStyle = { ...containerStyle, cursor: 'default' };

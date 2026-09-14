@@ -624,13 +624,18 @@ func MergePR(client *github.Client, owner string, repo string, number int, metho
 	return result, err
 }
 
+// SubmitReply posts a reply to an existing review comment, joining that
+// comment's thread.
+//
+// It goes through CreateCommentInReplyTo rather than handing CreateComment a
+// PullRequestComment with InReplyTo set: that field carries GitHub's *response*
+// name (`in_reply_to_id`), which the create endpoint ignores. The request then
+// reads as a brand new top-level comment, and with no commit_id/path/position
+// GitHub rejects it outright — which is how replies used to disappear between
+// the review being submitted and anything showing up on the PR.
 func SubmitReply(client *github.Client, owner string, repo string, number int, body string, replyToID int64) error {
 	ctx := context.Background()
-	comment := &github.PullRequestComment{
-		Body:      &body,
-		InReplyTo: &replyToID,
-	}
-	_, _, err := client.PullRequests.CreateComment(ctx, owner, repo, number, comment)
+	_, _, err := client.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, number, body, replyToID)
 	return err
 }
 

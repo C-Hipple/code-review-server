@@ -5,6 +5,7 @@ import {
     flattenReplyTree,
     groupIntoThreads,
     relativeTime,
+    replyTargetFor,
     summarizeDiscussion,
     summarizeThread,
 } from './discussion_utils';
@@ -86,6 +87,40 @@ describe('groupIntoThreads', () => {
             comment({ id: '5', in_reply_to: 99 }),
         ];
         expect(groupIntoThreads(comments).flat().length).toBe(comments.length);
+    });
+});
+
+describe('replyTargetFor', () => {
+    test('answers the last comment in a thread GitHub knows about', () => {
+        const target = replyTargetFor([
+            comment({ id: '2147483001' }),
+            comment({ id: '2147483002', author: 'bob', in_reply_to: 2147483001 }),
+        ]);
+        expect(target?.id).toBe('2147483002');
+    });
+
+    test('skips back over pending local replies', () => {
+        // A local id is a row id in the server's database; sending it as
+        // in_reply_to gets the reply rejected and dropped when the review
+        // is submitted.
+        const target = replyTargetFor([
+            comment({ id: '2147483001' }),
+            comment({ id: '2147483002', author: 'bob', in_reply_to: 2147483001 }),
+            comment({ id: '7', author: 'local', in_reply_to: 2147483002 }),
+        ]);
+        expect(target?.id).toBe('2147483002');
+    });
+
+    test('falls back to the last comment when the thread is all local', () => {
+        const target = replyTargetFor([
+            comment({ id: '7', author: 'local' }),
+            comment({ id: '8', author: 'local', in_reply_to: 7 }),
+        ]);
+        expect(target?.id).toBe('8');
+    });
+
+    test('returns undefined for an empty thread', () => {
+        expect(replyTargetFor([])).toBeUndefined();
     });
 });
 

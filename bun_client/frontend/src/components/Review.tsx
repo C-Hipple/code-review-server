@@ -6,6 +6,7 @@ import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import { buildPendingPreviews } from '../review_preview_utils';
+import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
     undockTab as undockTabState,
@@ -469,10 +470,17 @@ export default function Review({
             const prevIds = new Set(comments.map(c => c.id));
             const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
             if (newComments.length > 0) {
+                // Threads are keyed by their root, so a reply has to reveal the
+                // thread it landed in — not the comment it answered, which is
+                // the root only for the first reply in a conversation.
+                const rootOf = new Map<string, string>();
+                for (const thread of groupIntoThreads(res.comments || [])) {
+                    for (const c of thread) rootOf.set(c.id, thread[0].id);
+                }
                 setVisibleThreadIds(prev => {
                     const next = new Set(prev);
                     newComments.forEach(c => {
-                        next.add(c.in_reply_to ? c.in_reply_to.toString() : c.id);
+                        next.add(rootOf.get(c.id) ?? c.id);
                     });
                     return next;
                 });
@@ -595,6 +603,17 @@ export default function Review({
             setReviewBody('');
             applyPRResponse(res);
             loadPluginOutputs();
+            // A reply GitHub refused is still in the pending list below — say
+            // so rather than letting the submit look clean while the reply
+            // quietly stayed behind.
+            const failed = res.failed_replies || [];
+            if (failed.length > 0) {
+                console.error('Replies GitHub refused:', failed);
+                showToast(
+                    `${failed.length} ${failed.length === 1 ? 'reply' : 'replies'} could not be posted and are still pending — see console for details`,
+                    'danger'
+                );
+            }
         } catch (e) {
             console.error(e);
             alert('Error submitting review');
@@ -779,8 +798,8 @@ export default function Review({
             setReplyToId(null);
             setCommentBody('');
         } else {
-            const lastComment = thread[thread.length - 1];
-            setReplyToId(parseInt(lastComment.id, 10));
+            const target = replyTargetFor(thread);
+            setReplyToId(target ? parseInt(target.id, 10) : null);
             setEditingCommentId(null);
             setEditingCommentBody('');
             setCommentBody('');

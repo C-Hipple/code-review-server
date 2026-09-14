@@ -536,6 +536,11 @@ type CommentJSON struct {
 	ThreadID   string `json:"thread_id"`
 	Resolved   bool   `json:"resolved"`
 	ResolvedBy string `json:"resolved_by"`
+	// Reactions are the emoji left on this comment and the logins behind each
+	// one, so a client can show that someone acknowledged the comment rather
+	// than only that nobody replied to it. Also GraphQL-only (see
+	// git_tools.GetReactions); empty when that fetch was skipped or failed.
+	Reactions []git_tools.Reaction `json:"reactions"`
 }
 
 type ReviewJSON struct {
@@ -545,6 +550,10 @@ type ReviewJSON struct {
 	State       string    `json:"state"`
 	SubmittedAt time.Time `json:"submitted_at"`
 	HTMLURL     string    `json:"html_url"`
+	// Reactions on the review's own body. Merged in by GetPRDetails from the
+	// reactions cache rather than stored with the review, so a new thumbs-up
+	// does not have to invalidate the reviews cache.
+	Reactions []git_tools.Reaction `json:"reactions"`
 }
 
 type CommitJSON struct {
@@ -1310,7 +1319,14 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// REST comments above and merged in during the split.
 	reviewThreads := GetPRReviewThreads(owner, repo, number, skipCache)
 
+	// Who reacted is GraphQL-only as well, and is merged in after the split so
+	// the comment and review caches stay free of it — a reaction lands without
+	// changing either.
+	reactions := GetPRReactions(owner, repo, number, skipCache)
+
 	commentJSONs, outdatedCommentJSONs := splitComments(comments, reviewThreads)
+	applyCommentReactions(commentJSONs, reactions)
+	applyCommentReactions(outdatedCommentJSONs, reactions)
 
 	// 5. Load Reviews (with caching)
 	if !reviewsLoaded {
@@ -1319,6 +1335,8 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		}
 		reviews, _ = GetPRReviews(owner, repo, number, skipCache)
 	}
+
+	applyReviewReactions(reviews, reactions)
 
 	// 6. Fetch Commits (with caching)
 	var commits []CommitJSON
@@ -2413,6 +2431,60 @@ func GetPRReviewThreads(owner, repo string, number int, skipCache bool) []git_to
 	}
 
 	return threads
+}
+
+// GetPRReactions returns every reaction on the PR's comments and reviews,
+// reading the DB cache first. A GraphQL failure is logged and reported as nil
+// rather than an error so the PR still renders, just without reaction chips.
+func GetPRReactions(owner, repo string, number int, skipCache bool) *git_tools.PRReactions {
+	if !skipCache {
+		cached, err := config.C().DB.GetPRReactions(number, repo)
+		if err != nil {
+			slog.Error("Error checking database for PR reactions", "pr", number, "repo", repo, "error", err)
+		} else if cached != "" {
+			var reactions git_tools.PRReactions
+			if err := json.Unmarshal([]byte(cached), &reactions); err != nil {
+				slog.Error("Error unmarshaling cached reactions", "pr", number, "repo", repo, "error", err)
+			} else {
+				return &reactions
+			}
+		}
+	}
+
+	reactions, err := git_tools.GetReactions(owner, repo, number)
+	if err != nil {
+		slog.Error("Error fetching reactions", "pr", number, "repo", repo, "error", err)
+		return nil
+	}
+
+	if reactionsJSON, err := json.Marshal(reactions); err != nil {
+		slog.Error("Error marshaling reactions for storage", "error", err)
+	} else if err := config.C().DB.UpsertPRReactions(number, repo, string(reactionsJSON)); err != nil {
+		slog.Error("Error storing reactions in database", "pr", number, "repo", repo, "error", err)
+	}
+
+	return reactions
+}
+
+// applyCommentReactions hangs each comment's reactions off the comment itself,
+// in place. Comments nobody reacted to are left with a nil slice.
+func applyCommentReactions(comments []CommentJSON, reactions *git_tools.PRReactions) {
+	if reactions == nil {
+		return
+	}
+	for i := range comments {
+		comments[i].Reactions = reactions.ForComment(comments[i].ID)
+	}
+}
+
+// applyReviewReactions does the same for the reviews' own bodies.
+func applyReviewReactions(reviews []ReviewJSON, reactions *git_tools.PRReactions) {
+	if reactions == nil {
+		return
+	}
+	for i := range reviews {
+		reviews[i].Reactions = reactions.ForReview(reviews[i].ID)
+	}
 }
 
 type CombinedPRStatus struct {

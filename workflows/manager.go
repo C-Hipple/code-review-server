@@ -59,13 +59,15 @@ type apiCallCounter struct {
 	Commits        atomic.Int64
 	ReviewThreads  atomic.Int64
 	TeamReviews    atomic.Int64
+	Reactions      atomic.Int64
 }
 
 func (c *apiCallCounter) total() int64 {
 	return c.PRList.Load() + c.PRSpecific.Load() + c.Comments.Load() +
 		c.IssueComments.Load() + c.CIStatus.Load() + c.Diff.Load() +
 		c.Reviews.Load() + c.CombinedStatus.Load() + c.CheckRuns.Load() +
-		c.Commits.Load() + c.ReviewThreads.Load() + c.TeamReviews.Load()
+		c.Commits.Load() + c.ReviewThreads.Load() + c.TeamReviews.Load() +
+		c.Reactions.Load()
 }
 
 func (c *apiCallCounter) log() {
@@ -82,6 +84,7 @@ func (c *apiCallCounter) log() {
 		"commits", c.Commits.Load(),
 		"review_threads", c.ReviewThreads.Load(),
 		"team_reviews", c.TeamReviews.Load(),
+		"reactions", c.Reactions.Load(),
 		"total", c.total(),
 	)
 }
@@ -619,6 +622,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		apiCalls.Commits.Load(),
 		apiCalls.ReviewThreads.Load(),
 		apiCalls.TeamReviews.Load(),
+		apiCalls.Reactions.Load(),
 		rlRemaining,
 		rlLimit,
 		rlResetAtStr,
@@ -903,6 +907,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				existing.Commits = existing.Commits || req.AuxData.Commits
 				existing.ReviewThreads = existing.ReviewThreads || req.AuxData.ReviewThreads
 				existing.Teams = existing.Teams || req.AuxData.Teams
+				existing.Reactions = existing.Reactions || req.AuxData.Reactions
 				// Always fetch reviews for open non-draft PRs so Details() can
 				// display who has approved / requested changes / commented.
 				if pr.State != nil && *pr.State == "open" && (pr.Draft == nil || !*pr.Draft) {
@@ -926,7 +931,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 	for key, auxReq := range prRequirements {
 		// Skip if no aux data is needed
 		if !auxReq.Comments && !auxReq.CIStatus && !auxReq.Diff && !auxReq.Reviews &&
-			!auxReq.Commits && !auxReq.ReviewThreads && !auxReq.Teams {
+			!auxReq.Commits && !auxReq.ReviewThreads && !auxReq.Teams && !auxReq.Reactions {
 			continue
 		}
 
@@ -998,6 +1003,8 @@ func applyCacheWarmRequirements(db *database.DB,
 		// would populate it; without warming it here the first person to open the
 		// PR pays for the GraphQL call.
 		req.ReviewThreads = true
+		// Same story for who reacted to each comment.
+		req.Reactions = true
 		// A draft or closed PR is skipped by the open-PR rule in prefetchAuxData,
 		// so without this it would never get its required teams resolved at all.
 		req.Teams = true
@@ -1030,6 +1037,25 @@ func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 	return cachedSHA != *pr.Head.SHA || body == ""
 }
 
+// applyAuxImplications turns on the aux fields another requested field is
+// derived from, so each caller asks for what it wants rather than for what
+// that happens to need.
+func applyAuxImplications(req AuxDataRequirement) AuxDataRequirement {
+	// Required-team standing is computed from who has reviewed, so asking for
+	// the teams is asking for the reviews.
+	if req.Teams {
+		req.Reviews = true
+	}
+	// Reactions are metadata about the comments, and they move on their own —
+	// a thumbs-up leaves the head SHA alone, so the push-triggered cache warm
+	// would never refresh them. Refetching them whenever a workflow refetches
+	// the comments keeps them as current as the comments they hang off.
+	if req.Comments {
+		req.Reactions = true
+	}
+	return req
+}
+
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
 // workflowName identifies who asked for the fetch; it is recorded in
@@ -1041,11 +1067,7 @@ func fetchAuxDataForPR(client *github.Client,
 
 	auxData := &PRAuxData{}
 
-	// Required-team standing is computed from who has reviewed, so asking for
-	// the teams is asking for the reviews.
-	if req.Teams {
-		req.Reviews = true
-	}
+	req = applyAuxImplications(req)
 
 	headSHA := ""
 	if pr != nil && pr.Head != nil && pr.Head.SHA != nil {
@@ -1201,6 +1223,23 @@ func fetchAuxDataForPR(client *github.Client,
 				return
 			}
 			auxData.ReviewThreads = threads
+		}()
+	}
+
+	// 8. Reactions (GraphQL — REST gives per-emoji totals but not who reacted).
+	// Like review threads, only the review view reads these, so nothing else
+	// would fill the cache.
+	if req.Reactions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			apiCalls.Reactions.Add(1)
+			reactions, err := git_tools.GetReactions(key.Owner, key.Repo, key.Number)
+			if err != nil {
+				slog.Warn("Failed to fetch reactions for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
+				return
+			}
+			auxData.Reactions = reactions
 		}()
 	}
 
@@ -1394,6 +1433,19 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				slog.Error("Failed to cache PR team reviews", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "team_reviews")
+			}
+		}
+	}
+
+	// 6d. Reactions (who reacted to each comment and review; same JSON shape
+	// GetPRReactions reads). Nil means the fetch was not requested or failed,
+	// so the cached row stands rather than being blanked.
+	if auxData.Reactions != nil {
+		if j, err := json.Marshal(auxData.Reactions); err == nil {
+			if err := db.UpsertPRReactions(key.Number, key.Repo, string(j)); err != nil {
+				slog.Error("Failed to cache PR reactions", "pr", key.Number, "repo", key.Repo, "error", err)
+			} else {
+				written = append(written, "reactions")
 			}
 		}
 	}

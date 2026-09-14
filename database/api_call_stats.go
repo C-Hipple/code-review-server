@@ -26,6 +26,7 @@ type APICallStatsRow struct {
 	Commits            int64     `json:"commits"`
 	ReviewThreads      int64     `json:"review_threads"`
 	TeamReviews        int64     `json:"team_reviews"`
+	Reactions          int64     `json:"reactions"`
 	Total              int64     `json:"total"`
 	RateLimitRemaining int       `json:"rate_limit_remaining"`
 	RateLimitLimit     int       `json:"rate_limit_limit"`
@@ -40,7 +41,7 @@ func (db *DB) GetAPICallStatsSince(cutoff time.Time) ([]APICallStatsRow, error) 
 	rows, err := db.conn.Query(
 		`SELECT id, recorded_at, pr_list, pr_specific, comments, issue_comments,
 			ci_status, diff, reviews, combined_status, check_runs, commits,
-			review_threads, team_reviews, total,
+			review_threads, team_reviews, reactions, total,
 			rate_limit_remaining, rate_limit_limit, rate_limit_reset_at
 		 FROM APICallStats
 		 WHERE recorded_at >= ?
@@ -59,7 +60,7 @@ func (db *DB) GetAPICallStatsSince(cutoff time.Time) ([]APICallStatsRow, error) 
 		if err := rows.Scan(
 			&r.ID, &recordedAt, &r.PRList, &r.PRSpecific, &r.Comments, &r.IssueComments,
 			&r.CIStatus, &r.Diff, &r.Reviews, &r.CombinedStatus, &r.CheckRuns, &r.Commits,
-			&r.ReviewThreads, &r.TeamReviews, &r.Total,
+			&r.ReviewThreads, &r.TeamReviews, &r.Reactions, &r.Total,
 			&r.RateLimitRemaining, &r.RateLimitLimit, &r.RateLimitResetAt,
 		); err != nil {
 			return nil, err

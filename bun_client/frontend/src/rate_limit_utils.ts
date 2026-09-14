@@ -19,6 +19,7 @@ export const CALL_TYPES: Array<{ key: keyof RateLimitHistoryPoint; label: string
     { key: 'reviews', label: 'Reviews' },
     { key: 'review_threads', label: 'Review threads' },
     { key: 'team_reviews', label: 'Team reviews' },
+    { key: 'reactions', label: 'Reactions' },
     { key: 'commits', label: 'Commits' },
     { key: 'ci_status', label: 'CI status' },
     { key: 'combined_status', label: 'Combined status' },

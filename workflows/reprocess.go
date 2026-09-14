@@ -247,6 +247,9 @@ func mergeAuxRequirements(a, b AuxDataRequirement) AuxDataRequirement {
 		Reviews:  a.Reviews || b.Reviews,
 		Commits:  a.Commits || b.Commits,
 		Teams:    a.Teams || b.Teams,
+		// Reactions ride along with the comments they annotate; fetchAuxDataForPR
+		// turns them on for any request that asks for comments.
+		Reactions: a.Reactions || b.Reactions,
 	}
 }
 

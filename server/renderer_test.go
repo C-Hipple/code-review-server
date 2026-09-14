@@ -1350,3 +1350,60 @@ func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
 		t.Errorf("got %q, want %q", got, `["b","a"]`)
 	}
 }
+
+func TestApplyReactionsHangsThemOffCommentsAndReviews(t *testing.T) {
+	reactions := &git_tools.PRReactions{
+		Comments: map[string][]git_tools.Reaction{
+			"1": {{Content: "+1", Emoji: "👍", Users: []string{"bob"}, Count: 1, ViewerReacted: false}},
+			"3": {{Content: "eyes", Emoji: "👀", Users: []string{"carol"}, Count: 1}},
+		},
+		Reviews: map[string][]git_tools.Reaction{
+			"900": {{Content: "hooray", Emoji: "🎉", Users: []string{"dana"}, Count: 1}},
+		},
+	}
+
+	comments := []CommentJSON{{ID: "1"}, {ID: "2"}}
+	outdated := []CommentJSON{{ID: "3"}}
+	reviews := []ReviewJSON{{ID: 900}, {ID: 901}}
+
+	applyCommentReactions(comments, reactions)
+	applyCommentReactions(outdated, reactions)
+	applyReviewReactions(reviews, reactions)
+
+	if len(comments[0].Reactions) != 1 || comments[0].Reactions[0].Users[0] != "bob" {
+		t.Errorf("comment 1 reactions = %+v, want a thumbs-up from bob", comments[0].Reactions)
+	}
+	// A comment nobody reacted to keeps an empty list rather than gaining an
+	// entry, so clients can test it without special-casing.
+	if len(comments[1].Reactions) != 0 {
+		t.Errorf("comment 2 reactions = %+v, want none", comments[1].Reactions)
+	}
+	// Outdated comments carry reactions too: an acknowledged comment on code
+	// that has since changed is exactly the one you want to stop worrying about.
+	if len(outdated[0].Reactions) != 1 || outdated[0].Reactions[0].Content != "eyes" {
+		t.Errorf("outdated comment 3 reactions = %+v, want eyes", outdated[0].Reactions)
+	}
+	if len(reviews[0].Reactions) != 1 || reviews[0].Reactions[0].Emoji != "🎉" {
+		t.Errorf("review 900 reactions = %+v, want a hooray", reviews[0].Reactions)
+	}
+	if len(reviews[1].Reactions) != 0 {
+		t.Errorf("review 901 reactions = %+v, want none", reviews[1].Reactions)
+	}
+}
+
+// A failed or skipped reactions fetch must leave everything else intact rather
+// than blanking fields or panicking.
+func TestApplyReactionsToleratesAMissingFetch(t *testing.T) {
+	comments := []CommentJSON{{ID: "1", Author: "alice"}}
+	reviews := []ReviewJSON{{ID: 900, User: "alice"}}
+
+	applyCommentReactions(comments, nil)
+	applyReviewReactions(reviews, nil)
+
+	if comments[0].Author != "alice" || len(comments[0].Reactions) != 0 {
+		t.Errorf("comment = %+v, want it untouched with no reactions", comments[0])
+	}
+	if reviews[0].User != "alice" || len(reviews[0].Reactions) != 0 {
+		t.Errorf("review = %+v, want it untouched with no reactions", reviews[0])
+	}
+}

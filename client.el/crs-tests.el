@@ -51,6 +51,7 @@
                 crs--ensure-html crs--make-html-placeholder
                 crs--localize-image-srcs crs--image-cache-path
                 crs--process-html-placeholders crs--strip-comments-tree
+                crs--format-reaction crs--format-reactions
                 crs--index-annotations crs--render-annotation-block
                 crs--insert-annotations-into-buffer
                 crs--format-compact-annotation-indicator
@@ -479,6 +480,84 @@ newline until the very end."
     (should (vectorp (cdr (assq 'items parsed))))
     (should (eq (cdr (assq 'ok parsed)) :json-false))
     (should (eq (cdr (assq 'missing parsed)) nil))))
+
+;;; --- Reactions ---
+;;
+;; A thumbs-up on a comment is an acknowledgement that never arrives as a
+;; reply, so the formatting of *who* reacted is what these pin down.
+
+(ert-deftest crs-test-format-reactions-empty ()
+  "Nothing reacted to renders no line at all, not an empty label."
+  (should-not (crs--format-reactions nil))
+  (should-not (crs--format-reactions [])))
+
+(ert-deftest crs-test-format-reactions-names-reactors ()
+  (should (equal (crs--format-reactions
+                  (vector '((content . "+1") (emoji . "👍")
+                            (users . ["alice" "bob"]) (count . 2)
+                            (viewer_reacted . t))))
+                 "Reactions: 👍 alice, bob")))
+
+(ert-deftest crs-test-format-reactions-joins-emoji ()
+  (should (equal (crs--format-reactions
+                  (vector '((content . "+1") (emoji . "👍")
+                            (users . ["alice"]) (count . 1))
+                          '((content . "eyes") (emoji . "👀")
+                            (users . ["bob"]) (count . 1))))
+                 "Reactions: 👍 alice  👀 bob")))
+
+(ert-deftest crs-test-format-reactions-reports-truncated-reactors ()
+  "The server caps the logins it fetches, so the count can run ahead of them."
+  (should (equal (crs--format-reactions
+                  (vector '((content . "heart") (emoji . "❤️")
+                            (users . ["alice"]) (count . 4))))
+                 "Reactions: ❤️ alice +3 more")))
+
+(ert-deftest crs-test-format-reactions-falls-back-to-name ()
+  "An emoji the server did not recognise still renders under its name."
+  (should (equal (crs--format-reactions
+                  (vector '((content . "party_popper") (emoji . "")
+                            (users . ["carol"]) (count . 1))))
+                 "Reactions: :party_popper: carol")))
+
+(ert-deftest crs-test-comment-tree-renders-reactions ()
+  "Reaction lines appear under the comment they belong to, root and reply."
+  (let ((rendered
+         (crs--render-comment-tree
+          (list '((id . "1") (author . "alice") (path . "a.go") (position . "3")
+                  (body . "please rename this")
+                  (reactions . [((content . "+1") (emoji . "👍")
+                                 (users . ["bob"]) (count . 1))]))
+                '((id . "2") (author . "bob") (body . "done")
+                  (reactions . [((content . "eyes") (emoji . "👀")
+                                 (users . ["alice"]) (count . 1))]))))))
+    (should (string-match-p "👍 bob" rendered))
+    (should (string-match-p "👀 alice" rendered))))
+
+(ert-deftest crs-test-comment-tree-without-reactions ()
+  "A comment nobody reacted to gains no extra line."
+  (let ((rendered
+         (crs--render-comment-tree
+          (list '((id . "1") (author . "alice") (path . "a.go") (position . "3")
+                  (body . "please rename this"))))))
+    (should-not (string-match-p "Reactions:" rendered))))
+
+(ert-deftest crs-test-conversation-renders-reactions ()
+  "Conversation comments and review bodies both carry their reactions."
+  (let ((rendered
+         (crs--render-conversation-from-data
+          (vector '((id . "1") (author . "alice") (path . "")
+                    (created_at . "2026-01-01T00:00:00Z")
+                    (body . "shipping this")
+                    (reactions . [((content . "rocket") (emoji . "🚀")
+                                   (users . ["bob"]) (count . 1))])))
+          (vector '((id . 900) (user . "bob") (state . "APPROVED")
+                    (submitted_at . "2026-01-02T00:00:00Z")
+                    (body . "nice work")
+                    (reactions . [((content . "hooray") (emoji . "🎉")
+                                   (users . ["alice"]) (count . 1))]))))))
+    (should (string-match-p "🚀 bob" rendered))
+    (should (string-match-p "🎉 alice" rendered))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

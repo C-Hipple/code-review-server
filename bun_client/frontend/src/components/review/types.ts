@@ -14,6 +14,19 @@ export const stripHtmlComments = (text: string): string => {
     return text.replace(/<!--[\s\S]*?-->/g, '');
 };
 
+// One emoji's worth of reactions on a comment or review, with the logins
+// behind it. The server normalises GitHub's GraphQL enum to the REST name
+// ("+1", "heart") and carries the emoji itself so clients don't each keep a
+// copy of the mapping. `count` is GitHub's total, which can exceed `users`
+// when a reaction has more reactors than the server asks for.
+export interface Reaction {
+    content: string;
+    emoji: string;
+    users: string[];
+    count: number;
+    viewer_reacted: boolean;
+}
+
 export interface Comment {
     id: string;
     author: string;
@@ -35,6 +48,9 @@ export interface Comment {
     thread_id?: string;
     resolved?: boolean;
     resolved_by?: string;
+    // Emoji reactions left on this comment. Absent when the server could not
+    // fetch them; empty when nobody has reacted.
+    reactions?: Reaction[];
 }
 
 export interface ReviewData {
@@ -44,6 +60,8 @@ export interface ReviewData {
     state: string;
     submitted_at: string;
     html_url: string;
+    // Reactions on the review's own body, same shape as a comment's.
+    reactions?: Reaction[];
 }
 
 // The plugin response contract lives in plugin_utils, alongside the helpers

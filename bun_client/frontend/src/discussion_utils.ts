@@ -121,6 +121,28 @@ export function buildReplyTree(thread: Comment[]): ThreadNode[] {
     return roots;
 }
 
+/**
+ * The comment a new reply to `thread` should answer.
+ *
+ * Replies target the end of the conversation so a back-and-forth keeps
+ * nesting, but the target has to be something GitHub can resolve. A local
+ * comment's id is a row id in the server's database: answering one sends that
+ * id as `in_reply_to`, GitHub rejects it, and the reply is dropped when the
+ * review goes out. So skip back over the pending local comments to the last one
+ * GitHub already knows about.
+ *
+ * A thread that is local all the way down (a comment left this sitting, being
+ * replied to) has no such comment; it returns the last one anyway, and the
+ * server resolves the local chain when the review is submitted.
+ */
+export function replyTargetFor(thread: Comment[]): Comment | undefined {
+    if (thread.length === 0) return undefined;
+    for (let i = thread.length - 1; i >= 0; i--) {
+        if (thread[i].author !== 'local') return thread[i];
+    }
+    return thread[thread.length - 1];
+}
+
 /** Flatten a reply tree back into render order (parent, then its replies). */
 export function flattenReplyTree(nodes: ThreadNode[]): ThreadNode[] {
     const out: ThreadNode[] = [];

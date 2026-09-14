@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crs/config"
+	"crs/database"
 	"crs/git_tools"
 	"crs/llm"
 	"crs/utils"
@@ -541,6 +542,43 @@ type SubmitReviewArgs struct {
 
 type SubmitReviewReply struct {
 	PRPayload
+	// Replies GitHub refused. The local comments behind them are kept rather
+	// than deleted with the rest, so the reviewer still has the text and can
+	// retry; the client surfaces this list instead of reporting a clean submit.
+	FailedReplies []string `json:"failed_replies,omitempty"`
+}
+
+// resolveReplyAnchor finds the GitHub comment a pending local reply should be
+// posted against.
+//
+// A reply stores whatever comment the reviewer clicked, and that can itself be
+// another pending local comment — replying to a thread targets its last
+// message, which is a local one as soon as the reviewer has answered it once in
+// this sitting. A local id is a row id in our own database and means nothing to
+// GitHub, so walk up the chain of local comments until the trail leaves the
+// pending set: that id is the real comment on the PR.
+//
+// Returns false when the chain ends on a local comment with nothing above it —
+// the conversation being answered has not been submitted yet, so there is no
+// GitHub comment to reply to and the caller has to send the text another way.
+func resolveReplyAnchor(c database.LocalComment, pending map[int64]database.LocalComment) (int64, bool) {
+	if c.ReplyToID == nil {
+		return 0, false
+	}
+	target := *c.ReplyToID
+	seen := map[int64]bool{c.ID: true}
+	for {
+		local, isLocal := pending[target]
+		if !isLocal {
+			// Not one of ours: it is a comment GitHub knows about.
+			return target, true
+		}
+		if seen[target] || local.ReplyToID == nil {
+			return 0, false
+		}
+		seen[target] = true
+		target = *local.ReplyToID
+	}
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
@@ -550,50 +588,105 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		slog.Error("Error fetching local comments", "error", err)
 		return err
 	}
+	pending := make(map[int64]database.LocalComment, len(comments))
+	for _, c := range comments {
+		pending[c.ID] = c
+	}
 
 	// 2. Construct Review Request
+	//
+	// Replies cannot ride along in the review: GitHub's create-review endpoint
+	// takes a path and a position per comment and has no notion of answering an
+	// existing one, so each reply is posted on its own against the comment it
+	// answers. Everything else goes out as part of the review below.
 	client := git_tools.GetGithubClient()
 	var reviewComments []*github.DraftReviewComment
+	// Local rows riding along with the review, deleted once GitHub has it.
+	var reviewCommentIDs []int64
 	for _, c := range comments {
 		if c.Body == nil {
+			// Nothing to submit, and nothing worth keeping: an empty row would
+			// sit in the pending list forever.
+			if err := config.C().DB.DeleteLocalComment(c.ID); err != nil {
+				slog.Error("Error deleting empty local comment", "id", c.ID, "error", err)
+			}
+			continue
+		}
+		if anchor, ok := resolveReplyAnchor(c, pending); ok {
+			if err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, anchor); err != nil {
+				// Keep the local comment. Deleting it here is what used to make
+				// a failed reply vanish from both the PR and the dashboard,
+				// with only a server log to say it ever existed.
+				slog.Error("Error submitting reply", "id", c.ID, "in_reply_to", anchor, "error", err)
+				reply.FailedReplies = append(reply.FailedReplies, fmt.Sprintf("reply to comment %d: %v", anchor, err))
+				continue
+			}
+			// Already on GitHub, so drop it now rather than after the review
+			// call below: if that call fails and the reviewer submits again,
+			// this reply must not be posted a second time.
+			if err := config.C().DB.DeleteLocalComment(c.ID); err != nil {
+				slog.Error("Error deleting submitted reply", "id", c.ID, "error", err)
+			}
 			continue
 		}
 		if c.ReplyToID != nil {
-			err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, *c.ReplyToID)
-			if err != nil {
-				slog.Error("Error submitting reply", "error", err)
+			// A reply to a comment that is itself still pending, so there is
+			// nothing on GitHub to answer yet. Send it with the review as an
+			// ordinary comment on the line it was written against — the same
+			// conversation, just not nested — provided it has a line to point
+			// at. Without one GitHub would reject the whole review, so keep it
+			// pending and report it rather than taking the rest down with it.
+			if c.Filename == "" || c.Position <= 0 {
+				slog.Error("Reply targets an unsubmitted comment and has no diff position to fall back on",
+					"id", c.ID, "reply_to", *c.ReplyToID)
+				reply.FailedReplies = append(reply.FailedReplies,
+					fmt.Sprintf("reply to comment %d: the comment it answers has not been submitted yet", *c.ReplyToID))
+				continue
 			}
-		} else {
-			// Top-level comments
-			pos := int(c.Position)
-			body := *c.Body
-			reviewComments = append(reviewComments, &github.DraftReviewComment{
-				Path:     &c.Filename,
-				Position: &pos,
-				Body:     &body,
-			})
+			slog.Warn("Reply targets an unsubmitted comment; posting it with the review instead",
+				"id", c.ID, "reply_to", *c.ReplyToID)
 		}
-	}
-
-	reviewRequest := &github.PullRequestReviewRequest{
-		Event:    &args.Event,
-		Comments: reviewComments,
-	}
-	if args.Body != "" {
-		reviewRequest.Body = &args.Body
+		pos := int(c.Position)
+		body := *c.Body
+		reviewComments = append(reviewComments, &github.DraftReviewComment{
+			Path:     &c.Filename,
+			Position: &pos,
+			Body:     &body,
+		})
+		reviewCommentIDs = append(reviewCommentIDs, c.ID)
 	}
 
 	// 3. Submit to GitHub
-	err = git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest)
-	if err != nil {
-		slog.Error("Error submitting review to GitHub", "error", err)
-		return err
-	}
+	//
+	// A plain COMMENT review with no body and no comments left to carry is not
+	// something GitHub accepts, and there is nothing to say: the replies above
+	// were the whole submission. A verdict (APPROVE / REQUEST_CHANGES) still
+	// goes out on its own.
+	if args.Event == "COMMENT" && args.Body == "" && len(reviewComments) == 0 {
+		slog.Info("Nothing left to submit as a review; replies were posted on their own",
+			"owner", args.Owner, "repo", args.Repo, "pr", args.Number)
+	} else {
+		reviewRequest := &github.PullRequestReviewRequest{
+			Event:    &args.Event,
+			Comments: reviewComments,
+		}
+		if args.Body != "" {
+			reviewRequest.Body = &args.Body
+		}
 
-	// 4. Clean up Local Comments
-	err = config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
-	if err != nil {
-		slog.Error("Error deleting local comments after submission", "error", err)
+		if err := git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest); err != nil {
+			// The comments that would have ridden along are still in the
+			// database, so a retry sends exactly what did not make it.
+			slog.Error("Error submitting review to GitHub", "error", err)
+			return err
+		}
+
+		// 4. Clean up the Local Comments GitHub now has
+		for _, id := range reviewCommentIDs {
+			if err := config.C().DB.DeleteLocalComment(id); err != nil {
+				slog.Error("Error deleting local comment after submission", "id", id, "error", err)
+			}
+		}
 	}
 
 	// 5. Re-run the PR through the workflows that target its repo so the

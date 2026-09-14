@@ -95,6 +95,9 @@ export interface PRResponse {
     annotations?: PRAnnotation[];
     // Only set by SyncPR: true when the sync pulled in a new head SHA or new comments.
     updated?: boolean;
+    // Only set by SubmitReview: replies GitHub refused. The local comments
+    // behind them are still pending, so the review did not go out whole.
+    failed_replies?: string[];
 }
 
 // Map file extensions to Prism language identifiers

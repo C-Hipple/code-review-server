@@ -244,6 +244,12 @@ needs nothing from you. Individual threads still show both badges. See
 `summarizeDiscussion` in `discussion_utils.ts`, which exposes
 `unresolvedOutdatedThreads` alongside the `outdatedThreads` total.
 
+Reactions are rendered as chips under the body they belong to — a review summary, a
+standalone comment, or each comment inside a thread — with the reactors' logins in
+the hover text and your own reaction outlined in the accent colour. A 👍 from the
+author is an acknowledgement that never arrives as a reply, which is the whole
+reason they are shown.
+
 All of this is derived from one `GetPR` payload; the client makes no extra request
 for it.
 
@@ -554,6 +560,11 @@ basics:
   (REST has no equivalent) and folds it into the same payload, so a client gets it
   for free and **must not** call GitHub itself. All three are zero when the server
   could not fetch them, which means "unknown", not "unresolved".
+- [`comments[].reactions` / `reviews[].reactions`](protocol.md#reactions) — the emoji
+  on a comment *and the logins behind each one*. REST reports only totals, and who
+  reacted is one REST call per comment, so the server reads it from GraphQL in a
+  single call per PR and folds it into the payload. Null or empty means "nobody
+  reacted, or the fetch didn't happen" — there is no separate "unknown".
 
 ---
 

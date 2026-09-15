@@ -170,6 +170,13 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	CREATE TABLE IF NOT EXISTS PRReactions (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		reactions_json TEXT NOT NULL,
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS PRTeamReviews (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -272,6 +279,7 @@ func (db *DB) initSchema() error {
 		commits INTEGER NOT NULL DEFAULT 0,
 		review_threads INTEGER NOT NULL DEFAULT 0,
 		team_reviews INTEGER NOT NULL DEFAULT 0,
+		reactions INTEGER NOT NULL DEFAULT 0,
 		total INTEGER NOT NULL DEFAULT 0
 	);
 
@@ -448,6 +456,17 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN team_reviews INTEGER NOT NULL DEFAULT 0")
 		if err != nil {
 			slog.Warn("Error adding team_reviews column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: Add the reactions counter to APICallStats. Reactions are
+	// another GraphQL-only fetch (REST reports per-emoji totals but not who
+	// reacted), spending the same budget as review_threads and team_reviews.
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='reactions'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN reactions INTEGER NOT NULL DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding reactions column to APICallStats", "error", err)
 		}
 	}
 
@@ -1680,6 +1699,47 @@ func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
 	return err
 }
 
+// Who reacted to a comment is GraphQL-only too (REST reports per-emoji totals
+// but not the logins behind them), so reactions get their own cache rather than
+// being folded into the comment and review rows. Keeping them separate lets a
+// thumbs-up refresh without rewriting a comment cache whose contents have not
+// changed.
+
+func (db *DB) GetPRReactions(prNumber int, repo string) (string, error) {
+	var reactionsJSON string
+	err := db.conn.QueryRow(
+		"SELECT reactions_json FROM PRReactions WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&reactionsJSON)
+
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return reactionsJSON, nil
+}
+
+func (db *DB) UpsertPRReactions(prNumber int, repo, reactionsJSON string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRReactions (pr_number, repo, reactions_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			reactions_json = excluded.reactions_json`,
+		prNumber, repo, reactionsJSON,
+	)
+	return err
+}
+
+func (db *DB) DeletePRReactions(prNumber int, repo string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM PRReactions WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	)
+	return err
+}
+
 // GetPRTeamReviews returns the cached required-team review statuses for a PR as
 // JSON. An empty string means no row: the difference between "this PR has never
 // had its teams resolved" and "this PR has no required teams" (which caches as
@@ -1735,13 +1795,13 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 
 // LogAPICallStats persists per-type GitHub API call counts and post-cycle rate limit
 // status for a completed workflow cycle.
-func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
-	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads + teamReviews
+func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, reactions int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
+	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads + teamReviews + reactions
 	_, err := db.conn.Exec(
 		`INSERT INTO APICallStats
-			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, team_reviews, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, total,
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, team_reviews, reactions, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, reactions, total,
 		rateLimitRemaining, rateLimitLimit, rateLimitResetAt,
 	)
 	return err

@@ -75,7 +75,7 @@ func TestGetAPICallStatsSinceEmpty(t *testing.T) {
 func TestGetAPICallStatsSinceReadsLoggedCycle(t *testing.T) {
 	db := newTestDB(t)
 
-	if err := db.LogAPICallStats(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 4321, 5000, "2026-08-26T12:00:00Z"); err != nil {
+	if err := db.LogAPICallStats(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 4321, 5000, "2026-08-26T12:00:00Z"); err != nil {
 		t.Fatalf("LogAPICallStats: %v", err)
 	}
 
@@ -87,10 +87,10 @@ func TestGetAPICallStatsSinceReadsLoggedCycle(t *testing.T) {
 		t.Fatalf("expected the logged cycle to come back, got %d rows", len(rows))
 	}
 	got := rows[0]
-	if got.PRList != 1 || got.PRSpecific != 2 || got.ReviewThreads != 11 || got.TeamReviews != 12 {
+	if got.PRList != 1 || got.PRSpecific != 2 || got.ReviewThreads != 11 || got.TeamReviews != 12 || got.Reactions != 13 {
 		t.Errorf("per-type counters did not round-trip: %+v", got)
 	}
-	if want := int64(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12); got.Total != want {
+	if want := int64(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13); got.Total != want {
 		t.Errorf("Total = %d, want %d", got.Total, want)
 	}
 	if got.RateLimitRemaining != 4321 || got.RateLimitLimit != 5000 {

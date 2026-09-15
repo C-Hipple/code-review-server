@@ -199,9 +199,14 @@ If point is on a URL: line, open the URL in the browser instead."
                     (let ((author (or (cdr (assq 'author c)) "unknown"))
                           (time (or (cdr (assq 'created_at c)) ""))
                           (path (or (cdr (assq 'path c)) ""))
-                          (body (or (cdr (assq 'body c)) "(No body)")))
+                          (body (or (cdr (assq 'body c)) "(No body)"))
+                          (reacted (crs--format-reactions (cdr (assq 'reactions c)))))
                       (insert (format "[%s] %s on %s:\n" author time path))
                       (crs--insert-html body "  ")
+                      ;; A comment on code that has since changed is exactly the
+                      ;; one worth knowing was acknowledged before it went stale.
+                      (when reacted
+                        (insert (format "\n  %s" reacted)))
                       (insert "\n\n──────────────────────────────────\n\n")))
                   comments))
         (goto-char (point-min))

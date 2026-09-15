@@ -10,6 +10,7 @@ import {
     type TimelineEntry,
 } from '../../discussion_utils';
 import GitHubMarkdown from '../GitHubMarkdown';
+import Reactions from './Reactions';
 import ThreadStateBadges from './ThreadStateBadges';
 import { type Comment, type ReviewData, stripHtmlComments } from './types';
 
@@ -213,6 +214,7 @@ function TimelineThread({
                         >
                             <GitHubMarkdown>{stripHtmlComments(c.body)}</GitHubMarkdown>
                         </div>
+                        <Reactions reactions={c.reactions} compact />
                     </div>
                 ))}
         </div>
@@ -283,6 +285,7 @@ function TimelineRow({
                     <GitHubMarkdown>{stripHtmlComments(entry.body)}</GitHubMarkdown>
                 </div>
             )}
+            <Reactions reactions={entry.reactions} />
             {entry.threads.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {entry.threads.map(t => (

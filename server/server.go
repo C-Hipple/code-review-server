@@ -1180,6 +1180,7 @@ type RateLimitHistoryPoint struct {
 	Commits        int64  `json:"commits"`
 	ReviewThreads  int64  `json:"review_threads"`
 	TeamReviews    int64  `json:"team_reviews"`
+	Reactions      int64  `json:"reactions"`
 	Total          int64  `json:"total"`
 	// Remaining and Limit are -1 when the cycle recorded no usable budget
 	// reading, so a client can leave a gap rather than plotting a zero.
@@ -1241,6 +1242,7 @@ func (h *RPCHandler) GetRateLimitHistory(args *GetRateLimitHistoryArgs, reply *G
 			Commits:        row.Commits,
 			ReviewThreads:  row.ReviewThreads,
 			TeamReviews:    row.TeamReviews,
+			Reactions:      row.Reactions,
 			Total:          row.Total,
 			Remaining:      row.RateLimitRemaining,
 			Limit:          row.RateLimitLimit,

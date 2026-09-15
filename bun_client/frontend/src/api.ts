@@ -176,6 +176,7 @@ export interface RateLimitHistoryPoint {
     commits: number;
     review_threads: number;
     team_reviews: number;
+    reactions: number;
     total: number;
     remaining: number;
     limit: number;

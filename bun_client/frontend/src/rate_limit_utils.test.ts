@@ -38,6 +38,7 @@ function point(overrides: Partial<RateLimitHistoryPoint> = {}): RateLimitHistory
         commits: 0,
         review_threads: 0,
         team_reviews: 0,
+        reactions: 0,
         total: 0,
         remaining: 5000,
         limit: 5000,

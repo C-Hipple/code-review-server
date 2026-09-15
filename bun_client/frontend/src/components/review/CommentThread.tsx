@@ -1,6 +1,7 @@
 import { colors } from '../../design';
 import { buildReplyTree, flattenReplyTree, summarizeThread } from '../../discussion_utils';
 import GitHubMarkdown from '../GitHubMarkdown';
+import Reactions from './Reactions';
 import ThreadStateBadges from './ThreadStateBadges';
 import type { Comment } from './types';
 
@@ -166,6 +167,7 @@ export default function CommentThread({
                         >
                             <div className="markdown-content" style={{ flex: 1, minWidth: 0 }}>
                                 <GitHubMarkdown>{c.body}</GitHubMarkdown>
+                                <Reactions reactions={c.reactions} compact />
                             </div>
                             {c.author === 'local' && (
                                 <button

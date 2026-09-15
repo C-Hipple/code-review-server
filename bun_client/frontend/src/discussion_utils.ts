@@ -1,4 +1,4 @@
-import type { Comment, ReviewData } from './components/review/types';
+import type { Comment, Reaction, ReviewData } from './components/review/types';
 
 // Pure helpers for turning the server's flat comment list into something you
 // can actually follow: real reply trees, and a chronological PR-level timeline
@@ -211,6 +211,13 @@ export interface TimelineEntry {
     htmlUrl: string;
     /** Threads submitted as part of this review, oldest first. */
     threads: ThreadSummary[];
+    /**
+     * Reactions on whatever `body` came from — the review summary, or the
+     * standalone comment. Threads carry their own per-comment reactions, so
+     * an entry that is only a wrapper around threads leaves this empty rather
+     * than repeating the root comment's chips.
+     */
+    reactions?: Reaction[];
 }
 
 // GitHub records a pending review's submission time, but a review created by
@@ -283,6 +290,7 @@ export function buildDiscussionTimeline(
             body: r.body || '',
             htmlUrl: r.html_url || '',
             threads: reviewThreads,
+            reactions: r.reactions,
         });
         threadsByReview.delete(r.id);
     }
@@ -315,6 +323,7 @@ export function buildDiscussionTimeline(
             body: t.path ? '' : root.body,
             htmlUrl: root.html_url || '',
             threads: t.path ? [t] : [],
+            reactions: t.path ? undefined : root.reactions,
         });
     }
 

@@ -234,6 +234,7 @@ Each comment block includes the file path, timestamp, author(s), and comment ID,
 | `thread_id`   | string | GraphQL node ID of the review thread this comment belongs to (see [Review thread resolution](#review-thread-resolution)) |
 | `resolved`    | bool   | Whether the thread has been marked resolved on GitHub |
 | `resolved_by` | string | GitHub login of whoever resolved the thread; empty when unresolved |
+| `reactions`   | []Reaction | Emoji reactions on this comment, with the logins behind each one (see [Reactions](#reactions)) |
 
 ##### Review thread resolution
 
@@ -266,18 +267,45 @@ reflects GitHub's own judgement for the whole thread rather than a single
 comment's position mapping, and it also decides whether a comment lands in
 `comments` or in `outdated_comments`.
 
+##### Reactions
+
+| Field            | Type     | Description                                                                 |
+|------------------|----------|-----------------------------------------------------------------------------|
+| `content`        | string   | REST-style emoji name: `+1`, `-1`, `laugh`, `hooray`, `confused`, `heart`, `rocket`, `eyes` |
+| `emoji`          | string   | The emoji itself (`👍`), so clients don't each carry the mapping; empty for a content value the server doesn't recognise |
+| `users`          | []string | Logins that left this reaction, up to 20                                    |
+| `count`          | int      | GitHub's own total; `count > len(users)` means the login list was truncated  |
+| `viewer_reacted` | bool     | Whether the account behind `CRS_GITHUB_TOKEN` is one of the reactors         |
+
+Reactions are carried by comments (`comments`, `outdated_comments`) and by
+reviews, and they answer a question a reply count cannot: whether anyone
+acknowledged a comment at all. REST reports only per-emoji totals, and who
+reacted is a separate REST call *per comment*, so the server reads them from
+GraphQL's `reactionGroups` in one call per PR — again, **clients never call
+GitHub directly**.
+
+They are cached in SQLite (the `PRReactions` table) separately from the comment
+and review caches, because a reaction lands without changing either. The
+workflow cycle warms them when a PR is added or its head SHA changes, and
+refreshes them whenever it refetches a PR's comments; `SyncPR` forces a
+refetch. A comment nobody has reacted to carries `null` (the field is always
+present but not normalised to `[]`), and a failed or skipped fetch leaves every
+comment and review that way — so treat null-or-empty as "nothing to show"
+rather than as a positive statement about anything.
+
 #### Review Object
 
 Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 
-| Field          | Type      | Description                                      |
-|----------------|-----------|--------------------------------------------------|
-| `id`           | int64     | Review ID                                        |
-| `user`         | string    | GitHub login of the reviewer                     |
-| `body`         | string    | Main body text of the review                     |
-| `state`        | string    | Review state (APPROVED, CHANGES_REQUESTED, etc.) |
-| `submitted_at` | Time      | Timestamp when the review was submitted          |
-| `html_url`     | string    | Link to the review on GitHub                     |
+| Field          | Type       | Description                                      |
+|----------------|------------|--------------------------------------------------|
+| `id`           | int64      | Review ID                                        |
+| `user`         | string     | GitHub login of the reviewer                     |
+| `body`         | string     | Main body text of the review                     |
+| `state`        | string     | Review state (APPROVED, CHANGES_REQUESTED, etc.) |
+| `submitted_at` | Time       | Timestamp when the review was submitted          |
+| `html_url`     | string     | Link to the review on GitHub                     |
+| `reactions`    | []Reaction | Emoji reactions on the review's own body (see [Reactions](#reactions)) |
 
 #### Commit Object (`CommitJSON`)
 
@@ -1068,7 +1096,16 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "html_url": "https://github.com/octocat/Hello-World/pull/42#discussion_r12345",
         "thread_id": "PRRT_kwDOA...",
         "resolved": true,
-        "resolved_by": "coder1"
+        "resolved_by": "coder1",
+        "reactions": [
+          {
+            "content": "+1",
+            "emoji": "👍",
+            "users": ["coder1", "coder2"],
+            "count": 2,
+            "viewer_reacted": false
+          }
+        ]
       }
     ],
     "outdated_comments": [],
@@ -1079,7 +1116,8 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
         "body": "Looks good!",
         "state": "APPROVED",
         "submitted_at": "2023-01-01T12:05:00Z",
-        "html_url": "https://github.com/..."
+        "html_url": "https://github.com/...",
+        "reactions": []
       }
     ],
     "commits": [

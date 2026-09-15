@@ -43,6 +43,10 @@ type AuxDataRequirement struct {
 	// one stands, for the chips on the review list's rows. It is derived from
 	// the PR's reviews, so asking for it implies Reviews.
 	Teams bool
+	// Reactions is who reacted to each comment and review. Like ReviewThreads
+	// it is GraphQL-only and read only by the review view; asking for Comments
+	// implies it, since a reaction is metadata about a comment.
+	Reactions bool
 }
 
 // PRAuxData holds pre-fetched auxiliary data for a PR
@@ -59,8 +63,11 @@ type PRAuxData struct {
 	// rows. Non-nil (possibly empty) once resolved; nil means "not resolved
 	// this pass", which leaves any cached row alone.
 	TeamReviews []git_tools.TeamReviewStatus
-	HeadSHA     string // SHA of the PR head for DB storage
-	BaseSHA     string // SHA of the PR base for DB storage
+	// Reactions is who reacted to each comment and review, for the DB cache.
+	// Nil means "not fetched this pass", which leaves any cached row alone.
+	Reactions *git_tools.PRReactions
+	HeadSHA   string // SHA of the PR head for DB storage
+	BaseSHA   string // SHA of the PR base for DB storage
 }
 
 type Workflow interface {

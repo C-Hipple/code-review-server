@@ -190,6 +190,37 @@ compact <C: ...> comment indicator or <A: ...> annotation indicator."
     (maphash (lambda (k v) (puthash k (nreverse v) map)) map)
     map))
 
+;;; Reactions
+;;
+;; GitHub's emoji reactions are the quiet half of a review conversation: a
+;; thumbs-up on a comment is an acknowledgement that never arrives as a reply.
+;; The server sends the logins behind each emoji (see git_tools/reactions.go),
+;; so these render who reacted rather than only how many did.
+
+(defun crs--format-reaction (reaction)
+  "Format one REACTION alist as \"👍 alice, bob\".
+Falls back to the reaction's name when the server sent no emoji, and
+reports reactors it did not send names for as \"+N more\"."
+  (let* ((emoji (or (cdr (assq 'emoji reaction)) ""))
+         (content (or (cdr (assq 'content reaction)) ""))
+         (users (append (or (cdr (assq 'users reaction)) []) nil))
+         (count (or (cdr (assq 'count reaction)) (length users)))
+         (label (if (string-empty-p emoji) (format ":%s:" content) emoji))
+         (hidden (- count (length users)))
+         (names (string-join users ", ")))
+    (cond ((string-empty-p names) (format "%s %d" label count))
+          ((> hidden 0) (format "%s %s +%d more" label names hidden))
+          (t (format "%s %s" label names)))))
+
+(defun crs--format-reactions (reactions)
+  "Format REACTIONS (a vector or list of reaction alists) as one line.
+Returns nil when nothing has been reacted to, so callers can skip the
+line entirely rather than printing an empty label."
+  (let ((items (append (or reactions []) nil)))
+    (when items
+      (concat "Reactions: "
+              (mapconcat #'crs--format-reaction items "  ")))))
+
 (defun crs--render-comment-tree (comments)
   "Render a list of comments (presumably a thread) into a string."
   (if (null comments)
@@ -211,6 +242,8 @@ compact <C: ...> comment indicator or <A: ...> annotation indicator."
       ;; Render root comment
       (push (format "    │ [%s]:" (or author "local")) lines)
       (push (crs--make-html-placeholder (cdr (assq 'body root)) "    │   ") lines)
+      (when-let ((reacted (crs--format-reactions (cdr (assq 'reactions root)))))
+        (push (format "    │   %s" reacted) lines))
 
       ;; Render replies
       (dolist (reply replies)
@@ -218,7 +251,9 @@ compact <C: ...> comment indicator or <A: ...> annotation indicator."
         (let ((r-author (cdr (assq 'author reply)))
               (r-id (cdr (assq 'id reply))))
           (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
-          (push (crs--make-html-placeholder (cdr (assq 'body reply)) "    │   ") lines)))
+          (push (crs--make-html-placeholder (cdr (assq 'body reply)) "    │   ") lines)
+          (when-let ((reacted (crs--format-reactions (cdr (assq 'reactions reply)))))
+            (push (format "    │   %s" reacted) lines))))
 
       (push "    └──────────────────────────────────" lines)
       (push "" lines)
@@ -818,6 +853,13 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
 
       sb)))
 
+(defun crs--conversation-reactions-line (item)
+  "Return ITEM's reactions as a trailing line, or an empty string.
+Conversation entries are separated by a blank line either way, so this
+returns the line including its own newline rather than a bare string."
+  (let ((reacted (crs--format-reactions (plist-get item :reactions))))
+    (if reacted (concat reacted "\n") "")))
+
 (defun crs--render-conversation-from-data (comments reviews &optional outdated-comments commits)
   "Render the conversation section from COMMENTS, REVIEWS, OUTDATED-COMMENTS and COMMITS."
   (let ((items nil)
@@ -833,7 +875,8 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                   (push (list :type 'comment
                               :time (cdr (assq 'created_at c))
                               :author (cdr (assq 'author c))
-                              :body (cdr (assq 'body c)))
+                              :body (cdr (assq 'body c))
+                              :reactions (cdr (assq 'reactions c)))
                         items))))
             comments)
 
@@ -847,7 +890,8 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                               :time (cdr (assq 'submitted_at r))
                               :author (cdr (assq 'user r))
                               :state state
-                              :body body)
+                              :body body
+                              :reactions (cdr (assq 'reactions r)))
                         items))))
             reviews)
 
@@ -889,10 +933,12 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                                  (format "  %s  %s\n\n" short-sha first-line)))))
              ((eq type 'review)
               (setq sb (concat sb (format "From: %s at %s [%s]\n" author time (plist-get item :state))))
-              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n")))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n"))
+              (setq sb (concat sb (crs--conversation-reactions-line item) "\n")))
              (t
               (setq sb (concat sb (format "From: %s at %s\n" author time)))
-              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n\n"))))))))
+              (setq sb (concat sb (crs--make-html-placeholder (or (plist-get item :body) "(No body)")) "\n"))
+              (setq sb (concat sb (crs--conversation-reactions-line item) "\n"))))))))
 
     ;; Add Files Changed header (placeholder or parsed?)
     ;; For now just a blank line, maybe we can add a separator

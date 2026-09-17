@@ -38,8 +38,7 @@ export default function PluginsPanel({
             <div
                 style={{
                     background: 'var(--bg-secondary)',
-                    width: '600px',
-                    maxWidth: '90vw',
+                    width: '80vw',
                     height: '100vh',
                     borderLeft: '1px solid var(--border)',
                     boxShadow: shadows.lg,

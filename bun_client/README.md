@@ -27,6 +27,16 @@
     ```
     This runs on `http://localhost:5173`.
 
+## Tests
+
+```bash
+bun run test        # unit tests (frontend + bridge)
+bun run test:e2e    # Playwright end-to-end suite, see e2e/README.md
+```
+
+The e2e suite drives the built UI through the real bridge against a fake Go
+backend and fake language servers, so it needs no GitHub token.
+
 ## Architecture
 
 - **Backend (`server.ts`)**: Spawns the `crs` binary and bridges JSON-RPC communication over stdio. Exposes HTTP POST `/api/rpc`.

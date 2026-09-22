@@ -110,6 +110,26 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      - name: Type check e2e
+        run: bun run type-check:e2e
+
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      # Reuses the frontend built above; `bun run test:e2e` would rebuild it.
+      - name: Run e2e tests
+        run: bunx playwright test --config e2e/playwright.config.ts
+
+      - name: Upload e2e report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            bun_client/e2e/playwright-report
+            bun_client/e2e/test-results
+          retention-days: 7
+
   rust:
     needs: changes
     if: needs.changes.outputs.rust == 'true'

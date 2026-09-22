@@ -7,3 +7,5 @@ coverage
 frontend/dist
 crs-gui
 embedded_assets.ts
+e2e/test-results
+e2e/playwright-report

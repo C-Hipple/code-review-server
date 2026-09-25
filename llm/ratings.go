@@ -31,7 +31,7 @@ import (
 type Client interface {
 	// Provider identifies the backend, e.g. "gemini".
 	Provider() string
-	// Model identifies the specific model, e.g. "gemini-2.5-flash".
+	// Model identifies the specific model, e.g. "gemini-flash-latest".
 	Model() string
 	// Generate sends a prompt and returns the model's text response. Errors
 	// should be *CallError values so the call log can attribute the failure

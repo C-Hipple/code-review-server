@@ -15,7 +15,7 @@ import (
 // variable.
 
 const (
-	geminiModel   = "gemini-2.5-flash"
+	geminiModel   = "gemini-flash-latest"
 	geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 	geminiTimeout = 30 * time.Second
 )

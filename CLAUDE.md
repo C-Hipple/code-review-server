@@ -15,11 +15,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `bun install` — install dependencies
 - `bun run build` — build frontend
 - `bun run test` — run tests
+- `bun run test:e2e` — Playwright e2e suite (builds the frontend first); drives the real `server.ts` against a fake `crs` and fake language servers, see `bun_client/e2e/README.md`
 - `bun run lint` — ESLint
 - `bun run format:check` — Prettier check
 - `bun run type-check` — TypeScript type checking
 
-**CI runs** `go build && go test` for Go changes, and lint/format/type-check/test for `bun_client/` changes.
+**CI runs** `go build && go test` for Go changes, and lint/format/type-check/test plus the e2e suite for `bun_client/` changes.
 
 ## Architecture
 

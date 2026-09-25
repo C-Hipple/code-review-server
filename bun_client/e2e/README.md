@@ -53,12 +53,9 @@ CRS_E2E_REAL_LSP=1 bun run test:e2e
 
 ## Known bugs
 
-Two tests are marked `test.fail()` because they describe behavior that is
+One test is marked `test.fail()` because it describes behavior that is
 currently broken. Remove the marker when the bug is fixed:
 
-- **LSP popover close button** (`lsp.e2e.ts`): `.hover-line:hover { filter }`
-  in `App.css` turns the hovered row into a stacking context, so the popover
-  slides under the next diff row and its × receives no clicks.
 - **PR load errors** (`review.e2e.ts`): `Review` sets its content to
   "Error loading PR." but never renders it, so a PR that fails to load shows an
   empty page.

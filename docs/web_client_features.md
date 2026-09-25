@@ -117,11 +117,22 @@ browser cannot. Reproduce them if you want the corresponding features.
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
 | `GET /api/check-lsp-file?lang=` | Whether a per-language server is on `PATH`. |
 | `POST /api/prepare-diff-lsp` | Writes the diff plus a `Project/Root/Worktree/Buffer/Type` header to a temp file and returns its path; `diff-lsp` consumes that file. |
-| `WS /api/lsp` | Proxies a `diff-lsp` process. |
-| `WS /api/lsp-file?lang=` | Proxies a plain language server (`gopls`, `typescript-language-server`, `rust-analyzer`, `pyright-langserver`), resolved at startup. |
+| `WS /api/lsp?tempfile=` | Connects to a `diff-lsp` for the tempfile's workspace. |
+| `WS /api/lsp-file?lang=&root=` | Connects to a plain language server (`gopls`, `typescript-language-server`, `rust-analyzer`, `pyright-langserver`, resolved at startup) for `root`. |
+| `POST /api/lsp-lines` | The text on each line a list of LSP locations points at, read from disk, so the popover can show what each reference is. |
 
 The WebSocket handlers translate between browser JSON messages and LSP's
-`Content-Length` framing in both directions, and kill the child process on close.
+`Content-Length` framing in both directions. Language servers are pooled
+(`lsp_pool.ts`) rather than started per socket: a socket attaches to a running
+server for the same workspace — for `diff-lsp`, the same root and worktree with
+every backend language the diff needs — and a server whose last socket closes
+stays up for 20 minutes (at most four idle at once) in case the review is
+reopened. Starting one per socket meant every review open, hunk expansion and
+code-viewer file change re-indexed the workspace from scratch; the emacs client
+has always reused its `diff-lsp`. To share a server the pool replays the first
+`initialize` answer to later sockets, forwards `initialized` once, rewrites
+request ids (including in `$/cancelRequest`), and sends `didClose` for a
+socket's documents when it disconnects.
 
 ---
 
@@ -426,15 +437,20 @@ Optional, and degrades cleanly when the binaries or the local clone aren't there
 
 - **Diff mode** — if `diff-lsp` is on `PATH` and `metadata.repo_path` exists, the
   client posts the diff to `/api/prepare-diff-lsp`, opens the returned file over the
-  `/api/lsp` WebSocket, and clicking a code line issues hover, references,
-  definition, and typeDefinition in parallel. Coordinates are offset for the
+  `/api/lsp` WebSocket, and clicking a code line issues hover, definition,
+  typeDefinition and references — in that order, since `diff-lsp` answers one at a
+  time and references is the slow one. Coordinates are offset for the
   five-line context header and the diff's `+`/`-` prefix column; the clicked column
   is computed from the click's pixel position.
 - **File mode** — inside the code viewer, connects to a real language server for that
   file's language via `/api/lsp-file?lang=`.
 - **Popover** — inline (inside the comment form) or floating, listing hover text,
-  definitions, type definitions and references. Clicking a reference opens a code
-  viewer at that file and line.
+  definitions, type definitions and references. It opens on the first answer and
+  fills in the rest as they arrive (or after 300ms with a loading state), and a
+  newer click cancels the older one's requests. Locations are grouped by file
+  (shown relative to the worktree or repo), each row showing the code on that line
+  with the symbol highlighted. Clicking one opens a code viewer at that file and
+  line.
 - **Degradation** — the diff header shows "Repo not found locally. LSP disabled." or
   "LSP not active" instead of failing.
 

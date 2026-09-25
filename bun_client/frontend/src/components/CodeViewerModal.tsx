@@ -486,8 +486,10 @@ export default function CodeViewerModal({
                 lsp.clearData();
                 return;
             }
+            // Mark the line at once; the popover opens as answers arrive.
+            setActiveLspLine(line);
             lsp.query(line - 1, column).then(result => {
-                if (result) setActiveLspLine(line);
+                if (result === 'empty') setActiveLspLine(cur => (cur === line ? null : cur));
             });
         },
         [lsp, activeLspLine]
@@ -519,10 +521,7 @@ export default function CodeViewerModal({
                         }}
                     >
                         <LspPopover
-                            hover={lsp.lspData.hover}
-                            refs={lsp.lspData.refs}
-                            definitions={lsp.lspData.definitions}
-                            typeDefinitions={lsp.lspData.typeDefinitions}
+                            data={lsp.lspData}
                             variant="floating"
                             onRefClick={r => {
                                 const refPath = r.uri.replace('file://', '');

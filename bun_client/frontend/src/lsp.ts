@@ -19,6 +19,23 @@ export interface LspHover {
     range?: any;
 }
 
+/** Source text by file URI, then by 0-based line. */
+export type LocationLines = Record<string, Record<number, string>>;
+
+/** The text on each line the locations point at, read from disk by the server. */
+export async function fetchLocationLines(locations: LspLocation[]): Promise<LocationLines> {
+    const res = await fetch(`${API_BASE}/api/lsp-lines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            locations: locations.map(l => ({ uri: l.uri, line: l.range.start.line })),
+        }),
+    });
+    if (!res.ok) throw new Error(`Failed to read location lines: ${res.status}`);
+    const data = await res.json();
+    return data.lines || {};
+}
+
 export class LspClient {
     private ws: WebSocket | null = null;
     private messageQueue: string[] = [];
@@ -61,7 +78,6 @@ export class LspClient {
         };
 
         this.ws.onmessage = event => {
-            console.log('LSP Message received:', event.data);
             const msg = JSON.parse(event.data);
             if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
                 const { resolve, reject } = this.pendingRequests.get(msg.id)!;
@@ -74,8 +90,13 @@ export class LspClient {
         };
 
         this.ws.onerror = e => console.error('LSP WebSocket error', e);
-        this.ws.onclose = () => {
-            console.log('LSP WebSocket closed');
+        this.ws.onclose = event => {
+            console.log('LSP WebSocket closed', event.reason);
+            // Nothing in flight will be answered now.
+            for (const { reject } of this.pendingRequests.values()) {
+                reject(new Error(`LSP connection closed ${event.reason}`));
+            }
+            this.pendingRequests.clear();
         };
     }
 
@@ -97,37 +118,48 @@ export class LspClient {
     private flushQueue() {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         while (this.messageQueue.length > 0) {
-            const msg = this.messageQueue.shift()!;
-            console.log('LSP Sending flush:', msg);
-            this.ws.send(msg);
+            this.ws.send(this.messageQueue.shift()!);
         }
     }
 
-    request(method: string, params: any): Promise<any> {
+    // Aborting `signal` cancels the request on the server too, so it doesn't
+    // hold up the requests behind it: diff-lsp answers one at a time.
+    request(method: string, params: any, signal?: AbortSignal): Promise<any> {
         return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(signal.reason);
+                return;
+            }
+            // Queued messages go out when the socket opens; one that has
+            // closed (its server exited) would never answer.
+            if (this.ws && this.ws.readyState > WebSocket.OPEN) {
+                reject(new Error('LSP connection closed'));
+                return;
+            }
             const id = this.nextId++;
             const req = { jsonrpc: '2.0', id, method, params };
-            const msg = JSON.stringify(req);
             this.pendingRequests.set(id, { resolve, reject });
-
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                console.log('LSP Sending request:', msg);
-                this.ws.send(msg);
-            } else {
-                console.log('LSP Queuing request:', msg);
-                this.messageQueue.push(msg);
-            }
+            signal?.addEventListener(
+                'abort',
+                () => {
+                    if (!this.pendingRequests.delete(id)) return;
+                    this.notify('$/cancelRequest', { id });
+                    reject(signal.reason);
+                },
+                { once: true }
+            );
+            this.send(JSON.stringify(req));
         });
     }
 
     notify(method: string, params: any) {
-        const req = { jsonrpc: '2.0', method, params };
-        const msg = JSON.stringify(req);
+        this.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
+    }
+
+    private send(msg: string) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log('LSP Sending notify:', msg);
             this.ws.send(msg);
         } else {
-            console.log('LSP Queuing notify:', msg);
             this.messageQueue.push(msg);
         }
     }
@@ -151,50 +183,68 @@ export class LspClient {
         this.notify('initialized', {});
     }
 
-    async didOpen(uri: string, languageId: string, version: number, text: string) {
-        console.log('LSP didOpen: Waiting 1s...', uri);
-        // Wait 1 second before sending open file to give the lsp time to init
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        console.log('LSP didOpen: Sending now...', uri);
+    // Sent straight after `initialized`, as any editor does. The server may
+    // already be running (the bun server shares them — see lsp_pool.ts), in
+    // which case the handshake is answered without waiting on it at all.
+    didOpen(uri: string, languageId: string, version: number, text: string) {
         this.notify('textDocument/didOpen', {
             textDocument: { uri, languageId, version, text },
         });
     }
 
-    async hover(uri: string, line: number, character: number): Promise<LspHover | null> {
-        return this.request('textDocument/hover', {
-            textDocument: { uri },
-            position: { line, character },
-        });
+    async hover(
+        uri: string,
+        line: number,
+        character: number,
+        signal?: AbortSignal
+    ): Promise<LspHover | null> {
+        return this.request(
+            'textDocument/hover',
+            { textDocument: { uri }, position: { line, character } },
+            signal
+        );
     }
 
-    async references(uri: string, line: number, character: number): Promise<LspLocation[] | null> {
-        return this.request('textDocument/references', {
-            textDocument: { uri },
-            position: { line, character },
-            context: { includeDeclaration: true },
-        });
+    async references(
+        uri: string,
+        line: number,
+        character: number,
+        signal?: AbortSignal
+    ): Promise<LspLocation[] | null> {
+        return this.request(
+            'textDocument/references',
+            {
+                textDocument: { uri },
+                position: { line, character },
+                context: { includeDeclaration: true },
+            },
+            signal
+        );
     }
 
     async definition(
         uri: string,
         line: number,
-        character: number
+        character: number,
+        signal?: AbortSignal
     ): Promise<LspLocation | LspLocation[] | null> {
-        return this.request('textDocument/definition', {
-            textDocument: { uri },
-            position: { line, character },
-        });
+        return this.request(
+            'textDocument/definition',
+            { textDocument: { uri }, position: { line, character } },
+            signal
+        );
     }
 
     async typeDefinition(
         uri: string,
         line: number,
-        character: number
+        character: number,
+        signal?: AbortSignal
     ): Promise<LspLocation | LspLocation[] | null> {
-        return this.request('textDocument/typeDefinition', {
-            textDocument: { uri },
-            position: { line, character },
-        });
+        return this.request(
+            'textDocument/typeDefinition',
+            { textDocument: { uri }, position: { line, character } },
+            signal
+        );
     }
 }

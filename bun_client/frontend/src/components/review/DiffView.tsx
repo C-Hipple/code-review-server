@@ -612,10 +612,7 @@ export default function DiffView({
                         >
                             {lspData && (
                                 <LspPopover
-                                    hover={lspData.hover}
-                                    refs={lspData.refs}
-                                    definitions={lspData.definitions}
-                                    typeDefinitions={lspData.typeDefinitions}
+                                    data={lspData}
                                     variant="inline"
                                     onRefClick={(r, e) => {
                                         const filePath = r.uri.replace('file://', '');
@@ -833,10 +830,7 @@ export default function DiffView({
                     {annotationCell}
                     {isLspActive && lspData && (
                         <LspPopover
-                            hover={lspData.hover}
-                            refs={lspData.refs}
-                            definitions={lspData.definitions}
-                            typeDefinitions={lspData.typeDefinitions}
+                            data={lspData}
                             variant="floating"
                             onRefClick={(r, e) => {
                                 const filePath = r.uri.replace('file://', '');

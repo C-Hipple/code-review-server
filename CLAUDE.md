@@ -49,7 +49,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `cmd/` — plugin binaries (summarize_diff, security_check, etc.)
 
 ### Clients
-- `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio
+- `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio, and `lsp_pool.ts` keeps language servers (`diff-lsp`, `gopls`, ...) running across LSP WebSockets so reopening a review doesn't re-index the workspace
 - `client.el/` — Emacs client, split into modules with `crs-client.el` as the entry point (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`)
 
 ## Key Data Flow

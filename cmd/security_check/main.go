@@ -53,8 +53,8 @@ type PRMetadata struct {
 	}
 
 func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, error) {
-	// Using gemini-2.5-flash as per the example
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + geminiToken
+	// Using gemini-flash-latest, which tracks the newest Flash release
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + geminiToken
 
 	var contextInfo string
 	if metadata.Title != "" {

@@ -1,7 +1,9 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { type Subprocess, spawn } from 'bun';
+import { spawn } from 'bun';
 import { type GetImageReply, parseGitHubImageUrl } from './github_images';
+import { readLocationLines } from './lsp_lines';
+import { diffLspWorkspace, type LspSession, LspSessionPool, startLspServer } from './lsp_pool';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -53,6 +55,17 @@ function getProjectRoot() {
 }
 
 const PROJECT_ROOT = getProjectRoot();
+
+// Language servers outlive the WebSocket that started them, so reopening a
+// review (or expanding a hunk, which reconnects) finds its backends already
+// indexed — see lsp_pool.ts. Each idle diff-lsp holds a gopls/rust-analyzer
+// per language, so only a few are kept, and not for long.
+const lspPool = new LspSessionPool({
+    idleTimeoutMs: 20 * 60 * 1000,
+    maxIdle: 4,
+    start: startLspServer,
+});
+setInterval(() => lspPool.evictIdle(Date.now()), 60 * 1000).unref();
 
 interface JsonRpcRequest {
     method: string;
@@ -142,34 +155,39 @@ const CORS_HEADERS = {
 const SERVER_PORT = parseInt(process.env.CRS_PORT || '5172', 10);
 
 Bun.serve<{
-    cmd: string | null;
-    args?: string[];
-    envs: Record<string, string>;
-    proc?: Subprocess;
+    // Which session the socket can share, and how to start one if none can.
+    key: string;
+    langs: string[];
+    argv: string[];
+    session?: LspSession;
+    peerId?: number;
 }>({
     port: SERVER_PORT,
     async fetch(req, server) {
         const url = new URL(req.url);
 
         if (url.pathname === '/api/lsp') {
-            console.log('lsp call happening');
-
+            if (!DIFF_LSP_PATH) {
+                return new Response('diff-lsp not found', { status: 404 });
+            }
             // The client passes the tempfile it prepared via
             // /api/prepare-diff-lsp so diff-lsp reads exactly those init
             // params instead of whatever /tmp/diff_lsp_* file happens to be
             // newest (another tab or an emacs session may have written one).
+            // Its contents also decide which running diff-lsp can serve it.
             const tempfile = url.searchParams.get('tempfile');
-            const args: string[] = [];
-            if (tempfile && /^\/tmp\/diff_lsp_[A-Za-z0-9-]+$/.test(tempfile)) {
-                args.push(tempfile);
+            if (!tempfile || !/^\/tmp\/diff_lsp_[A-Za-z0-9-]+$/.test(tempfile)) {
+                return new Response('Missing or invalid tempfile', { status: 400 });
+            }
+            let workspace: { key: string; langs: string[] };
+            try {
+                workspace = diffLspWorkspace(await Bun.file(tempfile).text());
+            } catch {
+                return new Response('Tempfile not found', { status: 404 });
             }
 
             const success = server.upgrade(req, {
-                data: {
-                    cmd: DIFF_LSP_PATH,
-                    args,
-                    envs: process.env as Record<string, string>,
-                },
+                data: { ...workspace, argv: [DIFF_LSP_PATH, tempfile] },
             });
             if (success) return undefined;
             return new Response('Upgrade failed', { status: 500 });
@@ -182,14 +200,15 @@ Bun.serve<{
             }
 
             const serverConfig = AVAILABLE_LANGUAGE_SERVERS[lang];
-            console.log(`[LSP-File] Upgrading WebSocket for language: ${lang}`);
+            const argv = [serverConfig.cmd, ...serverConfig.args];
+            // One server per command and workspace root: typescript and tsx
+            // files in a repo share a typescript-language-server. Without a
+            // root there's no telling which workspace it is, so don't share.
+            const root = url.searchParams.get('root');
+            const key = root ? `${argv.join(' ')}\0${root}` : crypto.randomUUID();
 
             const success = server.upgrade(req, {
-                data: {
-                    cmd: serverConfig.cmd,
-                    args: serverConfig.args,
-                    envs: process.env as Record<string, string>,
-                },
+                data: { key, langs: [], argv },
             });
             if (success) return undefined;
             return new Response('Upgrade failed', { status: 500 });
@@ -483,6 +502,15 @@ Bun.serve<{
             }
         }
 
+        // The text on each line an LSP answer points at (see lsp_lines.ts).
+        if (url.pathname === '/api/lsp-lines' && req.method === 'POST') {
+            const body = (await req.json()) as { locations?: unknown };
+            const locations = Array.isArray(body?.locations) ? body.locations : [];
+            return new Response(JSON.stringify({ lines: await readLocationLines(locations) }), {
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+            });
+        }
+
         if (url.pathname === '/api/prepare-diff-lsp' && req.method === 'POST') {
             const body = await req.json();
             const { project, root, buffer, type, content, worktree } = body;
@@ -562,98 +590,34 @@ Type: ${type}
     },
     websocket: {
         open(ws) {
-            console.log('LSP WebSocket connected');
-            const { cmd, args, envs } = ws.data;
-            if (!cmd) {
-                console.warn('LSP binary not found, closing websocket');
-                ws.close();
+            const { key, langs, argv } = ws.data;
+            let session: LspSession;
+            try {
+                session = lspPool.acquire(key, langs, argv);
+            } catch (e) {
+                console.error(`[LSP] Could not start ${argv.join(' ')}:`, e);
+                ws.close(1011, 'Could not start the language server');
                 return;
             }
-
-            try {
-                const proc = spawn(args && args.length > 0 ? [cmd, ...args] : [cmd], {
-                    stdin: 'pipe',
-                    stdout: 'pipe',
-                    stderr: 'inherit',
-                    env: { ...process.env, ...envs },
-                });
-                ws.data.proc = proc;
-
-                const reader = proc.stdout.getReader();
-                (async () => {
-                    let buffer = Buffer.alloc(0);
-                    try {
-                        while (true) {
-                            const { done, value } = await reader.read();
-                            if (done) break;
-                            buffer = Buffer.concat([buffer, value]);
-
-                            while (true) {
-                                const separatorIndex = buffer.indexOf('\r\n\r\n');
-                                if (separatorIndex === -1) break;
-
-                                const headerPart = buffer
-                                    .subarray(0, separatorIndex)
-                                    .toString('utf-8');
-                                const lengthMatch = headerPart.match(/Content-Length: (\d+)/i);
-
-                                if (!lengthMatch) {
-                                    console.error('Invalid LSP header:', headerPart);
-                                    // Skip past this separator
-                                    buffer = buffer.subarray(separatorIndex + 4);
-                                    continue;
-                                }
-
-                                const contentLength = parseInt(lengthMatch[1], 10);
-                                const totalMessageLength = separatorIndex + 4 + contentLength;
-
-                                if (buffer.length >= totalMessageLength) {
-                                    const jsonBuf = buffer.subarray(
-                                        separatorIndex + 4,
-                                        totalMessageLength
-                                    );
-                                    const jsonStr = jsonBuf.toString('utf-8');
-                                    ws.send(jsonStr);
-                                    buffer = buffer.subarray(totalMessageLength);
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.error('Error reading from LSP:', e);
-                    }
-                })();
-            } catch (e) {
-                console.error('Error spawning LSP process:', e);
-                ws.close();
-            }
+            ws.data.session = session;
+            ws.data.peerId = session.attach({
+                send: body => ws.send(body),
+                close: (code, reason) => ws.close(code, reason),
+            });
+            console.log(
+                `[LSP] Client attached to ${argv[0]} (${session.peerCount} attached, ${lspPool.size} running)`
+            );
         },
         message(ws, message) {
-            const proc = ws.data.proc;
-            if (proc?.stdin && typeof proc.stdin !== 'number') {
-                const msgStr =
-                    typeof message === 'string' ? message : new TextDecoder().decode(message);
-                const length = new TextEncoder().encode(msgStr).length;
-                const wrapped = `Content-Length: ${length}\r\n\r\n${msgStr}`;
-                try {
-                    proc.stdin.write(wrapped);
-                    proc.stdin.flush();
-                } catch (e) {
-                    console.error('Error writing to LSP process:', e);
-                }
-            }
+            const { session, peerId } = ws.data;
+            if (!session || peerId === undefined) return;
+            const body = typeof message === 'string' ? message : new TextDecoder().decode(message);
+            session.fromPeer(peerId, body);
         },
         close(ws) {
-            console.log('LSP WebSocket closed');
-            const proc = ws.data.proc;
-            if (proc) {
-                try {
-                    proc.kill();
-                } catch (e) {
-                    console.error('Error killing LSP process:', e);
-                }
-            }
+            const { session, peerId } = ws.data;
+            if (!session || peerId === undefined) return;
+            lspPool.release(session, peerId, Date.now());
         },
     },
 });

@@ -2,6 +2,8 @@ import React from 'react';
 import Markdown from 'react-markdown';
 import { shadows } from '../design';
 import type { LspHover, LspLocation } from '../lsp';
+import type { LspData } from '../hooks/useLsp';
+import { displayPath, groupLocationsByFile, splitLocationLine } from '../lsp_utils';
 
 export function getHoverContent(hover: LspHover | null): string {
     if (!hover || !hover.contents) return '';
@@ -17,24 +19,208 @@ export function getHoverContent(hover: LspHover | null): string {
 }
 
 interface LspPopoverProps {
-    hover: LspHover | null;
-    refs: LspLocation[] | null;
-    definitions: LspLocation[] | null;
-    typeDefinitions: LspLocation[] | null;
+    data: LspData;
     variant: 'floating' | 'inline';
     onRefClick?: (ref: LspLocation, e: React.MouseEvent) => void;
     onClose?: () => void;
 }
 
-export default function LspPopover({
-    hover,
-    refs,
-    definitions,
-    typeDefinitions,
-    variant,
+const mutedStyle: React.CSSProperties = {
+    fontStyle: 'italic',
+    color: 'var(--text-secondary)',
+};
+
+// One file's locations: its path, then a row per location with the code on
+// that line and the symbol highlighted — enough to tell a call from a
+// declaration or a test from production code without opening each one.
+function LocationGroup({
+    uri,
+    locations,
+    data,
     onRefClick,
-    onClose,
-}: LspPopoverProps) {
+}: {
+    uri: string;
+    locations: LspLocation[];
+    data: LspData;
+    onRefClick?: (ref: LspLocation, e: React.MouseEvent) => void;
+}) {
+    const fileLines = data.lines[uri];
+    return (
+        <div style={{ marginBottom: '6px' }}>
+            <div
+                style={{
+                    color: 'var(--text-secondary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '11px',
+                    marginBottom: '2px',
+                    overflowWrap: 'anywhere',
+                }}
+                title={uri.replace(/^file:\/\//, '')}
+            >
+                {displayPath(uri, data.roots)}
+            </div>
+            {locations.map((location, i) => {
+                const text = fileLines?.[location.range.start.line];
+                const parts = text !== undefined ? splitLocationLine(text, location.range) : null;
+                return (
+                    <div
+                        key={i}
+                        className={onRefClick ? 'lsp-location-row' : undefined}
+                        onClick={e => {
+                            e.stopPropagation();
+                            onRefClick?.(location, e);
+                        }}
+                        style={{
+                            display: 'flex',
+                            gap: '8px',
+                            padding: '1px 4px',
+                            borderRadius: '3px',
+                            cursor: onRefClick ? 'pointer' : 'default',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12px',
+                            lineHeight: '1.5',
+                        }}
+                    >
+                        <span
+                            style={{
+                                color: 'var(--accent)',
+                                minWidth: '3.5em',
+                                textAlign: 'right',
+                                flexShrink: 0,
+                                userSelect: 'none',
+                            }}
+                        >
+                            {location.range.start.line + 1}
+                        </span>
+                        <span
+                            style={{
+                                flex: 1,
+                                minWidth: 0,
+                                whiteSpace: 'pre',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                tabSize: 4,
+                                color: 'var(--text-primary)',
+                            }}
+                        >
+                            {parts ? (
+                                <>
+                                    {parts.before}
+                                    <mark
+                                        style={{
+                                            background: 'var(--accent-dim)',
+                                            color: 'inherit',
+                                            fontWeight: 600,
+                                            borderRadius: '2px',
+                                        }}
+                                    >
+                                        {parts.match}
+                                    </mark>
+                                    {parts.after}
+                                </>
+                            ) : (
+                                <span style={{ color: 'var(--text-tertiary)' }}>…</span>
+                            )}
+                        </span>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+function LocationSection({
+    title,
+    locations,
+    loading,
+    data,
+    onRefClick,
+}: {
+    title: string;
+    locations: LspLocation[] | null;
+    loading: boolean;
+    data: LspData;
+    onRefClick?: (ref: LspLocation, e: React.MouseEvent) => void;
+}) {
+    if (!loading && !locations) return null;
+    return (
+        <div
+            style={{
+                marginTop: '10px',
+                paddingTop: '10px',
+                borderTop: '1px solid var(--border)',
+                fontSize: '12px',
+            }}
+        >
+            <div
+                style={{
+                    fontWeight: 600,
+                    marginBottom: '5px',
+                    color: 'var(--text-secondary)',
+                }}
+            >
+                {title}
+                {locations && locations.length > 1 ? ` (${locations.length})` : ''}
+            </div>
+            {locations ? (
+                groupLocationsByFile(locations).map(group => (
+                    <LocationGroup
+                        key={group.uri}
+                        uri={group.uri}
+                        locations={group.locations}
+                        data={data}
+                        onRefClick={onRefClick}
+                    />
+                ))
+            ) : (
+                <div style={mutedStyle}>Loading…</div>
+            )}
+        </div>
+    );
+}
+
+function LspSections({
+    data,
+    onRefClick,
+}: {
+    data: LspData;
+    onRefClick?: (ref: LspLocation, e: React.MouseEvent) => void;
+}) {
+    const nothingYet = !data.hover && !data.definitions && !data.typeDefinitions && !data.refs;
+    const stillLoading = Object.values(data.loading).some(Boolean);
+    if (nothingYet) {
+        return <div style={mutedStyle}>{stillLoading ? 'Loading…' : 'No information found.'}</div>;
+    }
+    return (
+        <>
+            <LocationSection
+                title="Definition"
+                locations={data.definitions}
+                loading={data.loading.definitions}
+                data={data}
+                onRefClick={onRefClick}
+            />
+            <LocationSection
+                title="Type Definition"
+                locations={data.typeDefinitions}
+                loading={data.loading.typeDefinitions}
+                data={data}
+                onRefClick={onRefClick}
+            />
+            <LocationSection
+                title="References"
+                locations={data.refs}
+                loading={data.loading.refs}
+                data={data}
+                onRefClick={onRefClick}
+            />
+        </>
+    );
+}
+
+export default function LspPopover({ data, variant, onRefClick, onClose }: LspPopoverProps) {
+    const hover = data.hover;
+
     if (variant === 'floating') {
         return (
             <div
@@ -48,9 +234,11 @@ export default function LspPopover({
                     borderRadius: '6px',
                     boxShadow: shadows.md,
                     padding: '12px',
-                    maxWidth: '600px',
+                    width: 'max-content',
+                    minWidth: '240px',
+                    maxWidth: 'min(760px, calc(100vw - 80px))',
                     overflow: 'auto',
-                    maxHeight: '300px',
+                    maxHeight: '360px',
                 }}
                 onClick={e => e.stopPropagation()}
             >
@@ -88,126 +276,7 @@ export default function LspPopover({
                         <Markdown>{getHoverContent(hover)}</Markdown>
                     </div>
                 )}
-                {definitions && definitions.length > 0 && (
-                    <div
-                        style={{
-                            marginTop: '10px',
-                            paddingTop: '10px',
-                            borderTop: '1px solid var(--border)',
-                            fontSize: '12px',
-                        }}
-                    >
-                        <div
-                            style={{
-                                fontWeight: 600,
-                                marginBottom: '5px',
-                                color: 'var(--text-secondary)',
-                            }}
-                        >
-                            Definition:
-                        </div>
-                        <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
-                            {definitions.map((d, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(d, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: 'var(--accent)',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                        marginBottom: '2px',
-                                    }}
-                                    className={onRefClick ? 'hover-link' : ''}
-                                >
-                                    {d.uri.split('/').pop()} : {d.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {typeDefinitions && typeDefinitions.length > 0 && (
-                    <div
-                        style={{
-                            marginTop: '10px',
-                            paddingTop: '10px',
-                            borderTop: '1px solid var(--border)',
-                            fontSize: '12px',
-                        }}
-                    >
-                        <div
-                            style={{
-                                fontWeight: 600,
-                                marginBottom: '5px',
-                                color: 'var(--text-secondary)',
-                            }}
-                        >
-                            Type Definition:
-                        </div>
-                        <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
-                            {typeDefinitions.map((d, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(d, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: 'var(--accent)',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                        marginBottom: '2px',
-                                    }}
-                                    className={onRefClick ? 'hover-link' : ''}
-                                >
-                                    {d.uri.split('/').pop()} : {d.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {refs && refs.length > 0 && (
-                    <div
-                        style={{
-                            marginTop: '10px',
-                            paddingTop: '10px',
-                            borderTop: '1px solid var(--border)',
-                            fontSize: '12px',
-                        }}
-                    >
-                        <div
-                            style={{
-                                fontWeight: 600,
-                                marginBottom: '5px',
-                                color: 'var(--text-secondary)',
-                            }}
-                        >
-                            References ({refs.length}):
-                        </div>
-                        <ul style={{ margin: '0 0 0 15px', padding: 0 }}>
-                            {refs.map((r, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(r, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: 'var(--accent)',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                        marginBottom: '2px',
-                                    }}
-                                    className={onRefClick ? 'hover-link' : ''}
-                                >
-                                    {r.uri.split('/').pop()} : {r.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
+                <LspSections data={data} onRefClick={onRefClick} />
             </div>
         );
     }
@@ -260,6 +329,8 @@ export default function LspPopover({
                 style={{
                     padding: '10px',
                     background: 'var(--bg-primary)',
+                    maxHeight: '360px',
+                    overflow: 'auto',
                 }}
             >
                 {hover && (
@@ -275,103 +346,7 @@ export default function LspPopover({
                         </pre>
                     </div>
                 )}
-                {definitions && definitions.length > 0 && (
-                    <div style={{ marginBottom: '10px' }}>
-                        <strong>Definition:</strong>
-                        <ul
-                            style={{
-                                margin: '5px 0 0 20px',
-                                padding: 0,
-                            }}
-                        >
-                            {definitions.map((d, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(d, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: onRefClick ? 'var(--accent)' : 'inherit',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                    }}
-                                >
-                                    {d.uri} : {d.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {typeDefinitions && typeDefinitions.length > 0 && (
-                    <div style={{ marginBottom: '10px' }}>
-                        <strong>Type Definition:</strong>
-                        <ul
-                            style={{
-                                margin: '5px 0 0 20px',
-                                padding: 0,
-                            }}
-                        >
-                            {typeDefinitions.map((d, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(d, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: onRefClick ? 'var(--accent)' : 'inherit',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                    }}
-                                >
-                                    {d.uri} : {d.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {refs && refs.length > 0 && (
-                    <div>
-                        <strong>References ({refs.length}):</strong>
-                        <ul
-                            style={{
-                                margin: '5px 0 0 20px',
-                                padding: 0,
-                            }}
-                        >
-                            {refs.map((r, i) => (
-                                <li
-                                    key={i}
-                                    onClick={e => {
-                                        e.stopPropagation();
-                                        onRefClick?.(r, e);
-                                    }}
-                                    style={{
-                                        cursor: onRefClick ? 'pointer' : 'default',
-                                        color: onRefClick ? 'var(--accent)' : 'inherit',
-                                        textDecoration: onRefClick ? 'underline' : 'none',
-                                    }}
-                                >
-                                    {r.uri} : {r.range.start.line + 1}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {!hover &&
-                    (!refs || refs.length === 0) &&
-                    (!definitions || definitions.length === 0) &&
-                    (!typeDefinitions || typeDefinitions.length === 0) && (
-                        <div
-                            style={{
-                                fontStyle: 'italic',
-                                color: 'var(--text-secondary)',
-                            }}
-                        >
-                            No information found.
-                        </div>
-                    )}
+                <LspSections data={data} onRefClick={onRefClick} />
             </div>
         </div>
     );

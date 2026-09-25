@@ -1,13 +1,30 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { LspClient, LspHover, LspLocation } from '../lsp';
+import { LspClient, LspHover, LspLocation, LocationLines, fetchLocationLines } from '../lsp';
 import { API_BASE } from '../api';
+import { hasHoverContent, mergeLocationLines, toLocationList } from '../lsp_utils';
+
+export type LspSection = 'hover' | 'definitions' | 'typeDefinitions' | 'refs';
 
 export interface LspData {
     hover: LspHover | null;
     refs: LspLocation[] | null;
     definitions: LspLocation[] | null;
     typeDefinitions: LspLocation[] | null;
+    /** Sections whose answer hasn't come back yet. */
+    loading: Record<LspSection, boolean>;
+    /** What's on each location's line; filled in after the locations arrive. */
+    lines: LocationLines;
+    /** Workspace roots that location paths are shown relative to. */
+    roots: string[];
 }
+
+/**
+ * How a query ended: with its answers on show in lspData, with nothing at
+ * that position (lspData cleared), or cut short by a later query or
+ * clearData(). A query that turns up nothing after its popover has opened
+ * to say it's loading counts as shown: the popover says nothing was found.
+ */
+export type LspQueryResult = 'shown' | 'empty' | 'stale';
 
 interface UseLspDiffOptions {
     mode: 'diff';
@@ -33,10 +50,26 @@ export type UseLspOptions = UseLspDiffOptions | UseLspFileOptions;
 export interface UseLspResult {
     available: boolean | null;
     connected: boolean;
-    query: (line: number, col: number) => Promise<LspData | null>;
+    /**
+     * Looks up hover, definition, type definition and references at a
+     * position. lspData fills in as each answer arrives — it stays null until
+     * the first non-empty one, or until the query has run long enough to be
+     * worth saying it's loading — so a popover can open on the fast answers
+     * while references are still being found.
+     */
+    query: (line: number, col: number) => Promise<LspQueryResult>;
     lspData: LspData | null;
     clearData: () => void;
 }
+
+// A query that has shown nothing after this long opens the popover in its
+// loading state, so a slow lookup visibly registers the click. A click on
+// whitespace is answered (empty) well within it and flashes nothing.
+const LOADING_POPOVER_DELAY_MS = 300;
+
+// A running server answers `initialize` at once (the bun server shares them);
+// a new diff-lsp first starts and initializes a backend per language.
+const INITIALIZE_TIMEOUT_MS = 60_000;
 
 // Map Prism language IDs to LSP language IDs used by the server
 const prismToLspLanguage: Record<string, string> = {
@@ -49,6 +82,26 @@ const prismToLspLanguage: Record<string, string> = {
     python: 'python',
 };
 
+// Notifications sent before the server has answered `initialize` are dropped
+// (diff-lsp's tower-lsp does this), so the handshake waits for the answer.
+async function initialize(client: LspClient, rootPath: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            client.initialize(rootPath),
+            new Promise((_, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error('LSP initialize timed out')),
+                    INITIALIZE_TIMEOUT_MS
+                );
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+    client.initialized();
+}
+
 export function useLsp(options: UseLspOptions): UseLspResult {
     const [available, setAvailable] = useState<boolean | null>(null);
     const [connected, setConnected] = useState(false);
@@ -56,11 +109,16 @@ export function useLsp(options: UseLspOptions): UseLspResult {
 
     const clientRef = useRef<LspClient | null>(null);
     const uriRef = useRef<string | null>(null);
+    const rootsRef = useRef<string[]>([]);
     const initializingRef = useRef(false);
+    // The query in flight; aborting it cancels its requests on the server.
+    const queryRef = useRef<AbortController | null>(null);
 
     const enabled = options.enabled !== false;
 
     const clearData = useCallback(() => {
+        queryRef.current?.abort();
+        queryRef.current = null;
         setLspData(null);
     }, []);
 
@@ -77,6 +135,7 @@ export function useLsp(options: UseLspOptions): UseLspResult {
         const init = async () => {
             if (initializingRef.current) return;
             initializingRef.current = true;
+            let client: LspClient | null = null;
 
             try {
                 // Check diff-lsp availability
@@ -87,7 +146,7 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 setAvailable(data.available);
                 if (!data.available || !options.repoPath) return;
 
-                const client = new LspClient();
+                client = new LspClient();
 
                 // Prepare context for diff-lsp BEFORE connecting: connecting
                 // spawns the diff-lsp process, which reads its init params
@@ -110,34 +169,19 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 const uri = `file://${path}`;
                 uriRef.current = uri;
 
-                // Initialize
-                try {
-                    await Promise.race([
-                        client.initialize('/'),
-                        new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('LSP Initialize timeout')), 5000)
-                        ),
-                    ]);
-                } catch (e) {
-                    console.error('LSP Initialize error/timeout', e);
-                }
+                await initialize(client, '/');
                 if (cancelled) {
                     client.disconnect();
                     return;
                 }
-
-                client.initialized();
-                await client.didOpen(uri, 'diff', 1, options.diffContent);
-
-                if (cancelled) {
-                    client.disconnect();
-                    return;
-                }
+                client.didOpen(uri, 'diff', 1, options.diffContent);
 
                 clientRef.current = client;
+                rootsRef.current = [options.worktreePath, options.repoPath].filter(Boolean);
                 setConnected(true);
             } catch (e) {
                 console.error('LSP init failed', e);
+                client?.disconnect();
             } finally {
                 initializingRef.current = false;
             }
@@ -147,6 +191,7 @@ export function useLsp(options: UseLspOptions): UseLspResult {
 
         return () => {
             cancelled = true;
+            queryRef.current?.abort();
             if (clientRef.current) {
                 clientRef.current.disconnect();
                 clientRef.current = null;
@@ -179,6 +224,7 @@ export function useLsp(options: UseLspOptions): UseLspResult {
         const init = async () => {
             if (initializingRef.current) return;
             initializingRef.current = true;
+            let client: LspClient | null = null;
 
             try {
                 // Check language server availability
@@ -189,26 +235,19 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 setAvailable(data.available);
                 if (!data.available) return;
 
-                const client = new LspClient();
-                client.connect(`/api/lsp-file?lang=${lspLang}`);
+                client = new LspClient();
+                // The root lets the bun server hand every viewer of this repo
+                // the same running server.
+                client.connect(
+                    `/api/lsp-file?lang=${lspLang}&root=${encodeURIComponent(options.repoPath)}`
+                );
 
                 // Initialize with repo path as root
-                try {
-                    await Promise.race([
-                        client.initialize(options.repoPath),
-                        new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('LSP Initialize timeout')), 5000)
-                        ),
-                    ]);
-                } catch (e) {
-                    console.error('LSP Initialize error/timeout', e);
-                }
+                await initialize(client, options.repoPath);
                 if (cancelled) {
                     client.disconnect();
                     return;
                 }
-
-                client.initialized();
 
                 // Construct the file URI
                 const filePath = options.filePath.startsWith('/')
@@ -217,17 +256,14 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 const uri = `file://${filePath}`;
                 uriRef.current = uri;
 
-                await client.didOpen(uri, lspLang, 1, options.fileContent);
-
-                if (cancelled) {
-                    client.disconnect();
-                    return;
-                }
+                client.didOpen(uri, lspLang, 1, options.fileContent);
 
                 clientRef.current = client;
+                rootsRef.current = [options.repoPath].filter(Boolean);
                 setConnected(true);
             } catch (e) {
                 console.error('LSP init failed', e);
+                client?.disconnect();
             } finally {
                 initializingRef.current = false;
             }
@@ -237,6 +273,7 @@ export function useLsp(options: UseLspOptions): UseLspResult {
 
         return () => {
             cancelled = true;
+            queryRef.current?.abort();
             if (clientRef.current) {
                 clientRef.current.disconnect();
                 clientRef.current = null;
@@ -255,10 +292,16 @@ export function useLsp(options: UseLspOptions): UseLspResult {
     ]);
 
     const query = useCallback(
-        async (line: number, col: number): Promise<LspData | null> => {
+        async (line: number, col: number): Promise<LspQueryResult> => {
+            queryRef.current?.abort();
+            setLspData(null);
             const client = clientRef.current;
             const uri = uriRef.current;
-            if (!client || !uri) return null;
+            if (!client || !uri) return 'empty';
+
+            const controller = new AbortController();
+            queryRef.current = controller;
+            const { signal } = controller;
 
             let queryLine = line;
             let queryCol = col;
@@ -270,57 +313,84 @@ export function useLsp(options: UseLspOptions): UseLspResult {
                 queryCol = col + 1;
             }
 
-            try {
-                const [hover, refs, defs, typeDefs] = await Promise.all([
-                    client.hover(uri, queryLine, queryCol),
-                    client.references(uri, queryLine, queryCol),
-                    client.definition(uri, queryLine, queryCol),
-                    client.typeDefinition(uri, queryLine, queryCol),
-                ]);
+            let data: LspData = {
+                hover: null,
+                refs: null,
+                definitions: null,
+                typeDefinitions: null,
+                loading: { hover: true, definitions: true, typeDefinitions: true, refs: true },
+                lines: {},
+                roots: rootsRef.current,
+            };
+            let found = false;
+            let shown = false;
+            const show = () => {
+                if (signal.aborted) return;
+                shown = true;
+                setLspData(data);
+            };
+            const loadingTimer = setTimeout(show, LOADING_POPOVER_DELAY_MS);
 
-                let hasHover = false;
-                if (hover && hover.contents) {
-                    if (typeof hover.contents === 'string') {
-                        hasHover = hover.contents.length > 0;
-                    } else if (Array.isArray(hover.contents)) {
-                        hasHover = hover.contents.length > 0;
-                    } else if (typeof hover.contents === 'object') {
-                        hasHover = !!(hover.contents as any).value;
+            const settle = async <T>(
+                section: LspSection,
+                request: Promise<T>,
+                normalize: (res: T) => LspData[LspSection]
+            ) => {
+                let value: LspData[LspSection] = null;
+                try {
+                    value = normalize(await request);
+                } catch (e) {
+                    if (signal.aborted) return;
+                    console.error(`LSP ${section} request failed`, e);
+                }
+                if (signal.aborted) return;
+                data = {
+                    ...data,
+                    [section]: value,
+                    loading: { ...data.loading, [section]: false },
+                };
+                if (value) found = true;
+                if (value || shown) show();
+
+                if (Array.isArray(value)) {
+                    try {
+                        const lines = await fetchLocationLines(value);
+                        data = { ...data, lines: mergeLocationLines(data.lines, lines) };
+                        show();
+                    } catch (e) {
+                        console.error('Failed to read the lines LSP locations point at', e);
                     }
                 }
-                const hasRefs = refs && refs.length > 0;
+            };
 
-                // Normalize definitions to array
-                let definitions: LspLocation[] | null = null;
-                if (defs) {
-                    if (Array.isArray(defs)) {
-                        definitions = defs.length > 0 ? defs : null;
-                    } else {
-                        definitions = [defs];
-                    }
-                }
+            // Sent in this order on purpose: diff-lsp asks its backend one
+            // request at a time, and references is the slow one, so hover and
+            // definitions go first rather than waiting behind it.
+            await Promise.all([
+                settle('hover', client.hover(uri, queryLine, queryCol, signal), hover =>
+                    hasHoverContent(hover) ? hover : null
+                ),
+                settle(
+                    'definitions',
+                    client.definition(uri, queryLine, queryCol, signal),
+                    toLocationList
+                ),
+                settle(
+                    'typeDefinitions',
+                    client.typeDefinition(uri, queryLine, queryCol, signal),
+                    toLocationList
+                ),
+                settle('refs', client.references(uri, queryLine, queryCol, signal), toLocationList),
+            ]);
+            clearTimeout(loadingTimer);
 
-                // Normalize type definitions to array
-                let typeDefinitions: LspLocation[] | null = null;
-                if (typeDefs) {
-                    if (Array.isArray(typeDefs)) {
-                        typeDefinitions = typeDefs.length > 0 ? typeDefs : null;
-                    } else {
-                        typeDefinitions = [typeDefs];
-                    }
-                }
-
-                if (hasHover || hasRefs || definitions || typeDefinitions) {
-                    const data = { hover, refs, definitions, typeDefinitions };
-                    setLspData(data);
-                    return data;
-                }
-
-                return null;
-            } catch (e) {
-                console.error('Failed to fetch LSP data', e);
-                return null;
+            if (signal.aborted) return 'stale';
+            if (queryRef.current === controller) queryRef.current = null;
+            if (!found && !shown) {
+                setLspData(null);
+                return 'empty';
             }
+            return 'shown';
         },
         [options.mode]
     );

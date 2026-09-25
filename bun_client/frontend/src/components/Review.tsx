@@ -714,11 +714,12 @@ export default function Review({
         if (activeLspIndex === idx) {
             setActiveLspIndex(null);
             lsp.clearData();
-        } else {
-            const result = await lsp.query(originalLineIndex, col);
-            if (result) {
-                setActiveLspIndex(idx);
-            }
+            return;
+        }
+        // Mark the line at once; the popover opens as answers arrive.
+        setActiveLspIndex(idx);
+        if ((await lsp.query(originalLineIndex, col)) === 'empty') {
+            setActiveLspIndex(cur => (cur === idx ? null : cur));
         }
     };
 

@@ -3,6 +3,10 @@
     outline: 1px solid var(--border);
 }
 
+.lsp-location-row:hover {
+    background: var(--bg-tertiary);
+}
+
 /* ============================================================
    App chrome — top bar shared by every view
    ============================================================ */

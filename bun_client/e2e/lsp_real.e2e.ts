@@ -26,6 +26,13 @@ function popoverWith(page: Page, text: string | RegExp): Locator {
         .filter({ hasText: text });
 }
 
+/** Any location row in a diff popover that points at formatGreeting's declaration. */
+function declarationRow(page: Page): Locator {
+    return page
+        .locator('.lsp-location-row')
+        .filter({ hasText: 'export function formatGreeting(greeting: Greeting): string {' });
+}
+
 // TypeScript loads the project in the background; until it has, queries come
 // back empty and a click shows nothing, so keep clicking until one answers.
 async function clickUntil(click: () => Promise<void>, answered: Locator) {
@@ -43,25 +50,24 @@ test('diff-lsp resolves a clicked diff symbol against the checkout', async ({ pa
     // backend writes after a request as its response without checking the
     // id, so a notification from tsserver shifts answers onto the wrong
     // request. Every answer for formatGreeting still names its declaration.
-    const answer = popoverWith(page, 'greet.ts : 8');
+    const declaration = declarationRow(page);
     await clickUntil(
         () => clickWord(diffRow(page, 'const message = formatGreeting('), 'formatGreeting'),
-        answer
+        declaration
     );
-    await expect(
-        answer.locator('li').filter({ hasText: /^(main|greet)\.ts : \d+$/ })
-    ).not.toHaveCount(0);
+    await expect(declaration.first()).toContainText('8');
+    await expect(declaration.first().locator('mark')).toHaveText('formatGreeting');
 });
 
 test('the code viewer talks to typescript-language-server directly', async ({ page }) => {
     await openReview(page);
 
-    const fromDiff = popoverWith(page, 'greet.ts : 8');
+    const declaration = declarationRow(page);
     await clickUntil(
         () => clickWord(diffRow(page, 'const message = formatGreeting('), 'formatGreeting'),
-        fromDiff
+        declaration
     );
-    await fromDiff.getByText('greet.ts : 8').first().click();
+    await declaration.first().click();
 
     await expect(page.getByTitle('Language server connected')).toBeVisible();
     const line8 = page.locator('[data-line="8"]');
@@ -70,7 +76,10 @@ test('the code viewer talks to typescript-language-server directly', async ({ pa
     // The `Greeting` type annotation (the second "Greeting" on the line).
     const info = popoverWith(page, 'interface Greeting');
     await clickUntil(() => clickWord(line8, 'Greeting', 1), info);
-    const definition = info.getByText('Definition:', { exact: true }).locator('..');
-    await expect(definition.locator('li')).toHaveText(['greet.ts : 3']);
-    await expect(info.getByText(/^References \(\d+\):$/)).toBeVisible();
+    const definition = info.getByText('Definition', { exact: true }).locator('..');
+    await expect(definition.locator('.lsp-location-row')).toHaveCount(1);
+    await expect(definition.locator('.lsp-location-row')).toContainText(
+        'export interface Greeting {'
+    );
+    await expect(info.getByText(/^References( \(\d+\))?$/)).toBeVisible();
 });

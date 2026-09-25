@@ -3,11 +3,14 @@
 //
 //   diff  — stands in for `diff-lsp`. Like the real one, it reads its init
 //           params from the tempfile the bridge hands it (the 5-line header
-//           written by /api/prepare-diff-lsp, then the diff) and treats an
-//           incoming position's `line` as a 1-indexed line of that tempfile
-//           and `character` as a column of the raw diff line (+/- prefix
-//           included). A client that gets the header offset or the prefix
-//           column wrong resolves the wrong word, which the tests catch.
+//           written by /api/prepare-diff-lsp, then the diff), and on each
+//           query re-reads the tempfile the document's uri names — the
+//           bridge pools servers, so one diff-lsp serves every review of a
+//           workspace. An incoming position's `line` is a 1-indexed line of
+//           that tempfile and `character` a column of the raw diff line
+//           (+/- prefix included). A client that gets the header offset or
+//           the prefix column wrong resolves the wrong word, which the tests
+//           catch.
 //   file  — stands in for a per-language server (typescript-language-server)
 //           used by the code viewer: plain 0-indexed positions into the
 //           document sent with textDocument/didOpen.
@@ -34,7 +37,6 @@ function log(entry: Record<string, unknown>) {
 // Init params
 
 let root = '';
-let tempfileLines: string[] = [];
 const tempfile = role === 'diff' ? process.argv[3] : undefined;
 
 if (role === 'diff') {
@@ -45,9 +47,8 @@ if (role === 'diff') {
         process.exit(2);
     }
     const text = readFileSync(tempfile, 'utf-8');
-    tempfileLines = text.split('\n');
     const header: Record<string, string> = {};
-    for (const line of tempfileLines.slice(0, 5)) {
+    for (const line of text.split('\n').slice(0, 5)) {
         const m = line.match(/^(\w+):\s?(.*)$/);
         if (m) header[m[1]] = m[2];
     }
@@ -156,7 +157,7 @@ interface Resolved {
 
 // Map a 1-indexed tempfile line back to "<file>:<new-side line>" the way
 // diff-lsp's code-review parser does, by walking the diff's hunk headers.
-function diffSourceLocation(tempLineIdx: number): string {
+function diffSourceLocation(tempfileLines: string[], tempLineIdx: number): string {
     let file = '';
     let newLine = 0;
     for (let i = 5; i <= tempLineIdx && i < tempfileLines.length; i++) {
@@ -182,8 +183,15 @@ function resolve(params: {
     if (role === 'diff') {
         // 1-indexed tempfile line, raw diff column.
         const idx = line - 1;
-        const text = tempfileLines[idx] ?? '';
-        return { word: wordAt(text, character), where: diffSourceLocation(idx) };
+        let lines: string[] = [];
+        try {
+            lines = readFileSync(params.textDocument.uri.replace('file://', ''), 'utf-8').split(
+                '\n'
+            );
+        } catch {
+            // Not a tempfile we can read: nothing resolves.
+        }
+        return { word: wordAt(lines[idx] ?? '', character), where: diffSourceLocation(lines, idx) };
     }
     const doc = documents.get(params.textDocument.uri) ?? '';
     const text = doc.split('\n')[line] ?? '';

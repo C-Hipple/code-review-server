@@ -30,6 +30,11 @@ for the fakes, so nothing installed on the machine leaks in. Two bridges run:
 - `:5190` — fake `crs`, fake `diff-lsp`, fake TypeScript server
 - `:5191` — fake `crs` and no language servers (the "LSP not active" paths)
 
+The bridge pools language servers per workspace (`lsp_pool.ts`), so a fake
+server started by one test can still be answering in the next: the fake
+`diff-lsp` re-reads the tempfile named by each request's document, and tests
+that need a fresh server pass a unique `worktree` when preparing the tempfile.
+
 Set `CRS_E2E_PORT` to move them. Each test resets the fake backend
 (`E2E.Reset`), and specs assert on what the UI sent through `backend.calls()`
 and `lsp.received()` (see `harness/test.ts`).

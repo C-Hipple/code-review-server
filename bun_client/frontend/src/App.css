@@ -1,5 +1,10 @@
+/* The highlight is an inset shadow painted over the row's own tint, not a
+   `filter`: a filter makes the hovered row a stacking context. The LSP popover
+   is a child of its row, so hovering the popover hovers the row too, and the
+   popover would sink under the rows that follow, handing clicks on its x to
+   the next line. */
 .hover-line:hover {
-    filter: brightness(1.2);
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--text-primary) 6%, transparent);
     outline: 1px solid var(--border);
 }
 

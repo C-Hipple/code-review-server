@@ -416,19 +416,18 @@ test.describe('LSP in the review diff', () => {
         expect(lsp.received('diff', 'textDocument/hover')).toHaveLength(3);
     });
 
-    // Known bug: `.hover-line:hover { filter: brightness(1.2) }` (App.css)
-    // makes the popover's row a stacking context as soon as the pointer is
-    // over the popover, trapping its z-index under the rows that follow. The
-    // x button sits over the next row, so the click lands on that row
-    // instead. Remove test.fail() once the popover stays on top.
+    // The x sits over the next diff row. The popover is a child of its row, so
+    // hovering it hovers the row: a row hover style that makes a stacking
+    // context (a `filter`, as .hover-line once had) sinks the popover under
+    // the rows that follow, and the click queries the next line instead.
     test('the close button dismisses the popover', async ({ page, lsp }) => {
-        test.fail();
         await openAndConnect(page, lsp);
 
         await clickWord(diffRow(page, 'const message = formatGreeting('), 'formatGreeting');
         await expect(page.getByText('References (3)')).toBeVisible();
         await page.getByRole('button', { name: 'Close', exact: true }).click({ timeout: 3_000 });
         await expect(page.getByText('References (3)')).toHaveCount(0, { timeout: 3_000 });
+        expect(lsp.received('diff', 'textDocument/hover')).toHaveLength(1);
     });
 
     test('keeps LSP info open while a comment is written', async ({ page, lsp }) => {

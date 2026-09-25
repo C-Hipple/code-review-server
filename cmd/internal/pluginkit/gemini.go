@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-const geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key="
+const geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key="
 
 type geminiPart struct {
 	Text string `json:"text"`
@@ -83,8 +83,9 @@ func AnnotationsSchema(max int) *Schema {
 	}
 }
 
-// Generate sends a prompt to Gemini 2.5 Flash and returns the text of the
-// first candidate. A non-nil schema asks for a JSON reply matching it.
+// Generate sends a prompt to the latest Gemini Flash model and returns the
+// text of the first candidate. A non-nil schema asks for a JSON reply
+// matching it.
 func Generate(prompt string, schema *Schema, apiKey string) (string, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{

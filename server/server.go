@@ -777,6 +777,10 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 		return err
 	}
 	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
+	// The diff just refetched may be for a newer head than the review
+	// worktree, which otherwise only moves on the next workflow cycle.
+	// diff-lsp reads the worktree, so bring it along before replying.
+	workflows.SyncPRWorktree(config.C().DB, args.Owner, args.Repo, args.Number)
 
 	reply.Updated = syncDetectedChanges(before, readSyncSnapshot(args.Repo, args.Number))
 

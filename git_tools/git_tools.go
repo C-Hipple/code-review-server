@@ -701,6 +701,11 @@ func runGit(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
+// HeadSHA returns the commit checked out in dir.
+func HeadSHA(dir string) (string, error) {
+	return runGit(dir, "rev-parse", "HEAD")
+}
+
 func CreateWorktree(repoDir, branch, worktreePath string) error {
 	// Registrations for worktrees whose directories were deleted by hand
 	// block re-adding at the same path, so clear them first.
@@ -752,7 +757,10 @@ func UpdateWorktree(repoDir, branch, worktreePath string) error {
 		slog.Warn("Failed to fetch branch before updating worktree", "repo", repoDir, "branch", branch, "output", out, "error", err)
 	}
 
-	if status, err := runGit(worktreePath, "status", "--porcelain"); err != nil {
+	// Only edits to tracked files count: git never removes an untracked
+	// file on a fast-forward or reset, and a stray build output or scratch
+	// file shouldn't pin the worktree to an old head.
+	if status, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=no"); err != nil {
 		return fmt.Errorf("git status failed in worktree %s: %s: %w", worktreePath, status, err)
 	} else if status != "" {
 		slog.Info("Worktree has local changes, skipping update", "path", worktreePath)

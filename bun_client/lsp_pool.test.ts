@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readLocationLines } from './lsp_lines';
 import {
+    diffLspCheckout,
     diffLspWorkspace,
     frameLspMessage,
     LspFrameParser,
@@ -118,6 +119,56 @@ describe('diffLspWorkspace', () => {
         expect(diffLspWorkspace(tempfile('undefined', 'modified   a.go\n')).key).toBe(
             'diff-lsp\0/src/crs\0'
         );
+    });
+});
+
+describe('diffLspCheckout', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lsp-checkout-'));
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+    const git = (cwd: string, ...args: string[]) => {
+        const proc = Bun.spawnSync(['git', '-C', cwd, ...args], {
+            env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: 't',
+                GIT_AUTHOR_EMAIL: 't@t',
+                GIT_COMMITTER_NAME: 't',
+                GIT_COMMITTER_EMAIL: 't@t',
+            },
+        });
+        if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+        return proc.stdout.toString().trim();
+    };
+    const repo = join(dir, 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'a.go'), 'package a\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'base');
+    const worktree = join(dir, 'repo_worktrees', '7_feature');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature', worktree);
+
+    test('keys on the worktree and its commit, which move with a push', async () => {
+        const before = await diffLspCheckout(repo, worktree);
+        expect(before).toBe(`${worktree}\0${git(worktree, 'rev-parse', 'HEAD')}`);
+
+        writeFileSync(join(worktree, 'a.go'), 'package a\n\nfunc A() {}\n');
+        git(worktree, 'commit', '-qam', 'push');
+        const after = await diffLspCheckout(repo, worktree);
+        expect(after).toBe(`${worktree}\0${git(worktree, 'rev-parse', 'HEAD')}`);
+        expect(after).not.toBe(before);
+    });
+
+    test('a worktree not on disk yet is the root, as diff-lsp falls back to it', async () => {
+        expect(await diffLspCheckout(repo, join(dir, 'not-created'))).toBe(
+            `${repo}\0${git(repo, 'rev-parse', 'HEAD')}`
+        );
+        expect(await diffLspCheckout(repo, '')).toBe(`${repo}\0${git(repo, 'rev-parse', 'HEAD')}`);
+    });
+
+    test('a directory outside git keys on the directory alone', async () => {
+        const plain = join(dir, 'plain');
+        mkdirSync(plain);
+        expect(await diffLspCheckout(plain, '')).toBe(`${plain}\0`);
     });
 });
 

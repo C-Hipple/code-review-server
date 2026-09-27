@@ -204,6 +204,10 @@ export function useLsp(options: UseLspOptions): UseLspResult {
     }, [
         options.mode === 'diff' ? options.diffContent : null,
         options.mode === 'diff' ? options.repoPath : null,
+        // A worktree that shows up after the review opened (a sync picks up
+        // the one the background workflow just created) has to be used:
+        // until then diff-lsp reads the main checkout.
+        options.mode === 'diff' ? options.worktreePath : null,
         options.mode === 'diff' ? options.repoName : null,
         options.mode === 'diff' ? options.prNumber : null,
         enabled,

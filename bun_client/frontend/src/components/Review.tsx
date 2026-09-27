@@ -178,6 +178,11 @@ export default function Review({
     // The login the review posts as, for the submit preview's verdict line.
     const [githubUsername, setGithubUsername] = useState('');
 
+    // Where the PR's files are on disk for the code viewer: its worktree when
+    // the server made one, else the main checkout, which may be on another
+    // branch entirely.
+    const checkoutPath = metadata?.worktree_path || metadata?.repo_path || '';
+
     // LSP Hook
     const lsp = useLsp({
         mode: 'diff',
@@ -1484,7 +1489,7 @@ export default function Review({
                                         isOpen={true}
                                         onClose={() => handleCloseDockedTab(tab.id)}
                                         filePath={tab.filePath}
-                                        repoPath={metadata?.repo_path || ''}
+                                        repoPath={checkoutPath}
                                         initialLine={tab.line}
                                         theme={theme}
                                         docked={true}
@@ -1586,7 +1591,7 @@ export default function Review({
                         }))
                     }
                     filePath={viewer.filePath}
-                    repoPath={metadata?.repo_path || ''}
+                    repoPath={checkoutPath}
                     initialLine={viewer.line}
                     theme={theme}
                     initialPosition={viewer.position}

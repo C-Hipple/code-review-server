@@ -2,8 +2,9 @@
 
 ;;; Commentary:
 
-;; The server's AI features for the PR under review, comments-addressed
-;; ("are all review comments addressed, and what is outstanding?") first.
+;; The server's AI features for the PR under review, such as
+;; comments-addressed ("are all review comments addressed, and what is
+;; outstanding?") and feature-flags ("is every change behind a flag?").
 ;; Mirrors crs-plugins.el: one output buffer per feature and PR, refreshed on
 ;; demand.
 ;;
@@ -59,8 +60,7 @@ describes it, and no run is already in flight."
       (insert (format "Updated %s\n" updated)))
     (when (and (crs--ai-true-p (cdr (assq 'stale output)))
                (not (crs--ai-pending-p output)))
-      (insert "\n> The PR has changed since this report was made (commits, comments, reviews or\n"
-              "> resolved threads).  Press R to re-run it.\n"))
+      (insert "\n> The PR has changed since this report was made.  Press R to re-run it.\n"))
     (when (crs--ai-true-p (cdr (assq 'truncated output)))
       (insert "\n> Some input was cut to fit the model's prompt.\n"))
     (when (and (crs--ai-pending-p output) has-content)

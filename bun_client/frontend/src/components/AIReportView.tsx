@@ -62,8 +62,7 @@ export default function AIReportView({
             )}
             {output?.stale && !pending && (
                 <Callout variant="warning">
-                    The PR has changed since this report was made (new commits, comments, reviews or
-                    resolved threads). Re-run it for a current answer.
+                    The PR has changed since this report was made. Re-run it for a current answer.
                 </Callout>
             )}
 

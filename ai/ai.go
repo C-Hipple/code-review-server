@@ -54,6 +54,28 @@ type TimeoutProvider interface {
 	Timeout() time.Duration
 }
 
+// CodeOnlyFeature is implemented by features whose result depends on the code
+// alone, not on the PR's discussion. Their results are keyed by the head SHA
+// with CodeOnlyDigest in place of the discussion digest (see KeyDigest), so a
+// new comment, review or resolved thread doesn't make one stale.
+type CodeOnlyFeature interface {
+	CodeOnly() bool
+}
+
+// CodeOnlyDigest stands in for the discussion digest in the key of a
+// code-only feature's result.
+const CodeOnlyDigest = "code-only"
+
+// KeyDigest is the digest a result of f is keyed by, given the digest of the
+// PR's discussion: that digest itself, or CodeOnlyDigest for a code-only
+// feature.
+func KeyDigest(f Feature, digest string) string {
+	if c, ok := f.(CodeOnlyFeature); ok && c.CodeOnly() {
+		return CodeOnlyDigest
+	}
+	return digest
+}
+
 // Statuses of a feature's result. Only the first three are ever stored; the
 // others describe a PR's result in a reply.
 const (
@@ -91,7 +113,8 @@ type Request struct {
 	Number int
 
 	// HeadSHA and Digest identify the inputs — the code and the discussion.
-	// The stored result is keyed by both.
+	// The stored result is keyed by both; a code-only feature sees
+	// CodeOnlyDigest here.
 	HeadSHA string
 	Digest  string
 
@@ -122,6 +145,10 @@ type Request struct {
 	// ReadFile reads a file as of the PR head, for agent tools. Nil when the
 	// server has no way to.
 	ReadFile func(ctx context.Context, path string) (string, error)
+	// SearchCode finds the lines of the repository at the PR head that contain
+	// a fixed string, for agent tools, one "path:line:text" per match. Nil when
+	// there is no local clone to search.
+	SearchCode func(ctx context.Context, query string) (string, error)
 }
 
 // Discussion is a PR's conversation as features see it. The server builds it

@@ -6,12 +6,18 @@ import (
 	"crs/config"
 	"crs/git_tools"
 	"crs/llm"
+	"crs/subprocess"
 	"crs/utils"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
 	"path"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // RunPostUpdatePRHooks runs the side-effecting work that should happen after a
@@ -103,6 +109,7 @@ func buildAIRequest(owner, repo string, number int) (ai.Request, error) {
 		ReviewThreads: details.reviewThreads,
 		Discussion:    aiDiscussion(details, rawComments),
 		ReadFile:      fileReaderAt(owner, repo, sha),
+		SearchCode:    codeSearcherAt(repo, sha),
 	}, nil
 }
 
@@ -122,6 +129,78 @@ func fileReaderAt(owner, repo, ref string) func(ctx context.Context, path string
 		}
 		return git_tools.GetFileContent(git_tools.GetGithubClient(), owner, repo, clean, ref)
 	}
+}
+
+// Bounds on one search_code call: its query, how long git grep may run, and
+// how many matches go back to the model.
+const (
+	minSearchQueryChars = 3
+	searchTimeout       = 20 * time.Second
+	maxSearchMatches    = 60
+	maxSearchLineChars  = 300
+)
+
+// codeSearcherAt searches the local clone as of ref for an agent's search_code
+// tool. Nil without a ref or a local clone: GitHub's code search only covers a
+// repository's default branch, not a PR's head.
+func codeSearcherAt(repo, ref string) func(ctx context.Context, query string) (string, error) {
+	if ref == "" {
+		return nil
+	}
+	repoPath, err := GetLocalRepoPath(repo)
+	if err != nil {
+		return nil
+	}
+	if info, err := os.Stat(repoPath); err != nil || !info.IsDir() {
+		return nil
+	}
+	return func(ctx context.Context, query string) (string, error) {
+		return searchRepoAt(ctx, repoPath, ref, query)
+	}
+}
+
+// searchRepoAt runs git grep for a fixed string over the tree at ref. The
+// query comes from a model, so it is passed with -e (it can't be read as an
+// option) and matched as a fixed string on a single line.
+func searchRepoAt(ctx context.Context, repoPath, ref, query string) (string, error) {
+	if strings.ContainsAny(query, "\r\n") {
+		return "", fmt.Errorf("the query must be a single line")
+	}
+	if len(strings.TrimSpace(query)) < minSearchQueryChars {
+		return "", fmt.Errorf("the query must be at least %d characters", minSearchQueryChars)
+	}
+	out, err := subprocess.Run(ctx, subprocess.Command{
+		Name:    "git",
+		Args:    []string{"-C", repoPath, "grep", "-n", "-I", "-F", "--no-color", "-e", query, ref, "--"},
+		Timeout: searchTimeout,
+	})
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && strings.TrimSpace(out.Stderr) == "" {
+		return "No matches.", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("git grep at %s failed: %v %s", ref, err, strings.TrimSpace(out.Stderr))
+	}
+
+	// Each match reads "<ref>:<path>:<line>:<text>".
+	matches := strings.Split(strings.TrimRight(out.Stdout, "\n"), "\n")
+	var b strings.Builder
+	for i, m := range matches {
+		if i == maxSearchMatches {
+			fmt.Fprintf(&b, "... and %d more match(es); search for something more specific.\n", len(matches)-i)
+			break
+		}
+		m = strings.TrimPrefix(m, ref+":")
+		if len(m) > maxSearchLineChars {
+			cut := maxSearchLineChars
+			for cut > 0 && !utf8.RuneStart(m[cut]) {
+				cut--
+			}
+			m = m[:cut] + "…"
+		}
+		b.WriteString(m + "\n")
+	}
+	return b.String(), nil
 }
 
 // cleanRepoPath accepts a path relative to the repository root and rejects

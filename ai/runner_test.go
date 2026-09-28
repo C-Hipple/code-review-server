@@ -135,6 +135,38 @@ func TestRunnerCacheHitNeedsBothKeyParts(t *testing.T) {
 	}
 }
 
+// codeOnlyFeature is a fakeFeature that reads only the code.
+type codeOnlyFeature struct{ fakeFeature }
+
+func (*codeOnlyFeature) CodeOnly() bool { return true }
+
+func TestRunnerKeysACodeOnlyFeatureByTheSHAAlone(t *testing.T) {
+	var seen string
+	f := &codeOnlyFeature{fakeFeature{id: "code", run: func(_ context.Context, req Request) (Result, error) {
+		seen = req.Digest
+		return Result{}, nil
+	}}}
+	r, db, _ := testRunner(t, nil, f)
+
+	r.RunSync(job("code", TriggerExplicit, "sha-1", "digest-1"))
+	if seen != CodeOnlyDigest {
+		t.Errorf("the feature saw digest %q, want %q", seen, CodeOnlyDigest)
+	}
+	stored, _, _ := db.GetAIResult("acme", "widgets", 42, "code")
+	if stored.SHA != "sha-1" || stored.InputHash != CodeOnlyDigest {
+		t.Errorf("stored key = %q/%q, want sha-1/%s", stored.SHA, stored.InputHash, CodeOnlyDigest)
+	}
+	if got := r.RunSync(job("code", TriggerExplicit, "sha-1", "digest-2")); got != OutcomeUpToDate {
+		t.Errorf("a new comment must not invalidate a code-only result: got %q", got)
+	}
+	if got := r.RunSync(job("code", TriggerExplicit, "sha-2", "digest-2")); got != OutcomeStarted {
+		t.Errorf("a new head SHA must invalidate a code-only result: got %q", got)
+	}
+	if n := f.calls.Load(); n != 2 {
+		t.Errorf("feature ran %d times, want 2", n)
+	}
+}
+
 func TestRunnerRetriesAFailedRunOnlyWhenAsked(t *testing.T) {
 	fail := true
 	f := &fakeFeature{id: "fake", run: func(context.Context, Request) (Result, error) {

@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -598,6 +601,203 @@ func TestCleanRepoPath(t *testing.T) {
 	for _, in := range []string{"", "/etc/passwd", "../secrets", "src/../../x", "..", ".", `src\..\x`} {
 		if got, err := cleanRepoPath(in); err == nil {
 			t.Errorf("cleanRepoPath(%q) = %q, want an error", in, got)
+		}
+	}
+}
+
+// gitRepo makes a repository under a fresh RepoLocation with one commit per
+// entry of versions (each a path -> content map) and returns the commit SHAs.
+func gitRepo(t *testing.T, name string, versions ...map[string]string) []string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, name)
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	var shas []string
+	for _, files := range versions {
+		for p, content := range files {
+			full := filepath.Join(dir, p)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		git("add", "-A")
+		git("commit", "-q", "-m", "commit")
+		shas = append(shas, git("rev-parse", "HEAD"))
+	}
+	cfg := config.C()
+	cfg.RepoLocation = root
+	config.SetC(cfg)
+	return shas
+}
+
+func TestCodeSearcherSearchesTheHeadRevision(t *testing.T) {
+	aiTestSetup(t, nil)
+	shas := gitRepo(t, aiRepo,
+		map[string]string{"app/views.py": "def checkout(request):\n    if flag_is_active(request, 'new_checkout'):\n        return new_checkout(request)\n"},
+		map[string]string{"app/views.py": "def checkout(request):\n    return new_checkout(request)\n", "app/urls.py": "path('checkout', checkout)\n"},
+	)
+	ctx := context.Background()
+
+	old, err := codeSearcherAt(aiRepo, shas[0])(ctx, "flag_is_active")
+	if err != nil || old != "app/views.py:2:    if flag_is_active(request, 'new_checkout'):\n" {
+		t.Errorf("search at the first commit = %q, %v", old, err)
+	}
+	head, err := codeSearcherAt(aiRepo, shas[1])(ctx, "flag_is_active")
+	if err != nil || head != "No matches." {
+		t.Errorf("search at the head = %q, %v; the flag check is gone there", head, err)
+	}
+	callers, err := codeSearcherAt(aiRepo, shas[1])(ctx, "checkout(")
+	if err != nil || !strings.Contains(callers, "app/views.py:1:def checkout(request):") || strings.Contains(callers, shas[1]) {
+		t.Errorf("callers = %q, %v", callers, err)
+	}
+	// A query that looks like an option is still just text to find.
+	if got, err := codeSearcherAt(aiRepo, shas[1])(ctx, "--version"); err != nil || got != "No matches." {
+		t.Errorf("an option-like query = %q, %v", got, err)
+	}
+	for _, bad := range []string{"ab", "  x ", "two\nlines"} {
+		if _, err := codeSearcherAt(aiRepo, shas[1])(ctx, bad); err == nil {
+			t.Errorf("query %q should be refused", bad)
+		}
+	}
+	if _, err := codeSearcherAt(aiRepo, "0000000000000000000000000000000000000000")(ctx, "checkout"); err == nil {
+		t.Error("a revision the clone doesn't have should be an error, not no matches")
+	}
+
+	if codeSearcherAt(aiRepo, "") != nil || codeSearcherAt("no-such-clone", shas[1]) != nil {
+		t.Error("without a ref or a local clone there is nothing to search")
+	}
+}
+
+// flagsTestDiff adds a flag-gated checkout and widens a model field for everyone.
+const flagsTestDiff = `diff --git a/app/views.py b/app/views.py
+index 1111111..2222222 100644
+--- a/app/views.py
++++ b/app/views.py
+@@ -10,2 +10,4 @@ def checkout(request):
+     cart = get_cart(request)
++    if flag_is_active(request, "new_checkout"):
++        return new_checkout(request, cart)
+     return old_checkout(request, cart)
+diff --git a/app/models.py b/app/models.py
+index 3333333..4444444 100644
+--- a/app/models.py
++++ b/app/models.py
+@@ -5,2 +5,2 @@ class Order(models.Model):
+     total = models.DecimalField()
+-    currency = models.CharField(max_length=3)
++    currency = models.CharField(max_length=8)
+diff --git a/app/tests/test_views.py b/app/tests/test_views.py
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/app/tests/test_views.py
+@@ -0,0 +1,2 @@
++@override_flag("new_checkout", active=True)
++def test_new_checkout(client): pass
+`
+
+func TestFeatureFlagsEndToEnd(t *testing.T) {
+	db := aiTestSetup(t, []config.AIFeature{{ID: ai.FeatureFlagsID, Enabled: true}})
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-1", "base-1", flagsTestDiff); err != nil {
+		t.Fatal(err)
+	}
+	r := useAIRunner(t, ai.FeatureFlags{})
+	model := &recordingProvider{answer: `{"changes": [
+		{"id": "1", "status": "gated", "flag": "new_checkout", "rationale": "Only runs when new_checkout is active."},
+		{"id": "2", "status": "ungated", "rationale": "Widens the currency column for every order."}
+	]}`}
+	r.NewProvider = func(string, string) (ai.Provider, error) { return model, nil }
+	h := &RPCHandler{}
+	args := &RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: ai.FeatureFlagsID}
+	output := func() AIFeatureOutput {
+		t.Helper()
+		var poll GetAIOutputReply
+		if err := h.GetAIOutput(&GetAIOutputArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: ai.FeatureFlagsID}, &poll); err != nil {
+			t.Fatalf("GetAIOutput: %v", err)
+		}
+		return poll.Output[ai.FeatureFlagsID]
+	}
+
+	var run RunAIFeatureReply
+	h.RunAIFeature(args, &run)
+	if run.Outcome != string(ai.OutcomeStarted) {
+		t.Fatalf("RunAIFeature: %+v", run)
+	}
+	waitForAIRun(t, ai.FeatureFlagsID)
+
+	out := output()
+	if out.Status != ai.StatusSuccess || out.Name != "Behind a flag?" {
+		t.Fatalf("status = %q, body:\n%s", out.Status, out.Body.BodyContent)
+	}
+	var report ai.FlagsReport
+	if err := json.Unmarshal(out.Report, &report); err != nil {
+		t.Fatalf("report is not a flags report: %v\n%s", err, out.Report)
+	}
+	if report.Verdict != ai.VerdictUngated || report.Counts != (ai.FlagCounts{Total: 3, Gated: 1, Ungated: 1, NoEffect: 1, ByModel: 2}) {
+		t.Errorf("verdict %q counts %+v", report.Verdict, report.Counts)
+	}
+	// Line numbers survive the server's rendering of the diff.
+	lines := map[string][2]int{}
+	for _, c := range report.Changes {
+		lines[c.Path] = [2]int{c.Line, c.EndLine}
+	}
+	if lines["app/views.py"] != [2]int{11, 12} || lines["app/models.py"] != [2]int{6, 6} {
+		t.Errorf("change lines = %v", lines)
+	}
+	if len(out.Annotations) != 1 || out.Annotations[0].Filename != "app/models.py" || out.Annotations[0].Line != 6 ||
+		out.Annotations[0].Source != AnnotationSourceAI || out.Annotations[0].Feature != ai.FeatureFlagsID {
+		t.Errorf("annotations = %+v", out.Annotations)
+	}
+	if out.CoversDigest != ai.CodeOnlyDigest || out.CurrentDigest != ai.CodeOnlyDigest || out.Stale {
+		t.Errorf("a code-only result is keyed by the SHA alone: %+v", out)
+	}
+
+	// A new comment changes the discussion, not the code: still current.
+	comments := append(aiTestComments(), issueComment(9002, "erin", "Is this safe to ship?", aiAt(3)))
+	raw, _ := json.Marshal(comments)
+	if err := db.UpsertPRComments(aiNumber, aiRepo, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if out := output(); out.Stale {
+		t.Errorf("a comment must not make the flags report stale: %+v", out)
+	}
+	h.RunAIFeature(args, &run)
+	if run.Outcome != string(ai.OutcomeUpToDate) {
+		t.Errorf("a comment must not cost a new run: %+v", run)
+	}
+
+	// A push does.
+	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-2", "base-1", flagsTestDiff); err != nil {
+		t.Fatal(err)
+	}
+	if out := output(); !out.Stale || out.CurrentSHA != "sha-2" {
+		t.Errorf("a new head SHA makes it stale: %+v", out)
+	}
+
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	if len(model.prompts) != 1 {
+		t.Fatalf("expected one model call, got %d", len(model.prompts))
+	}
+	for _, unwanted := range []string{"Log the formatted message", "Is this safe to ship?"} {
+		if strings.Contains(model.prompts[0], unwanted) {
+			t.Errorf("the flags prompt reads only the code, but contains %q", unwanted)
 		}
 	}
 }

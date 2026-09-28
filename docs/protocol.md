@@ -820,7 +820,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 #### `AIFeature` Object
 | Field         | Type     | Description                                                              |
 |---------------|----------|--------------------------------------------------------------------------|
-| `id`          | string   | Stable identifier, e.g. `comments-addressed`                            |
+| `id`          | string   | Stable identifier, e.g. `comments-addressed` or `feature-flags`         |
 | `name`        | string   | Label to show, e.g. `Comments addressed?`                                |
 | `description` | string   | One-paragraph explanation                                                |
 | `enabled`     | bool     | Whether an `[[AIFeatures]]` entry switches it on                         |
@@ -835,7 +835,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 
 Asks for an AI feature to run for a pull request and returns at once; the run happens in the background, like [`RerunPlugins`](#rpchandlerrerunplugins). Poll [`GetAIOutput`](#rpchandlergetaioutput) while the output's `status` is `pending`.
 
-Unless `Force` is set, a stored result that already covers the PR's current inputs — the same head SHA and the same [inputs digest](ai_features.md#caching-and-staleness) — answers without a run. Only one run per PR and feature is ever in flight.
+Unless `Force` is set, a stored result that already covers the PR's current inputs — the same head SHA and the same [inputs digest](ai_features.md#caching-and-staleness), or just the same head SHA for a feature that reads only the code — answers without a run. Only one run per PR and feature is ever in flight.
 
 **Arguments** (`RunAIFeatureArgs`):
 | Field     | Type   | Required | Description                                                     |
@@ -884,12 +884,12 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 | `status`         | string         | `pending` while a run is in flight (the output may still carry the previous result), `not-run` before the first one, otherwise the stored run's: `success`, `error` or `insufficient-input` |
 | `body`           | PluginBody     | The result rendered as markdown; an error's body says why the run failed    |
 | `annotations`    | []PRAnnotation | Diff annotations, each with `source: "ai"` and `feature` set                |
-| `report`         | object         | The feature's typed report, `null` when it has none; comments-addressed documents [its shape](ai_features.md#the-report) |
+| `report`         | object         | The feature's typed report, `null` when it has none; comments-addressed and feature-flags document their shapes ([comments-addressed](ai_features.md#the-report), [feature-flags](ai_features.md#the-feature-flags-report)) |
 | `outstanding`    | array          | For features that track it, every item still needing attention — including ones no diff line can anchor; `null` otherwise |
 | `covers_sha`     | string         | Head SHA the stored result was computed from                                |
-| `covers_digest`  | string         | Inputs digest the stored result was computed from                           |
+| `covers_digest`  | string         | Inputs digest the stored result was computed from; `code-only` for a feature that reads only the code, whose results the head SHA alone keys |
 | `current_sha`    | string         | The PR's head SHA now                                                       |
-| `current_digest` | string         | The PR's inputs digest now                                                  |
+| `current_digest` | string         | The PR's inputs digest now (`code-only` for such a feature)                  |
 | `stale`          | bool           | `true` when a stored result no longer matches the PR's SHA or digest        |
 | `truncated`      | bool           | `true` when some input was cut to fit the model's prompt                    |
 | `updated_at`     | string         | When the stored result was written (RFC 3339); empty when there is none     |

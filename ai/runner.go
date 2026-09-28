@@ -65,6 +65,8 @@ type Job struct {
 	Trigger Trigger
 	// SHA and Digest are the PR's current inputs as the DB caches have them,
 	// read up front so deciding whether to run needs no GitHub round trip.
+	// Digest is the discussion's; the runner swaps in CodeOnlyDigest for a
+	// code-only feature.
 	// The stored result is keyed by the Request that Build returns, which may
 	// have refreshed a cache on the way.
 	SHA    string
@@ -144,6 +146,7 @@ func (r *Runner) claim(job Job) (claim, Outcome) {
 	if !entry.Enabled || (job.Trigger == TriggerAutomatic && !entry.Automatic) {
 		return claim{}, OutcomeDisabled
 	}
+	job.Digest = KeyDigest(f, job.Digest)
 	if job.Trigger != TriggerRerun && storedCovers(cfg, job) {
 		return claim{}, OutcomeUpToDate
 	}
@@ -198,6 +201,7 @@ func (r *Runner) execute(c claim) {
 	if err != nil {
 		err = &llm.CallError{Stage: StageInput, Err: fmt.Errorf("assembling the PR's inputs: %w", err)}
 	} else {
+		req.Digest = KeyDigest(c.feature, req.Digest)
 		sha, digest = req.HeadSHA, req.Digest
 		req.Trigger = job.Trigger
 		req.Mode = c.mode

@@ -271,8 +271,9 @@ Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each
 
 ## AI Features
 
-AI features — such as the **comments-addressed** report of which review comments are
-still outstanding — are off by default and switched on one by one:
+AI features — the **comments-addressed** report of which review comments are still
+outstanding, and the **feature-flags** report of which changes would run with every
+feature flag off — are off by default and switched on one by one:
 
 ```toml
 [[AIFeatures]]

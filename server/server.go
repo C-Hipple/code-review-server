@@ -886,7 +886,8 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 //
 // AI features are registered in the ai package, switched on per feature in
 // config ([[AIFeatures]]), and served here. Each keeps one stored result per
-// PR, keyed by the head SHA plus a digest of the PR's discussion. A client
+// PR, keyed by the head SHA plus a digest of the PR's discussion (the head SHA
+// alone for a feature that reads only the code, see ai.KeyDigest). A client
 // lists the features, asks for a run — which happens in the background, like a
 // plugin rerun — and polls GetAIOutput while the output reads "pending".
 
@@ -990,7 +991,8 @@ type AIFeatureOutput struct {
 	Body        PluginBody     `json:"body"`
 	Annotations []PRAnnotation `json:"annotations"`
 	// Report and Outstanding are the feature's typed payload (see the ai
-	// package; comments-addressed documents its shape); null when absent.
+	// package; comments-addressed and feature-flags document their shapes);
+	// null when absent.
 	Report      json.RawMessage `json:"report"`
 	Outstanding json.RawMessage `json:"outstanding"`
 	// CoversSHA and CoversDigest are the inputs the stored result was computed
@@ -1048,7 +1050,8 @@ func aiFeatureOutput(owner, repo string, number int, f ai.Feature) (AIFeatureOut
 		Body:        PluginBody{BodyType: BodyTypeMarkdown},
 		Annotations: []PRAnnotation{},
 	}
-	out.CurrentSHA, out.CurrentDigest = currentAIInputs(repo, number)
+	sha, digest := currentAIInputs(repo, number)
+	out.CurrentSHA, out.CurrentDigest = sha, ai.KeyDigest(f, digest)
 
 	stored, ok, err := config.C().DB.GetAIResult(owner, repo, number, f.ID())
 	if err != nil {

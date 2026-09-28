@@ -6,7 +6,8 @@
  * RunAIFeature and GetAIOutput. A result follows the plugin response contract
  * (body + annotations) plus a typed report; comments-addressed is the first
  * feature, and the only one with a report this client knows how to render —
- * anything else renders its markdown body.
+ * anything else (feature-flags, say) renders its markdown body, and is counted
+ * on its toolbar button by the `outstanding` list it serves.
  *
  * The helpers here are the client's single interpretation of those replies.
  */
@@ -170,12 +171,18 @@ export function attentionItems(output: AIFeatureOutput | null | undefined): Repo
 
 /**
  * The count for a feature's toolbar button: how many items need attention.
- * Null when there is nothing to count yet — no result, or not a report this
- * client understands.
+ * comments-addressed counts its outstanding and unclear items; any other
+ * feature that serves an `outstanding` list (feature-flags: the changes that
+ * run without a flag, then the unclear ones) is counted by that list once a
+ * run has succeeded. Null when there is nothing to count yet — no result, a
+ * run that failed or lacked input, or a feature that keeps no such list.
  */
 export function attentionCount(output: AIFeatureOutput | null | undefined): number | null {
-    if (!commentsReport(output)) return null;
-    return attentionItems(output).length;
+    if (commentsReport(output)) return attentionItems(output).length;
+    if (output?.status === 'success' && Array.isArray(output.outstanding)) {
+        return output.outstanding.length;
+    }
+    return null;
 }
 
 export function isPending(output: AIFeatureOutput | null | undefined): boolean {

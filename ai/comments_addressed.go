@@ -765,30 +765,14 @@ var codeFence = regexp.MustCompile("(?s)^\\s*```[a-zA-Z]*\\s*\n?(.*?)\\s*```\\s*
 // around the object, a bare array, and numeric IDs; an entry with an unknown
 // status counts as unclear.
 func parseVerdicts(text string) ([]modelVerdict, error) {
-	s := strings.TrimSpace(text)
-	if m := codeFence.FindStringSubmatch(s); m != nil {
-		s = strings.TrimSpace(m[1])
-	}
-
 	type rawEntry struct {
 		ID        json.RawMessage `json:"id"`
 		Status    string          `json:"status"`
 		Rationale string          `json:"rationale"`
 	}
-	// Decode from the first opening bracket and stop at the end of that value,
-	// so prose after it — braces included — doesn't matter.
-	var entries []rawEntry
-	var wrapped struct {
-		Items []rawEntry `json:"items"`
-	}
-	if start := strings.Index(s, "{"); start >= 0 &&
-		json.NewDecoder(strings.NewReader(s[start:])).Decode(&wrapped) == nil && wrapped.Items != nil {
-		entries = wrapped.Items
-	} else if start := strings.Index(s, "["); start >= 0 &&
-		json.NewDecoder(strings.NewReader(s[start:])).Decode(&entries) == nil {
-		// A bare array of entries.
-	} else {
-		return nil, fmt.Errorf("no JSON object with an \"items\" list")
+	entries, err := decodeAnswerList[rawEntry](text, "items")
+	if err != nil {
+		return nil, err
 	}
 
 	out := make([]modelVerdict, 0, len(entries))
@@ -809,8 +793,34 @@ func parseVerdicts(text string) ([]modelVerdict, error) {
 	return out, nil
 }
 
+// decodeAnswerList reads the list under key from a model's JSON answer, e.g.
+// {"items": [...]}. It tolerates a code fence, prose around the object, and a
+// bare array of entries.
+func decodeAnswerList[T any](text, key string) ([]T, error) {
+	s := strings.TrimSpace(text)
+	if m := codeFence.FindStringSubmatch(s); m != nil {
+		s = strings.TrimSpace(m[1])
+	}
+	// Decode from the first opening bracket and stop at the end of that value,
+	// so prose after it — braces included — doesn't matter.
+	var wrapped map[string]json.RawMessage
+	if start := strings.Index(s, "{"); start >= 0 &&
+		json.NewDecoder(strings.NewReader(s[start:])).Decode(&wrapped) == nil {
+		var entries []T
+		if raw, ok := wrapped[key]; ok && json.Unmarshal(raw, &entries) == nil && entries != nil {
+			return entries, nil
+		}
+	}
+	var entries []T
+	if start := strings.Index(s, "["); start >= 0 &&
+		json.NewDecoder(strings.NewReader(s[start:])).Decode(&entries) == nil {
+		return entries, nil
+	}
+	return nil, fmt.Errorf("no JSON object with an %q list", key)
+}
+
 // normalizeItemID accepts an item ID as a JSON string or number, with a
-// stray "#" or "Item " prefix.
+// stray "#", "Item " or "Change " prefix.
 func normalizeItemID(raw json.RawMessage) string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -824,8 +834,9 @@ func normalizeItemID(raw json.RawMessage) string {
 		s = n.String()
 	}
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "Item ")
-	s = strings.TrimPrefix(s, "item ")
+	for _, prefix := range []string{"Item ", "item ", "Change ", "change "} {
+		s = strings.TrimPrefix(s, prefix)
+	}
 	return strings.TrimSpace(strings.TrimPrefix(s, "#"))
 }
 

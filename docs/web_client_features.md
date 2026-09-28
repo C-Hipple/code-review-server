@@ -533,14 +533,16 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`)
 
-The server's [AI features](ai_features.md) — comments-addressed first — have two
+The server's [AI features](ai_features.md) — comments-addressed and feature-flags — have two
 surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
 enabled by default, and an older server without the AI RPCs just shows neither.
 
 - **Review toolbar** — a button per feature, opening its report in a modal. The
   review view loads `GetAIOutput` for the enabled features on open (and after a sync
   or a submit), and each button counts the items needing attention, or shows ✓ when
-  none do.
+  none do. comments-addressed counts its outstanding and unclear items; any other
+  feature is counted by the `outstanding` list it serves (feature-flags: the changes
+  that run without a flag, then the unclear ones), once a run has succeeded.
 - **Full-page AI view** — reachable from the list's ✦ AI button or `?view=ai`, the
   counterpart of the plugin view: a card per feature, so reports can be run and read
   without opening the review. With no diff on the page, item locations are plain

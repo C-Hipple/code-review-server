@@ -1,8 +1,13 @@
 # AI Features
 
 AI features are units of AI work the server runs on a pull request and serves
-to every client. The first, **comments-addressed**, answers *"are all the
-review comments addressed, and what is still outstanding?"*
+to every client. Two are registered:
+
+- **comments-addressed** answers *"are all the review comments addressed, and
+  what is still outstanding?"*
+- **feature-flags** answers *"is every change in this PR behind a feature
+  flag?"* — how safe the PR is to approve, if its flags keep what it changes
+  switched off.
 
 They sit beside the two older AI paths rather than on top of them.
 [Plugins](plugins.md) remain separate binaries with their own config, table and
@@ -33,7 +38,7 @@ Mode = "oneshot"    # or "agent"
 
 | Field       | Default                                  | Meaning                                                                                  |
 |-------------|------------------------------------------|------------------------------------------------------------------------------------------|
-| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`                        |
+| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`, `feature-flags`       |
 | `Enabled`   | `false`                                  | Switches the feature on. Without it the feature is listed but can't run                 |
 | `Automatic` | `false`                                  | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
 | `Mode`      | the feature's default                    | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
@@ -123,16 +128,18 @@ feature's `provider`.
 
 > **Treat the prompt as untrusted input.** It carries text other people wrote —
 > the PR title, review and conversation comments, the diff — and anyone who can
-> comment on a PR can try to steer the model. With the `command` provider, run
-> the CLI without write, shell or network tools enabled, and check how it treats
-> tool permissions when nobody is there to approve them. The server's own
-> `read_file` tool, in agent mode, only reads repository files as of the PR head
-> and rejects paths outside the repository.
+> comment on a PR, or push to it, can try to steer the model. With the `command`
+> provider, run the CLI without write, shell or network tools enabled, and check
+> how it treats tool permissions when nobody is there to approve them. The
+> server's own tools, in agent mode, only read: `read_file` reads repository
+> files as of the PR head and rejects paths outside the repository, and
+> `search_code` runs a fixed-string `git grep` over the local clone at the PR
+> head, with the query passed as a pattern, never as an option.
 
 A provider that can't be built — no `GEMINI_API_KEY`, say — doesn't fail a
 feature that can manage without one: comments-addressed still produces its
-deterministic report, leaves the items it needed the model for unclear, and
-says why.
+deterministic report, and feature-flags still settles the files its path rules
+decide; each leaves what it needed the model for unclear, and says why.
 
 ## Modes
 
@@ -143,7 +150,8 @@ says why.
   replies with a `TOOL_CALL {"name": ..., "arguments": {...}}` line), so even
   a CLI that knows nothing of the server's tools can use them. A run gets at
   most six turns. comments-addressed offers one tool, `read_file`, which reads
-  a file as of the PR head from the local clone (or GitHub).
+  a file as of the PR head from the local clone (or GitHub); feature-flags adds
+  [`search_code`](#agent-mode-and-search_code).
 
 ## Running
 
@@ -176,6 +184,10 @@ PR's current one (`current_sha`, `current_digest`) and sets `stale` when they
 differ — so resolving a thread, a new or edited comment, a new review or
 dismissal, and a push each make a report stale. Local (unsubmitted) comments
 and reactions are not inputs.
+
+A feature that reads only the code — feature-flags — is keyed by the head SHA
+alone: both of its digests read `code-only`, so only a push makes its report
+stale, and a new comment neither makes it stale nor costs a model call.
 
 ## comments-addressed
 
@@ -251,10 +263,131 @@ nullable `thread_id`, `kind` (`thread` or `conversation`), `status`
 then unclear — whether or not it can be anchored to a line, and `annotations`
 marks the open threads that can (a warning for outstanding, info for unclear).
 
+## feature-flags
+
+Answers *"is every change in this PR behind a feature flag?"* A flag here is
+anything that decides at run time whether code runs: a feature flag; a
+django-waffle flag, switch or sample; a LaunchDarkly, Unleash, Flipper,
+OpenFeature, GrowthBook or Statsig check; a settings or environment toggle; or
+an in-house helper of the same shape.
+
+```toml
+[[AIFeatures]]
+ID = "feature-flags"
+Enabled = true
+Automatic = true    # judge each PR as it arrives, so the answer is waiting
+Mode = "agent"      # optional: lets the model look up a changed function's callers
+```
+
+### How it decides
+
+The unit is a **change**: one hunk of the diff, or a whole file a path rule
+decides. Path rules come first; the model judges the rest.
+
+| Change                                                                    | Status              | Decided by |
+|---------------------------------------------------------------------------|---------------------|------------|
+| A test file: `*_test.go`, `test_*.py`, `*_test.py`, `conftest.py`, `*.test.ts`, `*.spec.js` and the like, `*_spec.rb`, or anything under a `test`, `tests`, `__tests__`, `testdata` or `e2e` directory | no-effect | path rule |
+| Documentation: a `.md`, `.markdown`, `.rst` or `.adoc` file at the repository root, under a `docs` or `doc` directory, or named `README`, `CHANGELOG`, `CONTRIBUTING` and the like | no-effect | path rule |
+| A dependency lockfile: `package-lock.json`, `yarn.lock`, `go.sum`, `poetry.lock`, `Cargo.lock` and the like — it changes what every build installs | ungated | path rule |
+| Every other hunk, and a file changed with no text diff (a binary file, a rename or a mode change) | the model's verdict | model |
+
+The path rules are deliberately narrow: a file they miss only costs a model
+judgment, while a runtime file taken for a test would be reported as having no
+effect. Markdown anywhere else goes to the model, since it may be a template or
+a prompt read at run time, and a name like `ABTest.java` is not taken for a
+test.
+
+The model answers one question per change: *if this change were wrong, could
+it affect anyone while its flags are off, at their defaults?*
+
+- **`gated`** — no: it only runs while a flag is on. Code reachable only from
+  gated code, such as a new function whose only callers are behind the flag,
+  counts.
+- **`ungated`** — yes. That includes refactors however safe they look, changes
+  to what runs while the flag is off, removing a flag check, new routes, jobs,
+  migrations and schema changes, dependency and configuration changes, and a
+  flag the diff turns on by default.
+- **`no-effect`** — it can't change behaviour: comments, formatting, dead code.
+- **`unclear`** — it can't tell; for example, whether a flag check encloses the
+  change is outside the diff shown.
+
+The design goal is never to report a confidently wrong "all gated":
+
+- **A gated verdict must name its flag, and the flag must be in the code the
+  model saw** — the diff in its prompt, the tests shown as context, or what its
+  tools returned in agent mode. Case and separators don't matter
+  (`NEW_CHECKOUT` matches `"new-checkout"`). A verdict that names no flag, or a
+  flag the code never mentions, goes back to unclear. This catches an invented
+  flag; it can't prove the flag it found really encloses the change.
+- **A cut prompt keeps only ungated verdicts.** If any change the model had to
+  judge didn't fit its prompt, its gated and no-effect verdicts are discarded:
+  whether code is reachable only from behind a flag can hinge on the part it
+  didn't see. Ungated verdicts stand, since they only ever ask the reviewer to
+  look.
+- **No verdict, no status.** A change the model gave no verdict for — and every
+  change, when the model can't be reached — stays unclear.
+- **No diff makes the run `insufficient-input`**, not a clean report.
+
+The verdict is `ungated` when any change runs without a flag, `unclear` when
+none is known to but some are unclear, `all-gated` when every change that
+affects behaviour is behind a flag, and `no-runtime-changes` when none affects
+behaviour (a tests-and-docs PR, say).
+
+The prompt is bounded: at most 100 changes go to the model (the rest stay
+unclear, and the report is marked truncated), and the changes to judge fill up
+to 150 KB of diff in diff order, whole — one that doesn't fit is left out.
+Test files follow as context when there is room, since they often show which
+flag a change is behind; docs and lockfiles are listed by name only. The
+prompt carries the PR title but none of the discussion.
+
+### Agent mode and `search_code`
+
+The question a diff most often leaves open is whether a changed function has
+callers outside the flag. In `agent` mode the model has two tools to find out:
+`read_file`, as comments-addressed has, and **`search_code`**, which returns the
+lines of the repository at the PR head containing a fixed string — typically a
+function's name, to see its callers. It runs `git grep` over the local clone
+(under `RepoLocation`) at the head SHA, so it is offered only when that clone
+exists, and a search the clone can't answer (it hasn't fetched the head yet,
+say) comes back to the model as an error rather than as no matches. Queries
+need at least three characters; at most 60 matches are returned.
+
+### The feature-flags report
+
+The result's `body` is a complete markdown report: the verdict, then the
+changes that run without a flag, the unclear ones, the gated ones with their
+flags, and those with no runtime effect. Its `report` is the typed version:
+
+| Field       | Meaning                                                                                        |
+|-------------|------------------------------------------------------------------------------------------------|
+| `verdict`   | `all-gated`, `ungated`, `unclear`, `no-runtime-changes` or `insufficient-input`                |
+| `summary`   | The verdict in one sentence                                                                    |
+| `counts`    | `total`, `gated`, `ungated`, `no_effect`, `unclear`, and `by_model` (changes the model decided) |
+| `flags`     | The flags that gate changes, in order of first appearance: `name` and how many `changes`       |
+| `changes`   | One per change, in diff order; see below                                                       |
+| `model`     | As for comments-addressed: `consulted`, `provider`, `model`, `mode`, `asked`, agent `turns` / `tool_calls`, and a `note` |
+| `truncated` | A change was cut from the model's prompt                                                       |
+| `missing`   | What was unavailable, when the verdict is `insufficient-input`                                 |
+
+Each change carries `id` (its number in the diff, as the prompt numbers it),
+`path`, `line` and `end_line` (its span in the head version; absent for a
+whole file and for a deleted file), `context` (what the hunk header names,
+usually the enclosing function), `added`, `removed`, `new_file`,
+`deleted_file`, `status` (`gated`, `ungated`, `no-effect`, `unclear`), `source`
+(`model` when the model's verdict decided it, otherwise `rule`), `category`
+(`test`, `docs` or `lockfile`, for a file a path rule decided), `flag` (for a
+gated change, as the code spells it) and `rationale`.
+
+`outstanding` lists the changes that run without a flag, then the unclear
+ones, and `annotations` marks those with a head line (a warning for ungated,
+info for unclear); a whole-file change, such as a lockfile, anchors to none.
+
 ## Clients
 
 - **Web.** The review toolbar shows a button per enabled feature, with the
-  number of items needing attention once a report exists. It opens the report:
+  number of items needing attention once a report exists — for feature-flags,
+  the changes that run without a flag or are unclear — or ✓ when none do. It
+  opens the report (feature-flags renders its markdown body):
   verdict, what needs attention with who decided each item, change requests,
   and the addressed items collapsed. An item's location jumps to its thread in
   the diff (or the outdated-comments panel); **↻ Re-run** forces a fresh run.
@@ -302,11 +435,13 @@ type Feature interface {
 }
 ```
 
-`Describer`, `ModeSupporter` (to run in `agent` mode too) and
-`TimeoutProvider` are optional. The `Request` carries the PR's diff, raw
-comments JSON, metadata, review threads, the server's partition of the
-discussion, and the two seams: `req.Model.Generate` for one-shot calls and, in
-agent mode, `req.Agent.Run` with the tools the feature offers. The `Result` is
+`Describer`, `ModeSupporter` (to run in `agent` mode too), `TimeoutProvider`
+and `CodeOnlyFeature` (to key results by the head SHA alone) are optional. The
+`Request` carries the PR's diff, raw comments JSON, metadata, review threads,
+the server's partition of the discussion, and the two seams:
+`req.Model.Generate` for one-shot calls and, in agent mode, `req.Agent.Run`
+with the tools the feature offers — built from `req.ReadFile` and
+`req.SearchCode` where the server can provide them. The `Result` is
 the plugin response contract (a body and annotations) plus an optional typed
 `Report`, an `Outstanding` list and a `Log` line for the call log. Caching,
 the in-flight guard, the automatic-run cap, storage and the RPCs come with the
@@ -327,3 +462,7 @@ registration; a client renders any feature's markdown body without changes.
   `GetAIOutput`, which also serves them the staleness information.
 - **Automatic-run cap.** Two concurrent automatic runs, shared by every
   feature. It isn't configurable yet.
+- **Code-only keys.** A feature that reads only the code declares it
+  (`CodeOnlyFeature`) rather than the digest growing per-feature inputs: the
+  runner and `GetAIOutput` swap in `code-only` for its digest, so the table and
+  the RPCs stay unchanged.

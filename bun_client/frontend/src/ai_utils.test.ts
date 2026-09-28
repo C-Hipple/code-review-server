@@ -113,6 +113,19 @@ describe('attention items', () => {
         expect(attentionCount(output({ status: 'not-run' }))).toBeNull();
         expect(attentionCount(output({ report: report([done]), outstanding: [] }))).toBe(0);
     });
+
+    test("counts another feature's served outstanding list once a run succeeded", () => {
+        const flags = (fields: Partial<AIFeatureOutput>) =>
+            output({ feature: 'feature-flags', name: 'Behind a flag?', ...fields });
+        const ungated = { id: '3', path: 'app/models.py', status: 'ungated' };
+        expect(attentionCount(flags({ outstanding: [ungated] }))).toBe(1);
+        expect(attentionCount(flags({ outstanding: [] }))).toBe(0);
+        // No list, or a run that didn't reach a verdict, is nothing to count —
+        // never a ✓.
+        expect(attentionCount(flags({ outstanding: null }))).toBeNull();
+        expect(attentionCount(flags({ status: 'insufficient-input', outstanding: [] }))).toBeNull();
+        expect(attentionCount(flags({ status: 'error', outstanding: null }))).toBeNull();
+    });
 });
 
 describe('shouldRunOnOpen', () => {

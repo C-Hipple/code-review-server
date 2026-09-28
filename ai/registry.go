@@ -26,6 +26,7 @@ var DefaultRegistry = NewRegistry()
 
 func init() {
 	DefaultRegistry.MustRegister(CommentsAddressed{})
+	DefaultRegistry.MustRegister(FeatureFlags{})
 }
 
 // Register adds a feature. IDs must be unique and non-empty.

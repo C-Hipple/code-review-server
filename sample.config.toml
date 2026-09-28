@@ -48,6 +48,12 @@ SectionTitle = "Needs My Team's Review"
 # ID = "comments-addressed"
 # Enabled = true
 # Automatic = false
+#
+# [[AIFeatures]]
+# ID = "feature-flags"     # is every change behind a feature flag / waffle switch?
+# Enabled = true
+# Automatic = true
+# Mode = "agent"           # lets the model search the local clone for callers
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

@@ -105,15 +105,17 @@ func TestRegistryDescribeMergesConfig(t *testing.T) {
 	}
 }
 
-func TestDefaultRegistryHasCommentsAddressed(t *testing.T) {
-	f, ok := DefaultRegistry.Get(CommentsAddressedID)
-	if !ok {
-		t.Fatal("comments-addressed is not registered")
-	}
-	if f.Name() == "" || strings.Join(modesOf(f), ",") != "oneshot,agent" {
-		t.Errorf("unexpected feature: %q modes %v", f.Name(), modesOf(f))
-	}
-	if problems := ValidateFeatures([]config.AIFeature{{ID: CommentsAddressedID, Enabled: true, Mode: "agent"}}); len(problems) != 0 {
-		t.Errorf("a valid entry was rejected: %v", problems)
+func TestDefaultRegistryHasTheBuiltIns(t *testing.T) {
+	for _, id := range []string{CommentsAddressedID, FeatureFlagsID} {
+		f, ok := DefaultRegistry.Get(id)
+		if !ok {
+			t.Fatalf("%s is not registered", id)
+		}
+		if f.Name() == "" || strings.Join(modesOf(f), ",") != "oneshot,agent" {
+			t.Errorf("unexpected feature: %q modes %v", f.Name(), modesOf(f))
+		}
+		if problems := ValidateFeatures([]config.AIFeature{{ID: id, Enabled: true, Mode: "agent"}}); len(problems) != 0 {
+			t.Errorf("a valid entry was rejected: %v", problems)
+		}
 	}
 }

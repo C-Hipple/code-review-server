@@ -93,6 +93,10 @@ export default function Review({
     const [aiFeatures, setAIFeatures] = useState<AIFeatureInfo[]>([]);
     const [aiOutputs, setAIOutputs] = useState<Record<string, AIFeatureOutput>>({});
     const [openAIFeature, setOpenAIFeature] = useState<string | null>(null);
+    // The PR the view shows now. AI loads check it before applying their
+    // results, so a load for the PR just navigated away from can't paint its
+    // counts onto this one.
+    const aiPRKey = useRef('');
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
     // Comment threads are hidden by default; a thread's root comment id must be
     // in this set for its full interactive thread to render inline.
@@ -217,6 +221,7 @@ export default function Review({
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
+        aiPRKey.current = `${owner}/${repo}#${number}`;
         setOpenAIFeature(null);
         setAIOutputs({});
         loadAIFeatures();
@@ -286,16 +291,19 @@ export default function Review({
     // server has no AI RPCs at all. Either way the toolbar simply shows no AI
     // buttons.
     const loadAIFeatures = async () => {
+        const key = aiPRKey.current;
         try {
             const enabled = (await listAIFeatures()).filter(f => f.enabled);
-            setAIFeatures(enabled);
-            setAIOutputs(
+            const outputs =
                 enabled.length > 0
                     ? await getAIOutput({ Owner: owner, Repo: repo, Number: number })
-                    : {}
-            );
+                    : {};
+            if (aiPRKey.current !== key) return;
+            setAIFeatures(enabled);
+            setAIOutputs(outputs);
         } catch (e) {
             console.error('Failed to load AI features:', e);
+            if (aiPRKey.current !== key) return;
             setAIFeatures([]);
             setAIOutputs({});
         }
@@ -305,8 +313,10 @@ export default function Review({
     // change what they cover, like a sync.
     const loadAIOutputs = async () => {
         if (aiFeatures.length === 0) return;
+        const key = aiPRKey.current;
         try {
-            setAIOutputs(await getAIOutput({ Owner: owner, Repo: repo, Number: number }));
+            const outputs = await getAIOutput({ Owner: owner, Repo: repo, Number: number });
+            if (aiPRKey.current === key) setAIOutputs(outputs);
         } catch (e) {
             console.error('Failed to load AI outputs:', e);
         }

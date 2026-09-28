@@ -138,5 +138,37 @@ request, and the server holds the token.")
 (defvar-local crs--plugin-name nil
   "If non-nil, this buffer displays output only for this plugin.")
 
+;; AI features (crs-ai.el).
+(defvar crs-ai-features nil
+  "The AI features the server has enabled, as ListAIFeatures reports them.
+Each entry is an alist with at least `id' and `name'.  Nil until fetched.")
+
+(defcustom crs-ai-poll-interval 2
+  "Seconds between polls of an AI feature run that is still pending."
+  :type 'number
+  :group 'crs)
+
+(defcustom crs-ai-poll-timeout 360
+  "Stop polling a pending AI feature run after this many seconds.
+The server gives a run five minutes, so this leaves room for one to land."
+  :type 'number
+  :group 'crs)
+
+;; Buffer-local state for AI output buffers.
+(defvar-local crs--ai-owner nil
+  "Owner of the PR an AI output buffer shows.")
+(defvar-local crs--ai-repo nil
+  "Repo of the PR an AI output buffer shows.")
+(defvar-local crs--ai-number nil
+  "Number of the PR an AI output buffer shows.")
+(defvar-local crs--ai-feature nil
+  "The feature (an alist from ListAIFeatures) an AI output buffer shows.")
+(defvar-local crs--ai-output nil
+  "The last output the AI output buffer rendered, from GetAIOutput.")
+(defvar-local crs--ai-poll-timer nil
+  "Timer polling a pending run for this AI output buffer.")
+(defvar-local crs--ai-poll-started nil
+  "When the current round of polling began, as a float time.")
+
 (provide 'crs-vars)
 ;;; crs-vars.el ends here

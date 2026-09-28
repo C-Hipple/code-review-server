@@ -22,7 +22,8 @@
   "Loading `crs-client' provides the feature and all submodules."
   (should (featurep 'crs-client))
   (dolist (feat '(crs-vars crs-html crs-rpc crs-render crs-list-mode
-                  crs-review crs-comments crs-review-actions crs-plugins))
+                  crs-review crs-comments crs-review-actions crs-plugins
+                  crs-ai))
     (should (featurep feat))))
 
 (ert-deftest crs-test-key-commands-defined ()
@@ -39,6 +40,8 @@
                 crs-toggle-annotations crs-add-annotation-as-comment
                 crs-sync-pr crs-checkout-current-project
                 crs-get-plugin-output crs-rerun-plugin crs-run-on-demand-plugin
+                crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
+                crs-ai-list-features crs-quit-ai-output
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -59,7 +62,9 @@
                 crs--annotations-minibuffer-summary
                 crs--annotation-comment-body crs--annotation-choice-label
                 crs--select-annotation
-                crs--insert-plugin-output-entry))
+                crs--insert-plugin-output-entry
+                crs--insert-ai-output crs--ai-should-run-p crs--ai-pending-p
+                crs--ai-buffer-name crs--ai-choose-feature))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -70,7 +75,9 @@
                  crs--buffer-annotations crs--buffer-show-annotations
                  crs--buffer-images
                  crs--comment-owner crs--comment-filename crs--comment-position
-                 crs--plugin-owner crs--plugin-name crs--plugin-output-map))
+                 crs--plugin-owner crs--plugin-name crs--plugin-output-map
+                 crs-ai-features crs--ai-owner crs--ai-feature crs--ai-output
+                 crs--ai-poll-timer))
     (should (boundp var))))
 
 ;;; --- Modes can be entered without error ---
@@ -78,7 +85,8 @@
 (ert-deftest crs-test-modes-instantiate ()
   "Each major mode can be activated in a fresh buffer without error."
   (dolist (mode '(crs-list-mode my-code-review-mode comment-edit-mode
-                  crs-outdated-comments-mode crs-plugin-output-mode))
+                  crs-outdated-comments-mode crs-plugin-output-mode
+                  crs-ai-output-mode))
     (should (fboundp mode))
     (with-temp-buffer
       (funcall mode)
@@ -558,6 +566,179 @@ newline until the very end."
                                    (users . ["alice"]) (count . 1))]))))))
     (should (string-match-p "🚀 bob" rendered))
     (should (string-match-p "🎉 alice" rendered))))
+
+;;; --- AI feature reports ---
+
+(defun crs-test--ai-output (&rest overrides)
+  "A GetAIOutput entry for comments-addressed, with OVERRIDES applied.
+OVERRIDES is a plist of field symbols and values."
+  (let ((output (list (cons 'feature "comments-addressed")
+                      (cons 'name "Comments addressed?")
+                      (cons 'status "success")
+                      (cons 'body '((body_type . "markdown")
+                                    (body_content . "**1 outstanding of 1 item(s); 0 addressed.**")))
+                      (cons 'annotations [])
+                      (cons 'report '((verdict . "outstanding")))
+                      (cons 'stale :json-false)
+                      (cons 'truncated :json-false)
+                      (cons 'updated_at "2026-09-01T10:00:00Z"))))
+    (while overrides
+      (setf (alist-get (pop overrides) output) (pop overrides)))
+    output))
+
+(ert-deftest crs-test-ai-should-run ()
+  "A feature runs on open when it never ran or went stale, never while pending."
+  (should (crs--ai-should-run-p (crs-test--ai-output 'status "not-run")))
+  (should (crs--ai-should-run-p (crs-test--ai-output 'stale t)))
+  (should-not (crs--ai-should-run-p (crs-test--ai-output)))
+  (should-not (crs--ai-should-run-p (crs-test--ai-output 'status "pending" 'stale t)))
+  (should-not (crs--ai-should-run-p nil))
+  (should (crs--ai-pending-p (crs-test--ai-output 'status "pending"))))
+
+(ert-deftest crs-test-ai-output-rendering ()
+  "The report body renders as-is, with the stale warning when it applies."
+  (let ((rendered (with-temp-buffer
+                    (crs--insert-ai-output (crs-test--ai-output 'stale t))
+                    (buffer-string))))
+    (should (string-match-p "^# Comments addressed\\? (Status: success)" rendered))
+    (should (string-match-p "1 outstanding of 1 item" rendered))
+    (should (string-match-p "Press R to re-run" rendered)))
+  (let ((fresh (with-temp-buffer
+                 (crs--insert-ai-output (crs-test--ai-output))
+                 (buffer-string))))
+    (should-not (string-match-p "re-run" fresh))))
+
+(ert-deftest crs-test-ai-output-pending ()
+  "A pending run says so, over the previous report when there is one."
+  (let ((first-run (with-temp-buffer
+                     (crs--insert-ai-output
+                      (crs-test--ai-output 'status "pending"
+                                           'body '((body_type . "markdown") (body_content . ""))
+                                           'report nil 'updated_at ""))
+                     (buffer-string)))
+        (refresh (with-temp-buffer
+                   (crs--insert-ai-output (crs-test--ai-output 'status "pending"))
+                   (buffer-string))))
+    (should (string-match-p "Running\\.\\.\\." first-run))
+    (should (string-match-p "Refreshing" refresh))
+    (should (string-match-p "1 outstanding" refresh))))
+
+(ert-deftest crs-test-ai-output-annotations ()
+  "Annotations are listed for a feature without a typed report, not for one with."
+  (let* ((annotations [((filename . "src/main.ts") (line . 4) (severity . "warning")
+                        (content . "look here") (source . "ai"))])
+         (plain (with-temp-buffer
+                  (crs--insert-ai-output
+                   (crs-test--ai-output 'report nil 'annotations annotations))
+                  (buffer-string)))
+         (typed (with-temp-buffer
+                  (crs--insert-ai-output (crs-test--ai-output 'annotations annotations))
+                  (buffer-string))))
+    (should (string-match-p "## Annotations (1)" plain))
+    (should (string-match-p "src/main.ts:4 \\[warning\\] look here" plain))
+    (should-not (string-match-p "Annotations" typed))))
+
+(ert-deftest crs-test-ai-choose-feature ()
+  "One enabled feature is picked without asking; none is an error."
+  (let ((only '((id . "comments-addressed") (name . "Comments addressed?"))))
+    (should (equal (crs--ai-choose-feature (list only)) only)))
+  (should-error (crs--ai-choose-feature nil) :type 'user-error)
+  (should (equal (crs--ai-buffer-name "comments-addressed" "acme" "widgets" 42)
+                 "* AI: comments-addressed acme/widgets #42 *")))
+
+(ert-deftest crs-test-ai-keys-bound ()
+  "The AI commands are reachable from the review and AI output buffers."
+  (should (eq (lookup-key my-code-review-mode-map (kbd "C")) #'crs-get-ai-output))
+  (should (eq (lookup-key crs-ai-output-mode-map (kbd "r")) #'crs-ai-refresh))
+  (should (eq (lookup-key crs-ai-output-mode-map (kbd "R")) #'crs-ai-rerun))
+  (should (eq (lookup-key crs-ai-output-mode-map (kbd "q")) #'crs-quit-ai-output)))
+
+(ert-deftest crs-test-ai-killing-the-buffer-stops-polling ()
+  "A pending poll timer does not outlive its buffer."
+  (let ((buffer (generate-new-buffer "crs-ai-test")))
+    (with-current-buffer buffer
+      (crs-ai-output-mode)
+      (setq crs--ai-poll-timer (run-with-timer 3600 nil #'ignore)))
+    (let ((timer (buffer-local-value 'crs--ai-poll-timer buffer)))
+      (kill-buffer buffer)
+      (should-not (memq timer timer-list)))))
+
+(defmacro crs-test--with-fake-rpc (replies &rest body)
+  "Run BODY with RPCs answered from REPLIES and timers recorded, not run.
+REPLIES maps a method name to the result its callback receives.  Binds
+`calls' to the (METHOD . PARAMS) sent, most recent first, and `timers' to
+the functions scheduled."
+  (declare (indent 1))
+  `(let ((calls '())
+         (timers '()))
+     (cl-letf (((symbol-function 'crs--send-request)
+                (lambda (method params callback)
+                  (push (cons method params) calls)
+                  (funcall callback (cdr (assoc method ,replies)))))
+               ((symbol-function 'run-with-timer)
+                (lambda (_secs _repeat fn &rest _args)
+                  (push fn timers)
+                  'crs-test-timer))
+               ((symbol-function 'pop-to-buffer) #'ignore))
+       ,@body)))
+
+(defconst crs-test--ai-feature '((id . "comments-addressed") (name . "Comments addressed?")))
+
+(ert-deftest crs-test-ai-runs-a-feature-that-never-ran-and-polls ()
+  "Opening a feature with no result asks for a run, then polls while pending."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.GetAIOutput"
+         . ((output . ((comments-addressed
+                        . ,(crs-test--ai-output 'status "not-run" 'report nil
+                                                'body '((body_content . ""))))))))
+        ("RPCHandler.RunAIFeature"
+         . ((okay . t) (outcome . "started")
+            (output . ,(crs-test--ai-output 'status "pending" 'report nil
+                                            'body '((body_content . "")))))))
+    (let ((buffer (crs--ai-open "acme" "widgets" 42 crs-test--ai-feature)))
+      (unwind-protect
+          (progn
+            (crs--ai-fetch buffer t)
+            (should (equal (mapcar #'car (reverse calls))
+                           '("RPCHandler.GetAIOutput" "RPCHandler.RunAIFeature")))
+            ;; Not forced: the server may answer from its cache.
+            (should (equal (json-encode (cdar calls))
+                           "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"comments-addressed\"}]"))
+            (should (= (length timers) 1))
+            (with-current-buffer buffer
+              (should (string-match-p "Running" (buffer-string)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest crs-test-ai-current-report-needs-no-run ()
+  "A current report is shown without a run or a poll."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.GetAIOutput"
+         . ((output . ((comments-addressed . ,(crs-test--ai-output)))))))
+    (let ((buffer (crs--ai-open "acme" "widgets" 42 crs-test--ai-feature)))
+      (unwind-protect
+          (progn
+            (crs--ai-fetch buffer t)
+            (should (equal (mapcar #'car calls) '("RPCHandler.GetAIOutput")))
+            (should-not timers)
+            (with-current-buffer buffer
+              (should (string-match-p "1 outstanding of 1 item" (buffer-string)))
+              (should buffer-read-only)))
+        (kill-buffer buffer)))))
+
+(ert-deftest crs-test-ai-rerun-forces ()
+  "Re-running from the AI buffer forces a fresh run."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.RunAIFeature"
+         . ((okay . t) (outcome . "started")
+            (output . ,(crs-test--ai-output 'status "pending")))))
+    (let ((buffer (crs--ai-open "acme" "widgets" 42 crs-test--ai-feature)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (crs-ai-rerun)
+            (should (equal (json-encode (cdar calls))
+                           "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"comments-addressed\",\"Force\":true}]"))
+            (should (string-match-p "Refreshing" (buffer-string))))
+        (kill-buffer buffer)))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

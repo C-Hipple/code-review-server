@@ -17,27 +17,28 @@ existing users, until a config file enables a feature.
 
 ```toml
 [AI]
-# Optional defaults every feature inherits; see Providers below.
-DefaultProvider = "command"
-DefaultCommand = "claude -p"
+# Defaults every feature inherits. See Providers below for the two choices
+# and the order in which these settings pick one.
+DefaultProvider = "command"   # run a program on this machine ("gemini": call the Gemini API)
+DefaultCommand = "claude -p"  # the program the command provider runs
 
 [[AIFeatures]]
 ID = "comments-addressed"
 Enabled = true
 Automatic = false   # also run after a PR is fetched or updated
 Mode = "oneshot"    # or "agent"
-# Provider = "gemini"          # overrides AI.DefaultProvider
-# Command = "llm -m my-model"  # overrides AI.DefaultCommand
+# Provider = "gemini"          # this feature only; beats both [AI] settings
+# Command = "llm -m my-model"  # this feature only; picks the command provider
 ```
 
-| Field       | Default                 | Meaning                                                                                  |
-|-------------|-------------------------|------------------------------------------------------------------------------------------|
-| `ID`        | required                | The feature to configure. Registered today: `comments-addressed`                        |
-| `Enabled`   | `false`                 | Switches the feature on. Without it the feature is listed but can't run                 |
-| `Automatic` | `false`                 | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
-| `Mode`      | the feature's default   | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
-| `Provider`  | `AI.DefaultProvider`    | `gemini` or `command`; see [Providers](#providers)                                       |
-| `Command`   | `AI.DefaultCommand`     | The command line the `command` provider runs                                            |
+| Field       | Default                                  | Meaning                                                                                  |
+|-------------|------------------------------------------|------------------------------------------------------------------------------------------|
+| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`                        |
+| `Enabled`   | `false`                                  | Switches the feature on. Without it the feature is listed but can't run                 |
+| `Automatic` | `false`                                  | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
+| `Mode`      | the feature's default                    | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
+| `Provider`  | [picked by order](#which-provider-runs-a-feature) | `gemini` or `command`; see [Providers](#providers)                             |
+| `Command`   | `AI.DefaultCommand`                      | The command line the `command` provider runs. Setting it also picks that provider unless `Provider` says otherwise |
 
 Two entries with the same `ID` stop the config from loading, as duplicate
 plugin names do. Everything else — an unknown feature, provider or mode, a
@@ -50,18 +51,75 @@ logged at startup and rejected by `UpdateConfig`.
 A feature reaches a model through a provider. There are two, and neither is
 privileged:
 
-- **`gemini`** calls the Gemini API (`gemini-flash-latest`) with
-  `GEMINI_API_KEY`, through the same client the experimental LLM features use.
-- **`command`** runs a command line you name — `claude -p`, `llm -m <model>`,
-  a wrapper script — as the model. The contract is the simplest one any CLI
+- **`gemini` — a hosted API.** The server itself calls Google's Gemini API
+  (`gemini-flash-latest`) over HTTPS with the key in `GEMINI_API_KEY`, through
+  the same client the experimental LLM features use.
+- **`command` — a program on this machine.** For each run the server starts
+  the command line you name — `claude -p`, `llm -m <model>`, a wrapper
+  script — and treats it as the model. The contract is the simplest one any CLI
   agent can meet: **the prompt arrives on stdin, the answer is whatever the
-  command prints on stdout**, and a non-zero exit is a failure. The command line
-  is split into words the way a shell would (quotes work; pipes, globs and
-  variables don't, since nothing runs it through a shell) and runs with the
-  server's environment and working directory. No default command is pinned.
+  command prints on stdout**, and a non-zero exit is a failure. Where the model
+  itself runs is up to that program: `claude -p` calls Claude with its own
+  credentials, and another CLI may run a model locally. The server needs no
+  `GEMINI_API_KEY` for it; any credentials are the program's own. The command
+  line is split into words the way a shell would (quotes
+  work; pipes, globs and variables don't, since nothing runs it through a
+  shell) and runs with the server's environment and working directory. No
+  default command is pinned.
 
-A feature's provider is its own `Provider`, else `AI.DefaultProvider`, else
-`command` when a command is configured anywhere, else `gemini`.
+### Which provider runs a feature
+
+Each feature works its provider out on its own. The first of these that is
+set wins:
+
+| Rule | Setting                                   | Picks                      |
+|------|-------------------------------------------|----------------------------|
+| 1    | the feature's `Provider`                  | what it names              |
+| 2    | the feature's `Command`                   | `command`                  |
+| 3    | `[AI]` `DefaultProvider`                  | what it names              |
+| 4    | `[AI]` `DefaultCommand`                   | `command`                  |
+| 5    | none of the above                         | `gemini`                   |
+
+In other words, a feature's own `[[AIFeatures]]` settings beat the `[AI]`
+defaults, and at each level a named `Provider` beats the one a command
+implies. The `command` provider runs the feature's `Command`, else
+`AI.DefaultCommand`; an enabled feature that lands on `command` with neither is
+a config error.
+
+**`GEMINI_API_KEY` never picks the provider.** The server reads it only once a
+feature has landed on `gemini`. Exporting it doesn't move a feature off a
+command, and a feature that lands on `gemini` without it runs without a model
+(see below). The usual setups:
+
+```toml
+# 1. Everything on the Gemini API: export GEMINI_API_KEY and set no command.
+#    Rule 5 then picks gemini; DefaultProvider = "gemini" says so explicitly,
+#    and keeps gemini even if a DefaultCommand is added later (rule 3 beats 4).
+[AI]
+DefaultProvider = "gemini"
+```
+
+```toml
+# 2. Everything on a program on this machine: a DefaultCommand is enough
+#    (rule 4). GEMINI_API_KEY is ignored, set or not.
+[AI]
+DefaultCommand = "claude -p"
+```
+
+```toml
+# 3. A program by default, with one feature on the Gemini API.
+[AI]
+DefaultCommand = "claude -p"
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+Provider = "gemini"   # rule 1 beats the DefaultCommand at rule 4
+```
+
+To check what a config resolves to, the
+[`ListAIFeatures`](protocol.md#rpchandlerlistaifeatures) reply carries each
+feature's `provider`.
 
 > **Treat the prompt as untrusted input.** It carries text other people wrote —
 > the PR title, review and conversation comments, the diff — and anyone who can

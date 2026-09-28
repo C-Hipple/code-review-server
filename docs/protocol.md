@@ -827,7 +827,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 | `automatic`   | bool     | Whether it also runs after a PR is fetched or updated (implies `enabled`) |
 | `mode`        | string   | Configured execution mode: `oneshot` or `agent`                          |
 | `modes`       | []string | Modes the feature supports, default first                                |
-| `provider`    | string   | Provider it would run with (`gemini` or `command`), resolved from config but not checked |
+| `provider`    | string   | Provider it would run with (`gemini` or `command`), resolved from config in [this order](ai_features.md#which-provider-runs-a-feature) but not checked |
 
 ---
 

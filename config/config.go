@@ -71,10 +71,11 @@ const (
 // It enables nothing on its own — each feature is off until its entry says
 // Enabled = true.
 type AISettings struct {
-	// DefaultProvider is the provider a feature uses when its entry names none:
-	// "gemini" (needs GEMINI_API_KEY) or "command". Empty picks "command" when a
-	// command is configured and "gemini" otherwise; neither is preferred beyond
-	// that.
+	// DefaultProvider is the provider a feature uses when its entry sets
+	// neither Provider nor Command: "gemini" (the Gemini API, which needs
+	// GEMINI_API_KEY) or "command" (a program on this machine). Empty picks
+	// "command" when DefaultCommand is set and "gemini" otherwise. The whole
+	// order is on AIProviderFor.
 	DefaultProvider string
 	// DefaultCommand is the command line the command provider runs, e.g.
 	// "claude -p". It is split into words like a shell would (quotes work, pipes
@@ -95,29 +96,43 @@ type AIFeature struct {
 	// plugins run, instead of only when a client asks for it. It has no effect
 	// unless Enabled is set too.
 	Automatic bool
-	// Provider and Command override the [AI] defaults for this feature.
+	// Provider and Command override the [AI] defaults for this feature. A
+	// Command on its own also picks the command provider, over any [AI]
+	// DefaultProvider; see AIProviderFor.
 	Provider string
 	Command  string
 }
 
-// AIProviderFor resolves the provider and command a feature runs with: its own
-// settings, then the [AI] defaults, then — when neither names a provider —
-// "command" if a command is configured anywhere and "gemini" otherwise.
+// AIProviderFor resolves the provider and command a feature runs with. The
+// first of these that is set picks the provider:
+//
+//  1. the feature's Provider
+//  2. the feature's Command, which picks "command"
+//  3. [AI] DefaultProvider
+//  4. [AI] DefaultCommand, which picks "command"
+//  5. otherwise "gemini"
+//
+// That is, the feature's own settings beat the [AI] defaults, and at each
+// level a named provider beats the one a command implies. GEMINI_API_KEY plays
+// no part in the choice: it is read only once "gemini" has been picked. The
+// command is the feature's Command, else [AI] DefaultCommand, and only the
+// command provider uses it.
 func (c Config) AIProviderFor(f AIFeature) (provider, command string) {
 	command = f.Command
 	if command == "" {
 		command = c.AI.DefaultCommand
 	}
-	provider = f.Provider
-	if provider == "" {
+	switch {
+	case f.Provider != "":
+		provider = f.Provider
+	case f.Command != "":
+		provider = AIProviderCommand
+	case c.AI.DefaultProvider != "":
 		provider = c.AI.DefaultProvider
-	}
-	if provider == "" {
-		if command != "" {
-			provider = AIProviderCommand
-		} else {
-			provider = AIProviderGemini
-		}
+	case c.AI.DefaultCommand != "":
+		provider = AIProviderCommand
+	default:
+		provider = AIProviderGemini
 	}
 	return provider, command
 }

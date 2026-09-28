@@ -80,8 +80,12 @@ func TestAIProviderFor(t *testing.T) {
 		{"a default command implies the command provider", AISettings{DefaultCommand: "llm"}, AIFeature{}, "command", "llm"},
 		{"a feature command implies the command provider", AISettings{}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
 		{"an explicit default provider wins over inference", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{}, "gemini", "llm"},
+		{"a default provider alone is used as given", AISettings{DefaultProvider: "command"}, AIFeature{}, "command", ""},
 		{"a feature provider wins over the default", AISettings{DefaultProvider: "command", DefaultCommand: "llm"}, AIFeature{Provider: "gemini"}, "gemini", "llm"},
+		{"a feature provider wins over its own command", AISettings{}, AIFeature{Provider: "gemini", Command: "claude -p"}, "gemini", "claude -p"},
 		{"a feature command wins over the default", AISettings{DefaultCommand: "llm"}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
+		{"a feature command wins over a default provider", AISettings{DefaultProvider: "gemini"}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
+		{"a feature provider takes the default command", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{Provider: "command"}, "command", "llm"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

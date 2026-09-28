@@ -275,18 +275,42 @@ AI features — such as the **comments-addressed** report of which review commen
 still outstanding — are off by default and switched on one by one:
 
 ```toml
-[AI]
-DefaultCommand = "claude -p"   # or leave unset and export GEMINI_API_KEY
-
 [[AIFeatures]]
 ID = "comments-addressed"
 Enabled = true
 Automatic = false              # true also runs it after a PR updates
 ```
 
-A feature runs on Gemini (`GEMINI_API_KEY`) or on any CLI agent you name, which
-receives the prompt on stdin and answers on stdout. See [AI Features](ai_features.md)
-for every setting, how providers are chosen, and how the reports decide.
+Each feature runs on one of two providers:
+
+- **`gemini`** — the server calls Google's hosted Gemini API itself. It needs
+  `GEMINI_API_KEY` exported.
+- **`command`** — the server runs a program on this machine, such as
+  `claude -p`, writing the prompt to its stdin and reading the answer from its
+  stdout. It needs that command line, and no `GEMINI_API_KEY`.
+
+The first of these that is set picks a feature's provider:
+
+1. the feature's own `Provider`
+2. the feature's own `Command`, which picks `command`
+3. `[AI]` `DefaultProvider`
+4. `[AI]` `DefaultCommand`, which picks `command`
+5. none of them: `gemini`
+
+`GEMINI_API_KEY` never picks the provider; the server reads it only once a
+feature has landed on `gemini`. So for every feature on a program on this
+machine:
+
+```toml
+[AI]
+DefaultCommand = "claude -p"   # rule 4
+```
+
+and for every feature on the Gemini API, export `GEMINI_API_KEY` and either
+leave `[AI]` out (rule 5) or say so with `DefaultProvider = "gemini"` (rule 3,
+which also beats any `DefaultCommand`). See
+[AI Features](ai_features.md#which-provider-runs-a-feature) for more examples,
+every setting, and how the reports decide.
 
 ## Example Config
 

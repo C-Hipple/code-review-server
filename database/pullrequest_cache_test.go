@@ -109,3 +109,76 @@ func TestGetPullRequest_ReturnsLatestSHA(t *testing.T) {
 		t.Fatalf("SHAs = (%q, %q), want (%q, %q)", headSHA, baseSHA, "sha_new", "base_new")
 	}
 }
+
+// Comment counts come straight out of the cached comment JSON: review comments
+// and conversation comments alike, grouped by author, with nothing to count
+// before the workflow has cached the PR's comments.
+func TestGetPRCommentCountsByAuthor(t *testing.T) {
+	db := newTestDB(t)
+
+	const (
+		prNumber = 12
+		repo     = "code-review-server"
+	)
+
+	counts, err := db.GetPRCommentCountsByAuthor(prNumber, repo)
+	if err != nil {
+		t.Fatalf("GetPRCommentCountsByAuthor before caching: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want none before the comments are cached", counts)
+	}
+
+	// Two review comments on the code, a conversation comment (no path, as
+	// the workflow converts issue comments) and one with no author at all.
+	seed := `[
+		{"id":1,"user":{"login":"bob"},"body":"nit","path":"main.go","diff_hunk":"@@ -1 +1 @@"},
+		{"id":2,"user":{"login":"alice"},"body":"fixed","path":"main.go","in_reply_to_id":1},
+		{"id":3,"user":{"login":"bob"},"body":"LGTM overall"},
+		{"id":4,"body":"ghost"}
+	]`
+	if err := db.UpsertPRComments(prNumber, repo, seed); err != nil {
+		t.Fatalf("seed comments: %v", err)
+	}
+	// Same number in another repo: must not leak into this PR's counts.
+	if err := db.UpsertPRComments(prNumber, "other-repo", `[{"id":9,"user":{"login":"bob"}}]`); err != nil {
+		t.Fatalf("seed other repo: %v", err)
+	}
+
+	counts, err = db.GetPRCommentCountsByAuthor(prNumber, repo)
+	if err != nil {
+		t.Fatalf("GetPRCommentCountsByAuthor: %v", err)
+	}
+	want := map[string]int{"bob": 2, "alice": 1, "": 1}
+	if len(counts) != len(want) {
+		t.Fatalf("counts = %v, want %v", counts, want)
+	}
+	for login, n := range want {
+		if counts[login] != n {
+			t.Errorf("counts[%q] = %d, want %d (all: %v)", login, counts[login], n, counts)
+		}
+	}
+
+	// A PR cached with no comments — "[]", or "null" from marshalling a nil
+	// slice — counts as none rather than as one "null" element.
+	for _, empty := range []string{"[]", "null"} {
+		if err := db.UpsertPRComments(prNumber, repo, empty); err != nil {
+			t.Fatalf("cache %s: %v", empty, err)
+		}
+		counts, err = db.GetPRCommentCountsByAuthor(prNumber, repo)
+		if err != nil {
+			t.Fatalf("GetPRCommentCountsByAuthor(%s): %v", empty, err)
+		}
+		if len(counts) != 0 {
+			t.Errorf("counts for %s = %v, want none", empty, counts)
+		}
+	}
+
+	// A corrupt entry is reported rather than silently counted as zero.
+	if err := db.UpsertPRComments(prNumber, repo, "{not json"); err != nil {
+		t.Fatalf("cache corrupt entry: %v", err)
+	}
+	if _, err := db.GetPRCommentCountsByAuthor(prNumber, repo); err == nil {
+		t.Error("GetPRCommentCountsByAuthor on malformed JSON: want an error, got nil")
+	}
+}

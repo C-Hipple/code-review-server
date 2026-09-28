@@ -31,6 +31,11 @@ export interface ReviewItem {
      * to the current user. Absent until a workflow cycle has resolved them.
      */
     required_teams?: RequiredTeam[];
+    /**
+     * Conversation plus review comments, the count GitHub's PR list shows.
+     * 0 until a workflow cycle has cached the PR's comments.
+     */
+    comment_count?: number;
 }
 
 /** The lifecycle states the sidebar buckets PRs into. */

@@ -1424,6 +1424,37 @@ func (db *DB) DeletePRComments(prNumber int, repo string) error {
 	return err
 }
 
+// GetPRCommentCountsByAuthor counts the comments in a PR's cached PRComments
+// entry, keyed by author login ("" for a comment without one). The entry holds
+// the review comments and the conversation comments together, so the counts
+// add up to the total GitHub's pull request list shows beside a PR. SQLite does
+// the counting, so totalling every PR on the review list never decodes their
+// comment JSON in Go. A PR with no cached comments returns an empty map.
+func (db *DB) GetPRCommentCountsByAuthor(prNumber int, repo string) (map[string]int, error) {
+	rows, err := db.conn.Query(
+		`SELECT COALESCE(json_extract(c.value, '$.user.login'), ''), COUNT(*)
+		 FROM PRComments p, json_each(p.comments_json) c
+		 WHERE p.pr_number = ? AND p.repo = ? AND c.type = 'object'
+		 GROUP BY 1`,
+		prNumber, repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var login string
+		var count int
+		if err := rows.Scan(&login, &count); err != nil {
+			return nil, err
+		}
+		counts[login] = count
+	}
+	return counts, rows.Err()
+}
+
 func (db *DB) DeletePullRequests(prNumber int, repo string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",

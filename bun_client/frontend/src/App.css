@@ -429,6 +429,20 @@ details[open] > summary.crs-sidebar-label::after {
     font-variant-numeric: tabular-nums;
 }
 
+/* Comment count. Pushed to the row's right edge so the counts line up in a
+   column, the way GitHub's pull request list shows them. */
+.crs-row-comments {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
 /* Required teams. The chip's color carries the review's status (green
    approved, red changes requested, amber still waiting on one of your teams,
    grey waiting on somebody else's); the weight and the italic carry the

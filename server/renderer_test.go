@@ -1323,6 +1323,94 @@ func TestReviewItemsCarryRequiredTeams(t *testing.T) {
 	}
 }
 
+func TestReviewItemsCarryCommentCount(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	section, err := db.GetOrCreateSection("Test Section", 0)
+	if err != nil {
+		t.Fatalf("failed to create section: %v", err)
+	}
+	details := []string{
+		"84",
+		"Repo: C-Hipple/code-review-server",
+		"https://github.com/C-Hipple/code-review-server/pull/84",
+	}
+	if _, err := db.UpsertItem(section.ID, "84", "TODO", "Chatty PR", details, []string{"code-review-server"}, 0); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	r := NewOrgRenderer(db)
+
+	// Nothing cached yet: the row simply has no count.
+	items, err := r.GetAllReviewItems()
+	if err != nil {
+		t.Fatalf("GetAllReviewItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].CommentCount != 0 {
+		t.Errorf("comment count = %d, want 0 before the comments are cached", items[0].CommentCount)
+	}
+
+	// Cached the way the workflow writes it: review comments on the code plus
+	// the conversation comments converted alongside them, under the short repo
+	// name. The lint bot's comment is hidden in the review, so it isn't counted.
+	comments := []*github.PullRequestComment{
+		{
+			ID:       github.Ptr(int64(1)),
+			User:     &github.User{Login: github.Ptr("bob")},
+			Body:     github.Ptr("Should this be configurable?"),
+			Path:     github.Ptr("server/server.go"),
+			DiffHunk: github.Ptr("@@ -1,3 +1,4 @@"),
+		},
+		{
+			ID:        github.Ptr(int64(2)),
+			User:      &github.User{Login: github.Ptr("C-Hipple")},
+			Body:      github.Ptr("Not yet."),
+			Path:      github.Ptr("server/server.go"),
+			InReplyTo: github.Ptr(int64(1)),
+			DiffHunk:  github.Ptr("@@ -1,3 +1,4 @@"),
+		},
+		{
+			ID:   github.Ptr(int64(3)),
+			User: &github.User{Login: github.Ptr("github-advanced-security[bot]")},
+			Body: github.Ptr("Unused variable."),
+			Path: github.Ptr("server/server.go"),
+		},
+		convertIssueCommentToPRComment(&github.IssueComment{
+			ID:   github.Ptr(int64(4)),
+			User: &github.User{Login: github.Ptr("carol")},
+			Body: github.Ptr("Thanks, merging after CI."),
+		}),
+	}
+	raw, err := json.Marshal(comments)
+	if err != nil {
+		t.Fatalf("marshal comments: %v", err)
+	}
+	if err := db.UpsertPRComments(84, "code-review-server", string(raw)); err != nil {
+		t.Fatalf("failed to seed comments: %v", err)
+	}
+
+	items, err = r.GetAllReviewItems()
+	if err != nil {
+		t.Fatalf("GetAllReviewItems: %v", err)
+	}
+	if items[0].CommentCount != 3 {
+		t.Errorf("comment count = %d, want 3 (two review comments and one conversation comment)", items[0].CommentCount)
+	}
+
+	encoded, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal review item: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"comment_count":3`) {
+		t.Errorf("review item JSON %s is missing comment_count", encoded)
+	}
+}
+
 func TestDiffFileOrderingCacheRoundtrip(t *testing.T) {
 	db := setupTestDB(t)
 

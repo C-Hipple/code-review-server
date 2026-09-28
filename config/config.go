@@ -54,6 +54,85 @@ type Plugin struct {
 	OnlyOnDemand    bool
 }
 
+// AI providers and execution modes a [[AIFeatures]] entry can name. They live
+// here, beside the validation that checks them, because config cannot import
+// the ai package (ai reads config).
+const (
+	AIProviderGemini  = "gemini"
+	AIProviderCommand = "command"
+
+	// AIModeOneShot answers from a single model call.
+	AIModeOneShot = "oneshot"
+	// AIModeAgent runs a multi-turn loop in which the model may call tools.
+	AIModeAgent = "agent"
+)
+
+// AISettings is the [AI] table: defaults every [[AIFeatures]] entry inherits.
+// It enables nothing on its own — each feature is off until its entry says
+// Enabled = true.
+type AISettings struct {
+	// DefaultProvider is the provider a feature uses when its entry names none:
+	// "gemini" (needs GEMINI_API_KEY) or "command". Empty picks "command" when a
+	// command is configured and "gemini" otherwise; neither is preferred beyond
+	// that.
+	DefaultProvider string
+	// DefaultCommand is the command line the command provider runs, e.g.
+	// "claude -p". It is split into words like a shell would (quotes work, pipes
+	// and variables do not), receives the prompt on stdin, and must print its
+	// answer on stdout.
+	DefaultCommand string
+}
+
+// AIFeature is one [[AIFeatures]] entry: it switches a registered AI feature on
+// and says how it runs.
+type AIFeature struct {
+	// ID names the feature, e.g. "comments-addressed".
+	ID      string
+	Enabled bool
+	// Mode is AIModeOneShot or AIModeAgent; empty uses the feature's default.
+	Mode string
+	// Automatic also runs the feature after a PR is fetched or updated, the way
+	// plugins run, instead of only when a client asks for it. It has no effect
+	// unless Enabled is set too.
+	Automatic bool
+	// Provider and Command override the [AI] defaults for this feature.
+	Provider string
+	Command  string
+}
+
+// AIProviderFor resolves the provider and command a feature runs with: its own
+// settings, then the [AI] defaults, then — when neither names a provider —
+// "command" if a command is configured anywhere and "gemini" otherwise.
+func (c Config) AIProviderFor(f AIFeature) (provider, command string) {
+	command = f.Command
+	if command == "" {
+		command = c.AI.DefaultCommand
+	}
+	provider = f.Provider
+	if provider == "" {
+		provider = c.AI.DefaultProvider
+	}
+	if provider == "" {
+		if command != "" {
+			provider = AIProviderCommand
+		} else {
+			provider = AIProviderGemini
+		}
+	}
+	return provider, command
+}
+
+// AIFeatureSettings returns the [[AIFeatures]] entry for id, and false when
+// the config has none — which leaves the feature disabled.
+func (c Config) AIFeatureSettings(id string) (AIFeature, bool) {
+	for _, f := range c.AIFeatures {
+		if f.ID == id {
+			return f, true
+		}
+	}
+	return AIFeature{}, false
+}
+
 // Define your classes
 type Config struct {
 	Repos                []string // List of repositories in "owner/repo" format. Workflows can override this.
@@ -77,6 +156,11 @@ type Config struct {
 	// file ordering. The rating is exposed as the review_ease field in PR
 	// metadata and review list items. Off by default; requires GEMINI_API_KEY.
 	ExperimentalLLMReviewEase bool
+	// AI holds the defaults for the AI features, and AIFeatures switches them
+	// on one by one. Both are absent from the built-in defaults, so the AI layer
+	// does nothing until a config file enables a feature.
+	AI         AISettings
+	AIFeatures []AIFeature
 	// UsingDefaults is true when no config file exists and the server is
 	// running DefaultConfigTOML. Nothing behaves differently because of it; it
 	// exists so clients can say so.
@@ -172,6 +256,8 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs                 map[string]RepoConfig
 		ExperimentalLLMFileOrdering bool
 		ExperimentalLLMReviewEase   bool
+		AI                          AISettings
+		AIFeatures                  []AIFeature
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -185,6 +271,16 @@ func parseConfig(data []byte) (*Config, error) {
 			return nil, fmt.Errorf("duplicate plugin name found: %s", p.Name)
 		}
 		pluginNames[p.Name] = true
+	}
+
+	// Same rule as plugins: two entries for one feature would leave it
+	// ambiguous which settings apply.
+	aiFeatureIDs := make(map[string]bool)
+	for _, f := range intermediate_config.AIFeatures {
+		if aiFeatureIDs[f.ID] {
+			return nil, fmt.Errorf("duplicate AI feature ID found: %s", f.ID)
+		}
+		aiFeatureIDs[f.ID] = true
 	}
 
 	// Fill in who "me" is from the API token when the config doesn't say. This
@@ -234,6 +330,8 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs:                 repoConfigs,
 		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
 		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
+		AI:                          intermediate_config.AI,
+		AIFeatures:                  intermediate_config.AIFeatures,
 	}, nil
 }
 

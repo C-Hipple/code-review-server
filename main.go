@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crs/ai"
 	"crs/config"
 	"crs/git_tools"
 	"crs/logger"
@@ -127,6 +128,7 @@ func main() {
 // anything is wrong.
 func logConfigProblems(cfg *config.Config) {
 	problems := append(config.Validate(cfg), workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	problems = append(problems, ai.ValidateFeatures(cfg.AIFeatures)...)
 	if len(problems) == 0 {
 		return
 	}

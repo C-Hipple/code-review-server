@@ -1,12 +1,11 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crs/config"
+	"crs/subprocess"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"time"
 )
@@ -157,21 +156,18 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 		args = append(args, "--branch", branch)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), pluginTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, plugin.Command, args...)
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
-	err = cmd.Run()
-	resultStr := stdoutBuf.String()
-	if stderrBuf.Len() > 0 {
-		slog.Warn("Plugin stderr", "plugin", plugin.Name, "stderr", stderrBuf.String())
+	out, err := subprocess.Run(context.Background(), subprocess.Command{
+		Name:    plugin.Command,
+		Args:    args,
+		Timeout: pluginTimeout,
+	})
+	resultStr := out.Stdout
+	if out.Stderr != "" {
+		slog.Warn("Plugin stderr", "plugin", plugin.Name, "stderr", out.Stderr)
 	}
 	if err != nil {
-		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "call_type", callType, "stderr", stderrBuf.String())
-		if upsertErr := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, stderrBuf.String(), resultStr), "error", sha); upsertErr != nil {
+		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "call_type", callType, "stderr", out.Stderr)
+		if upsertErr := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, out.Stderr, resultStr), "error", sha); upsertErr != nil {
 			slog.Error("Failed to store plugin error result", "plugin", plugin.Name, "error", upsertErr)
 		}
 		return

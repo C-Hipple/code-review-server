@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crs/ai"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -603,6 +605,15 @@ type PRDetails struct {
 	OutdatedComments []CommentJSON `json:"outdated_comments"`
 	Reviews          []ReviewJSON  `json:"reviews"`
 	Commits          []CommitJSON  `json:"commits"`
+
+	// What GetPRDetails knew about its inputs, for the AI features (see
+	// aiDiscussion); never serialized. commentsLoaded is true when the GitHub
+	// comments came from the cache or from fetches that all succeeded — a PR
+	// with no comments leaves no cache row behind, so the row alone can't tell
+	// "none" from "never fetched". reviewThreads is the thread state the
+	// comments were split with, nil when it was unavailable.
+	commentsLoaded bool
+	reviewThreads  []git_tools.ReviewThread
 }
 
 // GitHubPRComment wraps *github.PullRequestComment to implement PRComment interface
@@ -1267,6 +1278,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 
 	// 4. Fetch Comments (GitHub + Local)
 	var githubComments []*github.PullRequestComment
+	commentsLoaded := false
 	if !skipCache {
 		cachedCommentsJSON, err := config.C().DB.GetPRComments(number, repo)
 		if err == nil && cachedCommentsJSON != "" {
@@ -1274,6 +1286,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				slog.Error("Error unmarshaling cached PR comments", "pr", number, "repo", repo, "error", err)
 			}
 		}
+		commentsLoaded = githubComments != nil
 	}
 	if githubComments == nil {
 		missState.missedFields = append(missState.missedFields, "comments")
@@ -1282,11 +1295,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		if err != nil {
 			slog.Error("Error fetching PR review comments", "pr", number, "repo", repo, "error", err)
 		}
+		reviewCommentsErr := err
 
 		issueComments, err := git_tools.ListAllIssueComments(ctx, client, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching PR issue comments", "pr", number, "repo", repo, "error", err)
 		}
+		commentsLoaded = reviewCommentsErr == nil && err == nil
 		for _, ic := range issueComments {
 			githubComments = append(githubComments, convertIssueCommentToPRComment(ic))
 		}
@@ -1384,6 +1399,8 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		OutdatedComments: outdatedCommentJSONs,
 		Reviews:          reviews,
 		Commits:          commits,
+		commentsLoaded:   commentsLoaded,
+		reviewThreads:    reviewThreads,
 	}, nil
 }
 
@@ -2297,6 +2314,119 @@ func splitComments(comments []PRComment, threads []git_tools.ReviewThread) ([]Co
 		}
 	}
 	return active, outdated
+}
+
+// aiDiscussion is the deterministic partition the AI features read (see
+// ai.Discussion): the PR's comments split into review-comment threads, grouped
+// by the comment that opened each and carrying the thread state splitComments
+// merged in from GitHub's reviewThreads, and top-level conversation comments;
+// plus the reviews, and when the code last changed. Local comments are the
+// reviewer's own unsubmitted drafts, not something the author has to address,
+// so they are left out.
+//
+// rawComments is the PRComments cache entry. It supplies each review comment's
+// line in the head file, which CommentJSON doesn't carry.
+func aiDiscussion(details *PRDetails, rawComments string) ai.Discussion {
+	d := ai.Discussion{
+		PRAuthor:      details.Metadata.Author,
+		CommentsKnown: details.commentsLoaded,
+		ThreadsKnown:  details.reviewThreads != nil,
+	}
+
+	all := make([]CommentJSON, 0, len(details.Comments)+len(details.OutdatedComments))
+	for _, c := range append(slices.Clone(details.Comments), details.OutdatedComments...) {
+		if c.Author != "local" {
+			all = append(all, c)
+		}
+	}
+	// Active and outdated comments come back as two lists; threads are read in
+	// posting order.
+	sort.SliceStable(all, func(i, j int) bool { return all[i].CreatedAt.Before(all[j].CreatedAt) })
+
+	byID := make(map[string]CommentJSON, len(all))
+	for _, c := range all {
+		byID[c.ID] = c
+	}
+	rootOf := func(c CommentJSON) string {
+		seen := map[string]bool{c.ID: true}
+		for c.InReplyTo != 0 {
+			parent, ok := byID[strconv.FormatInt(c.InReplyTo, 10)]
+			if !ok || seen[parent.ID] {
+				break
+			}
+			seen[parent.ID] = true
+			c = parent
+		}
+		return c.ID
+	}
+
+	headLines := reviewCommentHeadLines(rawComments)
+	threadIndex := map[string]int{}
+	for _, c := range all {
+		comment := ai.Comment{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt, HTMLURL: c.HTMLURL}
+		// Issue comments come through convertIssueCommentToPRComment with no
+		// path and no parent; every review comment has a path.
+		if c.Path == "" && c.InReplyTo == 0 {
+			d.Conversation = append(d.Conversation, comment)
+			continue
+		}
+		root := rootOf(c)
+		i, ok := threadIndex[root]
+		if !ok {
+			r := byID[root]
+			t := ai.Thread{
+				RootID:     root,
+				ThreadID:   r.ThreadID,
+				Resolved:   r.Resolved,
+				ResolvedBy: r.ResolvedBy,
+				Outdated:   r.Outdated,
+				Path:       r.Path,
+			}
+			if !t.Outdated {
+				t.Line = headLines[root]
+			}
+			i = len(d.Threads)
+			threadIndex[root] = i
+			d.Threads = append(d.Threads, t)
+		}
+		d.Threads[i].Comments = append(d.Threads[i].Comments, comment)
+	}
+
+	for _, r := range details.Reviews {
+		d.Reviews = append(d.Reviews, ai.Review{
+			ID: r.ID, User: r.User, State: r.State, Body: r.Body, SubmittedAt: r.SubmittedAt, HTMLURL: r.HTMLURL,
+		})
+	}
+	for _, c := range details.Commits {
+		if at, err := time.Parse(time.RFC3339, c.Date); err == nil && at.After(d.LatestCommitAt) {
+			d.LatestCommitAt = at
+		}
+	}
+	return d
+}
+
+// reviewCommentHeadLines maps each review comment on the head side of the diff
+// to its line in the head file, read from the raw PRComments cache entry.
+// Comments on removed lines (the LEFT side) have no head line and are left out.
+func reviewCommentHeadLines(rawComments string) map[string]int {
+	lines := map[string]int{}
+	if rawComments == "" {
+		return lines
+	}
+	var comments []struct {
+		ID   int64  `json:"id"`
+		Line *int   `json:"line"`
+		Side string `json:"side"`
+	}
+	if err := json.Unmarshal([]byte(rawComments), &comments); err != nil {
+		return lines
+	}
+	for _, c := range comments {
+		if c.Line != nil && *c.Line > 0 && c.Side != "LEFT" {
+			lines[strconv.FormatInt(c.ID, 10)] = *c.Line
+		}
+	}
+	return lines
 }
 
 func filterComments(comments []PRComment) []PRComment {

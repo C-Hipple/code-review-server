@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crs/subprocess"
 	"fmt"
 	"strings"
 	"time"
@@ -92,6 +93,60 @@ func Validate(cfg *Config) []ValidationError {
 		}
 	}
 
+	return append(problems, validateAI(cfg)...)
+}
+
+// validAIProviders and validAIModes are the names [AI] and [[AIFeatures]] may use.
+var (
+	validAIProviders = map[string]bool{AIProviderGemini: true, AIProviderCommand: true}
+	validAIModes     = map[string]bool{AIModeOneShot: true, AIModeAgent: true}
+)
+
+// validateAI checks the [AI] table and each [[AIFeatures]] entry for what can
+// be judged without the feature registry: required IDs, known provider and
+// mode names, command lines that split into words, and a command wherever an
+// enabled feature would run the command provider. Whether an ID names a real
+// feature, and whether that feature supports the chosen mode, is checked by
+// ai.ValidateFeatures, which owns the registry — the same split as workflows.
+func validateAI(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	if p := cfg.AI.DefaultProvider; p != "" && !validAIProviders[p] {
+		problems = append(problems, rootError("AI.DefaultProvider",
+			"unknown provider %q (expected \"gemini\" or \"command\")", p))
+	}
+	if c := cfg.AI.DefaultCommand; c != "" {
+		if _, err := subprocess.SplitCommand(c); err != nil {
+			problems = append(problems, rootError("AI.DefaultCommand", "%v", err))
+		}
+	}
+
+	for i, f := range cfg.AIFeatures {
+		field := func(name string) string { return fmt.Sprintf("AIFeatures[%d].%s", i, name) }
+		if strings.TrimSpace(f.ID) == "" {
+			problems = append(problems, rootError(field("ID"), "is required"))
+		}
+		if f.Mode != "" && !validAIModes[f.Mode] {
+			problems = append(problems, rootError(field("Mode"),
+				"unknown mode %q (expected \"oneshot\" or \"agent\")", f.Mode))
+		}
+		if f.Provider != "" && !validAIProviders[f.Provider] {
+			problems = append(problems, rootError(field("Provider"),
+				"unknown provider %q (expected \"gemini\" or \"command\")", f.Provider))
+		}
+		if f.Command != "" {
+			if _, err := subprocess.SplitCommand(f.Command); err != nil {
+				problems = append(problems, rootError(field("Command"), "%v", err))
+			}
+		}
+		// Only an enabled feature ever builds its provider, so a disabled entry
+		// left half-configured is not worth blocking a save over.
+		if f.Enabled {
+			if provider, command := cfg.AIProviderFor(f); provider == AIProviderCommand && command == "" {
+				problems = append(problems, rootError(field("Command"),
+					"the command provider needs a command: set Command here or AI.DefaultCommand"))
+			}
+		}
+	}
 	return problems
 }
 

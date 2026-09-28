@@ -39,11 +39,28 @@ type Client interface {
 	Generate(prompt string) (string, error)
 }
 
-// DefaultClient returns the LLM backend used for non-plugin calls. Today
-// that is always Gemini; this is the single place to swap in another
-// provider.
+// ProviderGemini names the Gemini backend (gemini.go), the one HTTP backend
+// this package ships.
+const ProviderGemini = "gemini"
+
+// NewClient is the provider factory: it builds the named text-generation
+// backend. Backends that are not HTTP APIs — the ai package's command-backed
+// provider, which shells out to a CLI agent — are built by their own package
+// and only share the Client shape.
+func NewClient(provider string) (Client, error) {
+	switch provider {
+	case ProviderGemini:
+		return NewGeminiClient()
+	default:
+		return nil, &CallError{Stage: StageClientInit, Err: fmt.Errorf("unknown LLM provider %q", provider)}
+	}
+}
+
+// DefaultClient returns the LLM backend used for the diff analysis below. The
+// analysis has no provider setting of its own, so it stays on Gemini; AI
+// features pick their provider from config through the ai package.
 func DefaultClient() (Client, error) {
-	return NewGeminiClient()
+	return NewClient(ProviderGemini)
 }
 
 // newClient is what analyzeDiff uses to build its backend; tests swap it out
@@ -59,6 +76,8 @@ const (
 	StageDecode        = "decode"         // malformed response body
 	StageEmptyResponse = "empty-response" // well-formed response with no content
 	StageParse         = "parse"          // response text lacked what we asked for
+	StageExitStatus    = "exit-status"    // a command-backed provider exited non-zero
+	StageTimeout       = "timeout"        // the call outlived its deadline
 )
 
 // CallError is an error from an LLM call attributed to the stage it failed
@@ -201,11 +220,11 @@ func analyzeDiff(files []*utils.DiffFile, includeOrdering, includeEase bool, ctx
 	rec.reviewEase = analysis.ReviewEase
 
 	if includeOrdering && len(analysis.Ordering) == 0 {
-		rec.responseSnippet = snippet(text)
+		rec.responseSnippet = Snippet(text)
 		return nil, rec.fail(StageParse, fmt.Errorf("response contained no file paths"))
 	}
 	if includeEase && analysis.ReviewEase == "" {
-		rec.responseSnippet = snippet(text)
+		rec.responseSnippet = Snippet(text)
 		if !includeOrdering {
 			return nil, rec.fail(StageParse, fmt.Errorf("response contained no usable review-ease rating"))
 		}

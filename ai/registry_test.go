@@ -1,0 +1,119 @@
+package ai
+
+import (
+	"context"
+	"crs/config"
+	"strings"
+	"testing"
+)
+
+// agentFeature supports both modes, agent first.
+type agentFeature struct{ fakeFeature }
+
+func (*agentFeature) Modes() []string { return []string{config.AIModeAgent, config.AIModeOneShot} }
+
+func TestRegistryDispatchesByID(t *testing.T) {
+	reg := NewRegistry()
+	a := &fakeFeature{id: "a"}
+	b := &fakeFeature{id: "b"}
+	reg.MustRegister(a)
+	reg.MustRegister(b)
+
+	if err := reg.Register(&fakeFeature{id: "a"}); err == nil {
+		t.Error("a duplicate ID should be rejected")
+	}
+	if err := reg.Register(&fakeFeature{id: " "}); err == nil {
+		t.Error("an empty ID should be rejected")
+	}
+	if got, ok := reg.Get("b"); !ok || got != b {
+		t.Errorf("Get(b) = %v, %v", got, ok)
+	}
+	if _, ok := reg.Get("c"); ok {
+		t.Error("Get(c) found an unregistered feature")
+	}
+	var ids []string
+	for _, f := range reg.Features() {
+		ids = append(ids, f.ID())
+	}
+	if strings.Join(ids, ",") != "a,b" {
+		t.Errorf("Features() = %v, want registration order", ids)
+	}
+
+	f, _ := reg.Get("a")
+	if _, err := f.Run(context.Background(), Request{}); err != nil || a.calls.Load() != 1 {
+		t.Errorf("dispatch through the registry didn't reach the feature: %v", err)
+	}
+}
+
+func TestRegistryValidate(t *testing.T) {
+	reg := NewRegistry()
+	reg.MustRegister(&fakeFeature{id: "oneshot-only"})
+	reg.MustRegister(&agentFeature{fakeFeature{id: "agentic"}})
+
+	problems := reg.Validate([]config.AIFeature{
+		{ID: "oneshot-only", Mode: config.AIModeOneShot},
+		{ID: "agentic", Mode: config.AIModeOneShot},
+		{ID: "oneshot-only", Mode: config.AIModeAgent},
+		{ID: "mermaid"},
+		{ID: ""}, // config.Validate's to report
+	})
+	if len(problems) != 2 {
+		t.Fatalf("expected 2 problems, got %v", problems)
+	}
+	if problems[0].Field != "AIFeatures[2].Mode" || !strings.Contains(problems[0].Message, `does not run in mode "agent"`) {
+		t.Errorf("unexpected mode problem: %+v", problems[0])
+	}
+	if problems[1].Field != "AIFeatures[3].ID" || !strings.Contains(problems[1].Message, `unknown AI feature "mermaid"`) ||
+		!strings.Contains(problems[1].Message, "oneshot-only, agentic") {
+		t.Errorf("unexpected ID problem: %+v", problems[1])
+	}
+	for _, p := range problems {
+		if p.Workflow != -1 {
+			t.Errorf("AI problems are root-level: %+v", p)
+		}
+	}
+}
+
+func TestRegistryDescribeMergesConfig(t *testing.T) {
+	reg := NewRegistry()
+	reg.MustRegister(&fakeFeature{id: "plain"})
+	reg.MustRegister(&agentFeature{fakeFeature{id: "agentic"}})
+
+	cfg := config.Config{
+		AI: config.AISettings{DefaultCommand: "claude -p"},
+		AIFeatures: []config.AIFeature{
+			{ID: "agentic", Enabled: true, Automatic: true, Provider: "gemini"},
+		},
+	}
+	infos := reg.Describe(cfg)
+	if len(infos) != 2 {
+		t.Fatalf("Describe should list every registered feature, got %+v", infos)
+	}
+	plain, agentic := infos[0], infos[1]
+	if plain.Enabled || plain.Automatic || plain.Mode != "oneshot" || plain.Provider != "command" {
+		t.Errorf("unconfigured feature: %+v", plain)
+	}
+	if !agentic.Enabled || !agentic.Automatic || agentic.Mode != "agent" || agentic.Provider != "gemini" ||
+		strings.Join(agentic.Modes, ",") != "agent,oneshot" {
+		t.Errorf("configured feature: %+v", agentic)
+	}
+
+	// Automatic without Enabled is not automatic.
+	cfg.AIFeatures[0].Enabled = false
+	if info := reg.Describe(cfg)[1]; info.Automatic {
+		t.Errorf("a disabled feature can't be automatic: %+v", info)
+	}
+}
+
+func TestDefaultRegistryHasCommentsAddressed(t *testing.T) {
+	f, ok := DefaultRegistry.Get(CommentsAddressedID)
+	if !ok {
+		t.Fatal("comments-addressed is not registered")
+	}
+	if f.Name() == "" || strings.Join(modesOf(f), ",") != "oneshot,agent" {
+		t.Errorf("unexpected feature: %q modes %v", f.Name(), modesOf(f))
+	}
+	if problems := ValidateFeatures([]config.AIFeature{{ID: CommentsAddressedID, Enabled: true, Mode: "agent"}}); len(problems) != 0 {
+		t.Errorf("a valid entry was rejected: %v", problems)
+	}
+}

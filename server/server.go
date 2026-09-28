@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crs/ai"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -877,6 +878,202 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 	return nil
 }
 
+// --- AI features ---
+//
+// AI features are registered in the ai package, switched on per feature in
+// config ([[AIFeatures]]), and served here. Each keeps one stored result per
+// PR, keyed by the head SHA plus a digest of the PR's discussion. A client
+// lists the features, asks for a run — which happens in the background, like a
+// plugin rerun — and polls GetAIOutput while the output reads "pending".
+
+type ListAIFeaturesArgs struct{}
+
+type ListAIFeaturesReply struct {
+	// Features lists every registered feature, enabled or not, as config
+	// currently sets it up.
+	Features []ai.Info `json:"features"`
+}
+
+func (h *RPCHandler) ListAIFeatures(args *ListAIFeaturesArgs, reply *ListAIFeaturesReply) error {
+	reply.Features = aiRunner.Registry().Describe(config.C())
+	return nil
+}
+
+type RunAIFeatureArgs struct {
+	Owner   string `json:"Owner"`
+	Repo    string `json:"Repo"`
+	Number  int    `json:"Number"`
+	Feature string `json:"Feature"`
+	// Force runs the feature even when its stored result already covers the
+	// PR's current inputs.
+	Force bool `json:"Force"`
+}
+
+type RunAIFeatureReply struct {
+	// Okay is false when the feature can't run: unknown, or not enabled.
+	Okay bool `json:"okay"`
+	// Outcome is what happened: started, up-to-date, already-running,
+	// disabled or unknown-feature.
+	Outcome string `json:"outcome"`
+	Message string `json:"message"`
+	// Output is the feature's output right after the dispatch: "pending" when
+	// a run started, the stored result when it was already up to date.
+	Output *AIFeatureOutput `json:"output"`
+}
+
+// RunAIFeature asks for an AI feature to run for a PR and returns at once. A
+// stored result that already covers the PR's current head SHA and discussion
+// answers without a run unless Force is set; results arrive through
+// GetAIOutput.
+func (h *RPCHandler) RunAIFeature(args *RunAIFeatureArgs, reply *RunAIFeatureReply) error {
+	trigger := ai.TriggerExplicit
+	if args.Force {
+		trigger = ai.TriggerRerun
+	}
+	outcome := aiRunner.Dispatch(aiJob(args.Owner, args.Repo, args.Number, args.Feature, trigger))
+	reply.Outcome = string(outcome)
+
+	feature, known := aiRunner.Registry().Get(args.Feature)
+	switch outcome {
+	case ai.OutcomeUnknown:
+		reply.Message = fmt.Sprintf("There is no AI feature named %q", args.Feature)
+		return nil
+	case ai.OutcomeDisabled:
+		reply.Message = fmt.Sprintf("%s is not enabled; turn it on with an [[AIFeatures]] entry in the config", feature.Name())
+	case ai.OutcomeUpToDate:
+		reply.Okay = true
+		reply.Message = fmt.Sprintf("%s is already up to date for PR %d", feature.Name(), args.Number)
+	case ai.OutcomeAlreadyRunning:
+		reply.Okay = true
+		reply.Message = fmt.Sprintf("%s is already running for PR %d", feature.Name(), args.Number)
+	default:
+		reply.Okay = true
+		reply.Message = fmt.Sprintf("Running %s for PR %d", feature.Name(), args.Number)
+	}
+	if known {
+		output, err := aiFeatureOutput(args.Owner, args.Repo, args.Number, feature)
+		if err != nil {
+			return err
+		}
+		reply.Output = &output
+	}
+	return nil
+}
+
+type GetAIOutputArgs struct {
+	Owner  string `json:"Owner"`
+	Repo   string `json:"Repo"`
+	Number int    `json:"Number"`
+	// Feature limits the reply to one feature, enabled or not. Empty returns
+	// every enabled feature.
+	Feature string `json:"Feature"`
+}
+
+type GetAIOutputReply struct {
+	Output map[string]AIFeatureOutput `json:"output"`
+}
+
+// AIFeatureOutput is one AI feature's result for a PR as clients see it: the
+// plugin response contract (body and annotations) plus the typed report, and
+// enough about the result's key to say whether it still describes the PR.
+type AIFeatureOutput struct {
+	Feature string `json:"feature"`
+	Name    string `json:"name"`
+	// Status is "pending" while a run is in flight, "not-run" before the first
+	// one, and otherwise the stored result's: success, error or
+	// insufficient-input. A pending output still carries the previous result.
+	Status      string         `json:"status"`
+	Body        PluginBody     `json:"body"`
+	Annotations []PRAnnotation `json:"annotations"`
+	// Report and Outstanding are the feature's typed payload (see the ai
+	// package; comments-addressed documents its shape); null when absent.
+	Report      json.RawMessage `json:"report"`
+	Outstanding json.RawMessage `json:"outstanding"`
+	// CoversSHA and CoversDigest are the inputs the stored result was computed
+	// from, CurrentSHA and CurrentDigest the PR's inputs now. Stale is true
+	// when a stored result no longer matches them.
+	CoversSHA     string `json:"covers_sha"`
+	CoversDigest  string `json:"covers_digest"`
+	CurrentSHA    string `json:"current_sha"`
+	CurrentDigest string `json:"current_digest"`
+	Stale         bool   `json:"stale"`
+	// Truncated is set when the result was computed from input cut to fit.
+	Truncated bool `json:"truncated"`
+	// UpdatedAt is when the stored result was written (RFC 3339), empty when
+	// there is none.
+	UpdatedAt string `json:"updated_at"`
+}
+
+// GetAIOutput returns stored AI feature results for a PR. It is a pure read:
+// it never starts a run, so clients can poll it.
+func (h *RPCHandler) GetAIOutput(args *GetAIOutputArgs, reply *GetAIOutputReply) error {
+	var features []ai.Feature
+	if args.Feature != "" {
+		f, ok := aiRunner.Registry().Get(args.Feature)
+		if !ok {
+			return fmt.Errorf("there is no AI feature named %q", args.Feature)
+		}
+		features = append(features, f)
+	} else {
+		cfg := config.C()
+		for _, f := range aiRunner.Registry().Features() {
+			if entry, _ := cfg.AIFeatureSettings(f.ID()); entry.Enabled {
+				features = append(features, f)
+			}
+		}
+	}
+
+	reply.Output = make(map[string]AIFeatureOutput, len(features))
+	for _, f := range features {
+		output, err := aiFeatureOutput(args.Owner, args.Repo, args.Number, f)
+		if err != nil {
+			return err
+		}
+		reply.Output[f.ID()] = output
+	}
+	return nil
+}
+
+// aiFeatureOutput reads one feature's stored result for a PR and sets it
+// against the PR's current inputs.
+func aiFeatureOutput(owner, repo string, number int, f ai.Feature) (AIFeatureOutput, error) {
+	out := AIFeatureOutput{
+		Feature:     f.ID(),
+		Name:        f.Name(),
+		Status:      ai.StatusNotRun,
+		Body:        PluginBody{BodyType: BodyTypeMarkdown},
+		Annotations: []PRAnnotation{},
+	}
+	out.CurrentSHA, out.CurrentDigest = currentAIInputs(repo, number)
+
+	stored, ok, err := config.C().DB.GetAIResult(owner, repo, number, f.ID())
+	if err != nil {
+		return out, fmt.Errorf("reading the stored %s result: %w", f.ID(), err)
+	}
+	if ok {
+		parsed := ParsePluginOutput(stored.Result)
+		doc := ai.DecodeDocument(stored.Result)
+		out.Status = stored.Status
+		out.Body = parsed.Body
+		for _, a := range parsed.Annotations {
+			out.Annotations = append(out.Annotations, PRAnnotation{PluginAnnotation: a, Source: AnnotationSourceAI, Feature: f.ID()})
+		}
+		out.Report = doc.Report
+		out.Outstanding = doc.Outstanding
+		out.Truncated = doc.Truncated
+		out.CoversSHA = stored.SHA
+		out.CoversDigest = stored.InputHash
+		out.Stale = stored.SHA != out.CurrentSHA || stored.InputHash != out.CurrentDigest
+		if !stored.UpdatedAt.IsZero() {
+			out.UpdatedAt = stored.UpdatedAt.Format(time.RFC3339)
+		}
+	}
+	if aiRunner.Running(owner, repo, number, f.ID()) {
+		out.Status = ai.StatusPending
+	}
+	return out, nil
+}
+
 // --- Configuration ---
 //
 // Clients read and edit the server's TOML config (~/.config/codereviewserver.toml)
@@ -1067,12 +1264,14 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 	return nil
 }
 
-// validateConfig runs both halves of validation: the root-level and
-// always-required workflow fields owned by the config package, plus the
-// workflow types and filters owned by the workflows package.
+// validateConfig runs every part of validation: the root-level and
+// always-required workflow fields owned by the config package, the workflow
+// types and filters owned by the workflows package, and the AI feature IDs and
+// modes owned by the ai package's registry.
 func validateConfig(cfg *config.Config) []config.ValidationError {
 	problems := config.Validate(cfg)
-	return append(problems, workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	problems = append(problems, workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	return append(problems, aiRunner.Registry().Validate(cfg.AIFeatures)...)
 }
 
 func pluralize(n int, singular, plural string) string {

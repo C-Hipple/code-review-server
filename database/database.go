@@ -215,6 +215,22 @@ func (db *DB) initSchema() error {
 		UNIQUE(owner, repo, pr_number, plugin_name)
 	);
 
+	-- One row per AI feature per PR (see ai_results.go). Additive: nothing else
+	-- reads it, so a binary that predates it simply ignores the table.
+	CREATE TABLE IF NOT EXISTS AIResults (
+		id INTEGER PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		feature_name TEXT NOT NULL,
+		result TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '',
+		sha TEXT NOT NULL DEFAULT '',
+		input_hash TEXT NOT NULL DEFAULT '',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number, feature_name)
+	);
+
 	CREATE TABLE IF NOT EXISTS DiffFileOrderingCache (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,

@@ -84,3 +84,17 @@ func TestGeminiGenerateEmptyResponse(t *testing.T) {
 	_, err := testGeminiClient(srv).Generate("prompt")
 	wantCallError(t, err, StageEmptyResponse)
 }
+
+func TestNewClientFactory(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	c, err := NewClient(ProviderGemini)
+	if err != nil {
+		t.Fatalf("NewClient(gemini): %v", err)
+	}
+	if c.Provider() != "gemini" {
+		t.Errorf("provider = %q, want gemini", c.Provider())
+	}
+
+	_, err = NewClient("not-a-provider")
+	wantCallError(t, err, StageClientInit)
+}

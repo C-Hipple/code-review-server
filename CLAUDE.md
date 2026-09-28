@@ -35,34 +35,37 @@ Periodic background jobs fetch PRs from GitHub, apply filters, and persist resul
 
 ### Server Layer (`server/`)
 RPC handlers serve data to clients (web UI, Emacs).
-- `server.go` — RPC method dispatch (`GetAllReviews`, `GetPR`, `AddComment`, `SubmitReview`, etc.)
-- `renderer.go` — `GetPRDetails()` fetches PR metadata/diff/comments/reviews, checking DB caches first
+- `server.go` — RPC method dispatch (`GetAllReviews`, `GetPR`, `AddComment`, `SubmitReview`, the AI RPCs `ListAIFeatures`/`RunAIFeature`/`GetAIOutput`, etc.)
+- `renderer.go` — `GetPRDetails()` fetches PR metadata/diff/comments/reviews, checking DB caches first; `aiDiscussion` partitions its comments into threads/conversation for the AI features
 - `plugins.go` — async plugin execution
+- `hooks.go` — the post-update hooks (plugins, LLM diff analysis, automatic AI features) and AI request assembly
 
 ### Supporting Packages
 - `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`)
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
 - `git_tools/` — GitHub API wrapper using go-github. Mostly REST; GraphQL (`graphql.go`) is reserved for what REST cannot answer — review-thread resolution (`review_threads.go`, `isResolved`), the review-request history (`team_reviews.go`), and who reacted to each comment (`reactions.go`, since REST gives per-emoji totals but the logins only one comment at a time)
 - `images/` — downloads and caches the images embedded in PR bodies, reviews and comments to `$CRS_HOME/images`, content-addressed by URL. Only `github.com` / `*.githubusercontent.com` are fetched, since bodies are attacker-supplied text. Clients render from the cached file rather than from GitHub: a private repo's attachments are served only to a request carrying the server's token
-- `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface; Gemini is the only backend today. Appends every call to `~/.crs/llm_calls.log`
+- `llm/` — non-plugin LLM calls (experimental diff file ordering + review-ease rating) behind a `Client` interface built by `NewClient`; Gemini is the only HTTP backend. Appends every call to `~/.crs/llm_calls.log` via `AppendCallReport`, which the AI runner shares
+- `ai/` — the AI feature layer (docs/ai_features.md): a `Registry` of `Feature`s (`comments-addressed` first), the `Provider` (one-shot: Gemini via `llm.Client`, or a command-backed CLI agent) and `Agent` (tool loop on any provider) seams, and the `Runner` — cache check keyed by head SHA + `InputsDigest`, in-memory in-flight tracking (so "pending" never outlives a restart), a cap of two concurrent automatic runs, a per-feature timeout, and one call-log entry per run. Results go to the `AIResults` table. Configured by `[AI]`/`[[AIFeatures]]`, all off by default
+- `subprocess/` — runs a command with a timeout, capturing stdout/stderr; shared by plugins and the command provider
 - `org/` — org-mode serialization for the Emacs client
 - `utils/` — diff parsing utilities
 - `cmd/` — plugin binaries (summarize_diff, security_check, etc.)
 
 ### Clients
 - `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio, and `lsp_pool.ts` keeps language servers (`diff-lsp`, `gopls`, ...) running across LSP WebSockets so reopening a review doesn't re-index the workspace
-- `client.el/` — Emacs client, split into modules with `crs-client.el` as the entry point (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`)
+- `client.el/` — Emacs client, split into modules with `crs-client.el` as the entry point (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`, `crs-ai`). A new module must also be added to the byte-compile list in `.github/workflows/all-checks.yml`
 
 ## Key Data Flow
 
 1. **Workflow fetch**: GitHub API → filter PRs → `ProcessPRsDB` upserts into `sections`/`items` tables
 2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI/review-threads and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written). What gets fetched is the union of what the workflows' filters asked for and what `applyCacheWarmRequirements` adds for a PR that is new or has a new head SHA — the warm covers every field `GetPRDetails` reads, so opening a review is a pure cache hit
-3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins and the LLM diff analysis in the background so they're cached before anyone opens the review
+3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins, the LLM diff analysis and any AI features configured `Automatic` in the background so they're cached before anyone opens the review
 4. **Image prefetch**: `ensurePostUpdateHooks` also hands every image URL found in the description, reviews and comments to `images.Store.Prefetch`, ahead of the head-SHA debounce — a new comment carrying a screenshot doesn't change the SHA. `PRPayload.images` then reports where each one landed, and `GetImage` fetches on demand anything the prefetch hasn't reached
 5. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
 6. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
 
-Nothing on the read path waits for a plugin or an LLM call: `ensurePostUpdateHooks` dispatches them in goroutines, and `orderDiffFiles` uses the cached LLM ordering or falls back to `sortFilesTestsLast`. The workflow layer cannot import `server` (`server` imports `workflows`), which is why step 3 goes through a registered callback wired up in `main.go`.
+Nothing on the read path waits for a plugin, an LLM call or an AI feature: `ensurePostUpdateHooks` dispatches them in goroutines, `orderDiffFiles` uses the cached LLM ordering or falls back to `sortFilesTestsLast`, and AI results are only ever read through `GetAIOutput`, which never starts a run. The workflow layer cannot import `server` (`server` imports `workflows`), which is why step 3 goes through a registered callback wired up in `main.go`.
 
 ## Cache Key Convention
 
@@ -72,4 +75,4 @@ DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT th
 
 - `CRS_GITHUB_TOKEN` — required GitHub API token
 - `CRS_HOME` — override `~/.crs` directory
-- `GEMINI_API_KEY` — for the summarization plugin and the experimental LLM diff analysis (`llm/`)
+- `GEMINI_API_KEY` — for the summarization plugin, the experimental LLM diff analysis (`llm/`), and AI features using the `gemini` provider (`ai/`)

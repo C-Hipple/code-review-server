@@ -4,11 +4,11 @@ Playwright drives the built web UI through the real Bun bridge (`server.ts`).
 Every process the bridge spawns is replaced with a fake, so the suite needs
 no GitHub token, network, or SQLite database:
 
-| Bridge spawns                              | E2E stand-in          | What it does                                                                                                                       |
-| ------------------------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `crs --server` (Go backend)                | `harness/fake_crs.ts` | Newline-delimited JSON-RPC over stdio, serving the PRs in `fixtures/prs.ts`, with in-memory comments, reviews and feedback.        |
-| `diff-lsp`                                 | `harness/fake_lsp.ts` | Reads the bridge's tempfile like the real diff-lsp and resolves positions the same way (1-indexed tempfile line, raw diff column). |
-| `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`.                                                                        |
+| Bridge spawns                              | E2E stand-in          | What it does                                                                                                                                                                                                   |
+| ------------------------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crs --server` (Go backend)                | `harness/fake_crs.ts` | Newline-delimited JSON-RPC over stdio, serving the PRs in `fixtures/prs.ts`, with in-memory comments, reviews and feedback. Enables the comments-addressed AI feature, whose runs read `pending` for one poll. |
+| `diff-lsp`                                 | `harness/fake_lsp.ts` | Reads the bridge's tempfile like the real diff-lsp and resolves positions the same way (1-indexed tempfile line, raw diff column).                                                                             |
+| `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`.                                                                                                                                                    |
 
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.

@@ -153,11 +153,16 @@ credentials, so clients load them directly.
 
 | Field      | Type   | Description                                              |
 |------------|--------|----------------------------------------------------------|
-| `plugin`   | string | Name of the plugin that produced the annotation          |
+| `source`   | string | What produced the annotation: `plugin`, or `ai` for an [AI feature](ai_features.md). A client that merges both kinds labels each by its source, so AI output never passes for a plugin's |
+| `plugin`   | string | Name of the plugin that produced the annotation; empty when `source` is `ai` |
+| `feature`  | string | ID of the AI feature that produced the annotation; omitted when `source` is `plugin` |
 | `filename` | string | Path of the file within the repo                         |
 | `line`     | int    | 1-based line number the annotation applies to            |
 | `severity` | string | Free-form severity, e.g. `info`, `warning`, `error`      |
 | `content`  | string | The annotation text                                      |
+
+The PR payload's `annotations` carry plugin annotations only (`source: "plugin"`).
+AI annotations come from [`GetAIOutput`](#rpchandlergetaioutput).
 
 #### PRMetadata Object
 
@@ -798,6 +803,108 @@ Because dispatch is asynchronous, `output` will generally still show the cleared
 
 ---
 
+### `RPCHandler.ListAIFeatures`
+
+Lists every registered [AI feature](ai_features.md), enabled or not, as the server's config currently sets it up. A client shows a way to open each enabled one.
+
+**Arguments** (`ListAIFeaturesArgs`):
+```json
+{}
+```
+
+**Reply** (`ListAIFeaturesReply`):
+| Field      | Type        | Description                          |
+|------------|-------------|--------------------------------------|
+| `features` | []AIFeature | Every registered feature             |
+
+#### `AIFeature` Object
+| Field         | Type     | Description                                                              |
+|---------------|----------|--------------------------------------------------------------------------|
+| `id`          | string   | Stable identifier, e.g. `comments-addressed`                            |
+| `name`        | string   | Label to show, e.g. `Comments addressed?`                                |
+| `description` | string   | One-paragraph explanation                                                |
+| `enabled`     | bool     | Whether an `[[AIFeatures]]` entry switches it on                         |
+| `automatic`   | bool     | Whether it also runs after a PR is fetched or updated (implies `enabled`) |
+| `mode`        | string   | Configured execution mode: `oneshot` or `agent`                          |
+| `modes`       | []string | Modes the feature supports, default first                                |
+| `provider`    | string   | Provider it would run with (`gemini` or `command`), resolved from config but not checked |
+
+---
+
+### `RPCHandler.RunAIFeature`
+
+Asks for an AI feature to run for a pull request and returns at once; the run happens in the background, like [`RerunPlugins`](#rpchandlerrerunplugins). Poll [`GetAIOutput`](#rpchandlergetaioutput) while the output's `status` is `pending`.
+
+Unless `Force` is set, a stored result that already covers the PR's current inputs — the same head SHA and the same [inputs digest](ai_features.md#caching-and-staleness) — answers without a run. Only one run per PR and feature is ever in flight.
+
+**Arguments** (`RunAIFeatureArgs`):
+| Field     | Type   | Required | Description                                                     |
+|-----------|--------|----------|-----------------------------------------------------------------|
+| `Owner`   | string | Yes      | Repository owner                                                |
+| `Repo`    | string | Yes      | Repository name                                                 |
+| `Number`  | int    | Yes      | Pull request number                                             |
+| `Feature` | string | Yes      | Feature ID                                                      |
+| `Force`   | bool   | No       | Run even when the stored result covers the PR's current inputs |
+
+**Reply** (`RunAIFeatureReply`):
+| Field     | Type            | Description                                                              |
+|-----------|-----------------|--------------------------------------------------------------------------|
+| `okay`    | bool            | `false` when the feature can't run: unknown, or not enabled              |
+| `outcome` | string          | `started`, `up-to-date`, `already-running`, `disabled` or `unknown-feature` |
+| `message` | string          | Human-readable status                                                    |
+| `output`  | AIFeatureOutput | The feature's output right after the dispatch (`pending` when a run started); `null` for an unknown feature |
+
+---
+
+### `RPCHandler.GetAIOutput`
+
+Returns stored AI feature results for a pull request. It is a pure read — it never starts a run — so clients can poll it.
+
+**Arguments** (`GetAIOutputArgs`):
+| Field     | Type   | Required | Description                                                      |
+|-----------|--------|----------|------------------------------------------------------------------|
+| `Owner`   | string | Yes      | Repository owner                                                 |
+| `Repo`    | string | Yes      | Repository name                                                  |
+| `Number`  | int    | Yes      | Pull request number                                              |
+| `Feature` | string | No       | One feature, enabled or not; omitted returns every enabled one. An unknown ID is an error |
+
+**Reply** (`GetAIOutputReply`):
+| Field    | Type                       | Description                  |
+|----------|----------------------------|------------------------------|
+| `output` | map[string]AIFeatureOutput | Outputs keyed by feature ID  |
+
+#### `AIFeatureOutput` Object
+
+The body and annotations follow the [plugin response contract](plugins.md#plugin-response-contract); the typed payload and the result's key sit beside them.
+
+| Field            | Type           | Description                                                                 |
+|------------------|----------------|-----------------------------------------------------------------------------|
+| `feature`        | string         | Feature ID                                                                  |
+| `name`           | string         | Feature label                                                               |
+| `status`         | string         | `pending` while a run is in flight (the output may still carry the previous result), `not-run` before the first one, otherwise the stored run's: `success`, `error` or `insufficient-input` |
+| `body`           | PluginBody     | The result rendered as markdown; an error's body says why the run failed    |
+| `annotations`    | []PRAnnotation | Diff annotations, each with `source: "ai"` and `feature` set                |
+| `report`         | object         | The feature's typed report, `null` when it has none; comments-addressed documents [its shape](ai_features.md#the-report) |
+| `outstanding`    | array          | For features that track it, every item still needing attention — including ones no diff line can anchor; `null` otherwise |
+| `covers_sha`     | string         | Head SHA the stored result was computed from                                |
+| `covers_digest`  | string         | Inputs digest the stored result was computed from                           |
+| `current_sha`    | string         | The PR's head SHA now                                                       |
+| `current_digest` | string         | The PR's inputs digest now                                                  |
+| `stale`          | bool           | `true` when a stored result no longer matches the PR's SHA or digest        |
+| `truncated`      | bool           | `true` when some input was cut to fit the model's prompt                    |
+| `updated_at`     | string         | When the stored result was written (RFC 3339); empty when there is none     |
+
+**Example Request** (poll one feature):
+```json
+{
+  "method": "RPCHandler.GetAIOutput",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "Feature": "comments-addressed"}],
+  "id": 11
+}
+```
+
+---
+
 ### `RPCHandler.GetConfig`
 
 Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. The reply also carries the workflow type and filter registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
@@ -1041,6 +1148,7 @@ Alongside that loop:
 
 - **Expand context**: `GetHunkContext` fetches lines around a hunk boundary when the diff's own context isn't enough to judge a change.
 - **Plugin results**: `GetPluginOutput` polls for plugin results, which arrive asynchronously; `RerunPlugins` forces a re-execution.
+- **AI features**: `ListAIFeatures` says which are enabled; `RunAIFeature` starts one for the PR and `GetAIOutput` polls for its result (see [AI Features](ai_features.md)).
 
 Steps 2–5 each return [the PR payload](#the-pr-payload) in full, so a client can apply the reply directly rather than tracking which parts of its local state a mutation invalidated.
 

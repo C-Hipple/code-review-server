@@ -7,6 +7,11 @@ You can install external plugins to process PR data asynchronously. Plugins rece
 
 This image shows the plugin output in the bun_client when reviewing a PR in this repository.
 
+Plugins are separate from the server's built-in [AI features](ai_features.md), which
+have their own config (`[[AIFeatures]]`), storage and RPCs. The two share only the
+code that runs a subprocess; an annotation's `source` field (`plugin` or `ai`) says
+which one produced it.
+
 ## Configuration
 
 Add plugins to your `codereviewserver.toml` using `[[Plugins]]` tables:

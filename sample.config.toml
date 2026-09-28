@@ -32,6 +32,16 @@ Repo = "my-org/main-repo"
 Teams = ["my-team", "my-other-team"]
 SectionTitle = "Needs My Team's Review"
 
+# AI features are off until enabled here (see docs/ai_features.md). They run on
+# Gemini (export GEMINI_API_KEY) or on a CLI agent that reads the prompt on stdin.
+# [AI]
+# DefaultCommand = "claude -p"
+#
+# [[AIFeatures]]
+# ID = "comments-addressed"
+# Enabled = true
+# Automatic = false
+
 # Plugins allow extending the server with custom checks
 [[Plugins]]
 Name = "Security Check"

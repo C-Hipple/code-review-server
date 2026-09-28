@@ -94,6 +94,9 @@ status 500).
 | `/api/list-plugins` | `RPCHandler.ListPlugins` | `GET` or `POST`; bridged but unused by the current UI |
 | `/api/get-plugin-output` | `RPCHandler.GetPluginOutput` | `GET` (query params `owner`/`repo`/`number`) or `POST` |
 | `/api/rerun-plugins` | `RPCHandler.RerunPlugins` | |
+| `/api/list-ai-features` | `RPCHandler.ListAIFeatures` | `GET` or `POST` |
+| `/api/run-ai-feature` | `RPCHandler.RunAIFeature` | |
+| `/api/get-ai-output` | `RPCHandler.GetAIOutput` | `GET` (query params `owner`/`repo`/`number`/`feature`) or `POST` |
 | `/api/get-hunk-context` | `RPCHandler.GetHunkContext` | |
 | `/api/get-config` | `RPCHandler.GetConfig` | `GET` or `POST` |
 | `/api/update-config` | `RPCHandler.UpdateConfig` | |
@@ -524,13 +527,40 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ---
 
+### 3.17 AI reports (`AIReportModal.tsx`, `ai_utils.ts`)
+
+The server's [AI features](ai_features.md) — comments-addressed first — each get a
+toolbar button in the review view, for the features `ListAIFeatures` reports as
+enabled. None are enabled by default, and an older server without the AI RPCs just
+shows no buttons.
+
+- **Toolbar count** — the review view loads `GetAIOutput` for the enabled features
+  on open (and after a sync or a submit) and shows how many items need attention,
+  or ✓ when none do.
+- **Run on open** — the modal loads the feature's output and calls `RunAIFeature`
+  (not forced) when the feature never ran for the PR (`not-run`) or its result is
+  `stale`; the server answers from its cache when nothing changed. **↻ Re-run**
+  forces a run.
+- **Polling** — while the output reads `pending`, the modal polls `GetAIOutput`
+  (every 1.5 s, backing off to 3 s, giving up after six minutes). The previous
+  result stays on screen, dimmed, until the new one lands.
+- **comments-addressed** renders from the typed `report`: the verdict and summary,
+  a "Needs attention" list (the served `outstanding` list — outstanding, then
+  unclear) with each item's status and whether GitHub or the model decided it,
+  active change requests, and the addressed items collapsed. Clicking an item's
+  location closes the modal, reveals the thread in the diff and scrolls to it
+  (threads carry `data-thread-root`), or opens the outdated-comments panel for a
+  thread no longer in the diff.
+- **Any other feature** renders its markdown `body` with `PluginBodyView`.
+
 ## 4. Protocol methods used — and not used
 
 Called by the current client:
 
 `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`,
 `DeleteComment`, `SetFeedback`, `SubmitReview`, `GetPluginOutput`, `RerunPlugins`,
-`GetHunkContext`, `GetConfig`, `UpdateConfig`.
+`GetHunkContext`, `GetConfig`, `UpdateConfig`, `ListAIFeatures`, `RunAIFeature`,
+`GetAIOutput`.
 
 Bridged in `server.ts` but not called by the UI: `RemovePRComments`, `ListPlugins`.
 
@@ -670,7 +700,7 @@ PR-specific parsing.
 4. **Navigation.** `GetAdjacentPR`, URL state, deep links.
 5. **Plugins.** `GetPluginOutput` polling, the body contract, `RerunPlugins`.
 6. **Extras.** Annotations in the diff, hunk expansion, the config editor, LSP, the
-   code viewer.
+   code viewer, AI reports (`ListAIFeatures`, `RunAIFeature`, `GetAIOutput`).
 
 Steps 1–4 give you a client comparable to the existing ones. Steps 5–6 are what make
 the web client distinct.

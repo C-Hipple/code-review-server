@@ -20,6 +20,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 - [Clients](https://code-review-server.readthedocs.io/en/latest/clients/)
 - [Filters](https://code-review-server.readthedocs.io/en/latest/filters/)
 - [Plugins](https://code-review-server.readthedocs.io/en/latest/plugins/)
+- [AI Features](https://code-review-server.readthedocs.io/en/latest/ai_features/)
 - [Protocol](https://code-review-server.readthedocs.io/en/latest/protocol/)
 
 ## Quickstart
@@ -32,7 +33,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
     ```bash
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
-    export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugin use.
+    export GEMINI_API_KEY="Gemini Token"  # Only necessary for plugins and Gemini-backed AI features.
     ```
 
     That token is the only required setup. With no config file, the server runs a built-in default configuration — a **Waiting On Me** section and a **Review Requested** section, found through GitHub search and identified by whoever the token belongs to. No repo list, no username.

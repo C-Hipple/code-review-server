@@ -86,3 +86,82 @@ test.describe('AI report', () => {
         expect(await backend.calls('RunAIFeature')).toHaveLength(0);
     });
 });
+
+// The full-page view the list's AI button opens: one card per enabled feature.
+test.describe('AI view', () => {
+    const aiView = '/?owner=acme&repo=widgets&number=42&view=ai';
+
+    test('runs comments-addressed on open and polls', async ({ page, backend }) => {
+        await page.goto(aiView);
+
+        await expect(page).toHaveTitle('AI acme/widgets::42');
+        await expect(
+            page.getByRole('heading', { name: 'AI Reports for acme/widgets #42' })
+        ).toBeVisible();
+        await expect(page.getByText('1 outstanding of 1 item(s); 0 addressed.')).toBeVisible();
+        await expect(page.getByText('Should punctuation have a default?')).toBeVisible();
+
+        // Never run for this PR, so opening the page asked for a run, then polled.
+        const runs = await backend.calls('RunAIFeature');
+        expect(runs.map(c => c.params)).toEqual([
+            {
+                Owner: 'acme',
+                Repo: 'widgets',
+                Number: 42,
+                Feature: 'comments-addressed',
+                Force: false,
+            },
+        ]);
+        expect((await backend.calls('GetAIOutput')).length).toBeGreaterThanOrEqual(2);
+
+        // There is no diff here to jump into, so the location is plain text.
+        await expect(page.getByText('src/greet.ts:3')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'src/greet.ts:3' })).toHaveCount(0);
+    });
+
+    test('re-run forces a fresh run', async ({ page, backend }) => {
+        await page.goto(aiView);
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+
+        await page.getByRole('button', { name: '↻ Re-run' }).click();
+        await expect
+            .poll(async () => (await backend.calls('RunAIFeature')).map(c => c.params.Force))
+            .toEqual([false, true]);
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+    });
+
+    test('opens the review, and comes back, without running again', async ({ page, backend }) => {
+        await page.goto(aiView);
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+
+        await page.getByRole('button', { name: 'Open review' }).click();
+        await expect(page).toHaveURL(/\?owner=acme&repo=widgets&number=42$/);
+        await expect(page.getByRole('heading', { name: 'Add greeting helper' })).toBeVisible();
+        // The review's toolbar reads the result the AI view stored.
+        await expect(
+            page.getByRole('button', { name: /Comments addressed\? \(1\)/ })
+        ).toBeVisible();
+
+        await page.goBack();
+        await expect(page).toHaveURL(/view=ai/);
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+        expect(await backend.calls('RunAIFeature')).toHaveLength(1);
+    });
+
+    test('Escape goes back to the list', async ({ page }) => {
+        await page.goto(aiView);
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+
+        await page.keyboard.press('Escape');
+        await expect(page).toHaveURL(/\/$/);
+        await expect(page.getByText('4 reviews tracked')).toBeVisible();
+    });
+
+    test('says so when the server enables no feature', async ({ page, backend }) => {
+        await backend.setAIEnabled(false);
+        await page.goto(aiView);
+
+        await expect(page.getByText('No AI features are enabled.')).toBeVisible();
+        expect(await backend.calls('RunAIFeature')).toHaveLength(0);
+    });
+});

@@ -258,6 +258,9 @@ marks the open threads that can (a warning for outstanding, info for unclear).
   verdict, what needs attention with who decided each item, change requests,
   and the addressed items collapsed. An item's location jumps to its thread in
   the diff (or the outdated-comments panel); **↻ Re-run** forces a fresh run.
+  The review list offers the same without opening the review: each PR's **✦ AI**
+  button, beside its Plugins button, opens a page with every enabled feature's
+  report for that PR.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
   an enabled feature in its own buffer, which polls while a run is pending. In
   that buffer, `r` refreshes, `R` re-runs and `q` quits.

@@ -19,6 +19,8 @@
 //   - Request ids are rewritten, since every client numbers its own from 1.
 //   - A client's open documents are closed for it when it detaches.
 
+import { stat } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { spawn } from 'bun';
 
 type JsonRpcId = number | string;
@@ -109,7 +111,12 @@ const DIFF_LSP_LANGUAGES: Record<string, string> = {
  * can take a later diff only when root and worktree match and it already runs
  * every backend the diff needs. The parsing mirrors diff-lsp's.
  */
-export function diffLspWorkspace(tempfile: string): { key: string; langs: string[] } {
+export function diffLspWorkspace(tempfile: string): {
+    key: string;
+    langs: string[];
+    root: string;
+    worktree: string;
+} {
     let root = '';
     let worktree = '';
     const langs = new Set<string>();
@@ -137,7 +144,40 @@ export function diffLspWorkspace(tempfile: string): { key: string; langs: string
         const lang = filename && dot !== -1 ? DIFF_LSP_LANGUAGES[filename.slice(dot + 1)] : null;
         if (lang) langs.add(lang);
     }
-    return { key: `diff-lsp\0${root}\0${worktree}`, langs: [...langs].sort() };
+    return { key: `diff-lsp\0${root}\0${worktree}`, langs: [...langs].sort(), root, worktree };
+}
+
+/**
+ * The checkout a diff-lsp started now would read, and the commit it's at, as
+ * one string for the pool key. diff-lsp (main.rs) uses the worktree when it
+ * is a directory and falls back to the root otherwise, and its backends read
+ * the files once, so a running diff-lsp can only serve a later review of the
+ * same checkout at the same commit. After a push moves the worktree, or once
+ * a worktree that was missing shows up, a new one has to start — else hover
+ * and definitions answer from the old code, lines shifted by whatever changed.
+ */
+export async function diffLspCheckout(root: string, worktree: string): Promise<string> {
+    let dir = root;
+    if (worktree) {
+        const path = isAbsolute(worktree) ? worktree : join(root, worktree);
+        try {
+            if ((await stat(path)).isDirectory()) dir = path;
+        } catch {
+            // Not created yet: diff-lsp reads the root.
+        }
+    }
+    let head = '';
+    try {
+        const proc = spawn(['git', '-C', dir, 'rev-parse', 'HEAD'], {
+            stdout: 'pipe',
+            stderr: 'ignore',
+        });
+        const out = (await new Response(proc.stdout).text()).trim();
+        if ((await proc.exited) === 0) head = out;
+    } catch {
+        // No git: key on the directory alone.
+    }
+    return `${dir}\0${head}`;
 }
 
 let nextPeerId = 1;

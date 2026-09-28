@@ -141,3 +141,39 @@ func TestUpdateWorktreeLeavesDirtyWorktreeAlone(t *testing.T) {
 		t.Fatalf("local edit was clobbered: %q err=%v", content, err)
 	}
 }
+
+// Untracked files (build output, an editor's scratch file) aren't local
+// changes a pull could lose: git never touches them on a fast-forward or
+// reset. They mustn't pin the worktree to an old head, or the language
+// servers keep reading code the PR has moved past.
+func TestUpdateWorktreeIgnoresUntrackedFiles(t *testing.T) {
+	origin, local := setupOriginAndClone(t)
+
+	wt := filepath.Join(filepath.Dir(local), "wt_untracked")
+	if err := CreateWorktree(local, "feature/thing", wt); err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pusher := filepath.Join(filepath.Dir(local), "pusher")
+	gitOrFail(t, filepath.Dir(local), "clone", "--branch", "feature/thing", origin, pusher)
+	gitOrFail(t, pusher, "config", "user.email", "test@test")
+	gitOrFail(t, pusher, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(pusher, "f.txt"), []byte("a\nb\nc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitOrFail(t, pusher, "commit", "-am", "more")
+	gitOrFail(t, pusher, "push", "origin", "feature/thing")
+
+	if err := UpdateWorktree(local, "feature/thing", wt); err != nil {
+		t.Fatalf("UpdateWorktree failed: %v", err)
+	}
+	if headOf(t, wt, "HEAD") != headOf(t, pusher, "HEAD") {
+		t.Fatal("an untracked file kept the worktree from moving to the new PR head")
+	}
+	if content, err := os.ReadFile(filepath.Join(wt, "scratch.txt")); err != nil || string(content) != "mine\n" {
+		t.Fatalf("untracked file was disturbed: %q err=%v", content, err)
+	}
+}

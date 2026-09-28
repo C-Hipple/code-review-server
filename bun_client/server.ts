@@ -3,7 +3,13 @@ import { join, relative, resolve } from 'node:path';
 import { spawn } from 'bun';
 import { type GetImageReply, parseGitHubImageUrl } from './github_images';
 import { readLocationLines } from './lsp_lines';
-import { diffLspWorkspace, type LspSession, LspSessionPool, startLspServer } from './lsp_pool';
+import {
+    diffLspCheckout,
+    diffLspWorkspace,
+    type LspSession,
+    LspSessionPool,
+    startLspServer,
+} from './lsp_pool';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -179,15 +185,20 @@ Bun.serve<{
             if (!tempfile || !/^\/tmp\/diff_lsp_[A-Za-z0-9-]+$/.test(tempfile)) {
                 return new Response('Missing or invalid tempfile', { status: 400 });
             }
-            let workspace: { key: string; langs: string[] };
+            let workspace: ReturnType<typeof diffLspWorkspace>;
             try {
                 workspace = diffLspWorkspace(await Bun.file(tempfile).text());
             } catch {
                 return new Response('Tempfile not found', { status: 404 });
             }
+            const checkout = await diffLspCheckout(workspace.root, workspace.worktree);
 
             const success = server.upgrade(req, {
-                data: { ...workspace, argv: [DIFF_LSP_PATH, tempfile] },
+                data: {
+                    key: `${workspace.key}\0${checkout}`,
+                    langs: workspace.langs,
+                    argv: [DIFF_LSP_PATH, tempfile],
+                },
             });
             if (success) return undefined;
             return new Response('Upgrade failed', { status: 500 });

@@ -292,31 +292,17 @@ func parsePRIdentifier(identifier string) (string, string, int, bool) {
 }
 
 func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
-	// Identifier is Repo-PRNumber for PRs
-	parts := strings.Split(change.FileChange.Identifier, "-")
-	if len(parts) < 2 {
-		return
-	}
-
-	repoFull := parts[0]
-	// Owner is part of RepoFull
-	repoParts := strings.Split(repoFull, "/")
-	if len(repoParts) < 2 {
-		return
-	}
-	ownerName := repoParts[0]
-	repoName := repoParts[1]
-	prNumberStr := parts[1]
-
-	var prNumber int
-	fmt.Sscanf(prNumberStr, "%d", &prNumber)
-	if prNumber == 0 {
+	// Identifier is owner/repo-PRNumber for PRs. Owners and repos contain
+	// dashes (C-Hipple/code-review-server-207), so split on the last one.
+	ownerName, repoName, prNumber, ok := parsePRIdentifier(change.FileChange.Identifier)
+	if !ok {
 		return
 	}
 
 	// We need head SHA and branch name. These are NOT in FileChanges.
-	// We might need to fetch them from DB if they were cached.
-	_, sha, _ := db.GetPullRequest(prNumber, repoFull)
+	// We might need to fetch them from DB if they were cached — under the
+	// short repo name, like every cache table.
+	_, sha, _ := db.GetPullRequest(prNumber, repoName)
 	if sha == "" {
 		// If we don't have it in DB, we can't easily manage worktree here without a refactor
 		// to include more info in FileChanges or performing a GitHub API call.
@@ -324,30 +310,13 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 		return
 	}
 
-	// We also don't have HeadRef here.
-	// This shows handleWorktreeChange was relying on PRToOrgBridge struct.
-	// Let's try to get it from metadata cache.
-	metadataJSON, _ := db.GetPRMetadataCache(ownerName, repoName, prNumber)
-	if metadataJSON == "" {
-		return
-	}
-
-	var metadata struct {
-		HeadRef string `json:"head_ref"`
-	}
-	json.Unmarshal([]byte(metadataJSON), &metadata)
-	branchName := metadata.HeadRef
+	// We also don't have HeadRef here, so take it from the metadata cache.
+	branchName := cachedHeadRef(db, ownerName, repoName, prNumber)
 	if branchName == "" {
 		return
 	}
 
-	repoLocation := config.C().RepoLocation
-	if strings.HasPrefix(repoLocation, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			repoLocation = strings.Replace(repoLocation, "~", home, 1)
-		}
-	}
+	repoLocation := expandedRepoLocation()
 	repoDir := filepath.Join(repoLocation, repoName)
 	worktreeRoot := filepath.Join(repoLocation, fmt.Sprintf("%s_worktrees", repoName))
 	// Branch names may contain slashes (feature/foo); keep the worktree a
@@ -364,7 +333,7 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 
 	if change.FileChange.ChangeType == "Addition" || change.FileChange.ChangeType == "Update" {
 		// Create worktree
-		slog.Info("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
+		slog.Debug("Ensuring worktree exists", "pr", prNumber, "path", worktreePath)
 
 		// Ensure worktree root exists
 		if err := os.MkdirAll(worktreeRoot, 0755); err != nil {
@@ -378,11 +347,7 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			if _, statErr := os.Stat(existingPath); statErr == nil {
 				// Already tracked: keep it in sync with the PR head so the
 				// LSPs aren't looking at stale code after a push.
-				if change.FileChange.ChangeType == "Update" {
-					if err := git_tools.UpdateWorktree(repoDir, branchName, existingPath); err != nil {
-						slog.Warn("Failed to update worktree", "pr", prNumber, "path", existingPath, "error", err)
-					}
-				}
+				refreshWorktree(repoDir, branchName, existingPath, sha)
 				return
 			}
 			// The directory was deleted out from under us; drop the record
@@ -404,6 +369,12 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 		}
 
 	} else if change.FileChange.ChangeType == "Delete" {
+		// A Delete only means this workflow stopped claiming the PR; while
+		// another still lists it the review can be opened, so keep its
+		// worktree.
+		if prClaimedElsewhere(db, change.FileChange) {
+			return
+		}
 		// Remove worktree
 		path, err := db.GetWorktree(prNumber, repoName, ownerName)
 		if err != nil {
@@ -420,6 +391,87 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			}
 		}
 	}
+}
+
+// cachedHeadRef is the PR's branch name from the metadata cache, or "".
+func cachedHeadRef(db *database.DB, owner, repo string, number int) string {
+	metadataJSON, _ := db.GetPRMetadataCache(owner, repo, number)
+	if metadataJSON == "" {
+		return ""
+	}
+	var metadata struct {
+		HeadRef string `json:"head_ref"`
+	}
+	json.Unmarshal([]byte(metadataJSON), &metadata)
+	return metadata.HeadRef
+}
+
+// expandedRepoLocation is config.RepoLocation with a leading ~ expanded.
+func expandedRepoLocation() string {
+	repoLocation := config.C().RepoLocation
+	if strings.HasPrefix(repoLocation, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			repoLocation = strings.Replace(repoLocation, "~", home, 1)
+		}
+	}
+	return repoLocation
+}
+
+// refreshWorktree moves a review worktree to headSHA, the PR head the cached
+// diff was built from. A worktree already there is left alone without a
+// fetch, so a cycle costs a rev-parse per PR rather than a network round trip.
+func refreshWorktree(repoDir, branch, path, headSHA string) {
+	if head, err := git_tools.HeadSHA(path); err == nil && head == headSHA {
+		return
+	}
+	if err := git_tools.UpdateWorktree(repoDir, branch, path); err != nil {
+		slog.Warn("Failed to update worktree", "path", path, "error", err)
+	}
+}
+
+// SyncPRWorktree moves the PR's review worktree to the head SHA cached for it.
+// SyncPR calls it after refetching the PR, so the diff it serves and the
+// checkout diff-lsp reads agree without waiting for the next workflow cycle.
+func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
+	if !config.C().AutoWorktree {
+		return
+	}
+	path, err := db.GetWorktree(number, repo, owner)
+	if err != nil || path == "" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	_, sha, _ := db.GetPullRequest(number, repo)
+	branch := cachedHeadRef(db, owner, repo, number)
+	if sha == "" || branch == "" {
+		return
+	}
+	refreshWorktree(filepath.Join(expandedRepoLocation(), repo), branch, path, sha)
+}
+
+// prClaimedElsewhere reports whether the PR a Delete releases is still listed
+// by another workflow or in another section. On a lookup error it says yes,
+// so a worktree is never removed on a guess.
+func prClaimedElsewhere(db *database.DB, change *FileChanges) bool {
+	items, err := db.GetAllItems()
+	if err != nil {
+		slog.Error("Error listing items for worktree cleanup", "error", err)
+		return true
+	}
+	for _, item := range items {
+		if item.Identifier != change.Identifier {
+			continue
+		}
+		for _, workflow := range item.GetWorkflows() {
+			if item.SectionID != change.SectionID || workflow != change.WorkflowName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duration) ManagerService {

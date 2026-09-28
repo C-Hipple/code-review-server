@@ -34,9 +34,15 @@ export interface PluginResult {
     annotations?: PluginAnnotation[];
 }
 
-/** A plugin annotation as it arrives on a PR payload, tagged with its source plugin. */
+/**
+ * An annotation as it arrives on a reply, tagged with what produced it:
+ * `source` is "plugin" (with `plugin` naming it) or "ai" (with `feature`
+ * naming the AI feature). Older servers send no source, which means a plugin.
+ */
 export interface PRAnnotation extends PluginAnnotation {
     plugin: string;
+    source?: 'plugin' | 'ai';
+    feature?: string;
 }
 
 /**

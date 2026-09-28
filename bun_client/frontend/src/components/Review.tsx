@@ -1,5 +1,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
-import { getConfig, rpcCall, getHunkContext } from '../api';
+import { getAIOutput, getConfig, getHunkContext, listAIFeatures, rpcCall } from '../api';
+import {
+    attentionCount,
+    type AIFeatureInfo,
+    type AIFeatureOutput,
+    type ReportItem,
+} from '../ai_utils';
 import { Button, Toast, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -17,6 +23,7 @@ import {
     allDockedTabs,
 } from '../dock_utils';
 import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
+import AIReportModal from './AIReportModal';
 import CodeViewerModal from './CodeViewerModal';
 import AddCommentModal from './review/AddCommentModal';
 import DiffView from './review/DiffView';
@@ -81,6 +88,11 @@ export default function Review({
     const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null); // For inline comments
     const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
+    // AI features the server has switched on, each one's latest output for
+    // this PR (for the toolbar count), and whose report is open.
+    const [aiFeatures, setAIFeatures] = useState<AIFeatureInfo[]>([]);
+    const [aiOutputs, setAIOutputs] = useState<Record<string, AIFeatureOutput>>({});
+    const [openAIFeature, setOpenAIFeature] = useState<string | null>(null);
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
     // Comment threads are hidden by default; a thread's root comment id must be
     // in this set for its full interactive thread to render inline.
@@ -205,6 +217,9 @@ export default function Review({
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
+        setOpenAIFeature(null);
+        setAIOutputs({});
+        loadAIFeatures();
     }, [owner, repo, number]);
 
     useEffect(() => {
@@ -264,6 +279,36 @@ export default function Review({
             setPluginOutputs(res.output || {});
         } catch (e) {
             console.error('Failed to load plugin outputs:', e);
+        }
+    };
+
+    // The AI features are optional: none are enabled by default, and an older
+    // server has no AI RPCs at all. Either way the toolbar simply shows no AI
+    // buttons.
+    const loadAIFeatures = async () => {
+        try {
+            const enabled = (await listAIFeatures()).filter(f => f.enabled);
+            setAIFeatures(enabled);
+            setAIOutputs(
+                enabled.length > 0
+                    ? await getAIOutput({ Owner: owner, Repo: repo, Number: number })
+                    : {}
+            );
+        } catch (e) {
+            console.error('Failed to load AI features:', e);
+            setAIFeatures([]);
+            setAIOutputs({});
+        }
+    };
+
+    // Refresh the AI outputs (for the toolbar counts) after something that can
+    // change what they cover, like a sync.
+    const loadAIOutputs = async () => {
+        if (aiFeatures.length === 0) return;
+        try {
+            setAIOutputs(await getAIOutput({ Owner: owner, Repo: repo, Number: number }));
+        } catch (e) {
+            console.error('Failed to load AI outputs:', e);
         }
     };
 
@@ -333,6 +378,7 @@ export default function Review({
             ]);
             applyPRResponse(res);
             loadPluginOutputs();
+            loadAIOutputs();
             if (res.updated) {
                 showToast('Synced — new commits, comments, or reviews pulled in', 'success');
             } else {
@@ -603,6 +649,7 @@ export default function Review({
             setReviewBody('');
             applyPRResponse(res);
             loadPluginOutputs();
+            loadAIOutputs();
             // A reply GitHub refused is still in the pending list below — say
             // so rather than letting the submit look clean while the reply
             // quietly stayed behind.
@@ -864,6 +911,42 @@ export default function Review({
         });
     };
 
+    // Take the reviewer from an AI report item to its thread: reveal it in the
+    // diff and scroll to it, or open the outdated-comments panel for a thread
+    // whose lines are no longer in the diff.
+    const jumpToReportItem = (item: ReportItem) => {
+        setOpenAIFeature(null);
+        const file = item.path;
+        if (!file) return;
+        if (item.outdated) {
+            setActiveOutdatedFile(file);
+            return;
+        }
+        setVisibleThreadIds(prev => new Set(prev).add(item.root_comment_id));
+        if (collapsedFiles.has(file)) {
+            setCollapsedFiles(prev => {
+                const next = new Set(prev);
+                next.delete(file);
+                return next;
+            });
+        }
+        // Two frames: one for the thread to render, one for layout.
+        requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+                const thread = document.querySelector(
+                    `[data-thread-root="${CSS.escape(item.root_comment_id)}"]`
+                );
+                if (thread) {
+                    thread.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else {
+                    scrollToFile(file);
+                }
+            })
+        );
+    };
+
+    const openFeature = aiFeatures.find(f => f.id === openAIFeature);
+
     if (loading && !content) return <div style={{ padding: '20px' }}>Loading PR...</div>;
 
     const renderDiff = (filterFile?: string) => (
@@ -1006,6 +1089,20 @@ export default function Review({
                         ? `(${Object.keys(pluginOutputs).length})`
                         : ''}
                 </Button>
+                {aiFeatures.map(feature => {
+                    const count = attentionCount(aiOutputs[feature.id]);
+                    return (
+                        <Button
+                            key={feature.id}
+                            onClick={() => setOpenAIFeature(feature.id)}
+                            variant={openAIFeature === feature.id ? 'primary' : 'secondary'}
+                            title={feature.description}
+                        >
+                            ✦ {feature.name}
+                            {count !== null && (count > 0 ? ` (${count})` : ' ✓')}
+                        </Button>
+                    );
+                })}
                 {annotationIndex.count > 0 && (
                     <Button
                         onClick={toggleAllAnnotations}
@@ -1562,6 +1659,21 @@ export default function Review({
                     onRefresh={loadPluginOutputs}
                     onExecutePlugin={executePlugin}
                     onClose={() => setShowPlugins(false)}
+                />
+            )}
+
+            {openFeature && (
+                <AIReportModal
+                    feature={openFeature}
+                    owner={owner}
+                    repo={repo}
+                    number={number}
+                    initialOutput={aiOutputs[openFeature.id]}
+                    onClose={() => setOpenAIFeature(null)}
+                    onOutput={output =>
+                        setAIOutputs(prev => ({ ...prev, [output.feature]: output }))
+                    }
+                    onJumpToItem={jumpToReportItem}
                 />
             )}
 

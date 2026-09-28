@@ -327,6 +327,38 @@ Bun.serve<{
             return handleRpc('RPCHandler.RerunPlugins', [body]);
         }
 
+        // AI features: list what the server offers, start a run (it happens in
+        // the background), and poll the output while it reads "pending".
+        if (
+            url.pathname === '/api/list-ai-features' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            return handleRpc('RPCHandler.ListAIFeatures', [{}]);
+        }
+
+        if (url.pathname === '/api/run-ai-feature' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.RunAIFeature', [body]);
+        }
+
+        if (
+            url.pathname === '/api/get-ai-output' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            let body: unknown;
+            if (req.method === 'GET') {
+                body = {
+                    Owner: url.searchParams.get('owner'),
+                    Repo: url.searchParams.get('repo'),
+                    Number: parseInt(url.searchParams.get('number') || '0', 10),
+                    Feature: url.searchParams.get('feature') || '',
+                };
+            } else {
+                body = await req.json();
+            }
+            return handleRpc('RPCHandler.GetAIOutput', [body]);
+        }
+
         if (url.pathname === '/api/get-config' && (req.method === 'POST' || req.method === 'GET')) {
             return handleRpc('RPCHandler.GetConfig', [{}]);
         }

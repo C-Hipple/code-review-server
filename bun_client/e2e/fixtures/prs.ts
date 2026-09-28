@@ -273,3 +273,71 @@ export function buildFixtures(): PRFixture[] {
         },
     ];
 }
+
+// The comments-addressed report the fake backend serves for a PR: one item
+// per thread root, outstanding unless resolved — the shape (not the rules) of
+// what the Go server's ai package produces.
+export function commentsAddressedReport(pr: PRFixture) {
+    const roots = pr.comments.filter(c => c.in_reply_to === 0 && c.path !== '');
+    const items = roots.map(root => {
+        const thread = [root, ...pr.comments.filter(c => c.in_reply_to === Number(root.id))];
+        const last = thread[thread.length - 1];
+        const lastAuthor =
+            last.author === pr.item.author ? `${last.author} (the author)` : last.author;
+        return {
+            root_comment_id: root.id,
+            thread_id: root.thread_id || null,
+            kind: 'thread',
+            status: root.resolved ? 'addressed' : 'outstanding',
+            source: 'github',
+            rationale: root.resolved
+                ? `Resolved on GitHub by ${root.resolved_by}.`
+                : `Unresolved on GitHub, and ${lastAuthor} replied after the latest commit.`,
+            author: root.author,
+            excerpt: root.body,
+            path: root.path,
+            line: Number(root.position) || 0,
+            outdated: root.outdated,
+            resolved: root.resolved,
+            resolved_by: root.resolved_by,
+            replies: thread.length - 1,
+            last_author: last.author,
+            last_activity: last.created_at,
+            html_url: root.html_url,
+        };
+    });
+    const outstanding = items.filter(i => i.status === 'outstanding');
+    const addressed = items.length - outstanding.length;
+    const verdict =
+        items.length === 0
+            ? 'no-comments'
+            : outstanding.length > 0
+              ? 'outstanding'
+              : 'all-addressed';
+    const summary =
+        verdict === 'no-comments'
+            ? 'There are no review threads or conversation comments to address.'
+            : verdict === 'all-addressed'
+              ? `All ${items.length} item(s) are addressed.`
+              : `${outstanding.length} outstanding of ${items.length} item(s); ${addressed} addressed.`;
+    return {
+        report: {
+            verdict,
+            summary,
+            counts: {
+                total: items.length,
+                addressed,
+                outstanding: outstanding.length,
+                unclear: 0,
+                by_model: 0,
+            },
+            items,
+            change_requests: [],
+            model: { consulted: false, mode: 'oneshot', asked: 0 },
+            truncated: false,
+            missing: [],
+        },
+        outstanding,
+        body: `**${summary}**`,
+    };
+}

@@ -52,6 +52,10 @@ class Backend {
     setSyncUpdated(updated: boolean) {
         return this.rpc('E2E.SetSyncUpdated', { updated });
     }
+
+    setAIEnabled(enabled: boolean) {
+        return this.rpc('E2E.SetAIEnabled', { enabled });
+    }
 }
 
 export interface LspMessage {

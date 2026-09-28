@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
+import AIOutput from './components/AIOutput';
 import ConfigManager from './components/ConfigManager';
 import RateLimitHistory from './components/RateLimitHistory';
 import { rpcCall } from './api';
@@ -27,8 +28,28 @@ interface PRParams {
     number: number;
 }
 
+type View = 'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT' | 'AI_OUTPUT';
+
+/** The `view` URL parameter of each PR view besides the review, which has none. */
+const VIEW_PARAMS: Partial<Record<View, string>> = {
+    PLUGIN_OUTPUT: 'plugins',
+    AI_OUTPUT: 'ai',
+};
+
+/** The PR view a `view` URL parameter names; the review when it names none. */
+function viewFromParam(param: string | null): View {
+    const match = Object.entries(VIEW_PARAMS).find(([, value]) => value === param);
+    return match ? (match[0] as View) : 'REVIEW';
+}
+
+const VIEW_TITLES: Record<Exclude<View, 'LIST'>, string> = {
+    REVIEW: 'Review',
+    PLUGIN_OUTPUT: 'Plugins',
+    AI_OUTPUT: 'AI',
+};
+
 function App() {
-    const [view, setView] = useState<'LIST' | 'REVIEW' | 'PLUGIN_OUTPUT'>('LIST');
+    const [view, setView] = useState<View>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
     const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
@@ -77,8 +98,7 @@ function App() {
         if (view === 'LIST') {
             document.title = 'Code Review';
         } else if (currentPR) {
-            const prefix = view === 'REVIEW' ? 'Review' : 'Plugins';
-            document.title = `${prefix} ${currentPR.owner}/${currentPR.repo}::${currentPR.number}`;
+            document.title = `${VIEW_TITLES[view]} ${currentPR.owner}/${currentPR.repo}::${currentPR.number}`;
         }
     }, [view, currentPR]);
 
@@ -92,11 +112,7 @@ function App() {
 
         if (owner && repo && number) {
             setCurrentPR({ owner, repo, number: parseInt(number, 10) });
-            if (viewParam === 'plugins') {
-                setView('PLUGIN_OUTPUT');
-            } else {
-                setView('REVIEW');
-            }
+            setView(viewFromParam(viewParam));
         }
 
         const handlePopState = () => {
@@ -108,11 +124,7 @@ function App() {
 
             if (newOwner && newRepo && newNumber) {
                 setCurrentPR({ owner: newOwner, repo: newRepo, number: parseInt(newNumber, 10) });
-                if (newViewParam === 'plugins') {
-                    setView('PLUGIN_OUTPUT');
-                } else {
-                    setView('REVIEW');
-                }
+                setView(viewFromParam(newViewParam));
             } else {
                 setView('LIST');
                 setCurrentPR(null);
@@ -123,30 +135,28 @@ function App() {
         return () => window.removeEventListener('popstate', handlePopState);
     }, []);
 
-    const handleOpenReview = (owner: string, repo: string, number: number) => {
+    const openPRView = (next: View, owner: string, repo: string, number: number) => {
         const params = new URLSearchParams();
         params.set('owner', owner);
         params.set('repo', repo);
         params.set('number', number.toString());
+        const viewParam = VIEW_PARAMS[next];
+        if (viewParam) params.set('view', viewParam);
 
         window.history.pushState({}, '', `?${params.toString()}`);
 
         setCurrentPR({ owner, repo, number });
-        setView('REVIEW');
+        setView(next);
     };
 
-    const handleOpenPluginOutput = (owner: string, repo: string, number: number) => {
-        const params = new URLSearchParams();
-        params.set('owner', owner);
-        params.set('repo', repo);
-        params.set('number', number.toString());
-        params.set('view', 'plugins');
+    const handleOpenReview = (owner: string, repo: string, number: number) =>
+        openPRView('REVIEW', owner, repo, number);
 
-        window.history.pushState({}, '', `?${params.toString()}`);
+    const handleOpenPluginOutput = (owner: string, repo: string, number: number) =>
+        openPRView('PLUGIN_OUTPUT', owner, repo, number);
 
-        setCurrentPR({ owner, repo, number });
-        setView('PLUGIN_OUTPUT');
-    };
+    const handleOpenAIOutput = (owner: string, repo: string, number: number) =>
+        openPRView('AI_OUTPUT', owner, repo, number);
 
     const handleBack = () => {
         window.history.pushState({}, '', window.location.pathname);
@@ -273,7 +283,7 @@ function App() {
                             </button>
                         </>
                     )}
-                    {(view === 'REVIEW' || view === 'PLUGIN_OUTPUT') && (
+                    {view !== 'LIST' && (
                         <button
                             onClick={handleBack}
                             style={{
@@ -321,6 +331,7 @@ function App() {
                     <PRList
                         onOpenReview={handleOpenReview}
                         onOpenPluginOutput={handleOpenPluginOutput}
+                        onOpenAIOutput={handleOpenAIOutput}
                         theme={theme}
                         reviewLocation={reviewLocation}
                         onThemeChange={setTheme}
@@ -342,6 +353,15 @@ function App() {
                         number={currentPR.number}
                         theme={theme}
                         onThemeChange={setTheme}
+                        onClose={handleBack}
+                    />
+                )}
+                {view === 'AI_OUTPUT' && currentPR && (
+                    <AIOutput
+                        owner={currentPR.owner}
+                        repo={currentPR.repo}
+                        number={currentPR.number}
+                        onOpenReview={handleOpenReview}
                         onClose={handleBack}
                     />
                 )}

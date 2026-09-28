@@ -171,8 +171,9 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
 - **Non-PR items** — items with `number <= 0` render as "Non-PR item" and are not
   clickable.
 - **Actions per row** — revealed on hover or keyboard focus: Plugins (open the plugin
-  view) plus whichever of Review / GitHub the row click doesn't already go to, which
-  depends on the Preferred Review Location preference.
+  view), ✦ AI (open the AI view; shown only when `ListAIFeatures` reports an enabled
+  feature), plus whichever of Review / GitHub the row click doesn't already go to,
+  which depends on the Preferred Review Location preference.
 - **Text filter** — matches title, repo, owner, author, required-team name or slug,
   and PR number (with or without a leading `#`, by prefix). A "N of M" counter sits
   beside it.
@@ -194,13 +195,15 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
 - **Refresh** — re-issues `GetAllReviews`; a failed load offers a retry.
 - **Plugin warm-up** — after loading, the list fires a `GetPluginOutput` call for
   every visible PR and ignores the results. This is deliberate: it starts deferred
-  plugin execution server-side so output is ready by the time a PR is opened.
+  plugin execution server-side so output is ready by the time a PR is opened. AI
+  features get no such warm-up: a run can call a model, so they run when someone
+  opens a report, or after a PR updates for features configured `Automatic`.
 
 ### 3.2 Routing and navigation (`App.tsx`)
 
 - **URL-driven state** — `?owner=&repo=&number=` opens the review view;
-  `&view=plugins` opens the plugin view. Set via `history.pushState`, and a
-  `popstate` listener makes browser back/forward work.
+  `&view=plugins` opens the plugin view and `&view=ai` the AI view. Set via
+  `history.pushState`, and a `popstate` listener makes browser back/forward work.
 - **Deep links** — any review is a shareable URL; the PR header has a Copy URL button.
 - **Modifier-aware links** — list rows and the home link are real `<a>` elements;
   ctrl/cmd/shift/alt clicks fall through to normal browser behavior, plain clicks are
@@ -210,7 +213,8 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   `adjacent_number` in the reply (never parsed out of `metadata.url`), and wraps at
   both ends.
 - **Dynamic document title** — `Code Review` on the list, `{title} (#{number})` in a
-  review, `Plugins {owner}/{repo}::{number}` in the plugin view.
+  review, `Plugins {owner}/{repo}::{number}` in the plugin view and
+  `AI {owner}/{repo}::{number}` in the AI view.
 - **Top bar** — wordmark, the active view's tab, the prev / next / back controls, and
   preferences. Pinned on the list (whose sidebar and toolbar stick beneath it, offset
   by `--topbar-height`); static in the review view, whose own sticky toolbar measures
@@ -527,30 +531,37 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ---
 
-### 3.17 AI reports (`AIReportModal.tsx`, `ai_utils.ts`)
+### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`)
 
-The server's [AI features](ai_features.md) — comments-addressed first — each get a
-toolbar button in the review view, for the features `ListAIFeatures` reports as
-enabled. None are enabled by default, and an older server without the AI RPCs just
-shows no buttons.
+The server's [AI features](ai_features.md) — comments-addressed first — have two
+surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
+enabled by default, and an older server without the AI RPCs just shows neither.
 
-- **Toolbar count** — the review view loads `GetAIOutput` for the enabled features
-  on open (and after a sync or a submit) and shows how many items need attention,
-  or ✓ when none do.
-- **Run on open** — the modal loads the feature's output and calls `RunAIFeature`
-  (not forced) when the feature never ran for the PR (`not-run`) or its result is
-  `stale`; the server answers from its cache when nothing changed. **↻ Re-run**
-  forces a run.
-- **Polling** — while the output reads `pending`, the modal polls `GetAIOutput`
+- **Review toolbar** — a button per feature, opening its report in a modal. The
+  review view loads `GetAIOutput` for the enabled features on open (and after a sync
+  or a submit), and each button counts the items needing attention, or shows ✓ when
+  none do.
+- **Full-page AI view** — reachable from the list's ✦ AI button or `?view=ai`, the
+  counterpart of the plugin view: a card per feature, so reports can be run and read
+  without opening the review. With no diff on the page, item locations are plain
+  text; **Open review** goes to the PR, and **Refresh** reloads every card.
+
+Both run and render a report the same way (`useAIReport`, `AIReportView`):
+
+- **Run on open** — opening a report (the modal, or each card of the AI view) loads
+  the feature's output and calls `RunAIFeature` (not forced) when the feature never
+  ran for the PR (`not-run`) or its result is `stale`; the server answers from its
+  cache when nothing changed. **↻ Re-run** forces a run.
+- **Polling** — while the output reads `pending`, the report polls `GetAIOutput`
   (every 1.5 s, backing off to 3 s, giving up after six minutes). The previous
   result stays on screen, dimmed, until the new one lands.
 - **comments-addressed** renders from the typed `report`: the verdict and summary,
   a "Needs attention" list (the served `outstanding` list — outstanding, then
   unclear) with each item's status and whether GitHub or the model decided it,
-  active change requests, and the addressed items collapsed. Clicking an item's
-  location closes the modal, reveals the thread in the diff and scrolls to it
-  (threads carry `data-thread-root`), or opens the outdated-comments panel for a
-  thread no longer in the diff.
+  active change requests, and the addressed items collapsed. In the review's modal,
+  clicking an item's location closes the modal, reveals the thread in the diff and
+  scrolls to it (threads carry `data-thread-root`), or opens the outdated-comments
+  panel for a thread no longer in the diff.
 - **Any other feature** renders its markdown `body` with `PluginBodyView`.
 
 ## 4. Protocol methods used — and not used

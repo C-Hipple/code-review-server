@@ -155,4 +155,30 @@ test.describe('PR list', () => {
         await expect(page.getByRole('heading', { name: 'Summary' })).toBeVisible();
         await expect(page.getByText('greeting helper', { exact: true })).toBeVisible();
     });
+
+    test('opens AI reports from a row', async ({ page }) => {
+        await page.goto('/');
+        await page
+            .locator('.crs-row')
+            .filter({ hasText: 'Add greeting helper' })
+            .getByRole('button', { name: 'AI', exact: true })
+            .click();
+
+        await expect(page).toHaveURL(/view=ai/);
+        await expect(page).toHaveTitle('AI acme/widgets::42');
+        await expect(page.getByRole('heading', { name: 'Comments addressed?' })).toBeVisible();
+        await expect(page.getByText('1 outstanding of 1 item(s); 0 addressed.')).toBeVisible();
+    });
+
+    test('offers no AI button when the server enables no feature', async ({ page, backend }) => {
+        await backend.setAIEnabled(false);
+        await page.goto('/');
+        const row = page.locator('.crs-row').filter({ hasText: 'Add greeting helper' });
+
+        await expect(row.getByRole('button', { name: 'Plugins' })).toBeAttached();
+        await expect
+            .poll(async () => (await backend.calls('ListAIFeatures')).length)
+            .toBeGreaterThan(0);
+        await expect(row.getByRole('button', { name: 'AI', exact: true })).toHaveCount(0);
+    });
 });

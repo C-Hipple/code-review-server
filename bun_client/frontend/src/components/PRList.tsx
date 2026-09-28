@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { rpcCall } from '../api';
+import { listAIFeatures, rpcCall } from '../api';
+import type { AIFeatureInfo } from '../ai_utils';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import {
     Button,
@@ -29,6 +30,7 @@ import { teamChips } from '../team_utils';
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
     onOpenPluginOutput: (owner: string, repo: string, number: number) => void;
+    onOpenAIOutput: (owner: string, repo: string, number: number) => void;
     theme: Theme;
     reviewLocation: ReviewLocation;
     onThemeChange: (theme: Theme) => void;
@@ -171,6 +173,7 @@ const REFRESH_ICON = (
 export default function PRList({
     onOpenReview,
     onOpenPluginOutput,
+    onOpenAIOutput,
     theme: _theme,
     reviewLocation,
     onThemeChange: _onThemeChange,
@@ -179,6 +182,9 @@ export default function PRList({
     const [items, setItems] = useState<ReviewItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
+    // The AI features the server has switched on; rows offer the AI view
+    // only when there is at least one.
+    const [aiFeatures, setAIFeatures] = useState<AIFeatureInfo[]>([]);
     const [query, setQuery] = useState('');
     // Repo / author narrowing is a set: the checkable facet lists select several,
     // and the dropdowns above them are single-value shortcuts into the same set,
@@ -207,8 +213,21 @@ export default function PRList({
         loadList();
     }, []);
 
+    // The AI features are optional: none are enabled by default, and an older
+    // server has no AI RPCs at all. Either way the rows simply show no AI
+    // button.
+    const loadAIFeatures = async () => {
+        try {
+            setAIFeatures((await listAIFeatures()).filter(f => f.enabled));
+        } catch (e) {
+            console.error('Failed to load AI features:', e);
+            setAIFeatures([]);
+        }
+    };
+
     const loadList = async () => {
         setLoading(true);
+        loadAIFeatures();
         try {
             const res = await rpcCall<GetReviewsResponse>('RPCHandler.GetAllReviews', [{}]);
             const loaded = res.items || [];
@@ -217,6 +236,10 @@ export default function PRList({
 
             // Warm up plugin output for every visible PR so execution is already
             // underway by the time the user opens a PR or its plugin panel.
+            // AI features get no such warm-up: a run can call a model, so they
+            // run when someone asks (the AI view, or the review's toolbar) or,
+            // for features configured Automatic, after a workflow sees the PR
+            // update.
             for (const item of loaded) {
                 if (item.owner && item.repo && item.number) {
                     rpcCall('RPCHandler.GetPluginOutput', [
@@ -588,8 +611,10 @@ export default function PRList({
                                             key={`${item.section}-${item.repo}-${item.number}-${item.title}`}
                                             item={item}
                                             reviewLocation={reviewLocation}
+                                            aiFeatures={aiFeatures}
                                             onOpenReview={onOpenReview}
                                             onOpenPluginOutput={onOpenPluginOutput}
+                                            onOpenAIOutput={onOpenAIOutput}
                                         />
                                     ))}
                             </section>
@@ -672,11 +697,21 @@ function FacetList({ label, facets, selected, onToggle, onClear, collapsible }: 
 interface PRRowProps {
     item: ReviewItem;
     reviewLocation: ReviewLocation;
+    /** The enabled AI features; the row offers the AI view when there are any. */
+    aiFeatures: AIFeatureInfo[];
     onOpenReview: (owner: string, repo: string, number: number) => void;
     onOpenPluginOutput: (owner: string, repo: string, number: number) => void;
+    onOpenAIOutput: (owner: string, repo: string, number: number) => void;
 }
 
-function PRRow({ item, reviewLocation, onOpenReview, onOpenPluginOutput }: PRRowProps) {
+function PRRow({
+    item,
+    reviewLocation,
+    aiFeatures,
+    onOpenReview,
+    onOpenPluginOutput,
+    onOpenAIOutput,
+}: PRRowProps) {
     const isPR = item.number > 0;
     const state = prState(item);
     const tone = stateTone(state);
@@ -790,6 +825,17 @@ function PRRow({ item, reviewLocation, onOpenReview, onOpenPluginOutput }: PRRow
                     >
                         Plugins
                     </Button>
+                    {aiFeatures.length > 0 && (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={<span aria-hidden="true">✦</span>}
+                            onClick={() => onOpenAIOutput(item.owner, item.repo, item.number)}
+                            title={`AI reports: ${aiFeatures.map(f => f.name).join(', ')}`}
+                        >
+                            AI
+                        </Button>
+                    )}
                     {rowOpensGitHub ? (
                         <Button
                             variant="ghost"

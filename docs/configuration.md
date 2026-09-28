@@ -269,6 +269,49 @@ Results are cached in the database per PR head SHA, so the LLM is queried at mos
 
 Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used, input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
 
+## AI Features
+
+AI features — such as the **comments-addressed** report of which review comments are
+still outstanding — are off by default and switched on one by one:
+
+```toml
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+Automatic = false              # true also runs it after a PR updates
+```
+
+Each feature runs on one of two providers:
+
+- **`gemini`** — the server calls Google's hosted Gemini API itself. It needs
+  `GEMINI_API_KEY` exported.
+- **`command`** — the server runs a program on this machine, such as
+  `claude -p`, writing the prompt to its stdin and reading the answer from its
+  stdout. It needs that command line, and no `GEMINI_API_KEY`.
+
+The first of these that is set picks a feature's provider:
+
+1. the feature's own `Provider`
+2. the feature's own `Command`, which picks `command`
+3. `[AI]` `DefaultProvider`
+4. `[AI]` `DefaultCommand`, which picks `command`
+5. none of them: `gemini`
+
+`GEMINI_API_KEY` never picks the provider; the server reads it only once a
+feature has landed on `gemini`. So for every feature on a program on this
+machine:
+
+```toml
+[AI]
+DefaultCommand = "claude -p"   # rule 4
+```
+
+and for every feature on the Gemini API, export `GEMINI_API_KEY` and either
+leave `[AI]` out (rule 5) or say so with `DefaultProvider = "gemini"` (rule 3,
+which also beats any `DefaultCommand`). See
+[AI Features](ai_features.md#which-provider-runs-a-feature) for more examples,
+every setting, and how the reports decide.
+
 ## Example Config
 
 ```toml

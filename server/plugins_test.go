@@ -284,3 +284,34 @@ OnlyOnDemand = true
 		t.Error("expected expensive-plugin OnlyOnDemand to be true")
 	}
 }
+
+func TestRunPlugins_StoresAFailedRunWithItsOutput(t *testing.T) {
+	// Plugins run through the shared subprocess helper; a failure must still
+	// be stored with everything the plugin wrote, so it can be diagnosed.
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "broken.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho partial\necho boom >&2\nexit 3\n"), 0755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "broken", Command: script}},
+	})
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	results, err := db.GetPluginResults("owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("failed to get plugin results: %v", err)
+	}
+	got := results["broken"]
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want error", got.Status)
+	}
+	for _, want := range []string{"exit status 3", "Stderr: boom", "Stdout: partial"} {
+		if !strings.Contains(got.Result, want) {
+			t.Errorf("stored result missing %q:\n%s", want, got.Result)
+		}
+	}
+}

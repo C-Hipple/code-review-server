@@ -105,7 +105,7 @@ See [Configuration](configuration.md) for `WorkflowInterval` and other schedulin
 The emacs client lives in the `client.el/` directory. It is split into
 several modules; `crs-client.el` is the entry point that loads them all
 (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`,
-`crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`).
+`crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`, `crs-ai`).
 
 ### Installation
 
@@ -136,6 +136,12 @@ several modules; `crs-client.el` is the entry point that loads them all
 ```
 
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
+
+When the server has an [AI feature](ai_features.md) enabled, `C` in a review
+buffer (`crs-get-ai-output`) opens its report for the PR — for example, which
+review comments are still outstanding — running it first when it never ran or its
+report is stale. The report buffer updates itself while a run is pending; `r`
+refreshes it, `R` forces a re-run and `q` quits.
 
 ### Embedded screenshots
 

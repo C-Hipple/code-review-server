@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
     buildFixtures,
     comment,
+    commentsAddressedReport,
     type CommentJSON,
     type PRFixture,
     type ReviewJSON,
@@ -33,6 +34,11 @@ interface State {
     syncUpdated: boolean;
     nextCommentId: number;
     nextReviewId: number;
+    // AI features: whether comments-addressed is enabled, the runs in flight
+    // (polls left before each lands) and the PRs that have a result.
+    aiEnabled: boolean;
+    aiRuns: Map<string, number>;
+    aiDone: Set<string>;
 }
 
 function freshState(): State {
@@ -45,6 +51,9 @@ function freshState(): State {
         syncUpdated: false,
         nextCommentId: 9001,
         nextReviewId: 800,
+        aiEnabled: true,
+        aiRuns: new Map(),
+        aiDone: new Set(),
     };
 }
 
@@ -118,6 +127,70 @@ function payload(pr: PRFixture) {
         feedback: state.feedback.get(key(pr.item.owner, pr.item.repo, pr.item.number)) ?? '',
         annotations: [],
         images: [],
+    };
+}
+
+const AI_FEATURE = {
+    id: 'comments-addressed',
+    name: 'Comments addressed?',
+    description: 'Reports which review comments are still outstanding.',
+    automatic: false,
+    mode: 'oneshot',
+    modes: ['oneshot', 'agent'],
+    provider: 'gemini',
+};
+
+// One feature's output for a PR, in the shape GetAIOutput serves. A run in
+// flight reads "pending" for one poll, then the canned report lands.
+function aiOutput(pr: PRFixture) {
+    const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+    const base = {
+        feature: AI_FEATURE.id,
+        name: AI_FEATURE.name,
+        annotations: [],
+        covers_sha: '',
+        covers_digest: '',
+        current_sha: 'e2e-sha',
+        current_digest: 'e2e-digest',
+        stale: false,
+        truncated: false,
+    };
+    const pollsLeft = state.aiRuns.get(k);
+    if (pollsLeft !== undefined) {
+        if (pollsLeft > 0) {
+            state.aiRuns.set(k, pollsLeft - 1);
+            return {
+                ...base,
+                status: 'pending',
+                body: { body_type: 'markdown', body_content: '' },
+                report: null,
+                outstanding: null,
+                updated_at: '',
+            };
+        }
+        state.aiRuns.delete(k);
+        state.aiDone.add(k);
+    }
+    if (!state.aiDone.has(k)) {
+        return {
+            ...base,
+            status: 'not-run',
+            body: { body_type: 'markdown', body_content: '' },
+            report: null,
+            outstanding: null,
+            updated_at: '',
+        };
+    }
+    const { report, outstanding, body } = commentsAddressedReport(pr);
+    return {
+        ...base,
+        status: 'success',
+        body: { body_type: 'markdown', body_content: body },
+        report,
+        outstanding,
+        covers_sha: 'e2e-sha',
+        covers_digest: 'e2e-digest',
+        updated_at: new Date().toISOString(),
     };
 }
 
@@ -292,6 +365,51 @@ const handlers: Record<string, (args: any) => unknown> = {
 
     'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
 
+    'RPCHandler.ListAIFeatures': () => ({
+        features: [{ ...AI_FEATURE, enabled: state.aiEnabled }],
+    }),
+
+    'RPCHandler.RunAIFeature': args => {
+        const pr = findPR(args);
+        if (args.Feature !== AI_FEATURE.id) {
+            return {
+                okay: false,
+                outcome: 'unknown-feature',
+                message: `There is no AI feature named "${args.Feature}"`,
+                output: null,
+            };
+        }
+        if (!state.aiEnabled) {
+            return {
+                okay: false,
+                outcome: 'disabled',
+                message: 'not enabled',
+                output: aiOutput(pr),
+            };
+        }
+        const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+        if (state.aiRuns.has(k)) {
+            return { okay: true, outcome: 'already-running', message: '', output: aiOutput(pr) };
+        }
+        if (!args.Force && state.aiDone.has(k)) {
+            return { okay: true, outcome: 'up-to-date', message: '', output: aiOutput(pr) };
+        }
+        state.aiDone.delete(k);
+        state.aiRuns.set(k, 1);
+        return {
+            okay: true,
+            outcome: 'started',
+            message: `Running ${AI_FEATURE.name} for PR ${pr.item.number}`,
+            output: aiOutput(pr),
+        };
+    },
+
+    'RPCHandler.GetAIOutput': args => {
+        const pr = findPR(args);
+        if (!state.aiEnabled && !args.Feature) return { output: {} };
+        return { output: { [AI_FEATURE.id]: aiOutput(pr) } };
+    },
+
     // --- Test control surface -------------------------------------------------
 
     'E2E.Reset': () => {
@@ -309,6 +427,11 @@ const handlers: Record<string, (args: any) => unknown> = {
 
     'E2E.SetSyncUpdated': args => {
         state.syncUpdated = !!args.updated;
+        return { okay: true };
+    },
+
+    'E2E.SetAIEnabled': args => {
+        state.aiEnabled = !!args.enabled;
         return { okay: true };
     },
 };

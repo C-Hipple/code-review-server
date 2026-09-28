@@ -123,11 +123,22 @@ func parsePluginOutputs(results map[string]database.PluginResult) map[string]Plu
 	return outputs
 }
 
-// PRAnnotation is a plugin annotation aggregated into a PR reply, tagged with
-// the plugin that produced it.
+// Annotation sources: what produced a PRAnnotation.
+const (
+	AnnotationSourcePlugin = "plugin"
+	AnnotationSourceAI     = "ai"
+)
+
+// PRAnnotation is an annotation aggregated into a reply, tagged with what
+// produced it. Source says which kind of producer that was, so a client that
+// merges plugin and AI annotations can label each for what it is and AI
+// output never passes for a plugin's: Plugin names the plugin when Source is
+// "plugin", Feature names the AI feature when Source is "ai".
 type PRAnnotation struct {
 	PluginAnnotation
-	Plugin string `json:"plugin"`
+	Plugin  string `json:"plugin"`
+	Source  string `json:"source"`
+	Feature string `json:"feature,omitempty"`
 }
 
 // collectPluginAnnotations gathers the annotations from every plugin that has
@@ -150,7 +161,7 @@ func collectPluginAnnotations(owner, repo string, number int) ([]PRAnnotation, e
 	annotations := []PRAnnotation{}
 	for _, name := range names {
 		for _, a := range ParsePluginOutput(results[name].Result).Annotations {
-			annotations = append(annotations, PRAnnotation{PluginAnnotation: a, Plugin: name})
+			annotations = append(annotations, PRAnnotation{PluginAnnotation: a, Plugin: name, Source: AnnotationSourcePlugin})
 		}
 	}
 	return annotations, nil

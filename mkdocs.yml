@@ -21,6 +21,7 @@ nav:
   - Configuration: configuration.md
   - Filters: filters.md
   - Plugins: plugins.md
+  - AI Features: ai_features.md
   - Reviewing Code: reviewing.md
   - Protocol: protocol.md
   - Building Clients: building_clients.md

@@ -131,6 +131,9 @@ func TestCollectPluginAnnotations_OnlySuccessfulPluginsTagged(t *testing.T) {
 	if a.Plugin != "b-linter" {
 		t.Errorf("expected annotation tagged with plugin name, got %q", a.Plugin)
 	}
+	if a.Source != AnnotationSourcePlugin || a.Feature != "" {
+		t.Errorf("expected a plugin-sourced annotation, got source %q feature %q", a.Source, a.Feature)
+	}
 	if a.Filename != "test.py" || a.Line != 75 || a.Severity != "warning" {
 		t.Errorf("unexpected annotation: %+v", a)
 	}

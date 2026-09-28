@@ -63,6 +63,7 @@ export default function CommentThread({
                 onClick();
             }}
             className="hover-thread"
+            data-thread-root={rc.id}
             title={isLocalComment ? 'Click to edit this comment' : 'Click to reply to this thread'}
         >
             <div

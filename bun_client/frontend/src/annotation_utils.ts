@@ -64,6 +64,7 @@ export function collectPRAnnotations(plugins: Record<string, PluginResult>): PRA
             (plugins[name].annotations ?? []).map(annotation => ({
                 ...annotation,
                 plugin: name,
+                source: 'plugin' as const,
             }))
         );
 }

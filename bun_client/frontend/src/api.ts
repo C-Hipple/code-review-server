@@ -1,3 +1,4 @@
+import type { AIFeatureInfo, AIFeatureOutput, RunAIFeatureReply } from './ai_utils';
 import type { ConfigReply, WorkflowEntry } from './config_utils';
 
 export const API_BASE =
@@ -28,6 +29,9 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.GetHunkContext': '/api/get-hunk-context',
     'RPCHandler.GetConfig': '/api/get-config',
     'RPCHandler.UpdateConfig': '/api/update-config',
+    'RPCHandler.ListAIFeatures': '/api/list-ai-features',
+    'RPCHandler.RunAIFeature': '/api/run-ai-feature',
+    'RPCHandler.GetAIOutput': '/api/get-ai-output',
 };
 
 export interface GetHunkContextArgs {
@@ -89,6 +93,47 @@ export interface UpdateConfigArgs {
     Workflows?: WorkflowEntry[];
     ExperimentalLLMFileOrdering?: boolean;
     ExperimentalLLMReviewEase?: boolean;
+}
+
+export interface PRRef {
+    Owner: string;
+    Repo: string;
+    Number: number;
+}
+
+/** Every registered AI feature, enabled or not, as the server's config sets it up. */
+export async function listAIFeatures(): Promise<AIFeatureInfo[]> {
+    const reply = await rpcCall<{ features: AIFeatureInfo[] | null }>('RPCHandler.ListAIFeatures', [
+        {},
+    ]);
+    return reply.features ?? [];
+}
+
+/**
+ * Asks for an AI feature to run for a PR. The run happens in the background:
+ * poll getAIOutput while the output reads `pending`. Unless `Force` is set, a
+ * stored result that still covers the PR's inputs answers without a run.
+ */
+export async function runAIFeature(
+    args: PRRef & { Feature: string; Force?: boolean }
+): Promise<RunAIFeatureReply> {
+    return rpcCall<RunAIFeatureReply>('RPCHandler.RunAIFeature', [
+        { ...args, Force: !!args.Force },
+    ]);
+}
+
+/**
+ * Stored AI feature results for a PR, keyed by feature ID: one feature when
+ * `Feature` is set, otherwise every enabled one. Never starts a run.
+ */
+export async function getAIOutput(
+    args: PRRef & { Feature?: string }
+): Promise<Record<string, AIFeatureOutput>> {
+    const reply = await rpcCall<{ output: Record<string, AIFeatureOutput> | null }>(
+        'RPCHandler.GetAIOutput',
+        [{ ...args, Feature: args.Feature ?? '' }]
+    );
+    return reply.output ?? {};
 }
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {

@@ -22,6 +22,7 @@
 (require 'crs-comments)
 (require 'crs-review-actions)
 (require 'crs-plugins)
+(require 'crs-ai)
 
 
 ;;; Keybindings
@@ -57,6 +58,7 @@
   "P" #'crs-get-single-plugin-output
   "D" #'crs-run-on-demand-plugin
   "R" #'crs-rerun-plugin
+  "C" #'crs-get-ai-output
   "H" #'crs-toggle-comments
   "A" #'crs-toggle-annotations
   "f" #'crs-set-review-feedback
@@ -83,6 +85,11 @@
   "w" #'crs-wash-plugin-output
   "D" #'crs-run-on-demand-plugin
   "R" #'crs-rerun-plugin)
+
+(define-keymap :keymap crs-ai-output-mode-map
+  "r" #'crs-ai-refresh
+  "R" #'crs-ai-rerun
+  "q" #'crs-quit-ai-output)
 
 (with-eval-after-load 'evil
   ;; Global normal-state leader bindings: available in any buffer/mode,
@@ -122,6 +129,7 @@
     "P" #'crs-get-single-plugin-output
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
+    "C" #'crs-get-ai-output
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
@@ -150,6 +158,7 @@
     "P" #'crs-get-single-plugin-output
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
+    "C" #'crs-get-ai-output
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
@@ -184,7 +193,12 @@
     "q" #'crs-quit-plugin-output
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
-    "w" #'crs-wash-plugin-output))
+    "w" #'crs-wash-plugin-output)
+  ;; crs-ai-output-mode
+  (evil-define-key 'normal crs-ai-output-mode-map
+    "r" #'crs-ai-refresh
+    "R" #'crs-ai-rerun
+    "q" #'crs-quit-ai-output))
 
 (provide 'crs-client)
 

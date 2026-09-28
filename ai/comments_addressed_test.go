@@ -435,6 +435,23 @@ func TestModelFailureLeavesItemsUnclear(t *testing.T) {
 	}
 }
 
+func TestModelFailureNoteIsBriefButTheLogIsNot(t *testing.T) {
+	// Gemini's error carries its whole JSON response body.
+	body := "{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid.\"" + strings.Repeat(",\n    \"x\": 1", 100) + "\n  }\n}"
+	d := discussion(thread(false, cmt("5001", "bob", "Rename this.", at(0))))
+	model := &scriptedProvider{t: t, err: &llm.CallError{Stage: llm.StageHTTPStatus,
+		Err: fmt.Errorf("Gemini API request failed with status 400: %s", body)}}
+	res, report := run(t, request(d, model))
+
+	note := report.Model.Note
+	if strings.Contains(note, "\n") || len([]rune(note)) > 400 || !strings.Contains(note, "status 400") {
+		t.Errorf("the note should be one short line naming the failure: %q", note)
+	}
+	if !strings.Contains(res.Log.Warnings[0], `"x": 1`) {
+		t.Error("the call log should keep the whole error")
+	}
+}
+
 func TestUnreadableModelAnswerLeavesItemsUnclear(t *testing.T) {
 	d := discussion(thread(false, cmt("5001", "bob", "Rename this.", at(0))))
 	res, report := run(t, request(d, &scriptedProvider{t: t, answers: []string{"Looks fine to me!"}}))

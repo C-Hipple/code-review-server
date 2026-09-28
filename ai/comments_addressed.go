@@ -426,7 +426,9 @@ func (c CommentsAddressed) consultModel(ctx context.Context, req Request, items,
 		report.Model.Model = req.Model.Model()
 	}
 	if err != nil {
-		report.Model.Note = fmt.Sprintf("The model could not be consulted, so %d item(s) stay unclear: %v", len(toAsk), err)
+		// The note is shown to the reader, so it gets the gist; the call log
+		// keeps the whole error (an HTTP failure carries the response body).
+		report.Model.Note = fmt.Sprintf("The model could not be consulted, so %d item(s) stay unclear: %s", len(toAsk), briefError(err))
 		runLog.Warnings = append(runLog.Warnings, fmt.Sprintf("model unavailable: %v", err))
 		return
 	}
@@ -1119,6 +1121,15 @@ func excerpt(body string) string {
 	if utf8.RuneCountInString(s) > excerptChars {
 		runes := []rune(s)
 		s = strings.TrimSpace(string(runes[:excerptChars])) + "…"
+	}
+	return s
+}
+
+// briefError is an error on one line, short enough to show a reader.
+func briefError(err error) string {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	if utf8.RuneCountInString(s) > 240 {
+		s = string([]rune(s)[:240]) + "…"
 	}
 	return s
 }

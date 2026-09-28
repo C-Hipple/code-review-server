@@ -161,6 +161,10 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   column so titles align), title, `review_ease` pill when the LLM rating is enabled,
   and a meta line of repo, `#number`, author login, a relative timestamp from
   `created_at` (full timestamp on hover), and the required-team chips.
+- **Comment count** — a speech bubble with `comment_count` at the row's right edge,
+  so the counts line up in a column as on GitHub's pull request list. Like GitHub's,
+  it counts conversation and review comments together and is left off at zero, which
+  also covers a PR whose comments no workflow cycle has cached yet.
 - **Required-team chips** — one per entry in `required_teams`, showing who still owes
   this PR a review. The color is the team's status: green approved, red changes
   requested, blue reviewed-but-unattributable, amber still waiting when it is one of

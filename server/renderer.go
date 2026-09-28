@@ -220,6 +220,12 @@ type ReviewItem struct {
 	// workflow layer and read here from its cache, so the list never waits on
 	// GitHub. Empty when no cycle has resolved this PR yet.
 	RequiredTeams []git_tools.TeamReviewStatus `json:"required_teams"`
+	// CommentCount is how many comments the PR has: conversation comments and
+	// review comments on the code together, the number GitHub's pull request
+	// list shows, less the ones the review view hides (see filterComments).
+	// Read from the PRComments cache the workflow layer fills, so it is 0 until
+	// a cycle has fetched the PR's comments.
+	CommentCount int `json:"comment_count"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -301,6 +307,7 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 
 	if reviewItem.Repo != "" && reviewItem.Number > 0 {
 		reviewItem.RequiredTeams = r.requiredTeams(reviewItem.Number, reviewItem.Repo)
+		reviewItem.CommentCount = r.commentCount(reviewItem.Number, reviewItem.Repo)
 	}
 
 	return reviewItem
@@ -324,6 +331,25 @@ func (r *OrgRenderer) requiredTeams(number int, repo string) []git_tools.TeamRev
 		return nil
 	}
 	return teams
+}
+
+// commentCount totals a PR's cached comments for its row on the review list,
+// skipping the authors the review view also hides (hiddenCommentAuthor). Like
+// requiredTeams it never fails a render: an unreadable cache entry just leaves
+// the row without a count.
+func (r *OrgRenderer) commentCount(number int, repo string) int {
+	counts, err := r.db.GetPRCommentCountsByAuthor(number, repo)
+	if err != nil {
+		slog.Warn("Error counting cached comments for review item", "pr", number, "repo", repo, "error", err)
+		return 0
+	}
+	total := 0
+	for login, count := range counts {
+		if !hiddenCommentAuthor(login) {
+			total += count
+		}
+	}
+	return total
 }
 
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
@@ -2432,13 +2458,19 @@ func reviewCommentHeadLines(rawComments string) map[string]int {
 func filterComments(comments []PRComment) []PRComment {
 	output := []PRComment{}
 	for _, comment := range comments {
-		if strings.Contains(comment.GetLogin(), "advanced") {
-			// I don't care about the lint warning stuff
+		if hiddenCommentAuthor(comment.GetLogin()) {
 			continue
 		}
 		output = append(output, comment)
 	}
 	return output
+}
+
+// hiddenCommentAuthor reports whether the review leaves out this login's
+// comments. The review list's comment counts skip the same authors.
+func hiddenCommentAuthor(login string) bool {
+	// I don't care about the lint warning stuff
+	return strings.Contains(login, "advanced")
 }
 
 func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*github.Reviewers, error) {

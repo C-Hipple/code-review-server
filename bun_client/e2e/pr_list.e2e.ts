@@ -80,6 +80,18 @@ test.describe('PR list', () => {
         await expect(page.getByText('1 of 4')).toBeVisible();
     });
 
+    test('shows how many comments each PR has', async ({ page }) => {
+        await page.goto('/');
+
+        const discussed = page.locator('.crs-row').filter({ hasText: 'Add greeting helper' });
+        await expect(discussed.getByRole('img', { name: '2 comments' })).toHaveText('2');
+
+        // Like GitHub's list, a PR nobody has commented on shows no count.
+        const quiet = page.locator('.crs-row').filter({ hasText: 'Fix gadget overflow' });
+        await expect(quiet).toBeVisible();
+        await expect(quiet.getByRole('img', { name: /comment/ })).toHaveCount(0);
+    });
+
     test('collapses and expands sections', async ({ page }) => {
         await page.goto('/');
         const section = page.getByRole('button', { name: /Needs Review/ });

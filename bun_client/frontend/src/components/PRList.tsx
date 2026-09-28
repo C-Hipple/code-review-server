@@ -170,6 +170,12 @@ const REFRESH_ICON = (
     </Icon>
 );
 
+const COMMENT_ICON = (
+    <Icon size={14}>
+        <path d="M4 3h8a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 12 11H7.5L5 13.3V11H4a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4 3z" />
+    </Icon>
+);
+
 export default function PRList({
     onOpenReview,
     onOpenPluginOutput,
@@ -719,6 +725,8 @@ function PRRow({
     const easeTone = ease ? getStatusTone(ease.variant) : null;
     const relative = formatRelativeTime(item.created_at);
     const teams = teamChips(item.required_teams);
+    const comments = item.comment_count ?? 0;
+    const commentsLabel = `${comments} ${comments === 1 ? 'comment' : 'comments'}`;
     // Rows open wherever the preference points; the action buttons cover the
     // other destination so both are always one click away.
     const rowOpensGitHub = reviewLocation === 'github';
@@ -815,6 +823,20 @@ function PRRow({
                         )}
                     </span>
                 </span>
+                {/* Like GitHub's list: a right-hand column, left off at zero. The
+                    bare number means nothing without its icon, so it carries a
+                    label for screen readers too. */}
+                {isPR && comments > 0 && (
+                    <span
+                        className="crs-row-comments"
+                        role="img"
+                        aria-label={commentsLabel}
+                        title={commentsLabel}
+                    >
+                        {COMMENT_ICON}
+                        {comments}
+                    </span>
+                )}
             </a>
             {isPR && (
                 <div className="crs-row-actions">

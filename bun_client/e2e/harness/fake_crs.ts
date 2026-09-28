@@ -214,7 +214,9 @@ const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetAllReviews': () => ({
         okay: true,
         content: '',
-        items: state.prs.map(p => p.item),
+        // Counted like the server does, from the PR's GitHub comments: local
+        // drafts don't count until they are submitted.
+        items: state.prs.map(p => ({ ...p.item, comment_count: p.comments.length })),
     }),
 
     'RPCHandler.GetPR': args => payload(findPR(args)),

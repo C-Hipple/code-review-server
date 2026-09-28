@@ -74,6 +74,7 @@ Fetches all review sections from the local database, rendered as org-mode format
 | `review_ease`      | string | LLM rating of how easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the config and a rating has been computed |
 | `created_at`       | Time   | PR creation timestamp                                             |
 | `required_teams`   | []TeamReviewStatus | Teams asked to review the PR, with each one's standing. Empty until a workflow cycle has resolved them |
+| `comment_count`    | int    | Conversation plus review comments on the PR, the number GitHub's pull request list shows, less the authors the review view hides. Counted from the server's comment cache, never from GitHub, so it is `0` until a workflow cycle has fetched the PR's comments |
 
 #### TeamReviewStatus Object
 

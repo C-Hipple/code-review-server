@@ -31,6 +31,10 @@ interface State {
     feedback: Map<string, string>;
     calls: { method: string; params: unknown }[];
     failNext: Map<string, string>;
+    // Methods whose next call is recorded but left unanswered, and the calls
+    // held that way, each answered by `E2E.Release`.
+    holdNext: Set<string>;
+    held: Map<string, () => void>;
     syncUpdated: boolean;
     nextCommentId: number;
     nextReviewId: number;
@@ -48,6 +52,8 @@ function freshState(): State {
         feedback: new Map(),
         calls: [],
         failNext: new Map(),
+        holdNext: new Set(),
+        held: new Map(),
         syncUpdated: false,
         nextCommentId: 9001,
         nextReviewId: 800,
@@ -455,6 +461,22 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { okay: true };
     },
 
+    // Leave the next call to `method` unanswered until `E2E.Release`, so a test
+    // can look at the UI while it waits. The call is handled at release, as if
+    // the backend had been busy with it all along.
+    'E2E.HoldNext': args => {
+        state.holdNext.add(args.method);
+        return { okay: true };
+    },
+
+    'E2E.Release': args => {
+        const answer = state.held.get(args.method);
+        if (!answer) throw new Error(`no ${args.method} call is being held`);
+        state.held.delete(args.method);
+        answer();
+        return { okay: true };
+    },
+
     'E2E.SetSyncUpdated': args => {
         state.syncUpdated = !!args.updated;
         return { okay: true };
@@ -475,6 +497,14 @@ function handle(req: Request) {
     if (!req.method.startsWith('E2E.')) {
         state.calls.push({ method: req.method, params: args });
     }
+    if (state.holdNext.delete(req.method)) {
+        state.held.set(req.method, () => answer(req, args));
+        return;
+    }
+    answer(req, args);
+}
+
+function answer(req: Request, args: Record<string, any>) {
     const injected = state.failNext.get(req.method);
     if (injected !== undefined) {
         state.failNext.delete(req.method);

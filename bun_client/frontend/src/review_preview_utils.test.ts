@@ -4,6 +4,7 @@ import {
     buildPendingPreviews,
     contextForPosition,
     pendingComments,
+    reviewSubmittedMessage,
     reviewVerdictLabel,
 } from './review_preview_utils';
 import type { Comment } from './components/review/types';
@@ -196,5 +197,28 @@ describe('reviewVerdictLabel', () => {
         expect(reviewVerdictLabel('APPROVE')).toBe('Approved');
         expect(reviewVerdictLabel('REQUEST_CHANGES', '  ')).toBe('Changes requested');
         expect(reviewVerdictLabel('COMMENT', '')).toBe('Commented');
+    });
+});
+
+describe('reviewSubmittedMessage', () => {
+    test('says what went out, on which PR', () => {
+        expect(reviewSubmittedMessage('APPROVE', 'acme/widgets#42')).toBe(
+            'Approved acme/widgets#42'
+        );
+        expect(reviewSubmittedMessage('REQUEST_CHANGES', 'acme/widgets#42')).toBe(
+            'Requested changes on acme/widgets#42'
+        );
+        expect(reviewSubmittedMessage('COMMENT', 'acme/widgets#42')).toBe(
+            'Review submitted on acme/widgets#42'
+        );
+    });
+
+    test('owns up to the replies GitHub refused', () => {
+        expect(reviewSubmittedMessage('APPROVE', 'acme/widgets#42', 1)).toBe(
+            'Approved acme/widgets#42, but 1 reply could not be posted and is still pending — see console for details'
+        );
+        expect(reviewSubmittedMessage('COMMENT', 'acme/widgets#42', 3)).toBe(
+            'Review submitted on acme/widgets#42, but 3 replies could not be posted and are still pending — see console for details'
+        );
     });
 });

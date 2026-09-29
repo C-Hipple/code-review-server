@@ -169,6 +169,23 @@ export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
 }
 
 /**
+ * The human-readable part of an error rpcCall threw. The Go server's error
+ * arrives as a JSON-encoded string (or an object carrying `message`), so
+ * unwrap it rather than showing the quotes and braces.
+ */
+export function rpcErrorMessage(e: unknown): string {
+    const raw = e instanceof Error ? e.message : String(e);
+    try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'string') return parsed;
+        if (typeof parsed?.message === 'string') return parsed.message;
+    } catch {
+        // Not JSON — a network failure or the like, already readable.
+    }
+    return raw;
+}
+
+/**
  * Read file contents from a repository
  */
 export async function readFile(repoPath: string, filePath: string): Promise<string> {

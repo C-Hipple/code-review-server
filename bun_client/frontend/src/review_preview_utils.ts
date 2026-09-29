@@ -155,3 +155,28 @@ export function reviewVerdictLabel(event: string, user?: string): string {
             return who ? `Commented by ${who}` : 'Commented';
     }
 }
+
+/**
+ * The toast a finished submit shows. The submit runs in the background, so the
+ * reviewer may be on another PR by the time it lands — the message names the
+ * PR rather than assuming it's the one on screen.
+ */
+export function reviewSubmittedMessage(event: string, pr: string, failedReplies = 0): string {
+    let done: string;
+    switch (event) {
+        case 'APPROVE':
+            done = `Approved ${pr}`;
+            break;
+        case 'REQUEST_CHANGES':
+            done = `Requested changes on ${pr}`;
+            break;
+        default:
+            done = `Review submitted on ${pr}`;
+    }
+    if (failedReplies === 0) return done;
+    const replies =
+        failedReplies === 1
+            ? '1 reply could not be posted and is'
+            : `${failedReplies} replies could not be posted and are`;
+    return `${done}, but ${replies} still pending — see console for details`;
+}

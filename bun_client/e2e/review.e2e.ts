@@ -129,8 +129,15 @@ test.describe('review view', () => {
 
         await dialog.getByRole('button', { name: 'Approve' }).click();
         await dialog.getByPlaceholder('Review Body (Optional)').fill('LGTM');
+        await backend.holdNext('SubmitReview');
         await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+
+        // The modal closes without waiting on the backend; the toolbar shows
+        // the submit is still going, and nothing has landed yet.
         await expect(dialog).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Submitting Review...' })).toBeDisabled();
+        await expect.poll(async () => (await backend.calls('SubmitReview')).length).toBe(1);
+        await expect(page.getByTitle('Delete local comment')).toHaveCount(1);
 
         const [submit] = await backend.calls('SubmitReview');
         expect(submit.params).toMatchObject({
@@ -141,12 +148,75 @@ test.describe('review view', () => {
             Body: 'LGTM',
         });
 
+        await backend.release('SubmitReview');
+        await expect(page.getByRole('status')).toHaveText('Approved acme/widgets#42');
+        await expect(
+            page.getByRole('button', { name: 'Submit Review', exact: true })
+        ).toBeEnabled();
+
         // The reply is the refreshed PR: the review is in the discussion and
         // the comment now belongs to the reviewer rather than being local.
         await page.getByRole('button', { name: /Discussion/ }).click();
         await expect(page.getByText('LGTM')).toBeVisible();
         await expect(page.locator('.hover-thread')).toContainText('e2e-reviewer commented');
         await expect(page.getByTitle('Delete local comment')).toHaveCount(0);
+    });
+
+    test('a submit that fails hands the draft back for a retry', async ({ page, backend }) => {
+        await openReview(page);
+
+        await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
+        const dialog = modal(page, 'Submit Review');
+        await dialog.getByRole('button', { name: 'Request Changes' }).click();
+        await dialog.getByPlaceholder('Review Body (Optional)').fill('Needs a test.');
+        await backend.failNext('SubmitReview', 'GitHub is down');
+        await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+
+        await expect(page.getByRole('status')).toHaveText(
+            'Review on acme/widgets#42 was not submitted: GitHub is down'
+        );
+        // Back in the modal, the draft as it was when Submit was clicked.
+        await expect(dialog.getByPlaceholder('Review Body (Optional)')).toHaveValue(
+            'Needs a test.'
+        );
+
+        await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+        await expect(page.getByRole('status')).toHaveText('Requested changes on acme/widgets#42');
+        await expect(dialog).toHaveCount(0);
+
+        const submits = await backend.calls('SubmitReview');
+        expect(submits).toHaveLength(2);
+        expect(submits[1].params).toMatchObject({
+            Event: 'REQUEST_CHANGES',
+            Body: 'Needs a test.',
+        });
+    });
+
+    test('a submit still reports after moving on to the next PR', async ({ page, backend }) => {
+        await openReview(page);
+
+        await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
+        const dialog = modal(page, 'Submit Review');
+        await dialog.getByPlaceholder('Review Body (Optional)').fill('Looks fine.');
+        await backend.holdNext('SubmitReview');
+        await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+        await expect.poll(async () => (await backend.calls('SubmitReview')).length).toBe(1);
+
+        // #43 has nothing in flight, so it is free to review.
+        await page.getByRole('button', { name: 'Next PR →' }).click();
+        await expect(page.getByRole('heading', { name: 'Refactor build scripts' })).toBeVisible();
+        await expect(
+            page.getByRole('button', { name: 'Submit Review', exact: true })
+        ).toBeEnabled();
+
+        await backend.release('SubmitReview');
+        await expect(page.getByRole('status')).toHaveText('Review submitted on acme/widgets#42');
+        // #42's refreshed payload — its description, its reviews — stays out
+        // of #43's view.
+        await expect(page.getByRole('heading', { name: 'Refactor build scripts' })).toBeVisible();
+        await expect(page.getByText('Work in progress.')).toBeVisible();
+        await expect(page.getByText('Closes #12.')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: /Discussion/ })).toHaveCount(0);
     });
 
     test('syncs and reports whether anything changed', async ({ page, backend }) => {

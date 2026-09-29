@@ -253,9 +253,10 @@ The returned string is stored and exposed as the `release_status` field in PR me
 
 AI features — the **comments-addressed** report of which review comments are still
 outstanding, the **feature-flags** report of which changes would run with every
-feature flag off, **file-ordering**, which orders a PR's files so it reads top to
-bottom, and **review-ease**, which rates how easy each PR is to review — are off by
-default and switched on one by one:
+feature flag off, the **change-diagram**, a Mermaid diagram of what a PR changes,
+**file-ordering**, which orders a PR's files so it reads top to bottom, and
+**review-ease**, which rates how easy each PR is to review — are off by default and
+switched on one by one:
 
 ```toml
 [[AIFeatures]]

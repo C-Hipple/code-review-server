@@ -27,6 +27,7 @@ var DefaultRegistry = NewRegistry()
 func init() {
 	DefaultRegistry.MustRegister(CommentsAddressed{})
 	DefaultRegistry.MustRegister(FeatureFlags{})
+	DefaultRegistry.MustRegister(ChangeDiagram{})
 	DefaultRegistry.MustRegister(FileOrdering{})
 	DefaultRegistry.MustRegister(ReviewEase{})
 }

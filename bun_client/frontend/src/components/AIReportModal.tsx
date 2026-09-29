@@ -1,4 +1,9 @@
-import { type AIFeatureInfo, type AIFeatureOutput, type ReportItem } from '../ai_utils';
+import {
+    CHANGE_DIAGRAM,
+    type AIFeatureInfo,
+    type AIFeatureOutput,
+    type ReportItem,
+} from '../ai_utils';
 import { Button, Modal } from '../design';
 import { useAIReport } from '../hooks/useAIReport';
 import AIReportView, { AIRerunButton } from './AIReportView';
@@ -24,6 +29,9 @@ interface AIReportModalProps {
  * stored one no longer describes the PR, then polls while the run is pending
  * (see useAIReport). The previous result stays on screen, marked as
  * refreshing, until the new one lands.
+ *
+ * The change diagram takes most of the screen, so a large diagram stays
+ * legible; every other report opens at the usual width.
  */
 export default function AIReportModal({
     feature,
@@ -44,12 +52,14 @@ export default function AIReportModal({
         onOutput,
     });
 
+    const diagram = feature.id === CHANGE_DIAGRAM;
+
     return (
         <Modal
             isOpen={true}
             onClose={onClose}
             title={feature.name}
-            size="xl"
+            size={diagram ? 'full' : 'xl'}
             footer={
                 <>
                     <AIRerunButton pending={report.pending} onRerun={report.rerun} />
@@ -65,6 +75,7 @@ export default function AIReportModal({
                 notice={report.notice}
                 gaveUp={report.gaveUp}
                 onJumpToItem={onJumpToItem}
+                fill={diagram}
             />
         </Modal>
     );

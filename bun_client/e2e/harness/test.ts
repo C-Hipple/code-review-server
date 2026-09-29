@@ -56,6 +56,11 @@ class Backend {
     setAIEnabled(enabled: boolean) {
         return this.rpc('E2E.SetAIEnabled', { enabled });
     }
+
+    /** Turn change-diagram on or off, optionally serving `mermaid` as its diagram. */
+    setDiagram(enabled: boolean, mermaid?: string) {
+        return this.rpc('E2E.SetDiagram', { enabled, mermaid });
+    }
 }
 
 export interface LspMessage {

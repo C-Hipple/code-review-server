@@ -54,6 +54,16 @@ SectionTitle = "Needs My Team's Review"
 # Enabled = true
 # Automatic = true
 # Mode = "agent"           # lets the model search the local clone for callers
+#
+# [[AIFeatures]]
+# ID = "file-ordering"     # show each diff's files in reading order, tests last
+# Enabled = true
+# Automatic = true
+#
+# [[AIFeatures]]
+# ID = "review-ease"       # rate each PR easy / medium / hard in the review list
+# Enabled = true
+# Automatic = true
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

@@ -5,11 +5,15 @@
 // keyed by the head SHA plus a digest of the PR's discussion (digest.go), so a
 // result can always say whether it still describes the PR.
 //
-// The layer sits beside the two older AI paths rather than on top of them.
-// Plugins (server/plugins.go) remain separate binaries with their own config,
-// table and RPCs, and share only the subprocess helper with this package. The
-// llm package's diff analysis keeps its own flags; this package reuses llm's
-// Client for Gemini and its call log (~/.crs/llm_calls.log).
+// Most features produce a report a client opens. An applied feature
+// (AppliedFeature) produces something the server applies to what it already
+// serves instead: file-ordering orders the files of a PR's diff, and
+// review-ease rates how easy the PR is to review.
+//
+// The layer sits beside plugins rather than on top of them. Plugins
+// (server/plugins.go) remain separate binaries with their own config, table
+// and RPCs, and share only the subprocess helper with this package. The llm
+// package supplies the Gemini client and the call log (~/.crs/llm_calls.log).
 //
 // Features reach a model through two seams: Provider for one-shot calls and
 // Agent for multi-turn work with tool callbacks. Neither seam names a backend.
@@ -65,6 +69,24 @@ type CodeOnlyFeature interface {
 // CodeOnlyDigest stands in for the discussion digest in the key of a
 // code-only feature's result.
 const CodeOnlyDigest = "code-only"
+
+// AppliedFeature is implemented by features whose result the server applies to
+// what it already serves, rather than a report a client opens: file-ordering
+// orders the files of the diff GetPR returns, and review-ease rates the PR in
+// the review list and its metadata. Clients show no report for one
+// (Info.Applied). Since no client asks for it either, the server does: it
+// requests the feature whenever a client opens the PR (see server's
+// ensurePostUpdateHooks), and an automatic one also runs after a PR is fetched
+// or updated, like any other.
+type AppliedFeature interface {
+	Applied() bool
+}
+
+// IsApplied reports whether f is an applied feature.
+func IsApplied(f Feature) bool {
+	a, ok := f.(AppliedFeature)
+	return ok && a.Applied()
+}
 
 // KeyDigest is the digest a result of f is keyed by, given the digest of the
 // PR's discussion: that digest itself, or CodeOnlyDigest for a code-only

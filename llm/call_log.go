@@ -1,15 +1,13 @@
 package llm
 
-// The LLM call log mirrors the cache-miss log in server/renderer.go: every
-// non-plugin LLM call appends a human-readable report to
+// The call log mirrors the cache-miss log in server/renderer.go: every AI
+// feature run (the ai package) appends a human-readable report to
 // ~/.crs/llm_calls.log, recording what was asked for, which backend was
-// called, and — when the call fails or its response can't be parsed — the
-// stage it died at and enough of the response to see why. This is the place
-// to look when a PR is missing its review-ease tag.
-//
-// AI feature runs (the ai package) append here too, through AppendCallReport,
-// one entry per run — including runs that settled everything deterministically
-// and never called a model, and runs that ended as INSUFFICIENT-INPUT.
+// called, and — when the run fails or a model's answer can't be parsed — the
+// stage it died at and enough of the answer to see why. It gets one entry per
+// run, including runs that settled everything deterministically and never
+// called a model, and runs that ended as INSUFFICIENT-INPUT. This is the place
+// to look when a PR is missing its review-ease tag or its file ordering.
 
 import (
 	"crs/config"
@@ -22,54 +20,6 @@ import (
 )
 
 const callLogName = "llm_calls.log"
-
-// callContext says which PR an LLM call was made for and which code path
-// asked for it.
-type callContext struct {
-	repo     string
-	prNumber int
-	sha      string
-	trigger  string // "render" or "post-update hook"
-}
-
-// callRecord accumulates everything worth logging about one LLM call.
-type callRecord struct {
-	context callContext
-
-	provider string // empty when the client could not be built
-	model    string
-	purpose  string // what the call asked for
-
-	fileCount     int
-	diffBytes     int  // diff size before truncation
-	truncated     bool // diff was cut down to maxDiffSize for the prompt
-	promptBytes   int
-	responseBytes int
-	start         time.Time
-	duration      time.Duration
-
-	// Outcome. stage/err are set on failure; warnings record non-fatal
-	// anomalies such as a combined call whose rating line was unusable.
-	stage           string
-	err             error
-	warnings        []string
-	orderingCount   int    // file paths parsed from the response
-	reviewEase      string // rating parsed from the response, if any
-	responseSnippet string // head of the response, set when parsing had problems
-}
-
-// fail marks the record as failed at a stage and passes the error through,
-// so callers can write `return nil, rec.fail(stage, err)`.
-func (r *callRecord) fail(stage string, err error) error {
-	r.stage = stage
-	r.err = err
-	return err
-}
-
-// warn records a non-fatal anomaly with the call.
-func (r *callRecord) warn(msg string) {
-	r.warnings = append(r.warnings, msg)
-}
 
 // Snippet returns the head of an LLM response for the log, truncated so a
 // chatty response can't blow up the log file.
@@ -85,10 +35,8 @@ func Snippet(text string) string {
 	return s
 }
 
-// CallReport is one entry in the call log. The diff analysis in this package
-// and the ai package's feature runs both write through it, so every model
-// call the server makes — and every AI feature run, including the ones that
-// never needed a model — lands in the same file in the same shape.
+// CallReport is one entry in the call log, written through AppendCallReport so
+// every entry lands in the same file in the same shape.
 type CallReport struct {
 	// Title heads the entry; empty means "LLM Call Report".
 	Title    string
@@ -121,41 +69,6 @@ type CallReport struct {
 	// ResponseSnippet is the head of the response, set when parsing had
 	// problems so the log shows what the model actually said.
 	ResponseSnippet string
-}
-
-// writeCallLog appends a diff-analysis record to the call log.
-func writeCallLog(rec *callRecord) {
-	if rec.duration == 0 {
-		rec.duration = time.Since(rec.start)
-	}
-
-	input := fmt.Sprintf("%d files, %d-byte diff", rec.fileCount, rec.diffBytes)
-	if rec.truncated {
-		input += fmt.Sprintf(" (truncated to %d bytes for the prompt)", maxDiffSize)
-	}
-	ease := rec.reviewEase
-	if ease == "" {
-		ease = "(none)"
-	}
-
-	AppendCallReport(CallReport{
-		Time:            rec.start,
-		Repo:            rec.context.repo,
-		PRNumber:        rec.context.prNumber,
-		SHA:             rec.context.sha,
-		Trigger:         rec.context.trigger,
-		Purpose:         rec.purpose,
-		Provider:        rec.provider,
-		Model:           rec.model,
-		Input:           input,
-		Duration:        rec.duration,
-		ResponseBytes:   rec.responseBytes,
-		Stage:           rec.stage,
-		Err:             rec.err,
-		Warnings:        rec.warnings,
-		Parsed:          fmt.Sprintf("%d ordered file paths, review-ease %s", rec.orderingCount, ease),
-		ResponseSnippet: rec.responseSnippet,
-	})
 }
 
 // AppendCallReport appends a report to ~/.crs/llm_calls.log. Log failures are

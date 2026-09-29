@@ -340,8 +340,26 @@ func TestListAIFeaturesDescribesTheBuiltIns(t *testing.T) {
 		t.Fatalf("comments-addressed missing from %+v", reply.Features)
 	}
 	// Off by default: rollout depends on it.
-	if found.Enabled || found.Automatic || found.Mode != "oneshot" || found.Name == "" {
+	if found.Enabled || found.Automatic || found.Mode != "oneshot" || found.Name == "" || found.Applied {
 		t.Errorf("unexpected default: %+v", *found)
+	}
+
+	// The applied features are listed too, marked so clients show no report
+	// for them, and off unless config enables them.
+	for _, id := range []string{ai.FileOrderingID, ai.ReviewEaseID} {
+		var info *ai.Info
+		for i := range reply.Features {
+			if reply.Features[i].ID == id {
+				info = &reply.Features[i]
+			}
+		}
+		if info == nil || !info.Applied || info.Enabled || info.Automatic {
+			t.Errorf("%s: unexpected listing %+v", id, info)
+		}
+	}
+	encoded, _ := json.Marshal(reply)
+	if !strings.Contains(string(encoded), `"applied":true`) {
+		t.Errorf("the reply should carry the applied flag: %s", encoded)
 	}
 }
 

@@ -209,9 +209,9 @@ type ReviewItem struct {
 	Author        string `json:"author"`
 	URL           string `json:"url"`
 	ReleaseStatus string `json:"release_status"`
-	// ReviewEase is the LLM rating of how easy the PR is to review ("easy",
-	// "medium", or "hard"). Empty unless ExperimentalLLMReviewEase is enabled
-	// and a rating has been computed.
+	// ReviewEase is the review-ease AI feature's rating of how easy the PR is
+	// to review ("easy", "medium", or "hard"). Empty unless the feature is
+	// enabled and has rated the PR.
 	ReviewEase string    `json:"review_ease"`
 	CreatedAt  time.Time `json:"created_at"`
 	// RequiredTeams are the teams asked to review this PR — including ones
@@ -298,12 +298,7 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 		}
 	}
 
-	// Look up the LLM review-ease rating when the feature is enabled
-	if config.C().ExperimentalLLMReviewEase && reviewItem.Repo != "" && reviewItem.Number > 0 {
-		if ease, err := r.db.GetLatestReviewEase(reviewItem.Number, reviewItem.Repo); err == nil && ease != "" {
-			reviewItem.ReviewEase = ease
-		}
-	}
+	reviewItem.ReviewEase = reviewEase(reviewItem.Owner, reviewItem.Repo, reviewItem.Number)
 
 	if reviewItem.Repo != "" && reviewItem.Number > 0 {
 		reviewItem.RequiredTeams = r.requiredTeams(reviewItem.Number, reviewItem.Repo)
@@ -421,13 +416,11 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int, opts 
 		tags = []string{}
 	}
 
-	// Append the LLM review-ease rating as a headline tag when enabled
-	if config.C().ExperimentalLLMReviewEase {
-		if repo, number := itemPRRef(item); repo != "" && number > 0 {
-			if ease, err := r.db.GetLatestReviewEase(number, repo); err == nil {
-				if tag := reviewEaseOrgTag(ease); tag != "" {
-					tags = append(tags, tag)
-				}
+	// Append the review-ease rating as a headline tag when enabled
+	if aiFeatureEnabled(ai.ReviewEaseID) {
+		if owner, repo, number := itemPRRef(item); repo != "" && number > 0 {
+			if tag := reviewEaseOrgTag(reviewEase(owner, repo, number)); tag != "" {
+				tags = append(tags, tag)
 			}
 		}
 	}
@@ -468,13 +461,13 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int, opts 
 	return lines
 }
 
-// itemPRRef extracts the PR number and short repo name from an item's detail
-// lines (the same encoding parseItemToReviewItem reads). It returns ("", 0)
-// when the item does not reference a PR.
-func itemPRRef(item *database.Item) (repo string, number int) {
+// itemPRRef extracts the PR number, short repo name and owner from an item's
+// detail lines (the same encoding parseItemToReviewItem reads). It returns
+// ("", "", 0) when the item does not reference a PR.
+func itemPRRef(item *database.Item) (owner, repo string, number int) {
 	details, err := item.GetDetails()
 	if err != nil {
-		return "", 0
+		return "", "", 0
 	}
 	for _, line := range details {
 		line = strings.TrimSpace(line)
@@ -489,9 +482,12 @@ func itemPRRef(item *database.Item) (repo string, number int) {
 			repoStr := strings.TrimSpace(strings.TrimPrefix(line, "Repo:"))
 			parts := strings.Split(repoStr, "/")
 			repo = parts[len(parts)-1]
+			if len(parts) >= 2 {
+				owner = parts[0]
+			}
 		}
 	}
-	return repo, number
+	return owner, repo, number
 }
 
 // reviewEaseOrgTag converts a stored review-ease rating into an org headline
@@ -615,9 +611,9 @@ type PRMetadata struct {
 	RepoPath           string   `json:"repo_path"`
 	WorktreePath       string   `json:"worktree_path"`
 	ReleaseStatus      string   `json:"release_status"`
-	// ReviewEase is the LLM rating of how easy the PR is to review ("easy",
-	// "medium", or "hard"). Empty unless ExperimentalLLMReviewEase is enabled
-	// and a rating has been computed.
+	// ReviewEase is the review-ease AI feature's rating of how easy the PR is
+	// to review ("easy", "medium", or "hard"). Empty unless the feature is
+	// enabled and has rated the PR.
 	ReviewEase   string `json:"review_ease"`
 	ChangedFiles int    `json:"changed_files"`
 	Additions    int    `json:"additions"`
@@ -1267,12 +1263,8 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 		metadata.ReleaseStatus = releaseStatus
 	}
 
-	// Load the LLM review-ease rating from DB when the feature is enabled
-	if config.C().ExperimentalLLMReviewEase {
-		if ease, err := config.C().DB.GetLatestReviewEase(number, repo); err == nil && ease != "" {
-			metadata.ReviewEase = ease
-		}
-	}
+	// The review-ease rating, when the feature is enabled and has one
+	metadata.ReviewEase = reviewEase(owner, repo, number)
 
 	// 3. Fetch Diff (with caching)
 	var diff string
@@ -1299,7 +1291,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	parsedDiff, _ := utils.Parse(diff)
 	formattedDiff := diff
 	if parsedDiff != nil {
-		formattedDiff = formatDiff(parsedDiff, repo, number, headSHA)
+		formattedDiff = formatDiff(parsedDiff, owner, repo, number, headSHA)
 	}
 
 	// 4. Fetch Comments (GitHub + Local)
@@ -1788,7 +1780,7 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 
 	if parsedDiff != nil {
 		headSHA, _, _ := config.C().DB.GetPullRequestSHAs(number, repo)
-		sb.WriteString(formatDiff(parsedDiff, repo, number, headSHA))
+		sb.WriteString(formatDiff(parsedDiff, owner, repo, number, headSHA))
 	} else {
 		sb.WriteString(diff) // Fallback if parse failed but we have raw string
 	}
@@ -1961,7 +1953,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 			commentsByFileAndLine[key] = append(commentsByFileAndLine[key], tree)
 		}
 	}
-	result := formatDiff(parsedDiff, repo, number, latestSha)
+	result := formatDiff(parsedDiff, owner, repo, number, latestSha)
 	// Insert any remaining comments (general file comments or comments we couldn't match)
 	// for key, trees := range commentsByFileAndLine {
 	//	parts := strings.Split(key, ":")
@@ -2036,9 +2028,9 @@ func sortFilesTestsLast(files []*utils.DiffFile) []*utils.DiffFile {
 	return sorted
 }
 
-func formatDiff(diff *utils.Diff, repo string, prNumber int, sha string) string {
+func formatDiff(diff *utils.Diff, owner, repo string, prNumber int, sha string) string {
 	var builder strings.Builder
-	for _, file := range orderDiffFiles(diff.Files, repo, prNumber, sha) {
+	for _, file := range orderDiffFiles(diff.Files, owner, repo, prNumber, sha) {
 		builder.WriteString(file.DiffHeader + "\n")
 
 		// The diff parser's lookahead misses ---/+++ lines for new/deleted files

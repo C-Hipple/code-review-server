@@ -210,3 +210,70 @@ Automatic = true
 		t.Errorf("[[AIFeatures]] lost in the round trip: %+v", cfg.AIFeatures)
 	}
 }
+
+func TestLegacyFlagsEnableTheirAIFeatures(t *testing.T) {
+	// A config written before file ordering and review ease were AI features
+	// keeps them on, running automatically on Gemini as the flags always did —
+	// even when [AI] would otherwise pick another provider.
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+
+[AI]
+DefaultCommand = "claude -p"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	for _, id := range []string{"file-ordering", "review-ease"} {
+		entry, ok := cfg.AIFeatureSettings(id)
+		if !ok || !entry.Enabled || !entry.Automatic {
+			t.Errorf("%s: expected an enabled, automatic entry, got %+v (found %v)", id, entry, ok)
+		}
+		if provider, _ := cfg.AIProviderFor(entry); provider != AIProviderGemini {
+			t.Errorf("%s runs on %q, want gemini", id, provider)
+		}
+	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("the entries a legacy flag stands for must be valid, got %v", problems)
+	}
+}
+
+func TestLegacyFlagDefersToAnEntryOfItsOwn(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = false
+
+[[AIFeatures]]
+ID = "file-ordering"
+Enabled = false
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if len(cfg.AIFeatures) != 1 || cfg.AIFeatures[0].Enabled {
+		t.Errorf("the config's own entry should win over the flag: %+v", cfg.AIFeatures)
+	}
+	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
+		t.Error("a flag set to false adds nothing")
+	}
+}
+
+func TestUpdateRenderKeepsLegacyFlags(t *testing.T) {
+	// The flags stay in the file as they were written; they are only read.
+	path := useTempConfig(t, "ExperimentalLLMReviewEase = true\n"+sampleConfig)
+	sleep := 15
+	data, cfg, err := Update{SleepDuration: &sleep}.Render()
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(string(data), "ExperimentalLLMReviewEase = true") {
+		t.Errorf("the flag was dropped from %s:\n%s", path, data)
+	}
+	if entry, ok := cfg.AIFeatureSettings("review-ease"); !ok || !entry.Enabled {
+		t.Errorf("the rendered config lost the review-ease entry: %+v", cfg.AIFeatures)
+	}
+	if strings.Contains(string(data), "AIFeatures") {
+		t.Errorf("the entry a flag stands for must not be written out:\n%s", data)
+	}
+}

@@ -249,31 +249,13 @@ merged
 
 The returned string is stored and exposed as the `release_status` field in PR metadata.
 
-## Experimental LLM Features
-
-These root-level flags enable LLM-powered helpers. Both are off by default and require a Gemini API key:
-
-```bash
-export GEMINI_API_KEY="Gemini API Key"
-```
-
-```toml
-ExperimentalLLMFileOrdering = true
-ExperimentalLLMReviewEase = true
-```
-
-- **ExperimentalLLMFileOrdering**: Orders the files in a PR diff via an LLM so the PR reads top-to-bottom (integration points first, then implementation, then styling, then tests) instead of the default test-files-last sort.
-- **ExperimentalLLMReviewEase**: Rates how easy each PR is to review — `easy`, `medium`, or `hard` — in the same LLM call used for the file ordering. The rating is exposed as the `review_ease` field in PR metadata (`GetPR`) and in review list items (`GetAllReviews`), and is appended as a tag (e.g. `:easy:`) on PR headlines in the rendered org content.
-
-Results are cached in the database per PR head SHA, so the LLM is queried at most once per PR revision.
-
-Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used, input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
-
 ## AI Features
 
 AI features — the **comments-addressed** report of which review comments are still
-outstanding, and the **feature-flags** report of which changes would run with every
-feature flag off — are off by default and switched on one by one:
+outstanding, the **feature-flags** report of which changes would run with every
+feature flag off, **file-ordering**, which orders a PR's files so it reads top to
+bottom, and **review-ease**, which rates how easy each PR is to review — are off by
+default and switched on one by one:
 
 ```toml
 [[AIFeatures]]
@@ -312,6 +294,41 @@ leave `[AI]` out (rule 5) or say so with `DefaultProvider = "gemini"` (rule 3,
 which also beats any `DefaultCommand`). See
 [AI Features](ai_features.md#which-provider-runs-a-feature) for more examples,
 every setting, and how the reports decide.
+
+### File ordering and review ease
+
+These two have no report to open: the server applies what they produce to what it
+already shows. **file-ordering** orders the files in a PR diff so the PR reads
+top-to-bottom — integration points first, then implementation, then styling, then
+tests — instead of the default test-files-last sort. **review-ease** rates how easy
+each PR is to review — `easy`, `medium`, or `hard` — and the rating is exposed as the
+`review_ease` field in PR metadata (`GetPR`) and in review list items
+(`GetAllReviews`), and is appended as a tag (e.g. `:easy:`) on PR headlines in the
+rendered org content.
+
+```toml
+[[AIFeatures]]
+ID = "file-ordering"
+Enabled = true
+Automatic = true   # order each PR as it arrives, before anyone opens it
+
+[[AIFeatures]]
+ID = "review-ease"
+Enabled = true
+Automatic = true   # rate each PR as it arrives, so the list shows it
+```
+
+Opening a PR in a client asks for both whenever what is stored doesn't cover the
+PR's head commit; `Automatic = true` also computes them when a workflow fetches or
+updates a PR. Results are stored per PR head SHA, so the model is asked at most once
+per PR revision, and every run is logged to `~/.crs/llm_calls.log` (respects
+`CRS_HOME`) — check it when a PR is missing its review-ease tag or its file order.
+
+Configs written before these were AI features may set the root-level flags
+`ExperimentalLLMFileOrdering = true` and `ExperimentalLLMReviewEase = true`. Both
+still work: each stands for the matching entry above, on the `gemini` provider, as
+the flag always ran. An `[[AIFeatures]]` entry for the same feature wins over its
+flag.
 
 ## Example Config
 

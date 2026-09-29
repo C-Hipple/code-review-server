@@ -141,7 +141,9 @@ request, and the server holds the token.")
 ;; AI features (crs-ai.el).
 (defvar crs-ai-features nil
   "The AI features the server has enabled, as ListAIFeatures reports them.
-Each entry is an alist with at least `id' and `name'.  Nil until fetched.")
+Only those with a report to open: the ones the server applies itself
+are left out.  Each entry is an alist with at least `id' and `name'.
+Nil until fetched.")
 
 (defcustom crs-ai-poll-interval 2
   "Seconds between polls of an AI feature run that is still pending."

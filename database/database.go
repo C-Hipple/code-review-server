@@ -657,6 +657,11 @@ func (db *DB) DeletePluginResultsForPR(owner, repo string, prNumber int, pluginN
 	return err
 }
 
+// DiffFileOrderingCache holds the diff file orderings and review-ease ratings
+// computed before those were AI features, whose results now live in AIResults.
+// The server no longer writes it; it reads it so the values computed before
+// the move keep showing.
+
 // GetDiffFileOrdering retrieves a cached LLM diff file ordering for a PR SHA.
 // It returns an empty string (no error) when there is no cached entry.
 func (db *DB) GetDiffFileOrdering(prNumber int, repo, sha string) (string, error) {
@@ -674,7 +679,9 @@ func (db *DB) GetDiffFileOrdering(prNumber int, repo, sha string) (string, error
 	return orderingJSON, nil
 }
 
-// UpsertDiffFileOrdering stores an LLM diff file ordering keyed by PR SHA.
+// UpsertDiffFileOrdering stores an LLM diff file ordering keyed by PR SHA. The
+// server no longer calls it; tests use it to stand in for a database written
+// before file-ordering was an AI feature.
 func (db *DB) UpsertDiffFileOrdering(prNumber int, repo, sha, orderingJSON string) error {
 	_, err := db.conn.Exec(
 		`INSERT INTO DiffFileOrderingCache (pr_number, repo, sha, ordering_json, updated_at)
@@ -685,23 +692,6 @@ func (db *DB) UpsertDiffFileOrdering(prNumber int, repo, sha, orderingJSON strin
 		prNumber, repo, sha, orderingJSON,
 	)
 	return err
-}
-
-// GetReviewEase retrieves a cached LLM review-ease rating for a PR SHA.
-// It returns an empty string (no error) when there is no cached entry.
-func (db *DB) GetReviewEase(prNumber int, repo, sha string) (string, error) {
-	var ease string
-	err := db.conn.QueryRow(
-		"SELECT review_ease FROM DiffFileOrderingCache WHERE pr_number = ? AND repo = ? AND sha = ?",
-		prNumber, repo, sha,
-	).Scan(&ease)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return ease, nil
 }
 
 // GetLatestReviewEase returns the most recently stored review-ease rating for
@@ -726,7 +716,8 @@ func (db *DB) GetLatestReviewEase(prNumber int, repo string) (string, error) {
 }
 
 // UpsertReviewEase stores an LLM review-ease rating keyed by PR SHA, leaving
-// any cached file ordering for the same SHA untouched.
+// any cached file ordering for the same SHA untouched. Like
+// UpsertDiffFileOrdering, only tests call it now.
 func (db *DB) UpsertReviewEase(prNumber int, repo, sha, ease string) error {
 	_, err := db.conn.Exec(
 		`INSERT INTO DiffFileOrderingCache (pr_number, repo, sha, ordering_json, review_ease, updated_at)

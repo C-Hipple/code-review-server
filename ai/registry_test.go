@@ -118,4 +118,56 @@ func TestDefaultRegistryHasTheBuiltIns(t *testing.T) {
 			t.Errorf("a valid entry was rejected: %v", problems)
 		}
 	}
+	for _, id := range []string{FileOrderingID, ReviewEaseID} {
+		f, ok := DefaultRegistry.Get(id)
+		if !ok {
+			t.Fatalf("%s is not registered", id)
+		}
+		if f.Name() == "" || !IsApplied(f) {
+			t.Errorf("unexpected feature: %q applied %v", f.Name(), IsApplied(f))
+		}
+		if problems := ValidateFeatures([]config.AIFeature{{ID: id, Enabled: true, Automatic: true, Provider: "gemini"}}); len(problems) != 0 {
+			t.Errorf("a valid entry was rejected: %v", problems)
+		}
+		if problems := ValidateFeatures([]config.AIFeature{{ID: id, Enabled: true, Mode: "agent"}}); len(problems) != 1 {
+			t.Errorf("%s runs one-shot only, got %v", id, problems)
+		}
+	}
+}
+
+func TestDescribeMarksAppliedFeatures(t *testing.T) {
+	infos := DefaultRegistry.Describe(config.Config{})
+	applied := map[string]bool{}
+	for _, info := range infos {
+		applied[info.ID] = info.Applied
+	}
+	want := map[string]bool{CommentsAddressedID: false, FeatureFlagsID: false, FileOrderingID: true, ReviewEaseID: true}
+	for id, w := range want {
+		if got, ok := applied[id]; !ok || got != w {
+			t.Errorf("%s: applied = %v (listed %v), want %v", id, got, ok, w)
+		}
+	}
+}
+
+func TestLegacyFlagsNameTheAppliedFeatures(t *testing.T) {
+	// config spells out the IDs its legacy flags stand for, since it can't
+	// import this package; they must name the features registered here.
+	cfg, err := config.ParseConfigForTest([]byte("ExperimentalLLMFileOrdering = true\nExperimentalLLMReviewEase = true\n"))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	var ids []string
+	for _, entry := range cfg.AIFeatures {
+		f, ok := DefaultRegistry.Get(entry.ID)
+		if !ok || !IsApplied(f) {
+			t.Errorf("legacy entry %q doesn't name an applied feature", entry.ID)
+		}
+		ids = append(ids, entry.ID)
+	}
+	if strings.Join(ids, ",") != FileOrderingID+","+ReviewEaseID {
+		t.Errorf("legacy entries = %v", ids)
+	}
+	if problems := ValidateFeatures(cfg.AIFeatures); len(problems) != 0 {
+		t.Errorf("legacy entries rejected: %v", problems)
+	}
 }

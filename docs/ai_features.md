@@ -1,7 +1,7 @@
 # AI Features
 
 AI features are units of AI work the server runs on a pull request and serves
-to every client. Two are registered:
+to every client. Four are registered. Two produce a report a client opens:
 
 - **comments-addressed** answers *"are all the review comments addressed, and
   what is still outstanding?"*
@@ -9,11 +9,17 @@ to every client. Two are registered:
   flag?"* — how safe the PR is to approve, if its flags keep what it changes
   switched off.
 
-They sit beside the two older AI paths rather than on top of them.
-[Plugins](plugins.md) remain separate binaries with their own config, table and
-RPCs — the two share only the code that runs a subprocess — and the
-[experimental LLM diff analysis](configuration.md#experimental-llm-features)
-keeps its own flags.
+The other two are *applied*: the server applies what they produce to what it
+already shows, so there is no report to open.
+
+- **[file-ordering](#file-ordering)** orders the files of a PR's diff so the
+  PR reads top to bottom.
+- **[review-ease](#review-ease)** rates how easy the PR is to review: `easy`,
+  `medium` or `hard`.
+
+They sit beside [plugins](plugins.md) rather than on top of them: plugins
+remain separate binaries with their own config, table and RPCs, and the two
+share only the code that runs a subprocess.
 
 **Everything is off by default.** Nothing runs, and nothing changes for
 existing users, until a config file enables a feature.
@@ -38,7 +44,7 @@ Mode = "oneshot"    # or "agent"
 
 | Field       | Default                                  | Meaning                                                                                  |
 |-------------|------------------------------------------|------------------------------------------------------------------------------------------|
-| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`, `feature-flags`       |
+| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`, `feature-flags`, `file-ordering`, `review-ease` |
 | `Enabled`   | `false`                                  | Switches the feature on. Without it the feature is listed but can't run                 |
 | `Automatic` | `false`                                  | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
 | `Mode`      | the feature's default                    | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
@@ -57,8 +63,7 @@ A feature reaches a model through a provider. There are two, and neither is
 privileged:
 
 - **`gemini` — a hosted API.** The server itself calls Google's Gemini API
-  (`gemini-flash-latest`) over HTTPS with the key in `GEMINI_API_KEY`, through
-  the same client the experimental LLM features use.
+  (`gemini-flash-latest`) over HTTPS with the key in `GEMINI_API_KEY`.
 - **`command` — a program on this machine.** For each run the server starts
   the command line you name — `claude -p`, `llm -m <model>`, a wrapper
   script — and treats it as the model. The contract is the simplest one any CLI
@@ -140,6 +145,9 @@ A provider that can't be built — no `GEMINI_API_KEY`, say — doesn't fail a
 feature that can manage without one: comments-addressed still produces its
 deterministic report, and feature-flags still settles the files its path rules
 decide; each leaves what it needed the model for unclear, and says why.
+file-ordering and review-ease need the model: without one their run fails at
+`client-init`, and the diff keeps its default order and the list gets no new
+rating.
 
 ## Modes
 
@@ -153,6 +161,8 @@ decide; each leaves what it needed the model for unclear, and says why.
   a file as of the PR head from the local clone (or GitHub); feature-flags adds
   [`search_code`](#agent-mode-and-search_code).
 
+file-ordering and review-ease run `oneshot` only.
+
 ## Running
 
 - **On demand.** A client asks with `RunAIFeature`; the run happens in the
@@ -162,6 +172,12 @@ decide; each leaves what it needed the model for unclear, and says why.
 - **Automatically**, for features with `Automatic = true`: after a workflow
   cycle adds a PR or sees a new push, and when a client opens a PR — the same
   post-update hook that runs plugins.
+- **When a client opens a PR**, for the applied features. No client asks for
+  one, so the server does on its behalf: opening a PR (`GetPR`, and the other
+  RPCs that serve one) asks for each enabled applied feature whose stored
+  result doesn't cover the PR's head, the way opening a report does. Nothing
+  waits for it — the review shows the default file order until the next time
+  it is rendered.
 
 At most two automatic runs execute at once, across every feature; a run a
 client asked for never queues behind them. Each run has five minutes. Only one
@@ -185,9 +201,10 @@ differ — so resolving a thread, a new or edited comment, a new review or
 dismissal, and a push each make a report stale. Local (unsubmitted) comments
 and reactions are not inputs.
 
-A feature that reads only the code — feature-flags — is keyed by the head SHA
-alone: both of its digests read `code-only`, so only a push makes its report
-stale, and a new comment neither makes it stale nor costs a model call.
+A feature that reads only the code — feature-flags, file-ordering and
+review-ease — is keyed by the head SHA alone: both of its digests read
+`code-only`, so only a push makes its report stale, and a new comment neither
+makes it stale nor costs a model call.
 
 ## comments-addressed
 
@@ -382,6 +399,61 @@ gated change, as the code spells it) and `rationale`.
 ones, and `annotations` marks those with a head line (a warning for ungated,
 info for unclear); a whole-file change, such as a lockfile, anchors to none.
 
+## file-ordering
+
+Orders the files of a PR's diff so a reviewer can read the PR from top to
+bottom: the entry points where the change is integrated (call sites, public
+APIs, top-level wiring) first, then helper functions and implementation
+details, then styling changes such as CSS, then tests.
+
+```toml
+[[AIFeatures]]
+ID = "file-ordering"
+Enabled = true
+Automatic = true    # order each PR as it arrives, before anyone opens it
+```
+
+It is an applied feature: `GetPR` serves the diff in the stored order when it
+was computed for the PR's head SHA, and in the default order — test files last
+— otherwise. Rendering never waits for a run, so the first open of a new
+revision shows the default order.
+
+The model is sent the list of changed files and the diff, cut at 200 KB (the
+list always goes in whole), and answers with the paths in reading order. Each
+path is matched to a file of the diff exactly, or failing that by its base
+name; a file the answer leaves out keeps its place after the ones it orders. A
+diff with a single file needs no model call, and an answer with no paths fails
+at stage `parse`, its raw text in the call log.
+
+The `report` is `{"files": [...]}`: the paths in reading order, as the model
+wrote them.
+
+## review-ease
+
+Rates how easy a PR is to review: `easy` for small, mechanical, or repetitive
+changes; `medium` for typical changes that need a careful read; `hard` for
+large, subtle, or high-risk changes (tricky logic, concurrency, security, many
+interacting files).
+
+```toml
+[[AIFeatures]]
+ID = "review-ease"
+Enabled = true
+Automatic = true    # rate each PR as it arrives, so the list shows it
+```
+
+It is an applied feature: the rating is the `review_ease` field of review list
+items (`GetAllReviews`) and of PR metadata (`GetPR`), a pill beside the PR in
+the web client's list, and a tag such as `:easy:` on the PR's headline in the
+org content. After a push, a PR keeps its latest rating until the new head's
+is stored.
+
+The model is sent the same input as for file-ordering and answers with a
+`REVIEW_EASE: <rating>` line. An answer without a usable rating fails at stage
+`parse`, its raw text in the call log.
+
+The `report` is `{"rating": "easy" | "medium" | "hard"}`.
+
 ## Clients
 
 - **Web.** The review toolbar shows a button per enabled feature, with the
@@ -393,10 +465,12 @@ info for unclear); a whole-file change, such as a lockfile, anchors to none.
   the diff (or the outdated-comments panel); **↻ Re-run** forces a fresh run.
   The review list offers the same without opening the review: each PR's **✦ AI**
   button, beside its Plugins button, opens a page with every enabled feature's
-  report for that PR.
+  report for that PR. The applied features get no button: their results are
+  the diff's order and the list's review-ease pill.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
   an enabled feature in its own buffer, which polls while a run is pending. In
-  that buffer, `r` refreshes, `R` re-runs and `q` quits.
+  that buffer, `r` refreshes, `R` re-runs and `q` quits. The applied features
+  aren't offered; review-ease shows as the headline tag in the reviews buffer.
 
 Both run the feature on open when it never ran or went stale.
 
@@ -419,6 +493,15 @@ The AI layer ships switched off: `[AI]` and `[[AIFeatures]]` are absent from
 the built-in defaults, each feature needs `Enabled = true`, and automatic runs
 also need `Automatic = true`.
 
+file-ordering and review-ease were once switched on by root-level flags, and a
+config that still sets them keeps working: `ExperimentalLLMFileOrdering = true`
+stands for an entry that enables file-ordering automatically on the `gemini`
+provider, and `ExperimentalLLMReviewEase = true` the same for review-ease. An
+`[[AIFeatures]]` entry for the same feature wins over its flag. Orders and
+ratings computed before they were AI features stay in the
+`DiffFileOrderingCache` table, which the server now only reads: a PR shows them
+until a run of the feature stores its own.
+
 The `AIResults` table is created with `CREATE TABLE IF NOT EXISTS` and touches
 no existing table, so an older binary simply ignores it. Rolling back is
 removing the `[[AIFeatures]]` entries, or their `Enabled` flags.
@@ -435,8 +518,9 @@ type Feature interface {
 }
 ```
 
-`Describer`, `ModeSupporter` (to run in `agent` mode too), `TimeoutProvider`
-and `CodeOnlyFeature` (to key results by the head SHA alone) are optional. The
+`Describer`, `ModeSupporter` (to run in `agent` mode too), `TimeoutProvider`,
+`CodeOnlyFeature` (to key results by the head SHA alone) and `AppliedFeature`
+(for a result the server applies itself, rather than a report) are optional. The
 `Request` carries the PR's diff, raw comments JSON, metadata, review threads,
 the server's partition of the discussion, and the two seams:
 `req.Model.Generate` for one-shot calls and, in agent mode, `req.Agent.Run`
@@ -462,6 +546,12 @@ registration; a client renders any feature's markdown body without changes.
   `GetAIOutput`, which also serves them the staleness information.
 - **Automatic-run cap.** Two concurrent automatic runs, shared by every
   feature. It isn't configurable yet.
+- **Applied features.** A feature whose result the server applies to what it
+  already serves declares it (`AppliedFeature`). `ListAIFeatures` marks it
+  `applied`, and clients offer no report for it. Since no client asks for one,
+  the server does whenever a client opens the PR; a workflow warming a PR runs
+  it only when it is `Automatic`, so it queues behind the automatic-run cap like
+  any other fan-out work.
 - **Code-only keys.** A feature that reads only the code declares it
   (`CodeOnlyFeature`) rather than the digest growing per-feature inputs: the
   runner and `GetAIOutput` swap in `code-only` for its digest, so the table and

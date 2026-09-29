@@ -64,7 +64,8 @@
                 crs--select-annotation
                 crs--insert-plugin-output-entry
                 crs--insert-ai-output crs--ai-should-run-p crs--ai-pending-p
-                crs--ai-buffer-name crs--ai-choose-feature))
+                crs--ai-buffer-name crs--ai-choose-feature
+                crs--ai-report-features))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -645,6 +646,18 @@ OVERRIDES is a plist of field symbols and values."
   (should-error (crs--ai-choose-feature nil) :type 'user-error)
   (should (equal (crs--ai-buffer-name "comments-addressed" "acme" "widgets" 42)
                  "* AI: comments-addressed acme/widgets #42 *")))
+
+(ert-deftest crs-test-ai-report-features ()
+  "Only enabled features the server doesn't apply itself are offered."
+  (let ((features (list '((id . "comments-addressed") (enabled . t) (applied . :json-false))
+                        '((id . "feature-flags") (enabled . :json-false))
+                        '((id . "file-ordering") (enabled . t) (applied . t))
+                        '((id . "review-ease") (enabled . t) (applied . t))
+                        ;; A server that predates `applied' leaves it out.
+                        '((id . "older") (enabled . t)))))
+    (should (equal (mapcar (lambda (f) (cdr (assq 'id f)))
+                           (crs--ai-report-features features))
+                   '("comments-addressed" "older")))))
 
 (ert-deftest crs-test-ai-keys-bound ()
   "The AI commands are reachable from the review and AI output buffers."

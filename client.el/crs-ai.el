@@ -16,6 +16,10 @@
 ;; The body the server sends is a complete markdown report, so this client
 ;; renders it as-is; a feature without a typed report also gets its line
 ;; annotations listed underneath, the way plugin output does.
+;;
+;; The features the server applies itself — file-ordering orders the diff,
+;; review-ease tags the PR in the review list — have no report, and are
+;; never offered here.
 
 ;;; Code:
 
@@ -187,8 +191,17 @@ With FORCE, run even when the stored result covers the PR's inputs."
              (when output
                (crs--ai-continue buffer output))))))))))
 
+(defun crs--ai-report-features (features)
+  "The FEATURES, as ListAIFeatures lists them, that have a report to open.
+That is every enabled one, less those the server applies itself — the
+diff's file order and the review list's ease rating — which have none."
+  (seq-filter (lambda (f)
+                (and (crs--ai-true-p (cdr (assq 'enabled f)))
+                     (not (crs--ai-true-p (cdr (assq 'applied f))))))
+              features))
+
 (defun crs--ai-with-features (callback)
-  "Call CALLBACK once the enabled AI features are known.
+  "Call CALLBACK once the AI features with a report to open are known.
 Fetches them with ListAIFeatures the first time."
   (if crs-ai-features
       (funcall callback)
@@ -197,8 +210,7 @@ Fetches them with ListAIFeatures the first time."
      (vector)
      (lambda (result)
        (setq crs-ai-features
-             (seq-filter (lambda (f) (crs--ai-true-p (cdr (assq 'enabled f))))
-                         (append (cdr (assq 'features result)) nil)))
+             (crs--ai-report-features (append (cdr (assq 'features result)) nil)))
        (funcall callback)))))
 
 (defun crs--ai-choose-feature (features)

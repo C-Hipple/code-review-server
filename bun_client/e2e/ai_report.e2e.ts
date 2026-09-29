@@ -83,6 +83,9 @@ test.describe('AI report', () => {
 
         await expect(page.getByRole('button', { name: '↻ Sync' })).toBeVisible();
         await expect(page.getByRole('button', { name: button })).toHaveCount(0);
+        // Nor for the applied features the backend lists as enabled: their
+        // results show in the diff and the list, not as a report.
+        await expect(page.getByRole('button', { name: /^✦/ })).toHaveCount(0);
         expect(await backend.calls('RunAIFeature')).toHaveLength(0);
     });
 });

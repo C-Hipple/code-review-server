@@ -158,7 +158,7 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   "Other", in the order the server sent them. Each section is a collapsible header
   with its own count, plus a global collapse/expand toggle in the toolbar.
 - **Per-item row** — lifecycle pill (open / draft / merged / closed, in a fixed-width
-  column so titles align), title, `review_ease` pill when the LLM rating is enabled,
+  column so titles align), title, `review_ease` pill when the review-ease AI feature is enabled,
   and a meta line of repo, `#number`, author login, a relative timestamp from
   `created_at` (full timestamp on hover), and the required-team chips.
 - **Comment count** — a speech bubble with `comment_count` at the row's right edge,

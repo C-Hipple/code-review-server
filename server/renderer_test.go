@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crs/ai"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -986,121 +987,6 @@ func TestIsTestFile(t *testing.T) {
 	}
 }
 
-func TestOrderDiffFilesDefaultsToTestsLast(t *testing.T) {
-	// With the experimental flag off, ordering must match sortFilesTestsLast
-	// and make no network calls.
-	config.SetC(config.Config{})
-	files := []*utils.DiffFile{
-		{NewName: "server/server_test.go"},
-		{NewName: "server/server.go"},
-	}
-	got := orderDiffFiles(files, "code-review-server", 1, "")
-	if got[0].NewName != "server/server.go" || got[1].NewName != "server/server_test.go" {
-		t.Errorf("orderDiffFiles did not fall back to tests-last sort: got %q, %q",
-			got[0].NewName, got[1].NewName)
-	}
-}
-
-func TestOrderDiffFilesUsesCachedOrdering(t *testing.T) {
-	// With the flag on and a cache entry for the PR SHA, orderDiffFiles must
-	// apply the cached ordering without contacting the LLM.
-	db := setupTestDB(t)
-	config.SetC(config.Config{DB: db, ExperimentalLLMFileOrdering: true})
-	t.Cleanup(func() { config.SetC(config.Config{}) })
-
-	files := []*utils.DiffFile{
-		{NewName: "a_test.go"},
-		{NewName: "main.go"},
-		{NewName: "helper.go"},
-	}
-
-	cached, _ := json.Marshal([]string{"main.go", "helper.go", "a_test.go"})
-	if err := db.UpsertDiffFileOrdering(7, "code-review-server", "sha-abc", string(cached)); err != nil {
-		t.Fatalf("failed to seed cache: %v", err)
-	}
-
-	got := orderDiffFiles(files, "code-review-server", 7, "sha-abc")
-
-	wantOrder := []string{"main.go", "helper.go", "a_test.go"}
-	if len(got) != len(wantOrder) {
-		t.Fatalf("got %d files, want %d", len(got), len(wantOrder))
-	}
-	for i, w := range wantOrder {
-		if got[i].NewName != w {
-			t.Errorf("[%d] got %q, want %q", i, got[i].NewName, w)
-		}
-	}
-}
-
-func TestOrderDiffFilesFallsBackWithoutWaitingOnLLM(t *testing.T) {
-	// With the flag on and nothing cached for the SHA, the render must not
-	// block on the analysis: it falls back to the tests-last sort and leaves
-	// the LLM call to the background dispatch.
-	t.Setenv("CRS_HOME", t.TempDir())
-	t.Setenv("GEMINI_API_KEY", "")
-
-	db := setupTestDB(t)
-	config.SetC(config.Config{DB: db, ExperimentalLLMFileOrdering: true})
-	t.Cleanup(func() { config.SetC(config.Config{}) })
-
-	files := []*utils.DiffFile{
-		{NewName: "a_test.go"},
-		{NewName: "main.go"},
-	}
-
-	done := make(chan []*utils.DiffFile, 1)
-	go func() { done <- orderDiffFiles(files, "code-review-server", 12, "sha-uncached") }()
-
-	select {
-	case got := <-done:
-		if got[0].NewName != "main.go" || got[1].NewName != "a_test.go" {
-			t.Errorf("expected tests-last fallback, got %q, %q", got[0].NewName, got[1].NewName)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("orderDiffFiles blocked on a cache miss instead of falling back")
-	}
-}
-
-func TestReviewEaseCacheRoundtrip(t *testing.T) {
-	db := setupTestDB(t)
-
-	// Missing entry returns empty string, no error.
-	got, err := db.GetReviewEase(1, "code-review-server", "sha1")
-	if err != nil {
-		t.Fatalf("unexpected error on cache miss: %v", err)
-	}
-	if got != "" {
-		t.Errorf("expected empty result on cache miss, got %q", got)
-	}
-
-	// Storing an ease rating must not clobber an existing ordering, and
-	// vice versa.
-	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["a","b"]`); err != nil {
-		t.Fatalf("ordering upsert failed: %v", err)
-	}
-	if err := db.UpsertReviewEase(1, "code-review-server", "sha1", "hard"); err != nil {
-		t.Fatalf("ease upsert failed: %v", err)
-	}
-	if err := db.UpsertDiffFileOrdering(1, "code-review-server", "sha1", `["b","a"]`); err != nil {
-		t.Fatalf("ordering re-upsert failed: %v", err)
-	}
-
-	gotEase, err := db.GetReviewEase(1, "code-review-server", "sha1")
-	if err != nil {
-		t.Fatalf("get ease failed: %v", err)
-	}
-	if gotEase != "hard" {
-		t.Errorf("got ease %q, want %q", gotEase, "hard")
-	}
-	gotOrdering, err := db.GetDiffFileOrdering(1, "code-review-server", "sha1")
-	if err != nil {
-		t.Fatalf("get ordering failed: %v", err)
-	}
-	if gotOrdering != `["b","a"]` {
-		t.Errorf("got ordering %q, want %q", gotOrdering, `["b","a"]`)
-	}
-}
-
 func TestGetLatestReviewEaseSkipsUnratedRows(t *testing.T) {
 	db := setupTestDB(t)
 
@@ -1233,7 +1119,8 @@ func TestDetailSubtree(t *testing.T) {
 
 func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	db := setupTestDB(t)
-	config.SetC(config.Config{DB: db, ExperimentalLLMReviewEase: true})
+	enabled := []config.AIFeature{{ID: ai.ReviewEaseID, Enabled: true}}
+	config.SetC(config.Config{DB: db, AIFeatures: enabled})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
 	section, err := db.GetOrCreateSection("Test Section", 0)
@@ -1249,9 +1136,8 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create item: %v", err)
 	}
-	if err := db.UpsertReviewEase(83, "code-review-server", "sha-1", "medium"); err != nil {
-		t.Fatalf("failed to seed review ease: %v", err)
-	}
+	storeAIResult(t, db, "C-Hipple", "code-review-server", 83, ai.ReviewEaseID, ai.StatusSuccess, "sha-1",
+		ai.Result{Report: ai.ReviewEaseReport{Rating: "medium"}})
 
 	r := NewOrgRenderer(db)
 	lines := r.buildItemLines(item, 2, FullRenderOptions())
@@ -1262,7 +1148,7 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 		t.Errorf("title line %q missing review-ease tag", lines[0])
 	}
 
-	// With the flag off, the headline keeps only the stored tags.
+	// With the feature off, the headline keeps only the stored tags.
 	config.SetC(config.Config{DB: db})
 	lines = r.buildItemLines(item, 2, FullRenderOptions())
 	if !strings.Contains(lines[0], ":code-review-server:") || strings.Contains(lines[0], "medium") {

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } fr
 import { getAIOutput, getConfig, getHunkContext, listAIFeatures, rpcCall } from '../api';
 import {
     attentionCount,
+    reportFeatures,
     type AIFeatureInfo,
     type AIFeatureOutput,
     type ReportItem,
@@ -298,7 +299,7 @@ export default function Review({
     const loadAIFeatures = async () => {
         const key = aiPRKey.current;
         try {
-            const enabled = (await listAIFeatures()).filter(f => f.enabled);
+            const enabled = reportFeatures(await listAIFeatures());
             const outputs =
                 enabled.length > 0
                     ? await getAIOutput({ Owner: owner, Repo: repo, Number: number })

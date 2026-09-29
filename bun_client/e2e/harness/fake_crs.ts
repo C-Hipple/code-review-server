@@ -140,6 +140,36 @@ const AI_FEATURE = {
     provider: 'gemini',
 };
 
+// Features whose results the server applies to what it already serves — the
+// diff's file order, the review list's ease pill — rather than a report. They
+// are always listed as enabled, the way a server whose config switches them on
+// lists them, so the tests that expect no AI buttons also prove the client
+// never offers a report for one.
+const APPLIED_AI_FEATURES = [
+    {
+        id: 'file-ordering',
+        name: 'File ordering',
+        description: 'Orders the files of the diff so the PR reads top to bottom.',
+        enabled: true,
+        automatic: true,
+        mode: 'oneshot',
+        modes: ['oneshot'],
+        provider: 'gemini',
+        applied: true,
+    },
+    {
+        id: 'review-ease',
+        name: 'Review ease',
+        description: 'Rates how easy the PR is to review.',
+        enabled: true,
+        automatic: true,
+        mode: 'oneshot',
+        modes: ['oneshot'],
+        provider: 'gemini',
+        applied: true,
+    },
+];
+
 // One feature's output for a PR, in the shape GetAIOutput serves. A run in
 // flight reads "pending" for one poll, then the canned report lands.
 function aiOutput(pr: PRFixture) {
@@ -356,8 +386,6 @@ const handlers: Record<string, (args: any) => unknown> = {
             SectionSorting: {},
             Workflows: [],
             Plugins: [],
-            ExperimentalLLMFileOrdering: false,
-            ExperimentalLLMReviewEase: false,
         },
         workflow_types: [],
         filters: [],
@@ -368,7 +396,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
 
     'RPCHandler.ListAIFeatures': () => ({
-        features: [{ ...AI_FEATURE, enabled: state.aiEnabled }],
+        features: [{ ...AI_FEATURE, enabled: state.aiEnabled }, ...APPLIED_AI_FEATURES],
     }),
 
     'RPCHandler.RunAIFeature': args => {

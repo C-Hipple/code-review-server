@@ -137,6 +137,38 @@ func (c Config) AIProviderFor(f AIFeature) (provider, command string) {
 	return provider, command
 }
 
+// IDs of the AI features the legacy root-level flags switch on. config cannot
+// import the ai package for them (ai reads config), so they are spelled out
+// here; ai's tests check them against its registry.
+const (
+	legacyFileOrderingID = "file-ordering"
+	legacyReviewEaseID   = "review-ease"
+)
+
+// withLegacyAIFeatures adds the [[AIFeatures]] entries that two root-level
+// flags from before file ordering and review ease were AI features stand for:
+// ExperimentalLLMFileOrdering = true enables file-ordering, and
+// ExperimentalLLMReviewEase = true enables review-ease. Each entry runs
+// automatically on the Gemini API, as the flag always did, so a config that
+// still sets one behaves as it did before. An [[AIFeatures]] entry of the
+// config's own for the same feature wins over its flag.
+func withLegacyAIFeatures(entries []AIFeature, fileOrdering, reviewEase bool) []AIFeature {
+	add := func(on bool, id string) {
+		if !on {
+			return
+		}
+		for _, e := range entries {
+			if e.ID == id {
+				return
+			}
+		}
+		entries = append(entries, AIFeature{ID: id, Enabled: true, Automatic: true, Provider: AIProviderGemini})
+	}
+	add(fileOrdering, legacyFileOrderingID)
+	add(reviewEase, legacyReviewEaseID)
+	return entries
+}
+
 // AIFeatureSettings returns the [[AIFeatures]] entry for id, and false when
 // the config has none — which leaves the feature disabled.
 func (c Config) AIFeatureSettings(id string) (AIFeature, bool) {
@@ -162,18 +194,11 @@ type Config struct {
 	SectionSorting       map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins              []Plugin
 	RepoConfigs          map[string]RepoConfig // Keyed by "owner/repo"
-	// ExperimentalLLMFileOrdering, when true, orders the files in a PR diff via
-	// an LLM (integration first, then implementation, then styling, then tests)
-	// instead of the default test-files-last sort. Off by default.
-	ExperimentalLLMFileOrdering bool
-	// ExperimentalLLMReviewEase, when true, rates how easy each PR is to review
-	// ("easy", "medium", or "hard") in the same LLM call that computes the diff
-	// file ordering. The rating is exposed as the review_ease field in PR
-	// metadata and review list items. Off by default; requires GEMINI_API_KEY.
-	ExperimentalLLMReviewEase bool
 	// AI holds the defaults for the AI features, and AIFeatures switches them
 	// on one by one. Both are absent from the built-in defaults, so the AI layer
-	// does nothing until a config file enables a feature.
+	// does nothing until a config file enables a feature. AIFeatures also holds
+	// the entries the legacy root-level flags stand for (see
+	// withLegacyAIFeatures).
 	AI         AISettings
 	AIFeatures []AIFeature
 	// UsingDefaults is true when no config file exists and the server is
@@ -257,22 +282,23 @@ func ParseConfigForTest(data []byte) (*Config, error) {
 // It does NOT initialize the database.
 func parseConfig(data []byte) (*Config, error) {
 	var intermediate_config struct {
-		Repos                       []string
-		JiraDomain                  string
-		SleepDuration               int64
-		Workflows                   []RawWorkflow
-		GithubUsername              string
-		RepoLocation                string
-		AutoWorktree                bool
-		DesktopNotifications        bool
-		SectionPriority             map[string]int
-		SectionSorting              map[string]string
-		Plugins                     []Plugin
-		RepoConfigs                 map[string]RepoConfig
-		ExperimentalLLMFileOrdering bool
-		ExperimentalLLMReviewEase   bool
-		AI                          AISettings
-		AIFeatures                  []AIFeature
+		Repos                []string
+		JiraDomain           string
+		SleepDuration        int64
+		Workflows            []RawWorkflow
+		GithubUsername       string
+		RepoLocation         string
+		AutoWorktree         bool
+		DesktopNotifications bool
+		SectionPriority      map[string]int
+		SectionSorting       map[string]string
+		Plugins              []Plugin
+		RepoConfigs          map[string]RepoConfig
+		AI                   AISettings
+		AIFeatures           []AIFeature
+		// The legacy flags withLegacyAIFeatures turns into AIFeatures entries.
+		LegacyFileOrdering bool `toml:"ExperimentalLLMFileOrdering"`
+		LegacyReviewEase   bool `toml:"ExperimentalLLMReviewEase"`
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -297,6 +323,9 @@ func parseConfig(data []byte) (*Config, error) {
 		}
 		aiFeatureIDs[f.ID] = true
 	}
+	// A legacy flag never clashes with an entry: the entry wins.
+	aiFeatures := withLegacyAIFeatures(intermediate_config.AIFeatures,
+		intermediate_config.LegacyFileOrdering, intermediate_config.LegacyReviewEase)
 
 	// Fill in who "me" is from the API token when the config doesn't say. This
 	// runs before the per-workflow copy below, so a resolved login reaches the
@@ -331,22 +360,20 @@ func parseConfig(data []byte) (*Config, error) {
 	}
 
 	return &Config{
-		Repos:                       intermediate_config.Repos,
-		RawWorkflows:                intermediate_config.Workflows,
-		SleepDuration:               parsed_sleep_duration,
-		JiraDomain:                  intermediate_config.JiraDomain,
-		GithubUsername:              intermediate_config.GithubUsername,
-		RepoLocation:                repoLocation,
-		AutoWorktree:                intermediate_config.AutoWorktree,
-		DesktopNotifications:        intermediate_config.DesktopNotifications,
-		SectionPriority:             intermediate_config.SectionPriority,
-		SectionSorting:              intermediate_config.SectionSorting,
-		Plugins:                     intermediate_config.Plugins,
-		RepoConfigs:                 repoConfigs,
-		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
-		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
-		AI:                          intermediate_config.AI,
-		AIFeatures:                  intermediate_config.AIFeatures,
+		Repos:                intermediate_config.Repos,
+		RawWorkflows:         intermediate_config.Workflows,
+		SleepDuration:        parsed_sleep_duration,
+		JiraDomain:           intermediate_config.JiraDomain,
+		GithubUsername:       intermediate_config.GithubUsername,
+		RepoLocation:         repoLocation,
+		AutoWorktree:         intermediate_config.AutoWorktree,
+		DesktopNotifications: intermediate_config.DesktopNotifications,
+		SectionPriority:      intermediate_config.SectionPriority,
+		SectionSorting:       intermediate_config.SectionSorting,
+		Plugins:              intermediate_config.Plugins,
+		RepoConfigs:          repoConfigs,
+		AI:                   intermediate_config.AI,
+		AIFeatures:           aiFeatures,
 	}, nil
 }
 

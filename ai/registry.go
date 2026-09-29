@@ -27,6 +27,8 @@ var DefaultRegistry = NewRegistry()
 func init() {
 	DefaultRegistry.MustRegister(CommentsAddressed{})
 	DefaultRegistry.MustRegister(FeatureFlags{})
+	DefaultRegistry.MustRegister(FileOrdering{})
+	DefaultRegistry.MustRegister(ReviewEase{})
 }
 
 // Register adds a feature. IDs must be unique and non-empty.
@@ -141,6 +143,10 @@ type Info struct {
 	// Provider is the provider the feature would run with; it is resolved from
 	// config, not checked, so it can name one that isn't set up.
 	Provider string `json:"provider"`
+	// Applied is set for a feature whose result the server applies to what it
+	// already serves (AppliedFeature), so there is no report for a client to
+	// open.
+	Applied bool `json:"applied"`
 }
 
 // Describe returns every registered feature, enabled or not, as cfg configures
@@ -159,6 +165,7 @@ func (r *Registry) Describe(cfg config.Config) []Info {
 			Mode:      resolveMode(f, entry),
 			Modes:     modesOf(f),
 			Provider:  provider,
+			Applied:   IsApplied(f),
 		}
 		if d, ok := f.(Describer); ok {
 			info.Description = d.Description()

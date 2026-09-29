@@ -91,8 +91,6 @@ export interface UpdateConfigArgs {
     SectionPriority?: Record<string, number>;
     SectionSorting?: Record<string, string>;
     Workflows?: WorkflowEntry[];
-    ExperimentalLLMFileOrdering?: boolean;
-    ExperimentalLLMReviewEase?: boolean;
 }
 
 export interface PRRef {

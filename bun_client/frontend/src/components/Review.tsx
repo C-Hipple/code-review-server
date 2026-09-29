@@ -1,5 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
-import { getAIOutput, getConfig, getHunkContext, listAIFeatures, rpcCall } from '../api';
+import {
+    getAIOutput,
+    getConfig,
+    getHunkContext,
+    listAIFeatures,
+    rpcCall,
+    rpcErrorMessage,
+} from '../api';
 import {
     attentionCount,
     reportFeatures,
@@ -7,12 +14,12 @@ import {
     type AIFeatureOutput,
     type ReportItem,
 } from '../ai_utils';
-import { Button, Toast, Theme, StatusVariant } from '../design';
+import { Button, Theme, StatusVariant } from '../design';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
-import { buildPendingPreviews } from '../review_preview_utils';
+import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
@@ -51,6 +58,10 @@ interface ReviewProps {
     number: number;
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
+    // Raises a transient notification. It outlives this view, so a review
+    // submit that lands after the reviewer has gone back to the list still
+    // reports how it went.
+    onToast: (message: string, variant?: StatusVariant) => void;
 }
 
 export default function Review({
@@ -59,6 +70,7 @@ export default function Review({
     number,
     theme,
     onThemeChange: _onThemeChange,
+    onToast: showToast,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
     const [diff, setDiff] = useState<string>('');
@@ -75,14 +87,6 @@ export default function Review({
     const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
     const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
-    // Transient toast notification; keyed by id so a new message restarts the timer.
-    const [toast, setToast] = useState<{
-        id: number;
-        message: string;
-        variant: StatusVariant;
-    } | null>(null);
-    const showToast = (message: string, variant: StatusVariant = 'info') =>
-        setToast({ id: Date.now(), message, variant });
 
     // UI State
     const [showCommentModal, setShowCommentModal] = useState(false); // For general comments
@@ -94,10 +98,12 @@ export default function Review({
     const [aiFeatures, setAIFeatures] = useState<AIFeatureInfo[]>([]);
     const [aiOutputs, setAIOutputs] = useState<Record<string, AIFeatureOutput>>({});
     const [openAIFeature, setOpenAIFeature] = useState<string | null>(null);
-    // The PR the view shows now. AI loads check it before applying their
-    // results, so a load for the PR just navigated away from can't paint its
-    // counts onto this one.
-    const aiPRKey = useRef('');
+    // The PR the view shows now, and blank once the view is gone. Work that
+    // lands after a wait — AI loads, a review submit — checks it before
+    // applying its results, so a reply for the PR just navigated away from
+    // can't paint onto this one.
+    const prRef = `${owner}/${repo}#${number}`;
+    const prKey = useRef('');
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
     // Comment threads are hidden by default; a thread's root comment id must be
     // in this set for its full interactive thread to render inline.
@@ -174,7 +180,11 @@ export default function Review({
     const [feedbackCollapsed, setFeedbackCollapsed] = useState(true);
 
     const [submitting, setSubmitting] = useState(false);
-    const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+    // PRs with a review submit still in flight. Keyed by PR because the submit
+    // runs in the background: navigating on to the next PR mid-submit leaves
+    // that one free to review.
+    const [submittingPRs, setSubmittingPRs] = useState<Set<string>>(new Set());
+    const isSubmittingReview = submittingPRs.has(prRef);
     const [isAddingComment, setIsAddingComment] = useState(false);
 
     // Comment form data
@@ -227,10 +237,13 @@ export default function Review({
     useEffect(() => {
         loadPR();
         loadPluginOutputs();
-        aiPRKey.current = `${owner}/${repo}#${number}`;
+        prKey.current = prRef;
         setOpenAIFeature(null);
         setAIOutputs({});
         loadAIFeatures();
+        return () => {
+            prKey.current = '';
+        };
     }, [owner, repo, number]);
 
     useEffect(() => {
@@ -297,19 +310,19 @@ export default function Review({
     // server has no AI RPCs at all. Either way the toolbar simply shows no AI
     // buttons.
     const loadAIFeatures = async () => {
-        const key = aiPRKey.current;
+        const key = prKey.current;
         try {
             const enabled = reportFeatures(await listAIFeatures());
             const outputs =
                 enabled.length > 0
                     ? await getAIOutput({ Owner: owner, Repo: repo, Number: number })
                     : {};
-            if (aiPRKey.current !== key) return;
+            if (prKey.current !== key) return;
             setAIFeatures(enabled);
             setAIOutputs(outputs);
         } catch (e) {
             console.error('Failed to load AI features:', e);
-            if (aiPRKey.current !== key) return;
+            if (prKey.current !== key) return;
             setAIFeatures([]);
             setAIOutputs({});
         }
@@ -319,10 +332,10 @@ export default function Review({
     // change what they cover, like a sync.
     const loadAIOutputs = async () => {
         if (aiFeatures.length === 0) return;
-        const key = aiPRKey.current;
+        const key = prKey.current;
         try {
             const outputs = await getAIOutput({ Owner: owner, Repo: repo, Number: number });
-            if (aiPRKey.current === key) setAIOutputs(outputs);
+            if (prKey.current === key) setAIOutputs(outputs);
         } catch (e) {
             console.error('Failed to load AI outputs:', e);
         }
@@ -645,8 +658,15 @@ export default function Review({
         }
     };
 
+    // The submit runs in the background: the modal closes at once and a toast
+    // reports how it went, so the reviewer can read on — or move to the next
+    // PR — while GitHub takes the review and the server refetches the PR.
     const handleSubmitReview = async () => {
-        setIsSubmittingReview(true);
+        const key = prRef;
+        const event = reviewEvent;
+        const body = reviewBody;
+        setSubmitting(false);
+        setSubmittingPRs(prev => new Set(prev).add(key));
         try {
             // The reply is the post-submission PR, fetched fresh from GitHub
             // by the server. Applying it directly is the refresh — calling
@@ -657,31 +677,46 @@ export default function Review({
                     Owner: owner,
                     Repo: repo,
                     Number: number,
-                    Event: reviewEvent,
-                    Body: reviewBody,
+                    Event: event,
+                    Body: body,
                 },
             ]);
-            setSubmitting(false);
-            setReviewBody('');
-            applyPRResponse(res);
-            loadPluginOutputs();
-            loadAIOutputs();
-            // A reply GitHub refused is still in the pending list below — say
-            // so rather than letting the submit look clean while the reply
+            // Only a view still showing this PR takes the refreshed payload;
+            // one the reviewer has moved on from gets just the toast.
+            if (prKey.current === key) {
+                setReviewBody('');
+                applyPRResponse(res);
+                loadPluginOutputs();
+                loadAIOutputs();
+            }
+            // A reply GitHub refused is still in the pending list — say so
+            // rather than letting the submit look clean while the reply
             // quietly stayed behind.
             const failed = res.failed_replies || [];
             if (failed.length > 0) {
                 console.error('Replies GitHub refused:', failed);
-                showToast(
-                    `${failed.length} ${failed.length === 1 ? 'reply' : 'replies'} could not be posted and are still pending — see console for details`,
-                    'danger'
-                );
             }
+            showToast(
+                reviewSubmittedMessage(event, key, failed.length),
+                failed.length > 0 ? 'danger' : 'success'
+            );
         } catch (e) {
             console.error(e);
-            alert('Error submitting review');
+            showToast(`Review on ${key} was not submitted: ${rpcErrorMessage(e)}`, 'danger');
+            // Nothing went out, so hand the draft back for a retry, as it
+            // was when Submit was clicked — unless the reviewer has moved on
+            // to another PR.
+            if (prKey.current === key) {
+                setReviewEvent(event);
+                setReviewBody(body);
+                setSubmitting(true);
+            }
         } finally {
-            setIsSubmittingReview(false);
+            setSubmittingPRs(prev => {
+                const next = new Set(prev);
+                next.delete(key);
+                return next;
+            });
         }
     };
 
@@ -1090,8 +1125,9 @@ export default function Review({
                     }}
                     style={{ background: 'var(--success)' }}
                     disabled={loading}
+                    loading={isSubmittingReview}
                 >
-                    Submit Review
+                    {isSubmittingReview ? 'Submitting Review...' : 'Submit Review'}
                 </Button>
                 <Button
                     onClick={() => {
@@ -1658,7 +1694,6 @@ export default function Review({
                 isOpen={submitting}
                 reviewEvent={reviewEvent}
                 reviewBody={reviewBody}
-                isSubmittingReview={isSubmittingReview}
                 pendingPreviews={pendingPreviews}
                 username={githubUsername}
                 diffTheme={customDiffTheme}
@@ -1724,23 +1759,12 @@ export default function Review({
 
             {isMobile && metadata && (
                 <MobileReviewBar
-                    loading={loading}
+                    loading={loading || isSubmittingReview}
                     onAction={event => {
                         setReviewEvent(event);
                         setReviewBody(feedbackBody);
                         setSubmitting(true);
                     }}
-                />
-            )}
-
-            {/* Transient notifications (e.g., sync result) */}
-            {toast && (
-                <Toast
-                    key={toast.id}
-                    message={toast.message}
-                    variant={toast.variant}
-                    bottomOffset={isMobile ? 84 : 24}
-                    onDismiss={() => setToast(null)}
                 />
             )}
         </div>

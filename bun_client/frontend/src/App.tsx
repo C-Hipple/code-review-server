@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import PRList from './components/PRList';
 import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
@@ -10,7 +10,9 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import {
     Modal,
     Select,
+    StatusVariant,
     Theme,
+    Toast,
     resolveTheme,
     THEME_OPTIONS,
     ReviewLocation,
@@ -55,6 +57,20 @@ function App() {
     const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
+    // Transient toast notification; keyed by id so a new message restarts the
+    // timer. Held here rather than in the view that raised it so work that
+    // finishes in the background — a review submit — can still report after
+    // the reviewer has moved on to another view.
+    const [toast, setToast] = useState<{
+        id: number;
+        message: string;
+        variant: StatusVariant;
+    } | null>(null);
+    const showToast = useCallback(
+        (message: string, variant: StatusVariant = 'info') =>
+            setToast({ id: Date.now(), message, variant }),
+        []
+    );
     const [theme, setTheme] = useState<Theme>(() => {
         const saved = resolveTheme(localStorage.getItem('theme'));
         if (saved) return saved;
@@ -344,6 +360,7 @@ function App() {
                         number={currentPR.number}
                         theme={theme}
                         onThemeChange={setTheme}
+                        onToast={showToast}
                     />
                 )}
                 {view === 'PLUGIN_OUTPUT' && currentPR && (
@@ -533,6 +550,17 @@ function App() {
                     </button>
                 </div>
             </Modal>
+
+            {toast && (
+                <Toast
+                    key={toast.id}
+                    message={toast.message}
+                    variant={toast.variant}
+                    // Clear the review view's mobile action bar.
+                    bottomOffset={isMobile && view === 'REVIEW' ? 84 : 24}
+                    onDismiss={() => setToast(null)}
+                />
+            )}
         </div>
     );
 }

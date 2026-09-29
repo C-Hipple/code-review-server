@@ -7,7 +7,6 @@ interface ReviewSubmitModalProps {
     isOpen: boolean;
     reviewEvent: string;
     reviewBody: string;
-    isSubmittingReview: boolean;
     // Unsubmitted comments this review will post, in diff order, each with the
     // diff rows it was left on. Empty when the reviewer left none.
     pendingPreviews: PendingCommentPreview[];
@@ -22,11 +21,12 @@ interface ReviewSubmitModalProps {
 
 // Modal for submitting a review: pick Comment / Approve / Request Changes and
 // an optional body, with a live preview of everything the submit will post.
+// Submitting closes it straight away — the review view runs the submit in the
+// background and reports the outcome with a toast.
 export default function ReviewSubmitModal({
     isOpen,
     reviewEvent,
     reviewBody,
-    isSubmittingReview,
     pendingPreviews,
     username,
     diffTheme,
@@ -79,7 +79,6 @@ export default function ReviewSubmitModal({
                                 key={option.value}
                                 type="button"
                                 onClick={() => onChangeReviewEvent(option.value)}
-                                disabled={isSubmittingReview}
                                 style={{
                                     flex: 1,
                                     padding: '8px',
@@ -87,7 +86,7 @@ export default function ReviewSubmitModal({
                                     border: `1px solid ${borderColor}`,
                                     color: textColor,
                                     borderRadius: '4px',
-                                    cursor: isSubmittingReview ? 'default' : 'pointer',
+                                    cursor: 'pointer',
                                     fontFamily: 'inherit',
                                     fontSize: '14px',
                                     fontWeight: 500,
@@ -103,7 +102,6 @@ export default function ReviewSubmitModal({
                     value={reviewBody}
                     onChange={e => onChangeReviewBody(e.target.value)}
                     rows={5}
-                    disabled={isSubmittingReview}
                 />
                 <ReviewPreview
                     reviewEvent={reviewEvent}
@@ -113,14 +111,10 @@ export default function ReviewSubmitModal({
                     diffTheme={diffTheme}
                 />
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                    <Button onClick={onClose} variant="secondary" disabled={isSubmittingReview}>
+                    <Button onClick={onClose} variant="secondary">
                         Cancel
                     </Button>
-                    <Button
-                        onClick={onSubmit}
-                        style={{ background: 'var(--success)' }}
-                        loading={isSubmittingReview}
-                    >
+                    <Button onClick={onSubmit} style={{ background: 'var(--success)' }}>
                         Submit
                     </Button>
                 </div>

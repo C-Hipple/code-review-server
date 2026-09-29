@@ -49,6 +49,19 @@ class Backend {
         return this.rpc('E2E.FailNext', { method: `RPCHandler.${method}`, message });
     }
 
+    /**
+     * Leave the next call to `method` unanswered until `release(method)`, to
+     * look at the UI while it waits on the backend.
+     */
+    holdNext(method: string) {
+        return this.rpc('E2E.HoldNext', { method: `RPCHandler.${method}` });
+    }
+
+    /** Answer the call `holdNext(method)` held. */
+    release(method: string) {
+        return this.rpc('E2E.Release', { method: `RPCHandler.${method}` });
+    }
+
     setSyncUpdated(updated: boolean) {
         return this.rpc('E2E.SetSyncUpdated', { updated });
     }

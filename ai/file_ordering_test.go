@@ -152,6 +152,10 @@ func TestCleanFileName(t *testing.T) {
 		{"\"server/server.go\"", "server/server.go"},
 		{"a/server/server.go", "server/server.go"},
 		{"b/server/server.go", "server/server.go"},
+		{"1. server/server.go", "server/server.go"},
+		{"12) `server/server.go`", "server/server.go"},
+		{"2024/notes.md", "2024/notes.md"},
+		{"3.go", "3.go"},
 		{"", ""},
 		{"```", ""},
 	}

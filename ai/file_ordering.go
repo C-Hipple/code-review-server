@@ -133,11 +133,29 @@ func cleanFileName(line string) string {
 	}
 	s = strings.TrimPrefix(s, "- ")
 	s = strings.TrimPrefix(s, "* ")
+	s = trimListNumber(s)
 	s = strings.TrimSpace(s)
 	s = strings.Trim(s, "\"'`")
 	s = strings.TrimPrefix(s, "a/")
 	s = strings.TrimPrefix(s, "b/")
 	return strings.TrimSpace(s)
+}
+
+// trimListNumber drops a leading "1. " or "1) ", which some models add to a
+// list despite the prompt asking for bare paths. A path that merely starts
+// with digits ("2024/notes.md") keeps them, since no space follows.
+func trimListNumber(s string) string {
+	digits := 0
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits+1 >= len(s) {
+		return s
+	}
+	if (s[digits] == '.' || s[digits] == ')') && s[digits+1] == ' ' {
+		return s[digits+2:]
+	}
+	return s
 }
 
 // renderFileOrdering is the order as markdown, for clients that show a

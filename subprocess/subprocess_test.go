@@ -62,6 +62,22 @@ func TestRunTimeoutIsDistinguishable(t *testing.T) {
 	}
 }
 
+func TestRunAddsToTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("CRS_SUBPROCESS_INHERITED", "from-server")
+	t.Setenv("CRS_SUBPROCESS_REPLACED", "from-server")
+	out, err := Run(context.Background(), Command{
+		Name: "sh",
+		Args: []string{"-c", `printf '%s %s %s' "$CRS_SUBPROCESS_INHERITED" "$CRS_SUBPROCESS_REPLACED" "$CRS_SUBPROCESS_ADDED"`},
+		Env:  []string{"CRS_SUBPROCESS_REPLACED=from-command", "CRS_SUBPROCESS_ADDED=added"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if want := "from-server from-command added"; out.Stdout != want {
+		t.Errorf("stdout = %q, want %q", out.Stdout, want)
+	}
+}
+
 func TestRunMissingCommand(t *testing.T) {
 	_, err := Run(context.Background(), Command{Name: "definitely-not-a-real-command-crs"})
 	if !errors.Is(err, exec.ErrNotFound) {

@@ -36,7 +36,7 @@ func TestCommandProviderSendsThePromptOnStdin(t *testing.T) {
 	// The contract every CLI agent can meet: prompt in on stdin, answer out
 	// on stdout. Arguments from the configured command line pass through.
 	cmd := script(t, `printf '%s|' "$1"; tr a-z A-Z`)
-	p, err := NewProvider(config.AIProviderCommand, cmd+` "--flag with space"`)
+	p, err := NewProvider(config.AIProviderChoice{Provider: config.AIProviderCommand, Command: cmd + ` "--flag with space"`})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
@@ -55,19 +55,19 @@ func TestCommandProviderSendsThePromptOnStdin(t *testing.T) {
 func TestCommandProviderFailureStages(t *testing.T) {
 	ctx := context.Background()
 
-	failing, _ := NewProvider(config.AIProviderCommand, script(t, `echo "rate limited" >&2; exit 2`))
+	failing, _ := NewProvider(commandChoice(script(t, `echo "rate limited" >&2; exit 2`)))
 	_, err := failing.Generate(ctx, "p")
 	wantStage(t, err, llm.StageExitStatus)
 
-	silent, _ := NewProvider(config.AIProviderCommand, script(t, `cat >/dev/null`))
+	silent, _ := NewProvider(commandChoice(script(t, `cat >/dev/null`)))
 	_, err = silent.Generate(ctx, "p")
 	wantStage(t, err, llm.StageEmptyResponse)
 
-	missing, _ := NewProvider(config.AIProviderCommand, "definitely-not-an-agent-crs -p")
+	missing, _ := NewProvider(commandChoice("definitely-not-an-agent-crs -p"))
 	_, err = missing.Generate(ctx, "p")
 	wantStage(t, err, llm.StageClientInit)
 
-	slow, _ := NewProvider(config.AIProviderCommand, script(t, `exec sleep 10`))
+	slow, _ := NewProvider(commandChoice(script(t, `exec sleep 10`)))
 	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	_, err = slow.Generate(short, "p")
@@ -75,21 +75,45 @@ func TestCommandProviderFailureStages(t *testing.T) {
 }
 
 func TestNewProviderRejectsWhatItCannotBuild(t *testing.T) {
-	_, err := NewProvider(config.AIProviderCommand, "  ")
+	_, err := NewProvider(commandChoice("  "))
 	wantStage(t, err, llm.StageClientInit)
 
-	_, err = NewProvider("openai", "")
+	_, err = NewProvider(config.AIProviderChoice{Provider: "openai"})
 	wantStage(t, err, llm.StageClientInit)
 
 	t.Setenv("GEMINI_API_KEY", "")
-	_, err = NewProvider(config.AIProviderGemini, "")
+	_, err = NewProvider(config.AIProviderChoice{Provider: config.AIProviderGemini})
 	wantStage(t, err, llm.StageClientInit)
 
 	t.Setenv("GEMINI_API_KEY", "test-key")
-	p, err := NewProvider(config.AIProviderGemini, "")
+	p, err := NewProvider(config.AIProviderChoice{Provider: config.AIProviderGemini})
 	if err != nil || p.Name() != "gemini" {
 		t.Errorf("gemini provider: %v, %v", p, err)
 	}
+}
+
+func TestNewProviderBuildsOpenRouter(t *testing.T) {
+	sonnet := config.AIProviderChoice{Provider: config.AIProviderOpenRouter, Model: "anthropic/claude-sonnet-4.5"}
+
+	t.Setenv("OPENROUTER_API_KEY", "")
+	_, err := NewProvider(sonnet)
+	wantStage(t, err, llm.StageClientInit)
+
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	_, err = NewProvider(config.AIProviderChoice{Provider: config.AIProviderOpenRouter})
+	wantStage(t, err, llm.StageClientInit)
+
+	p, err := NewProvider(sonnet)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	if p.Name() != "openrouter" || p.Model() != "anthropic/claude-sonnet-4.5" {
+		t.Errorf("openrouter provider = %s (%s)", p.Name(), p.Model())
+	}
+}
+
+func commandChoice(command string) config.AIProviderChoice {
+	return config.AIProviderChoice{Provider: config.AIProviderCommand, Command: command}
 }
 
 // slowClient is an llm.Client that answers after a delay.
@@ -109,6 +133,28 @@ func TestClientProviderAddsTheDeadlineToAnLLMClient(t *testing.T) {
 	}
 
 	p = &clientProvider{client: slowClient{delay: 5 * time.Second}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := p.Generate(ctx, "hi")
+	wantStage(t, err, llm.StageTimeout)
+	if time.Since(start) > 2*time.Second {
+		t.Error("Generate outlived its deadline")
+	}
+}
+
+// contextClient is an llm.ContextClient that waits for its context.
+type contextClient struct{ slowClient }
+
+func (c contextClient) GenerateContext(ctx context.Context, prompt string) (string, error) {
+	<-ctx.Done()
+	return "", &llm.CallError{Stage: llm.StageTimeout, Err: ctx.Err()}
+}
+
+func TestClientProviderHandsTheDeadlineToAContextClient(t *testing.T) {
+	// The blocking Generate would take five seconds; GenerateContext is the
+	// one that must be called, so the deadline cancels the request itself.
+	p := &clientProvider{client: contextClient{slowClient{delay: 5 * time.Second}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()

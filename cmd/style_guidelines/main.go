@@ -19,14 +19,14 @@ import (
 // worst offenders are worth more than an exhaustive list.
 const maxAnnotations = 10
 
-// modelOutput is the shape Gemini is asked to return, mirroring
+// modelOutput is the shape the model is asked to return, mirroring
 // responseSchema below.
 type modelOutput struct {
 	Report      string                 `json:"report"`
 	Annotations []pluginkit.Annotation `json:"annotations"`
 }
 
-// responseSchema constrains Gemini's reply to the report and annotations we
+// responseSchema constrains the model's reply to the report and annotations we
 // know how to turn into a plugin response.
 func responseSchema() *pluginkit.Schema {
 	return &pluginkit.Schema{
@@ -103,7 +103,7 @@ empty list is fine, and a clean diff should have one.
 		maxAnnotations, pluginkit.SeverityInfo, pluginkit.SeverityWarning, pluginkit.SeverityError)
 }
 
-// responseFor turns Gemini's reply into a plugin response. A reply that isn't
+// responseFor turns the model's reply into a plugin response. A reply that isn't
 // the JSON we asked for becomes the body verbatim, which is what this plugin
 // emitted before it spoke the contract.
 func responseFor(reply string) pluginkit.Response {
@@ -140,9 +140,9 @@ func main() {
 		}
 	}
 
-	geminiToken := os.Getenv("GEMINI_API_KEY")
-	if geminiToken == "" {
-		fmt.Println("Error: GEMINI_API_KEY environment variable not set")
+	model, err := pluginkit.ModelFromEnv()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -157,9 +157,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	result, err := pluginkit.Generate(buildPrompt(*diff, metadata, styleGuidelines), responseSchema(), geminiToken)
+	result, err := model.Generate(buildPrompt(*diff, metadata, styleGuidelines), responseSchema())
 	if err != nil {
-		fmt.Printf("Error calling Gemini: %v\n", err)
+		fmt.Printf("Error calling %s: %v\n", model, err)
 		os.Exit(1)
 	}
 

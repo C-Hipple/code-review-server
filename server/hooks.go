@@ -37,13 +37,12 @@ func RunPostUpdatePRHooks(owner, repo string, number int, sha string, diff strin
 var aiRunner = ai.DefaultRunner
 
 // dispatchAutomaticAIFeatures starts each AI feature config enables to run
-// automatically, unless its stored result already covers the PR's current
-// inputs. Nothing is configured by default, so by default this does nothing.
+// automatically — a legacy flag's included — unless its stored result already
+// covers the PR's current inputs. Nothing is configured by default, so by
+// default this does nothing.
 func dispatchAutomaticAIFeatures(owner, repo string, number int) {
-	for _, entry := range config.C().AIFeatures {
-		if entry.Enabled && entry.Automatic {
-			aiRunner.Dispatch(aiJob(owner, repo, number, entry.ID, ai.TriggerAutomatic))
-		}
+	for _, id := range config.C().AutomaticAIFeatures() {
+		aiRunner.Dispatch(aiJob(owner, repo, number, id, ai.TriggerAutomatic))
 	}
 }
 

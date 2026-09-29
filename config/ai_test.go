@@ -69,30 +69,33 @@ func TestDefaultConfigLeavesAIOff(t *testing.T) {
 }
 
 func TestAIProviderFor(t *testing.T) {
+	const sonnet = "anthropic/claude-sonnet-4.5"
 	tests := []struct {
-		name         string
-		ai           AISettings
-		feature      AIFeature
-		wantProvider string
-		wantCommand  string
+		name    string
+		ai      AISettings
+		feature AIFeature
+		want    AIProviderChoice
 	}{
-		{"nothing configured falls back to gemini", AISettings{}, AIFeature{}, "gemini", ""},
-		{"a default command implies the command provider", AISettings{DefaultCommand: "llm"}, AIFeature{}, "command", "llm"},
-		{"a feature command implies the command provider", AISettings{}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
-		{"an explicit default provider wins over inference", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{}, "gemini", "llm"},
-		{"a default provider alone is used as given", AISettings{DefaultProvider: "command"}, AIFeature{}, "command", ""},
-		{"a feature provider wins over the default", AISettings{DefaultProvider: "command", DefaultCommand: "llm"}, AIFeature{Provider: "gemini"}, "gemini", "llm"},
-		{"a feature provider wins over its own command", AISettings{}, AIFeature{Provider: "gemini", Command: "claude -p"}, "gemini", "claude -p"},
-		{"a feature command wins over the default", AISettings{DefaultCommand: "llm"}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
-		{"a feature command wins over a default provider", AISettings{DefaultProvider: "gemini"}, AIFeature{Command: "claude -p"}, "command", "claude -p"},
-		{"a feature provider takes the default command", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{Provider: "command"}, "command", "llm"},
+		{"nothing configured falls back to gemini", AISettings{}, AIFeature{}, AIProviderChoice{Provider: "gemini"}},
+		{"a default command implies the command provider", AISettings{DefaultCommand: "llm"}, AIFeature{}, AIProviderChoice{Provider: "command", Command: "llm"}},
+		{"a feature command implies the command provider", AISettings{}, AIFeature{Command: "claude -p"}, AIProviderChoice{Provider: "command", Command: "claude -p"}},
+		{"an explicit default provider wins over inference", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{}, AIProviderChoice{Provider: "gemini", Command: "llm"}},
+		{"a default provider alone is used as given", AISettings{DefaultProvider: "command"}, AIFeature{}, AIProviderChoice{Provider: "command"}},
+		{"a feature provider wins over the default", AISettings{DefaultProvider: "command", DefaultCommand: "llm"}, AIFeature{Provider: "gemini"}, AIProviderChoice{Provider: "gemini", Command: "llm"}},
+		{"a feature provider wins over its own command", AISettings{}, AIFeature{Provider: "gemini", Command: "claude -p"}, AIProviderChoice{Provider: "gemini", Command: "claude -p"}},
+		{"a feature command wins over the default", AISettings{DefaultCommand: "llm"}, AIFeature{Command: "claude -p"}, AIProviderChoice{Provider: "command", Command: "claude -p"}},
+		{"a feature command wins over a default provider", AISettings{DefaultProvider: "gemini"}, AIFeature{Command: "claude -p"}, AIProviderChoice{Provider: "command", Command: "claude -p"}},
+		{"a feature provider takes the default command", AISettings{DefaultProvider: "gemini", DefaultCommand: "llm"}, AIFeature{Provider: "command"}, AIProviderChoice{Provider: "command", Command: "llm"}},
+		{"openrouter as the default takes the default model", AISettings{DefaultProvider: "openrouter", DefaultModel: sonnet}, AIFeature{}, AIProviderChoice{Provider: "openrouter", Model: sonnet}},
+		{"a feature model wins over the default model", AISettings{DefaultProvider: "openrouter", DefaultModel: sonnet}, AIFeature{Model: "openai/gpt-5"}, AIProviderChoice{Provider: "openrouter", Model: "openai/gpt-5"}},
+		{"a feature picks openrouter over a default command", AISettings{DefaultCommand: "llm"}, AIFeature{Provider: "openrouter", Model: sonnet}, AIProviderChoice{Provider: "openrouter", Command: "llm", Model: sonnet}},
+		{"a model alone picks no provider", AISettings{}, AIFeature{Model: sonnet}, AIProviderChoice{Provider: "gemini", Model: sonnet}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{AI: tt.ai}
-			provider, command := cfg.AIProviderFor(tt.feature)
-			if provider != tt.wantProvider || command != tt.wantCommand {
-				t.Errorf("AIProviderFor = (%q, %q), want (%q, %q)", provider, command, tt.wantProvider, tt.wantCommand)
+			if got := cfg.AIProviderFor(tt.feature); got != tt.want {
+				t.Errorf("AIProviderFor = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -153,6 +156,42 @@ func TestValidateAI(t *testing.T) {
 			wantField:   "AIFeatures[0].Command",
 			wantMessage: "needs a command",
 		},
+		{
+			name: "enabled openrouter provider without a model",
+			mutate: func(c *Config) {
+				c.AI.DefaultProvider = "openrouter"
+				c.AIFeatures = []AIFeature{{ID: "x", Enabled: true}}
+			},
+			wantField:   "AIFeatures[0].Model",
+			wantMessage: "needs a model",
+		},
+		{
+			name:        "unknown legacy LLM provider",
+			mutate:      func(c *Config) { c.legacy.Provider = "command" },
+			wantField:   "ExperimentalLLMProvider",
+			wantMessage: "unknown provider",
+		},
+		{
+			name: "legacy LLM flags on openrouter without a model",
+			mutate: func(c *Config) {
+				c.legacy.ReviewEase = true
+				c.legacy.Provider = "openrouter"
+			},
+			wantField:   "ExperimentalLLMModel",
+			wantMessage: "needs a model",
+		},
+		{
+			name:        "unknown plugin provider",
+			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: "p", Command: "p", Provider: "command"}} },
+			wantField:   "Plugins[0].Provider",
+			wantMessage: "unknown provider",
+		},
+		{
+			name:        "openrouter plugin without a model",
+			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: "p", Command: "p", Provider: "openrouter"}} },
+			wantField:   "Plugins[0].Model",
+			wantMessage: "needs a model",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -173,15 +212,74 @@ func TestValidateAI(t *testing.T) {
 
 func TestValidateAIAcceptsWorkingSettings(t *testing.T) {
 	cfg := validConfig()
-	cfg.AI = AISettings{DefaultCommand: `claude -p --append-system-prompt "be brief"`}
+	cfg.AI = AISettings{DefaultCommand: `claude -p --append-system-prompt "be brief"`, DefaultModel: "anthropic/claude-sonnet-4.5"}
 	cfg.AIFeatures = []AIFeature{
 		{ID: "comments-addressed", Enabled: true, Automatic: true, Mode: "oneshot"},
 		{ID: "mermaid", Enabled: true, Provider: "gemini", Mode: "agent"},
+		{ID: "feature-flags", Enabled: true, Provider: "openrouter"},
 		// Disabled and half-configured: harmless, so not worth blocking a save.
 		{ID: "later", Provider: "command"},
+		{ID: "someday", Provider: "openrouter", Model: " "},
+	}
+	cfg.Plugins = []Plugin{
+		{Name: "a", Command: "a"},
+		{Name: "b", Command: "b", Provider: "gemini"},
+		{Name: "c", Command: "c", Provider: "openrouter", Model: "google/gemini-2.5-flash"},
 	}
 	if problems := Validate(cfg); len(problems) != 0 {
 		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
+func TestLegacyLLMBackendReachesItsFeatures(t *testing.T) {
+	// ExperimentalLLMProvider and ExperimentalLLMModel pick the backend of the
+	// features the legacy flags switch on, and [AI] doesn't move them.
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMProvider = "openrouter"
+ExperimentalLLMModel = "google/gemini-2.5-flash"
+
+[AI]
+DefaultProvider = "command"
+DefaultCommand = "claude -p"
+DefaultModel = "anthropic/claude-sonnet-4.5"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	entry, ok := cfg.AIFeatureSettings("file-ordering")
+	if !ok || !entry.Enabled || !entry.Automatic {
+		t.Fatalf("file-ordering: %+v (found %v)", entry, ok)
+	}
+	want := AIProviderChoice{Provider: "openrouter", Command: "claude -p", Model: "google/gemini-2.5-flash"}
+	if got := cfg.AIProviderFor(entry); got != want {
+		t.Errorf("AIProviderFor = %+v, want %+v", got, want)
+	}
+	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
+		t.Error("review-ease has no flag on, so the backend keys don't enable it")
+	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
+func TestValidateLeavesAnIdleLegacyLLMBackendAlone(t *testing.T) {
+	// Neither legacy flag is on, so nothing would call OpenRouter: a half-set
+	// backend is not worth blocking a save over.
+	cfg := validConfig()
+	cfg.legacy.Provider = "openrouter"
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
+func TestPluginEnv(t *testing.T) {
+	if env := (Plugin{Name: "p"}).Env(); len(env) != 0 {
+		t.Errorf("a plugin with no backend set should add nothing to the environment, got %v", env)
+	}
+	env := Plugin{Provider: "openrouter", Model: "openai/gpt-5"}.Env()
+	if len(env) != 2 || env[0] != "CRS_LLM_PROVIDER=openrouter" || env[1] != "CRS_LLM_MODEL=openai/gpt-5" {
+		t.Errorf("Env = %v", env)
 	}
 }
 
@@ -230,9 +328,13 @@ DefaultCommand = "claude -p"
 		if !ok || !entry.Enabled || !entry.Automatic {
 			t.Errorf("%s: expected an enabled, automatic entry, got %+v (found %v)", id, entry, ok)
 		}
-		if provider, _ := cfg.AIProviderFor(entry); provider != AIProviderGemini {
+		if provider := cfg.AIProviderFor(entry).Provider; provider != AIProviderGemini {
 			t.Errorf("%s runs on %q, want gemini", id, provider)
 		}
+	}
+	// The flags are read, not written into the file's entries.
+	if len(cfg.AIFeatures) != 0 {
+		t.Errorf("AIFeatures holds what the file has, got %+v", cfg.AIFeatures)
 	}
 	if problems := Validate(cfg); len(problems) != 0 {
 		t.Errorf("the entries a legacy flag stands for must be valid, got %v", problems)
@@ -253,6 +355,9 @@ Enabled = false
 	}
 	if len(cfg.AIFeatures) != 1 || cfg.AIFeatures[0].Enabled {
 		t.Errorf("the config's own entry should win over the flag: %+v", cfg.AIFeatures)
+	}
+	if entry, ok := cfg.AIFeatureSettings("file-ordering"); !ok || entry.Enabled {
+		t.Errorf("file-ordering should be the config's disabled entry, got %+v", entry)
 	}
 	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
 		t.Error("a flag set to false adds nothing")
@@ -275,5 +380,34 @@ func TestUpdateRenderKeepsLegacyFlags(t *testing.T) {
 	}
 	if strings.Contains(string(data), "AIFeatures") {
 		t.Errorf("the entry a flag stands for must not be written out:\n%s", data)
+	}
+}
+
+func TestAutomaticAIFeatures(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+
+[[AIFeatures]]
+ID = "feature-flags"
+Enabled = true
+Automatic = true
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+
+[[AIFeatures]]
+ID = "review-ease"
+Enabled = true
+Automatic = false
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	// File order first, then the legacy flag without an entry of its own; the
+	// review-ease entry beats its flag, and isn't automatic.
+	if got := strings.Join(cfg.AutomaticAIFeatures(), ","); got != "feature-flags,file-ordering" {
+		t.Errorf("AutomaticAIFeatures = %s", got)
 	}
 }

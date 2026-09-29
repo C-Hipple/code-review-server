@@ -19,7 +19,7 @@ already shows, so there is no report to open.
 
 They sit beside [plugins](plugins.md) rather than on top of them: plugins
 remain separate binaries with their own config, table and RPCs, and the two
-share only the code that runs a subprocess.
+share only the code that runs a subprocess and the OpenRouter client.
 
 **Everything is off by default.** Nothing runs, and nothing changes for
 existing users, until a config file enables a feature.
@@ -28,10 +28,11 @@ existing users, until a config file enables a feature.
 
 ```toml
 [AI]
-# Defaults every feature inherits. See Providers below for the two choices
+# Defaults every feature inherits. See Providers below for the three choices
 # and the order in which these settings pick one.
-DefaultProvider = "command"   # run a program on this machine ("gemini": call the Gemini API)
+DefaultProvider = "command"   # run a program on this machine ("gemini" / "openrouter": call an API)
 DefaultCommand = "claude -p"  # the program the command provider runs
+# DefaultModel = "anthropic/claude-sonnet-4.5"  # the model the openrouter provider asks for
 
 [[AIFeatures]]
 ID = "comments-addressed"
@@ -40,6 +41,7 @@ Automatic = false   # also run after a PR is fetched or updated
 Mode = "oneshot"    # or "agent"
 # Provider = "gemini"          # this feature only; beats both [AI] settings
 # Command = "llm -m my-model"  # this feature only; picks the command provider
+# Model = "openai/gpt-5"       # this feature only; the openrouter provider's model
 ```
 
 | Field       | Default                                  | Meaning                                                                                  |
@@ -48,22 +50,39 @@ Mode = "oneshot"    # or "agent"
 | `Enabled`   | `false`                                  | Switches the feature on. Without it the feature is listed but can't run                 |
 | `Automatic` | `false`                                  | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
 | `Mode`      | the feature's default                    | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
-| `Provider`  | [picked by order](#which-provider-runs-a-feature) | `gemini` or `command`; see [Providers](#providers)                             |
+| `Provider`  | [picked by order](#which-provider-runs-a-feature) | `gemini`, `openrouter` or `command`; see [Providers](#providers)               |
 | `Command`   | `AI.DefaultCommand`                      | The command line the `command` provider runs. Setting it also picks that provider unless `Provider` says otherwise |
+| `Model`     | `AI.DefaultModel`                        | The model the `openrouter` provider asks for, as OpenRouter names it (`anthropic/claude-sonnet-4.5`). It picks no provider, and the others ignore it |
 
 Two entries with the same `ID` stop the config from loading, as duplicate
 plugin names do. Everything else — an unknown feature, provider or mode, a
 mode the feature doesn't support, an enabled feature that would use the
 command provider with no command, a command line that can't be split — is
-logged at startup and rejected by `UpdateConfig`.
+logged at startup and rejected by `UpdateConfig`; so is an enabled feature
+that would use the openrouter provider with no model.
 
 ## Providers
 
-A feature reaches a model through a provider. There are two, and neither is
+A feature reaches a model through a provider. There are three, and none is
 privileged:
 
 - **`gemini` — a hosted API.** The server itself calls Google's Gemini API
   (`gemini-flash-latest`) over HTTPS with the key in `GEMINI_API_KEY`.
+- **`openrouter` — any model OpenRouter serves.** The server itself calls
+  [OpenRouter](https://openrouter.ai)'s chat completions API over HTTPS with
+  the key in `OPENROUTER_API_KEY`, asking for the model the feature's `Model`
+  (else `AI.DefaultModel`) names — Anthropic's, OpenAI's, Google's, Meta's and
+  many more behind one key and one bill, named the way OpenRouter's model list
+  names them (`anthropic/claude-sonnet-4.5`, `openai/gpt-5`,
+  `google/gemini-2.5-flash`). No default model is pinned, since which model to
+  pay for is yours to choose; an enabled feature that lands on `openrouter`
+  without one is a config error. The run's deadline cancels the request
+  itself, and requests carry the project's name as OpenRouter's app
+  attribution (`X-Title: code-review-server`), never anything about you. As
+  with `gemini`, the prompt — the PR's code and discussion — leaves this
+  machine: it goes to OpenRouter and on to the vendor serving the model, and
+  your OpenRouter account's privacy settings decide which vendors it may go
+  to.
 - **`command` — a program on this machine.** For each run the server starts
   the command line you name — `claude -p`, `llm -m <model>`, a wrapper
   script — and treats it as the model. The contract is the simplest one any CLI
@@ -94,12 +113,17 @@ In other words, a feature's own `[[AIFeatures]]` settings beat the `[AI]`
 defaults, and at each level a named `Provider` beats the one a command
 implies. The `command` provider runs the feature's `Command`, else
 `AI.DefaultCommand`; an enabled feature that lands on `command` with neither is
-a config error.
+a config error. Likewise the `openrouter` provider asks for the feature's
+`Model`, else `AI.DefaultModel`, and needs one of them. A `Model` never picks
+a provider, so `openrouter` is always named — and only it reads `Model`: a
+feature on `gemini` stays on `gemini-flash-latest` whatever `AI.DefaultModel`
+says.
 
-**`GEMINI_API_KEY` never picks the provider.** The server reads it only once a
-feature has landed on `gemini`. Exporting it doesn't move a feature off a
-command, and a feature that lands on `gemini` without it runs without a model
-(see below). The usual setups:
+**An API key never picks the provider.** The server reads `GEMINI_API_KEY`
+only once a feature has landed on `gemini`, and `OPENROUTER_API_KEY` only once
+one has landed on `openrouter`. Exporting either doesn't move a feature off a
+command, and a feature that lands on a provider without its key runs without a
+model (see below). The usual setups:
 
 ```toml
 # 1. Everything on the Gemini API: export GEMINI_API_KEY and set no command.
@@ -127,9 +151,28 @@ Enabled = true
 Provider = "gemini"   # rule 1 beats the DefaultCommand at rule 4
 ```
 
+```toml
+# 4. Everything through OpenRouter: export OPENROUTER_API_KEY. One feature
+#    asks for a cheaper model than the rest.
+[AI]
+DefaultProvider = "openrouter"                 # rule 3
+DefaultModel = "anthropic/claude-sonnet-4.5"
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+
+[[AIFeatures]]
+ID = "feature-flags"
+Enabled = true
+Automatic = true
+Model = "google/gemini-2.5-flash"              # beats DefaultModel
+```
+
 To check what a config resolves to, the
 [`ListAIFeatures`](protocol.md#rpchandlerlistaifeatures) reply carries each
-feature's `provider`.
+feature's `provider`; a report's `model` says which provider and model
+actually answered.
 
 > **Treat the prompt as untrusted input.** It carries text other people wrote —
 > the PR title, review and conversation comments, the diff — and anyone who can
@@ -141,7 +184,8 @@ feature's `provider`.
 > `search_code` runs a fixed-string `git grep` over the local clone at the PR
 > head, with the query passed as a pattern, never as an option.
 
-A provider that can't be built — no `GEMINI_API_KEY`, say — doesn't fail a
+A provider that can't be built — no `GEMINI_API_KEY` or `OPENROUTER_API_KEY`,
+say — doesn't fail a
 feature that can manage without one: comments-addressed still produces its
 deterministic report, and feature-flags still settles the files its path rules
 decide; each leaves what it needed the model for unclear, and says why.
@@ -154,7 +198,7 @@ rating.
 - **`oneshot`** answers from a single model call.
 - **`agent`** runs a multi-turn loop in which the model may call tools the
   feature offers, see their results and call more before answering. It works
-  on either provider: tool calls go through a plain-text protocol (the model
+  on every provider: tool calls go through a plain-text protocol (the model
   replies with a `TOOL_CALL {"name": ..., "arguments": {...}}` line), so even
   a CLI that knows nothing of the server's tools can use them. A run gets at
   most six turns. comments-addressed offers one tool, `read_file`, which reads
@@ -496,7 +540,9 @@ also need `Automatic = true`.
 file-ordering and review-ease were once switched on by root-level flags, and a
 config that still sets them keeps working: `ExperimentalLLMFileOrdering = true`
 stands for an entry that enables file-ordering automatically on the `gemini`
-provider, and `ExperimentalLLMReviewEase = true` the same for review-ease. An
+provider, and `ExperimentalLLMReviewEase = true` the same for review-ease.
+`ExperimentalLLMProvider = "openrouter"` moves both onto `openrouter`, asking
+for `ExperimentalLLMModel`; the `[AI]` defaults don't reach them. An
 `[[AIFeatures]]` entry for the same feature wins over its flag. Orders and
 ratings computed before they were AI features stay in the
 `DiffFileOrderingCache` table, which the server now only reads: a PR shows them
@@ -539,6 +585,10 @@ registration; a client renders any feature's markdown body without changes.
   annotations arrive through `GetAIOutput` with `source: "ai"` and `feature`.
 - **CLI contract.** Prompt on stdin, answer on stdout, non-zero exit is a
   failure. No default command is pinned.
+- **OpenRouter model.** No default model is pinned either, for the same
+  reason: which model runs — and what it costs — is the user's choice. `Model`
+  is read only by the `openrouter` provider, so a default model meant for it
+  can't reach a feature on `gemini` as a model Gemini doesn't serve.
 - **Digest composition.** Comment IDs and bodies, review IDs and states, and
   thread resolved/outdated flags. Review states are in scope for the first
   feature: an active change request is part of its verdict.

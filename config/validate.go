@@ -93,26 +93,75 @@ func Validate(cfg *Config) []ValidationError {
 		}
 	}
 
+	problems = append(problems, validateLegacyLLM(cfg)...)
+	problems = append(problems, validatePlugins(cfg)...)
 	return append(problems, validateAI(cfg)...)
+}
+
+// validLLMBackends are the LLM backends a [[Plugins]] entry, or the legacy
+// file-ordering and review-ease keys, may name: the two HTTP APIs.
+var validLLMBackends = map[string]bool{AIProviderGemini: true, AIProviderOpenRouter: true}
+
+// validateLegacyLLM checks the backend the legacy keys give file-ordering and
+// review-ease (legacyLLMKeys): a known provider, and a model for OpenRouter
+// while either flag that would call it is on. Problems name the key the
+// config sets, not the [[AIFeatures]] entry it stands for.
+func validateLegacyLLM(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	p := cfg.legacy.Provider
+	if p != "" && !validLLMBackends[p] {
+		problems = append(problems, rootError("ExperimentalLLMProvider",
+			"unknown provider %q (expected \"gemini\" or \"openrouter\")", p))
+	}
+	enabled := cfg.legacy.FileOrdering || cfg.legacy.ReviewEase
+	if enabled && p == AIProviderOpenRouter && strings.TrimSpace(cfg.legacy.Model) == "" {
+		problems = append(problems, rootError("ExperimentalLLMModel",
+			"the openrouter provider needs a model, e.g. \"google/gemini-2.5-flash\""))
+	}
+	return problems
+}
+
+// validatePlugins checks each [[Plugins]] entry's LLM backend: a known
+// provider, and a model wherever it names OpenRouter, which has no default.
+// Duplicate names are rejected earlier, when the file is parsed.
+func validatePlugins(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	for i, p := range cfg.Plugins {
+		field := func(name string) string { return fmt.Sprintf("Plugins[%d].%s", i, name) }
+		if p.Provider != "" && !validLLMBackends[p.Provider] {
+			problems = append(problems, rootError(field("Provider"),
+				"unknown provider %q (expected \"gemini\" or \"openrouter\")", p.Provider))
+		}
+		if p.Provider == PluginProviderOpenRouter && strings.TrimSpace(p.Model) == "" {
+			problems = append(problems, rootError(field("Model"),
+				"the openrouter provider needs a model, e.g. \"anthropic/claude-sonnet-4.5\""))
+		}
+	}
+	return problems
 }
 
 // validAIProviders and validAIModes are the names [AI] and [[AIFeatures]] may use.
 var (
-	validAIProviders = map[string]bool{AIProviderGemini: true, AIProviderCommand: true}
+	validAIProviders = map[string]bool{AIProviderGemini: true, AIProviderOpenRouter: true, AIProviderCommand: true}
 	validAIModes     = map[string]bool{AIModeOneShot: true, AIModeAgent: true}
 )
 
+// unknownAIProvider is the message for a provider name validAIProviders lacks.
+func unknownAIProvider(p string) string {
+	return fmt.Sprintf("unknown provider %q (expected \"gemini\", \"openrouter\" or \"command\")", p)
+}
+
 // validateAI checks the [AI] table and each [[AIFeatures]] entry for what can
 // be judged without the feature registry: required IDs, known provider and
-// mode names, command lines that split into words, and a command wherever an
-// enabled feature would run the command provider. Whether an ID names a real
+// mode names, command lines that split into words, a command wherever an
+// enabled feature would run the command provider, and a model wherever one
+// would run the openrouter provider. Whether an ID names a real
 // feature, and whether that feature supports the chosen mode, is checked by
 // ai.ValidateFeatures, which owns the registry — the same split as workflows.
 func validateAI(cfg *Config) []ValidationError {
 	var problems []ValidationError
 	if p := cfg.AI.DefaultProvider; p != "" && !validAIProviders[p] {
-		problems = append(problems, rootError("AI.DefaultProvider",
-			"unknown provider %q (expected \"gemini\" or \"command\")", p))
+		problems = append(problems, rootError("AI.DefaultProvider", "%s", unknownAIProvider(p)))
 	}
 	if c := cfg.AI.DefaultCommand; c != "" {
 		if _, err := subprocess.SplitCommand(c); err != nil {
@@ -130,8 +179,7 @@ func validateAI(cfg *Config) []ValidationError {
 				"unknown mode %q (expected \"oneshot\" or \"agent\")", f.Mode))
 		}
 		if f.Provider != "" && !validAIProviders[f.Provider] {
-			problems = append(problems, rootError(field("Provider"),
-				"unknown provider %q (expected \"gemini\" or \"command\")", f.Provider))
+			problems = append(problems, rootError(field("Provider"), "%s", unknownAIProvider(f.Provider)))
 		}
 		if f.Command != "" {
 			if _, err := subprocess.SplitCommand(f.Command); err != nil {
@@ -141,9 +189,14 @@ func validateAI(cfg *Config) []ValidationError {
 		// Only an enabled feature ever builds its provider, so a disabled entry
 		// left half-configured is not worth blocking a save over.
 		if f.Enabled {
-			if provider, command := cfg.AIProviderFor(f); provider == AIProviderCommand && command == "" {
+			choice := cfg.AIProviderFor(f)
+			if choice.Provider == AIProviderCommand && choice.Command == "" {
 				problems = append(problems, rootError(field("Command"),
 					"the command provider needs a command: set Command here or AI.DefaultCommand"))
+			}
+			if choice.Provider == AIProviderOpenRouter && strings.TrimSpace(choice.Model) == "" {
+				problems = append(problems, rootError(field("Model"),
+					"the openrouter provider needs a model: set Model here or AI.DefaultModel"))
 			}
 		}
 	}

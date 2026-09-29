@@ -1,10 +1,11 @@
 // Package llm is the server's plain text-generation layer: the Client
-// interface a backend implements, the Gemini backend (gemini.go), the stages
-// a call can fail at, and the call log every model call and AI feature run is
-// appended to (~/.crs/llm_calls.log, see call_log.go).
+// interface a backend implements, the two HTTP backends — Gemini (gemini.go)
+// and OpenRouter (openrouter.go) — the stages a call can fail at, and the call
+// log every AI feature run is appended to (~/.crs/llm_calls.log, see
+// call_log.go).
 //
-// The features that call a model live in the ai package, which reaches Gemini
-// through this package's Client.
+// The features that call a model live in the ai package, which reaches these
+// backends through this package's Client.
 package llm
 
 import (
@@ -25,14 +26,14 @@ type Client interface {
 	Generate(prompt string) (string, error)
 }
 
-// ProviderGemini names the Gemini backend (gemini.go), the one HTTP backend
-// this package ships.
+// ProviderGemini names the Gemini backend (gemini.go).
 const ProviderGemini = "gemini"
 
-// NewClient is the provider factory: it builds the named text-generation
-// backend. Backends that are not HTTP APIs — the ai package's command-backed
-// provider, which shells out to a CLI agent — are built by their own package
-// and only share the Client shape.
+// NewClient is the provider factory for the backends that need nothing but
+// their name: Gemini, whose model is pinned. OpenRouter needs a model named,
+// so it is built by NewOpenRouterClient. Backends that are not HTTP APIs — the
+// ai package's command-backed provider, which shells out to a CLI agent — are
+// built by their own package and only share the Client shape.
 func NewClient(provider string) (Client, error) {
 	switch provider {
 	case ProviderGemini:

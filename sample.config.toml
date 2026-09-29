@@ -34,15 +34,17 @@ SectionTitle = "Needs My Team's Review"
 
 # AI features are off until enabled here (see docs/ai_features.md). Each one
 # runs on a provider: "command" runs a program on this machine with the prompt
-# on stdin, and "gemini" calls the Gemini API with GEMINI_API_KEY. The first of
-# these that is set picks it:
+# on stdin, "gemini" calls the Gemini API with GEMINI_API_KEY, and
+# "openrouter" calls any model OpenRouter serves with OPENROUTER_API_KEY. The
+# first of these that is set picks it:
 #   1. the feature's Provider         2. the feature's Command (-> "command")
 #   3. [AI] DefaultProvider           4. [AI] DefaultCommand   (-> "command")
 #   5. none of them: "gemini"
-# GEMINI_API_KEY on its own never picks a provider.
+# An API key on its own never picks a provider.
 # [AI]
-# DefaultProvider = "command"   # or "gemini"
+# DefaultProvider = "command"   # or "gemini" / "openrouter"
 # DefaultCommand = "claude -p"  # what the command provider runs
+# DefaultModel = "anthropic/claude-sonnet-4.5"  # what openrouter asks for; a feature's Model beats it
 #
 # [[AIFeatures]]
 # ID = "comments-addressed"
@@ -78,4 +80,8 @@ Name = "Summarize"
 Command = "summarize_diff"
 IncludeDiff = true
 IncludeHeaders = true
+# The bundled LLM plugins call Gemini (GEMINI_API_KEY) unless told otherwise.
+# To run one through OpenRouter (OPENROUTER_API_KEY) instead:
+# Provider = "openrouter"
+# Model = "anthropic/claude-sonnet-4.5"
 IncludeComments = true

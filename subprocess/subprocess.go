@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ type Command struct {
 	Args []string
 	// Stdin is fed to the command's standard input. Empty means none.
 	Stdin string
+	// Env adds "KEY=value" entries to the environment the command inherits
+	// from the server, replacing any the server's environment already has.
+	Env []string
 	// Timeout bounds the run on top of whatever deadline ctx carries. Zero
 	// leaves it to ctx.
 	Timeout time.Duration
@@ -57,6 +61,10 @@ func Run(ctx context.Context, c Command) (Output, error) {
 	cmd.Stderr = &stderr
 	if c.Stdin != "" {
 		cmd.Stdin = strings.NewReader(c.Stdin)
+	}
+	if len(c.Env) > 0 {
+		// exec keeps the last value of a duplicated key, so these win.
+		cmd.Env = append(os.Environ(), c.Env...)
 	}
 	cmd.WaitDelay = waitDelay
 

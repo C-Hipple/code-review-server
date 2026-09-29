@@ -30,6 +30,7 @@ code-review-server is a service which runs highly configurable workflows to load
     ```bash
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
     export GEMINI_API_KEY="Gemini Token"  # Only for plugins and AI features on the gemini provider.
+    export OPENROUTER_API_KEY="OpenRouter Key"  # Only for AI features and plugins configured to use the openrouter provider.
     ```
 
     Minimal `~/.config/codereviewserver.toml`:

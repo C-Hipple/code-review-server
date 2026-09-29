@@ -146,7 +146,7 @@ func TestOrderDiffFilesNeverStartsARun(t *testing.T) {
 	db := aiTestSetup(t, []config.AIFeature{{ID: ai.FileOrderingID, Enabled: true, Automatic: true}})
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 	r := useAIRunner(t, ai.FileOrdering{})
-	r.NewProvider = func(string, string) (ai.Provider, error) {
+	r.NewProvider = func(config.AIProviderChoice) (ai.Provider, error) {
 		t.Error("rendering must not build a provider")
 		return nil, nil
 	}
@@ -282,7 +282,7 @@ func TestFileOrderingEndToEnd(t *testing.T) {
 	forgetHookDispatches()
 	r := useAIRunner(t, ai.FileOrdering{})
 	model := &recordingProvider{answer: "src/main.ts\nsrc/greet.ts\n"}
-	r.NewProvider = func(string, string) (ai.Provider, error) { return model, nil }
+	r.NewProvider = func(config.AIProviderChoice) (ai.Provider, error) { return model, nil }
 	h := &RPCHandler{}
 	args := &GetPRstructArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber}
 
@@ -329,7 +329,7 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := useAIRunner(t, ai.ReviewEase{})
-	r.NewProvider = func(string, string) (ai.Provider, error) {
+	r.NewProvider = func(config.AIProviderChoice) (ai.Provider, error) {
 		return &recordingProvider{answer: "REVIEW_EASE: easy\n"}, nil
 	}
 	h := &RPCHandler{}
@@ -362,5 +362,34 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	}
 	if got := reviewEase(aiOwner, aiRepo, aiNumber); got != "easy" {
 		t.Errorf("after a push: %q", got)
+	}
+}
+
+func TestLegacyFlagRunsItsFeatureAutomatically(t *testing.T) {
+	// A config from before review-ease was an AI feature has no [[AIFeatures]]
+	// entry for it, only the flag: warming a PR must still run it.
+	parsed, err := config.ParseConfigForTest([]byte("ExperimentalLLMReviewEase = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := aiTestSetup(t, nil)
+	parsed.DB = db
+	config.SetC(*parsed)
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	r := useAIRunner(t, ai.ReviewEase{})
+	var choice config.AIProviderChoice
+	r.NewProvider = func(c config.AIProviderChoice) (ai.Provider, error) {
+		choice = c
+		return &recordingProvider{answer: "REVIEW_EASE: hard\n"}, nil
+	}
+
+	dispatchAutomaticAIFeatures(aiOwner, aiRepo, aiNumber)
+	waitForAIRun(t, ai.ReviewEaseID)
+
+	if got := reviewEase(aiOwner, aiRepo, aiNumber); got != "hard" {
+		t.Errorf("review ease = %q, want hard", got)
+	}
+	if choice.Provider != config.AIProviderGemini {
+		t.Errorf("the flag runs on %q, want gemini", choice.Provider)
 	}
 }

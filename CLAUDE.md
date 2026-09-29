@@ -22,6 +22,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **CI runs** `go build && go test` for Go changes, and lint/format/type-check/test plus the e2e suite for `bun_client/` changes.
 
+## Workflow
+
+After building a feature, always open a pull request for it (once the change is committed and pushed to the working branch and the relevant build/tests pass).
+
 ## Architecture
 
 JSON-RPC server (over stdio) that aggregates GitHub PRs into a review dashboard. Two main subsystems:

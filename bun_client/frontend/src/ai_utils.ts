@@ -9,6 +9,10 @@
  * anything else (feature-flags, say) renders its markdown body, and is counted
  * on its toolbar button by the `outstanding` list it serves.
  *
+ * Applied features (file-ordering, review-ease) have no report: the server
+ * applies their results to the diff's file order and the review list's ease
+ * pill itself, so the client offers no button for them (see reportFeatures).
+ *
  * The helpers here are the client's single interpretation of those replies.
  */
 
@@ -27,6 +31,21 @@ export interface AIFeatureInfo {
     mode: string;
     modes: string[];
     provider: string;
+    /**
+     * The server applies the feature's result to what it already serves —
+     * the diff's file order, the review list's ease rating — so there is no
+     * report to open. Absent from servers that predate it.
+     */
+    applied?: boolean;
+}
+
+/**
+ * The features to offer a report for: every one the server's config enables,
+ * less the applied ones, whose results show up in the diff and the review
+ * list instead.
+ */
+export function reportFeatures(features: AIFeatureInfo[]): AIFeatureInfo[] {
+    return features.filter(f => f.enabled && !f.applied);
 }
 
 /**

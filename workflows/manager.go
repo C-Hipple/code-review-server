@@ -24,8 +24,8 @@ import (
 
 // prUpdatedHook is called once per PR that a cycle newly added or re-fetched
 // after a push, after that PR's aux data has been written to the DB caches.
-// The server registers server.WarmPRAnalysis here so plugins and the LLM diff
-// analysis are computed off the back of the workflow rather than when a
+// The server registers server.WarmPRAnalysis here so plugins and the automatic
+// AI features are computed off the back of the workflow rather than when a
 // reviewer opens the PR. It is a registered callback rather than a direct call
 // because server imports this package, so the dependency cannot run both ways.
 //
@@ -1035,8 +1035,8 @@ func notifyPRsUpdated(warmed []PRKey) {
 // by a workflow and every open of one logs a "reviews" cache miss.
 //
 // It returns the PRs it turned the warm on for. Those are exactly the ones
-// whose plugin results and LLM analysis are stale too, so the caller fires the
-// PR-updated hook for them once the fetches land.
+// whose plugin results and AI feature results are stale too, so the caller
+// fires the PR-updated hook for them once the fetches land.
 func applyCacheWarmRequirements(db *database.DB,
 	prObjects map[PRKey]*github.PullRequest,
 	prRequirements map[PRKey]AuxDataRequirement) []PRKey {

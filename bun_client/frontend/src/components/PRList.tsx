@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { listAIFeatures, rpcCall } from '../api';
-import type { AIFeatureInfo } from '../ai_utils';
+import { reportFeatures, type AIFeatureInfo } from '../ai_utils';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import {
     Button,
@@ -224,7 +224,7 @@ export default function PRList({
     // button.
     const loadAIFeatures = async () => {
         try {
-            setAIFeatures((await listAIFeatures()).filter(f => f.enabled));
+            setAIFeatures(reportFeatures(await listAIFeatures()));
         } catch (e) {
             console.error('Failed to load AI features:', e);
             setAIFeatures([]);

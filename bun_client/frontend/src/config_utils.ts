@@ -47,8 +47,6 @@ export interface ServerConfig {
     SectionSorting: Record<string, string>;
     Workflows: WorkflowEntry[];
     Plugins: PluginEntry[];
-    ExperimentalLLMFileOrdering: boolean;
-    ExperimentalLLMReviewEase: boolean;
 }
 
 export interface WorkflowTypeInfo {

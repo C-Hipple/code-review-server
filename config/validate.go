@@ -93,27 +93,28 @@ func Validate(cfg *Config) []ValidationError {
 		}
 	}
 
-	problems = append(problems, validateExperimentalLLM(cfg)...)
+	problems = append(problems, validateLegacyLLM(cfg)...)
 	problems = append(problems, validatePlugins(cfg)...)
 	return append(problems, validateAI(cfg)...)
 }
 
-// validLLMBackends are the LLM backends a [[Plugins]] entry, or the
-// experimental diff analysis, may name: the two HTTP APIs.
+// validLLMBackends are the LLM backends a [[Plugins]] entry, or the legacy
+// file-ordering and review-ease keys, may name: the two HTTP APIs.
 var validLLMBackends = map[string]bool{AIProviderGemini: true, AIProviderOpenRouter: true}
 
-// validateExperimentalLLM checks the backend of the experimental diff
-// analysis: a known provider, and a model for OpenRouter while either helper
-// that would call it is switched on.
-func validateExperimentalLLM(cfg *Config) []ValidationError {
+// validateLegacyLLM checks the backend the legacy keys give file-ordering and
+// review-ease (legacyLLMKeys): a known provider, and a model for OpenRouter
+// while either flag that would call it is on. Problems name the key the
+// config sets, not the [[AIFeatures]] entry it stands for.
+func validateLegacyLLM(cfg *Config) []ValidationError {
 	var problems []ValidationError
-	p := cfg.ExperimentalLLMProvider
+	p := cfg.legacy.Provider
 	if p != "" && !validLLMBackends[p] {
 		problems = append(problems, rootError("ExperimentalLLMProvider",
 			"unknown provider %q (expected \"gemini\" or \"openrouter\")", p))
 	}
-	enabled := cfg.ExperimentalLLMFileOrdering || cfg.ExperimentalLLMReviewEase
-	if enabled && p == AIProviderOpenRouter && strings.TrimSpace(cfg.ExperimentalLLMModel) == "" {
+	enabled := cfg.legacy.FileOrdering || cfg.legacy.ReviewEase
+	if enabled && p == AIProviderOpenRouter && strings.TrimSpace(cfg.legacy.Model) == "" {
 		problems = append(problems, rootError("ExperimentalLLMModel",
 			"the openrouter provider needs a model, e.g. \"google/gemini-2.5-flash\""))
 	}

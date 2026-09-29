@@ -71,7 +71,7 @@ Fetches all review sections from the local database, rendered as org-mode format
 | `author`           | string | PR author login                                                   |
 | `url`              | string | GitHub HTML URL                                                   |
 | `release_status`   | string | Release status from the configured release check command, if any  |
-| `review_ease`      | string | LLM rating of how easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the config and a rating has been computed |
+| `review_ease`      | string | How easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless the [review-ease](ai_features.md#review-ease) AI feature is enabled and has rated the PR |
 | `created_at`       | Time   | PR creation timestamp                                             |
 | `required_teams`   | []TeamReviewStatus | Teams asked to review the PR, with each one's standing. Empty until a workflow cycle has resolved them |
 | `comment_count`    | int    | Conversation plus review comments on the PR, the number GitHub's pull request list shows, less the authors the review view hides. Counted from the server's comment cache, never from GitHub, so it is `0` until a workflow cycle has fetched the PR's comments |
@@ -191,7 +191,7 @@ AI annotations come from [`GetAIOutput`](#rpchandlergetaioutput).
 | `repo_path`            | string   | Absolute path to the local clone of the repository, when one exists under the configured `RepoLocation`. Empty when the repo isn't checked out locally. Distinct from `worktree_path`: this is the repository itself, not the PR's worktree. Clients use it to gate features that need local source, such as language-server lookups or a file browser |
 | `worktree_path`        | string   | Absolute path to the local git worktree (if managed by server) |
 | `release_status`       | string   | Release status from the configured release check command, if any |
-| `review_ease`          | string   | LLM rating of how easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless `ExperimentalLLMReviewEase` is enabled in the config and a rating has been computed |
+| `review_ease`          | string   | How easy the PR is to review: `easy`, `medium`, or `hard`. Empty unless the [review-ease](ai_features.md#review-ease) AI feature is enabled and has rated the PR |
 | `changed_files`        | int      | Number of files changed by the PR                         |
 | `additions`            | int      | Lines added by the PR                                     |
 | `deletions`            | int      | Lines removed by the PR                                   |
@@ -806,7 +806,7 @@ Because dispatch is asynchronous, `output` will generally still show the cleared
 
 ### `RPCHandler.ListAIFeatures`
 
-Lists every registered [AI feature](ai_features.md), enabled or not, as the server's config currently sets it up. A client shows a way to open each enabled one.
+Lists every registered [AI feature](ai_features.md), enabled or not, as the server's config currently sets it up. A client shows a way to open each enabled one that isn't `applied`.
 
 **Arguments** (`ListAIFeaturesArgs`):
 ```json
@@ -829,6 +829,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 | `mode`        | string   | Configured execution mode: `oneshot` or `agent`                          |
 | `modes`       | []string | Modes the feature supports, default first                                |
 | `provider`    | string   | Provider it would run with (`gemini`, `openrouter` or `command`), resolved from config in [this order](ai_features.md#which-provider-runs-a-feature) but not checked |
+| `applied`     | bool     | The server applies the feature's result to what it already serves — `file-ordering` orders the diff `GetPR` returns, `review-ease` fills `review_ease` — so there is no report to open. Opening a PR asks for each enabled one itself |
 
 ---
 
@@ -885,7 +886,7 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 | `status`         | string         | `pending` while a run is in flight (the output may still carry the previous result), `not-run` before the first one, otherwise the stored run's: `success`, `error` or `insufficient-input` |
 | `body`           | PluginBody     | The result rendered as markdown; an error's body says why the run failed    |
 | `annotations`    | []PRAnnotation | Diff annotations, each with `source: "ai"` and `feature` set                |
-| `report`         | object         | The feature's typed report, `null` when it has none; comments-addressed and feature-flags document their shapes ([comments-addressed](ai_features.md#the-report), [feature-flags](ai_features.md#the-feature-flags-report)) |
+| `report`         | object         | The feature's typed report, `null` when it has none; each feature documents its shape ([comments-addressed](ai_features.md#the-report), [feature-flags](ai_features.md#the-feature-flags-report), [file-ordering](ai_features.md#file-ordering), [review-ease](ai_features.md#review-ease)) |
 | `outstanding`    | array          | For features that track it, every item still needing attention — including ones no diff line can anchor; `null` otherwise |
 | `covers_sha`     | string         | Head SHA the stored result was computed from                                |
 | `covers_digest`  | string         | Inputs digest the stored result was computed from; `code-only` for a feature that reads only the code, whose results the head SHA alone keys |
@@ -947,8 +948,6 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 | `SectionSorting`              | map[string]string | Section title → `newest_first` / `oldest_first`                  |
 | `Workflows`                   | []Workflow        | Configured workflows                                             |
 | `Plugins`                     | []Plugin          | Configured plugins (read-only; `UpdateConfig` does not set them) |
-| `ExperimentalLLMFileOrdering` | bool              | LLM diff file ordering                                           |
-| `ExperimentalLLMReviewEase`   | bool              | LLM review-ease rating                                           |
 
 #### `Workflow` Object
 
@@ -1016,8 +1015,6 @@ The background workflow manager re-derives its workflows from the config at the 
 | `SectionPriority`             | map[string]int    | No       | Replaces the section priority map                |
 | `SectionSorting`              | map[string]string | No       | Replaces the section sorting map                 |
 | `Workflows`                   | []Workflow        | No       | Replaces the whole workflow list                 |
-| `ExperimentalLLMFileOrdering` | bool              | No       | LLM diff file ordering                           |
-| `ExperimentalLLMReviewEase`   | bool              | No       | LLM review-ease rating                           |
 
 **Reply** (`UpdateConfigReply`):
 

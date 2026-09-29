@@ -7,11 +7,13 @@ import {
     isPending,
     itemLocation,
     pollDelayMs,
+    reportFeatures,
     shouldRunOnOpen,
     statusLabel,
     statusVariant,
     verdictLabel,
     verdictVariant,
+    type AIFeatureInfo,
     type AIFeatureOutput,
     type CommentsReport,
     type ReportItem,
@@ -70,6 +72,38 @@ function output(fields: Partial<AIFeatureOutput> = {}): AIFeatureOutput {
         ...fields,
     };
 }
+
+function feature(fields: Partial<AIFeatureInfo> & Pick<AIFeatureInfo, 'id'>): AIFeatureInfo {
+    return {
+        name: fields.id,
+        description: '',
+        enabled: true,
+        automatic: false,
+        mode: 'oneshot',
+        modes: ['oneshot'],
+        provider: 'gemini',
+        ...fields,
+    };
+}
+
+describe('reportFeatures', () => {
+    test('offers a report for each enabled feature the server does not apply itself', () => {
+        const features = [
+            feature({ id: 'comments-addressed' }),
+            feature({ id: 'feature-flags', enabled: false }),
+            feature({ id: 'file-ordering', applied: true }),
+            feature({ id: 'review-ease', applied: true, automatic: true }),
+        ];
+        expect(reportFeatures(features).map(f => f.id)).toEqual(['comments-addressed']);
+    });
+
+    test('treats a feature from a server that predates the flag as a report', () => {
+        const { applied: _, ...older } = feature({ id: 'comments-addressed', applied: false });
+        expect(reportFeatures([older as AIFeatureInfo]).map(f => f.id)).toEqual([
+            'comments-addressed',
+        ]);
+    });
+});
 
 describe('commentsReport', () => {
     test('reads the typed report of a comments-addressed output', () => {

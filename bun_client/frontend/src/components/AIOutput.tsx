@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { listAIFeatures } from '../api';
-import type { AIFeatureInfo, AIFeatureOutput } from '../ai_utils';
+import { reportFeatures, type AIFeatureInfo, type AIFeatureOutput } from '../ai_utils';
 import { Button, Card } from '../design';
 import { useAIReport } from '../hooks/useAIReport';
 import AIReportView, { AIRerunButton } from './AIReportView';
@@ -42,7 +42,7 @@ export default function AIOutput({ owner, repo, number, onOpenReview, onClose }:
         const seq = ++loadSeq.current;
         setLoading(true);
         try {
-            const enabled = (await listAIFeatures()).filter(f => f.enabled);
+            const enabled = reportFeatures(await listAIFeatures());
             if (seq !== loadSeq.current) return;
             setFeatures(enabled);
             setError(null);

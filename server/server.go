@@ -6,8 +6,6 @@ import (
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
-	"crs/llm"
-	"crs/utils"
 	"crs/workflows"
 	"encoding/json"
 	"fmt"
@@ -233,7 +231,7 @@ func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
 
 // fetchPR fetches PR details plus the fully formatted content string. It is a
 // pure query: it reads caches (or GitHub on a miss) but never dispatches
-// plugins or LLM analysis — callers that want those side effects invoke
+// plugins or AI features — callers that want those side effects invoke
 // ensurePostUpdateHooks explicitly.
 func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
 	fetchStart := time.Now()
@@ -292,11 +290,22 @@ func shouldDispatchHooks(owner, repo string, number int, sha string) bool {
 }
 
 // ensurePostUpdateHooks dispatches the async post-update hooks (plugins and
-// the experimental LLM diff analysis) for a PR, reading the hooks' inputs from
+// AI features) for a PR a client is looking at, reading the hooks' inputs from
 // the DB caches. RPC methods that represent "the client is looking at fresh PR
 // content" call this; local-comment mutations do not, since they never change
-// the PR's head SHA. The workflow layer reaches it through WarmPRAnalysis.
+// the PR's head SHA.
+//
+// Beyond the hooks a workflow runs (WarmPRAnalysis), it asks for the applied
+// AI features on the client's behalf — ahead of the SHA debounce, so a run
+// that failed is retried the next time the PR is opened.
 func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
+	requestAppliedAIFeatures(owner, repo, number)
+	dispatchPostUpdateHooks(owner, repo, number, details)
+}
+
+// dispatchPostUpdateHooks runs the post-update hooks for a PR once per head
+// SHA per hookDispatchTTL, and prefetches its images every time.
+func dispatchPostUpdateHooks(owner, repo string, number int, details *PRDetails) {
 	// Deliberately ahead of the SHA debounce below: a new comment carrying a
 	// screenshot doesn't change the head SHA, and it is exactly the case where
 	// an image is missing from the cache.
@@ -1092,38 +1101,34 @@ func aiFeatureOutput(owner, repo string, number int, f ai.Feature) (AIFeatureOut
 // is expressed in minutes, matching the TOML field rather than the
 // time.Duration the server keeps in memory.
 type ConfigView struct {
-	Repos                       []string             `json:"Repos"`
-	SleepDuration               int                  `json:"SleepDuration"`
-	JiraDomain                  string               `json:"JiraDomain"`
-	GithubUsername              string               `json:"GithubUsername"`
-	RepoLocation                string               `json:"RepoLocation"`
-	AutoWorktree                bool                 `json:"AutoWorktree"`
-	DesktopNotifications        bool                 `json:"DesktopNotifications"`
-	SectionPriority             map[string]int       `json:"SectionPriority"`
-	SectionSorting              map[string]string    `json:"SectionSorting"`
-	Workflows                   []config.RawWorkflow `json:"Workflows"`
-	Plugins                     []config.Plugin      `json:"Plugins"`
-	ExperimentalLLMFileOrdering bool                 `json:"ExperimentalLLMFileOrdering"`
-	ExperimentalLLMReviewEase   bool                 `json:"ExperimentalLLMReviewEase"`
+	Repos                []string             `json:"Repos"`
+	SleepDuration        int                  `json:"SleepDuration"`
+	JiraDomain           string               `json:"JiraDomain"`
+	GithubUsername       string               `json:"GithubUsername"`
+	RepoLocation         string               `json:"RepoLocation"`
+	AutoWorktree         bool                 `json:"AutoWorktree"`
+	DesktopNotifications bool                 `json:"DesktopNotifications"`
+	SectionPriority      map[string]int       `json:"SectionPriority"`
+	SectionSorting       map[string]string    `json:"SectionSorting"`
+	Workflows            []config.RawWorkflow `json:"Workflows"`
+	Plugins              []config.Plugin      `json:"Plugins"`
 }
 
 // newConfigView builds the view from a loaded config, normalizing nil maps and
 // slices to empty ones so JSON clients always see {} / [] instead of null.
 func newConfigView(cfg config.Config) ConfigView {
 	view := ConfigView{
-		Repos:                       cfg.Repos,
-		SleepDuration:               int(cfg.SleepDuration.Minutes()),
-		JiraDomain:                  cfg.JiraDomain,
-		GithubUsername:              cfg.GithubUsername,
-		RepoLocation:                cfg.RepoLocation,
-		AutoWorktree:                cfg.AutoWorktree,
-		DesktopNotifications:        cfg.DesktopNotifications,
-		SectionPriority:             cfg.SectionPriority,
-		SectionSorting:              cfg.SectionSorting,
-		Workflows:                   cfg.RawWorkflows,
-		Plugins:                     cfg.Plugins,
-		ExperimentalLLMFileOrdering: cfg.ExperimentalLLMFileOrdering,
-		ExperimentalLLMReviewEase:   cfg.ExperimentalLLMReviewEase,
+		Repos:                cfg.Repos,
+		SleepDuration:        int(cfg.SleepDuration.Minutes()),
+		JiraDomain:           cfg.JiraDomain,
+		GithubUsername:       cfg.GithubUsername,
+		RepoLocation:         cfg.RepoLocation,
+		AutoWorktree:         cfg.AutoWorktree,
+		DesktopNotifications: cfg.DesktopNotifications,
+		SectionPriority:      cfg.SectionPriority,
+		SectionSorting:       cfg.SectionSorting,
+		Workflows:            cfg.RawWorkflows,
+		Plugins:              cfg.Plugins,
 	}
 	if view.Repos == nil {
 		view.Repos = []string{}
@@ -1198,18 +1203,16 @@ func (h *RPCHandler) GetConfig(args *GetConfigArgs, reply *GetConfigReply) error
 // left out (null) keeps whatever is on disk. Sending Workflows replaces the
 // whole list, which is how a client removes or reorders entries.
 type UpdateConfigArgs struct {
-	Repos                       *[]string             `json:"Repos"`
-	SleepDuration               *int                  `json:"SleepDuration"`
-	JiraDomain                  *string               `json:"JiraDomain"`
-	GithubUsername              *string               `json:"GithubUsername"`
-	RepoLocation                *string               `json:"RepoLocation"`
-	AutoWorktree                *bool                 `json:"AutoWorktree"`
-	DesktopNotifications        *bool                 `json:"DesktopNotifications"`
-	SectionPriority             *map[string]int       `json:"SectionPriority"`
-	SectionSorting              *map[string]string    `json:"SectionSorting"`
-	Workflows                   *[]config.RawWorkflow `json:"Workflows"`
-	ExperimentalLLMFileOrdering *bool                 `json:"ExperimentalLLMFileOrdering"`
-	ExperimentalLLMReviewEase   *bool                 `json:"ExperimentalLLMReviewEase"`
+	Repos                *[]string             `json:"Repos"`
+	SleepDuration        *int                  `json:"SleepDuration"`
+	JiraDomain           *string               `json:"JiraDomain"`
+	GithubUsername       *string               `json:"GithubUsername"`
+	RepoLocation         *string               `json:"RepoLocation"`
+	AutoWorktree         *bool                 `json:"AutoWorktree"`
+	DesktopNotifications *bool                 `json:"DesktopNotifications"`
+	SectionPriority      *map[string]int       `json:"SectionPriority"`
+	SectionSorting       *map[string]string    `json:"SectionSorting"`
+	Workflows            *[]config.RawWorkflow `json:"Workflows"`
 }
 
 // UpdateConfigReply carries the same body as GetConfig plus any validation
@@ -1234,18 +1237,16 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 	reply.Errors = []config.ValidationError{}
 
 	update := config.Update{
-		Repos:                       normalizeRepos(args.Repos),
-		SleepDuration:               args.SleepDuration,
-		JiraDomain:                  args.JiraDomain,
-		GithubUsername:              args.GithubUsername,
-		RepoLocation:                args.RepoLocation,
-		AutoWorktree:                args.AutoWorktree,
-		DesktopNotifications:        args.DesktopNotifications,
-		SectionPriority:             args.SectionPriority,
-		SectionSorting:              args.SectionSorting,
-		Workflows:                   normalizeWorkflows(args.Workflows),
-		ExperimentalLLMFileOrdering: args.ExperimentalLLMFileOrdering,
-		ExperimentalLLMReviewEase:   args.ExperimentalLLMReviewEase,
+		Repos:                normalizeRepos(args.Repos),
+		SleepDuration:        args.SleepDuration,
+		JiraDomain:           args.JiraDomain,
+		GithubUsername:       args.GithubUsername,
+		RepoLocation:         args.RepoLocation,
+		AutoWorktree:         args.AutoWorktree,
+		DesktopNotifications: args.DesktopNotifications,
+		SectionPriority:      args.SectionPriority,
+		SectionSorting:       args.SectionSorting,
+		Workflows:            normalizeWorkflows(args.Workflows),
 	}
 
 	if update.IsEmpty() {
@@ -1767,47 +1768,4 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 	// Return empty output for now (plugins running async)
 	reply.Output = make(map[string]PluginOutput)
 	return nil
-}
-
-// Experimental: LLM-based diff analysis (file ordering + review ease).
-//
-// When config.ExperimentalLLMFileOrdering is enabled, the files in a PR diff
-// are ordered by an LLM so a reviewer can read the PR top-to-bottom: the
-// integration / entry-point changes first, then implementation and helpers,
-// then styling changes, then tests last. When the flag is off (the default),
-// or if the LLM call fails for any reason, ordering falls back to
-// sortFilesTestsLast.
-//
-// When config.ExperimentalLLMReviewEase is enabled, the same LLM call also
-// rates how easy the PR is to review ("easy", "medium", or "hard"). The
-// rating is cached alongside the file ordering and exposed as the
-// review_ease field in PR metadata and review list items.
-//
-// The analysis itself — the provider client, prompt, response parsing,
-// per-SHA caching, and the ~/.crs/llm_calls.log call log — lives in the llm
-// package. This file only keeps the dispatch between the experimental LLM
-// ordering and the default sort.
-
-// orderDiffFiles returns the diff files in display order. It dispatches to the
-// experimental LLM ordering when enabled, otherwise to the default sort that
-// places test files last. LLM orderings are cached per PR SHA so the LLM is
-// queried at most once per revision.
-//
-// Rendering never waits on the LLM. On a cache miss the analysis is kicked off
-// in the background and this render falls back to the default sort; the
-// ordering is in place for the next render of the same revision. Blocking here
-// would put a multi-second network round trip in front of opening a review,
-// which is precisely the delay this path must not have.
-func orderDiffFiles(files []*utils.DiffFile, repo string, prNumber int, sha string) []*utils.DiffFile {
-	if !config.C().ExperimentalLLMFileOrdering {
-		return sortFilesTestsLast(files)
-	}
-	if len(files) < 2 {
-		return files
-	}
-	if ordered, ok := llm.CachedOrderedDiffFiles(files, repo, prNumber, sha); ok {
-		return ordered
-	}
-	go llm.EnsureDiffAnalysis(files, repo, prNumber, sha, llm.TriggerRender)
-	return sortFilesTestsLast(files)
 }

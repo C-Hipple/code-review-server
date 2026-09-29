@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"crs/config"
+	"crs/llm"
 	"strings"
 	"testing"
 )
@@ -118,4 +119,92 @@ func TestDefaultRegistryHasTheBuiltIns(t *testing.T) {
 			t.Errorf("a valid entry was rejected: %v", problems)
 		}
 	}
+	for _, id := range []string{FileOrderingID, ReviewEaseID} {
+		f, ok := DefaultRegistry.Get(id)
+		if !ok {
+			t.Fatalf("%s is not registered", id)
+		}
+		if f.Name() == "" || !IsApplied(f) {
+			t.Errorf("unexpected feature: %q applied %v", f.Name(), IsApplied(f))
+		}
+		if problems := ValidateFeatures([]config.AIFeature{{ID: id, Enabled: true, Automatic: true, Provider: "gemini"}}); len(problems) != 0 {
+			t.Errorf("a valid entry was rejected: %v", problems)
+		}
+		if problems := ValidateFeatures([]config.AIFeature{{ID: id, Enabled: true, Mode: "agent"}}); len(problems) != 1 {
+			t.Errorf("%s runs one-shot only, got %v", id, problems)
+		}
+	}
+}
+
+func TestDescribeMarksAppliedFeatures(t *testing.T) {
+	infos := DefaultRegistry.Describe(config.Config{})
+	applied := map[string]bool{}
+	for _, info := range infos {
+		applied[info.ID] = info.Applied
+	}
+	want := map[string]bool{CommentsAddressedID: false, FeatureFlagsID: false, FileOrderingID: true, ReviewEaseID: true}
+	for id, w := range want {
+		if got, ok := applied[id]; !ok || got != w {
+			t.Errorf("%s: applied = %v (listed %v), want %v", id, got, ok, w)
+		}
+	}
+}
+
+func TestLegacyFlagsNameTheAppliedFeatures(t *testing.T) {
+	// config spells out the IDs its legacy flags stand for, since it can't
+	// import this package; they must name the applied features registered here.
+	cfg, err := config.ParseConfigForTest([]byte("ExperimentalLLMFileOrdering = true\nExperimentalLLMReviewEase = true\n"))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	var enabled []string
+	for _, f := range DefaultRegistry.Features() {
+		entry, ok := cfg.AIFeatureSettings(f.ID())
+		if !ok {
+			continue
+		}
+		if !IsApplied(f) || !entry.Enabled || !entry.Automatic {
+			t.Errorf("legacy flags enabled %s as %+v", f.ID(), entry)
+		}
+		if problems := ValidateFeatures([]config.AIFeature{entry}); len(problems) != 0 {
+			t.Errorf("%s: the entry a flag stands for is rejected: %v", f.ID(), problems)
+		}
+		enabled = append(enabled, f.ID())
+	}
+	if strings.Join(enabled, ",") != FileOrderingID+","+ReviewEaseID {
+		t.Errorf("legacy flags enabled %v", enabled)
+	}
+}
+
+func TestLegacyBackendKeysBuildTheirProvider(t *testing.T) {
+	// What llm.DefaultClient did for the experimental analysis: Gemini unless
+	// ExperimentalLLMProvider says openrouter, which asks for
+	// ExperimentalLLMModel; a model-less or unknown backend fails at
+	// client-init.
+	t.Setenv("GEMINI_API_KEY", "gemini-key")
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-key")
+	build := func(toml string) (Provider, error) {
+		t.Helper()
+		cfg, err := config.ParseConfigForTest([]byte("ExperimentalLLMReviewEase = true\n" + toml))
+		if err != nil {
+			t.Fatalf("parsing: %v", err)
+		}
+		entry, ok := cfg.AIFeatureSettings(ReviewEaseID)
+		if !ok {
+			t.Fatal("review-ease isn't enabled")
+		}
+		return NewProvider(cfg.AIProviderFor(entry))
+	}
+
+	if p, err := build(""); err != nil || p.Name() != "gemini" {
+		t.Errorf("no backend set: %v, %v; want gemini", p, err)
+	}
+	p, err := build("ExperimentalLLMProvider = \"openrouter\"\nExperimentalLLMModel = \"google/gemini-2.5-flash\"\n")
+	if err != nil || p.Name() != "openrouter" || p.Model() != "google/gemini-2.5-flash" {
+		t.Errorf("openrouter: %v, %v", p, err)
+	}
+	_, err = build("ExperimentalLLMProvider = \"openrouter\"\n")
+	wantStage(t, err, llm.StageClientInit)
+	_, err = build("ExperimentalLLMProvider = \"openai\"\n")
+	wantStage(t, err, llm.StageClientInit)
 }

@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Gemini is the backend behind DefaultClient today. It talks to the Google
-// Generative Language REST API using the GEMINI_API_KEY environment
+// Gemini is the backend NewClient builds for ProviderGemini. It talks to the
+// Google Generative Language REST API using the GEMINI_API_KEY environment
 // variable.
 
 const (

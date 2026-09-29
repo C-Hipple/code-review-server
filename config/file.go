@@ -29,18 +29,16 @@ func ConfigPath() (string, error) {
 // Update is a partial change to the config file. A nil field is left as it is
 // on disk, so a client can send only the settings it means to change.
 type Update struct {
-	Repos                       *[]string
-	SleepDuration               *int // minutes
-	JiraDomain                  *string
-	GithubUsername              *string
-	RepoLocation                *string
-	AutoWorktree                *bool
-	DesktopNotifications        *bool
-	SectionPriority             *map[string]int
-	SectionSorting              *map[string]string
-	Workflows                   *[]RawWorkflow
-	ExperimentalLLMFileOrdering *bool
-	ExperimentalLLMReviewEase   *bool
+	Repos                *[]string
+	SleepDuration        *int // minutes
+	JiraDomain           *string
+	GithubUsername       *string
+	RepoLocation         *string
+	AutoWorktree         *bool
+	DesktopNotifications *bool
+	SectionPriority      *map[string]int
+	SectionSorting       *map[string]string
+	Workflows            *[]RawWorkflow
 }
 
 // IsEmpty reports whether the update carries no changes at all.
@@ -48,7 +46,7 @@ func (u Update) IsEmpty() bool {
 	return u.Repos == nil && u.SleepDuration == nil && u.JiraDomain == nil &&
 		u.GithubUsername == nil && u.RepoLocation == nil && u.AutoWorktree == nil &&
 		u.DesktopNotifications == nil && u.SectionPriority == nil && u.SectionSorting == nil &&
-		u.Workflows == nil && u.ExperimentalLLMFileOrdering == nil && u.ExperimentalLLMReviewEase == nil
+		u.Workflows == nil
 }
 
 // setKey writes v into the TOML document when the update supplies it.
@@ -100,8 +98,6 @@ func (u Update) Render() ([]byte, *Config, error) {
 	setKey(doc, "DesktopNotifications", u.DesktopNotifications)
 	setKey(doc, "SectionPriority", u.SectionPriority)
 	setKey(doc, "SectionSorting", u.SectionSorting)
-	setKey(doc, "ExperimentalLLMFileOrdering", u.ExperimentalLLMFileOrdering)
-	setKey(doc, "ExperimentalLLMReviewEase", u.ExperimentalLLMReviewEase)
 	if u.Workflows != nil {
 		doc["Workflows"] = stripInheritedUsernames(*u.Workflows, docString(doc, "GithubUsername"))
 	}

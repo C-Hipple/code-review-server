@@ -169,8 +169,6 @@ describe('draftFromConfig', () => {
                 { WorkflowType: 'SyncReviewRequestsWorkflow', Name: 'A', SectionTitle: 'Sec' },
             ],
             Plugins: [],
-            ExperimentalLLMFileOrdering: false,
-            ExperimentalLLMReviewEase: false,
         } as ServerConfig;
 
         const draft = draftFromConfig(config);

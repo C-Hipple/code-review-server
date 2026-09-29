@@ -194,9 +194,76 @@ func (c Config) AIProviderFor(f AIFeature) AIProviderChoice {
 	return choice
 }
 
+// IDs of the AI features the legacy root-level keys configure. config cannot
+// import the ai package for them (ai reads config), so they are spelled out
+// here; ai's tests check them against its registry.
+const (
+	legacyFileOrderingID = "file-ordering"
+	legacyReviewEaseID   = "review-ease"
+)
+
+// legacyLLMKeys are the root-level keys that configured the diff file ordering
+// and the review-ease rating before those were AI features. A config that
+// still sets them keeps working: for either feature without an [[AIFeatures]]
+// entry of its own, a flag that is on stands for an entry that enables it
+// automatically on Provider (Gemini unless it names another) with Model — how
+// the flags always ran, apart from any [AI] defaults.
+type legacyLLMKeys struct {
+	FileOrdering bool   // ExperimentalLLMFileOrdering
+	ReviewEase   bool   // ExperimentalLLMReviewEase
+	Provider     string // ExperimentalLLMProvider: "gemini" or "openrouter"
+	Model        string // ExperimentalLLMModel: the model the openrouter provider asks for
+}
+
+// entry is the [[AIFeatures]] entry for the feature id that a legacy flag
+// stands for, and false when no flag that is on stands for one.
+func (k legacyLLMKeys) entry(id string) (AIFeature, bool) {
+	on := (id == legacyFileOrderingID && k.FileOrdering) || (id == legacyReviewEaseID && k.ReviewEase)
+	if !on {
+		return AIFeature{}, false
+	}
+	provider := k.Provider
+	if provider == "" {
+		provider = AIProviderGemini
+	}
+	return AIFeature{ID: id, Enabled: true, Automatic: true, Provider: provider, Model: k.Model}, true
+}
+
 // AIFeatureSettings returns the [[AIFeatures]] entry for id, and false when
-// the config has none — which leaves the feature disabled.
+// the config has none — which leaves the feature disabled. For file-ordering
+// and review-ease, a legacy flag that is on stands in for a missing entry
+// (legacyLLMKeys), so code asking whether a feature is enabled goes through
+// here rather than reading AIFeatures.
 func (c Config) AIFeatureSettings(id string) (AIFeature, bool) {
+	if f, ok := c.fileEntry(id); ok {
+		return f, true
+	}
+	return c.legacy.entry(id)
+}
+
+// AutomaticAIFeatures returns the IDs of the AI features config enables to run
+// automatically: the [[AIFeatures]] entries that say so, in file order, then
+// the features a legacy flag stands in for.
+func (c Config) AutomaticAIFeatures() []string {
+	var ids []string
+	for _, f := range c.AIFeatures {
+		if f.Enabled && f.Automatic {
+			ids = append(ids, f.ID)
+		}
+	}
+	for _, id := range []string{legacyFileOrderingID, legacyReviewEaseID} {
+		if _, own := c.fileEntry(id); own {
+			continue
+		}
+		if f, ok := c.legacy.entry(id); ok && f.Enabled && f.Automatic {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// fileEntry is the [[AIFeatures]] entry the config file has for id.
+func (c Config) fileEntry(id string) (AIFeature, bool) {
 	for _, f := range c.AIFeatures {
 		if f.ID == id {
 			return f, true
@@ -219,27 +286,15 @@ type Config struct {
 	SectionSorting       map[string]string // Map of section title to sorting method (e.g. "newest_first", "oldest_first")
 	Plugins              []Plugin
 	RepoConfigs          map[string]RepoConfig // Keyed by "owner/repo"
-	// ExperimentalLLMFileOrdering, when true, orders the files in a PR diff via
-	// an LLM (integration first, then implementation, then styling, then tests)
-	// instead of the default test-files-last sort. Off by default.
-	ExperimentalLLMFileOrdering bool
-	// ExperimentalLLMReviewEase, when true, rates how easy each PR is to review
-	// ("easy", "medium", or "hard") in the same LLM call that computes the diff
-	// file ordering. The rating is exposed as the review_ease field in PR
-	// metadata and review list items. Off by default.
-	ExperimentalLLMReviewEase bool
-	// ExperimentalLLMProvider is the backend both experimental helpers call:
-	// "gemini" (the default, with GEMINI_API_KEY) or "openrouter" (with
-	// OPENROUTER_API_KEY), which asks for ExperimentalLLMModel.
-	ExperimentalLLMProvider string
-	// ExperimentalLLMModel is the model the openrouter provider asks for, as
-	// OpenRouter names it. Gemini ignores it.
-	ExperimentalLLMModel string
 	// AI holds the defaults for the AI features, and AIFeatures switches them
 	// on one by one. Both are absent from the built-in defaults, so the AI layer
-	// does nothing until a config file enables a feature.
+	// does nothing until a config file enables a feature. AIFeatures holds only
+	// the entries the file has: ask AIFeatureSettings whether a feature is on.
 	AI         AISettings
 	AIFeatures []AIFeature
+	// legacy holds the root-level keys file ordering and review ease were
+	// configured by before they were AI features; see legacyLLMKeys.
+	legacy legacyLLMKeys
 	// UsingDefaults is true when no config file exists and the server is
 	// running DefaultConfigTOML. Nothing behaves differently because of it; it
 	// exists so clients can say so.
@@ -321,24 +376,25 @@ func ParseConfigForTest(data []byte) (*Config, error) {
 // It does NOT initialize the database.
 func parseConfig(data []byte) (*Config, error) {
 	var intermediate_config struct {
-		Repos                       []string
-		JiraDomain                  string
-		SleepDuration               int64
-		Workflows                   []RawWorkflow
-		GithubUsername              string
-		RepoLocation                string
-		AutoWorktree                bool
-		DesktopNotifications        bool
-		SectionPriority             map[string]int
-		SectionSorting              map[string]string
-		Plugins                     []Plugin
-		RepoConfigs                 map[string]RepoConfig
-		ExperimentalLLMFileOrdering bool
-		ExperimentalLLMReviewEase   bool
-		ExperimentalLLMProvider     string
-		ExperimentalLLMModel        string
-		AI                          AISettings
-		AIFeatures                  []AIFeature
+		Repos                []string
+		JiraDomain           string
+		SleepDuration        int64
+		Workflows            []RawWorkflow
+		GithubUsername       string
+		RepoLocation         string
+		AutoWorktree         bool
+		DesktopNotifications bool
+		SectionPriority      map[string]int
+		SectionSorting       map[string]string
+		Plugins              []Plugin
+		RepoConfigs          map[string]RepoConfig
+		AI                   AISettings
+		AIFeatures           []AIFeature
+		// The legacy keys; see legacyLLMKeys.
+		LegacyFileOrdering bool   `toml:"ExperimentalLLMFileOrdering"`
+		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
+		LegacyProvider     string `toml:"ExperimentalLLMProvider"`
+		LegacyModel        string `toml:"ExperimentalLLMModel"`
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -397,24 +453,26 @@ func parseConfig(data []byte) (*Config, error) {
 	}
 
 	return &Config{
-		Repos:                       intermediate_config.Repos,
-		RawWorkflows:                intermediate_config.Workflows,
-		SleepDuration:               parsed_sleep_duration,
-		JiraDomain:                  intermediate_config.JiraDomain,
-		GithubUsername:              intermediate_config.GithubUsername,
-		RepoLocation:                repoLocation,
-		AutoWorktree:                intermediate_config.AutoWorktree,
-		DesktopNotifications:        intermediate_config.DesktopNotifications,
-		SectionPriority:             intermediate_config.SectionPriority,
-		SectionSorting:              intermediate_config.SectionSorting,
-		Plugins:                     intermediate_config.Plugins,
-		RepoConfigs:                 repoConfigs,
-		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
-		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
-		ExperimentalLLMProvider:     intermediate_config.ExperimentalLLMProvider,
-		ExperimentalLLMModel:        intermediate_config.ExperimentalLLMModel,
-		AI:                          intermediate_config.AI,
-		AIFeatures:                  intermediate_config.AIFeatures,
+		Repos:                intermediate_config.Repos,
+		RawWorkflows:         intermediate_config.Workflows,
+		SleepDuration:        parsed_sleep_duration,
+		JiraDomain:           intermediate_config.JiraDomain,
+		GithubUsername:       intermediate_config.GithubUsername,
+		RepoLocation:         repoLocation,
+		AutoWorktree:         intermediate_config.AutoWorktree,
+		DesktopNotifications: intermediate_config.DesktopNotifications,
+		SectionPriority:      intermediate_config.SectionPriority,
+		SectionSorting:       intermediate_config.SectionSorting,
+		Plugins:              intermediate_config.Plugins,
+		RepoConfigs:          repoConfigs,
+		AI:                   intermediate_config.AI,
+		AIFeatures:           intermediate_config.AIFeatures,
+		legacy: legacyLLMKeys{
+			FileOrdering: intermediate_config.LegacyFileOrdering,
+			ReviewEase:   intermediate_config.LegacyReviewEase,
+			Provider:     intermediate_config.LegacyProvider,
+			Model:        intermediate_config.LegacyModel,
+		},
 	}, nil
 }
 

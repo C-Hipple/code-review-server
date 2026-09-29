@@ -166,16 +166,16 @@ func TestValidateAI(t *testing.T) {
 			wantMessage: "needs a model",
 		},
 		{
-			name:        "unknown experimental LLM provider",
-			mutate:      func(c *Config) { c.ExperimentalLLMProvider = "command" },
+			name:        "unknown legacy LLM provider",
+			mutate:      func(c *Config) { c.legacy.Provider = "command" },
 			wantField:   "ExperimentalLLMProvider",
 			wantMessage: "unknown provider",
 		},
 		{
-			name: "experimental LLM on openrouter without a model",
+			name: "legacy LLM flags on openrouter without a model",
 			mutate: func(c *Config) {
-				c.ExperimentalLLMReviewEase = true
-				c.ExperimentalLLMProvider = "openrouter"
+				c.legacy.ReviewEase = true
+				c.legacy.Provider = "openrouter"
 			},
 			wantField:   "ExperimentalLLMModel",
 			wantMessage: "needs a model",
@@ -231,28 +231,43 @@ func TestValidateAIAcceptsWorkingSettings(t *testing.T) {
 	}
 }
 
-func TestParseConfigReadsExperimentalLLMBackend(t *testing.T) {
+func TestLegacyLLMBackendReachesItsFeatures(t *testing.T) {
+	// ExperimentalLLMProvider and ExperimentalLLMModel pick the backend of the
+	// features the legacy flags switch on, and [AI] doesn't move them.
 	cfg, err := parseConfig([]byte(`
 ExperimentalLLMFileOrdering = true
 ExperimentalLLMProvider = "openrouter"
 ExperimentalLLMModel = "google/gemini-2.5-flash"
+
+[AI]
+DefaultProvider = "command"
+DefaultCommand = "claude -p"
+DefaultModel = "anthropic/claude-sonnet-4.5"
 `))
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if cfg.ExperimentalLLMProvider != "openrouter" || cfg.ExperimentalLLMModel != "google/gemini-2.5-flash" {
-		t.Errorf("unexpected experimental LLM backend: %q, %q", cfg.ExperimentalLLMProvider, cfg.ExperimentalLLMModel)
+	entry, ok := cfg.AIFeatureSettings("file-ordering")
+	if !ok || !entry.Enabled || !entry.Automatic {
+		t.Fatalf("file-ordering: %+v (found %v)", entry, ok)
+	}
+	want := AIProviderChoice{Provider: "openrouter", Command: "claude -p", Model: "google/gemini-2.5-flash"}
+	if got := cfg.AIProviderFor(entry); got != want {
+		t.Errorf("AIProviderFor = %+v, want %+v", got, want)
+	}
+	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
+		t.Error("review-ease has no flag on, so the backend keys don't enable it")
 	}
 	if problems := Validate(cfg); len(problems) != 0 {
 		t.Errorf("expected no problems, got %v", problems)
 	}
 }
 
-func TestValidateLeavesAnIdleExperimentalLLMBackendAlone(t *testing.T) {
-	// Neither helper is on, so nothing would call OpenRouter: a half-set
+func TestValidateLeavesAnIdleLegacyLLMBackendAlone(t *testing.T) {
+	// Neither legacy flag is on, so nothing would call OpenRouter: a half-set
 	// backend is not worth blocking a save over.
 	cfg := validConfig()
-	cfg.ExperimentalLLMProvider = "openrouter"
+	cfg.legacy.Provider = "openrouter"
 	if problems := Validate(cfg); len(problems) != 0 {
 		t.Errorf("expected no problems, got %v", problems)
 	}
@@ -291,5 +306,108 @@ Automatic = true
 	if len(cfg.AIFeatures) != 1 || cfg.AIFeatures[0].ID != "comments-addressed" ||
 		!cfg.AIFeatures[0].Enabled || !cfg.AIFeatures[0].Automatic {
 		t.Errorf("[[AIFeatures]] lost in the round trip: %+v", cfg.AIFeatures)
+	}
+}
+
+func TestLegacyFlagsEnableTheirAIFeatures(t *testing.T) {
+	// A config written before file ordering and review ease were AI features
+	// keeps them on, running automatically on Gemini as the flags always did —
+	// even when [AI] would otherwise pick another provider.
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+
+[AI]
+DefaultCommand = "claude -p"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	for _, id := range []string{"file-ordering", "review-ease"} {
+		entry, ok := cfg.AIFeatureSettings(id)
+		if !ok || !entry.Enabled || !entry.Automatic {
+			t.Errorf("%s: expected an enabled, automatic entry, got %+v (found %v)", id, entry, ok)
+		}
+		if provider := cfg.AIProviderFor(entry).Provider; provider != AIProviderGemini {
+			t.Errorf("%s runs on %q, want gemini", id, provider)
+		}
+	}
+	// The flags are read, not written into the file's entries.
+	if len(cfg.AIFeatures) != 0 {
+		t.Errorf("AIFeatures holds what the file has, got %+v", cfg.AIFeatures)
+	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("the entries a legacy flag stands for must be valid, got %v", problems)
+	}
+}
+
+func TestLegacyFlagDefersToAnEntryOfItsOwn(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = false
+
+[[AIFeatures]]
+ID = "file-ordering"
+Enabled = false
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if len(cfg.AIFeatures) != 1 || cfg.AIFeatures[0].Enabled {
+		t.Errorf("the config's own entry should win over the flag: %+v", cfg.AIFeatures)
+	}
+	if entry, ok := cfg.AIFeatureSettings("file-ordering"); !ok || entry.Enabled {
+		t.Errorf("file-ordering should be the config's disabled entry, got %+v", entry)
+	}
+	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
+		t.Error("a flag set to false adds nothing")
+	}
+}
+
+func TestUpdateRenderKeepsLegacyFlags(t *testing.T) {
+	// The flags stay in the file as they were written; they are only read.
+	path := useTempConfig(t, "ExperimentalLLMReviewEase = true\n"+sampleConfig)
+	sleep := 15
+	data, cfg, err := Update{SleepDuration: &sleep}.Render()
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(string(data), "ExperimentalLLMReviewEase = true") {
+		t.Errorf("the flag was dropped from %s:\n%s", path, data)
+	}
+	if entry, ok := cfg.AIFeatureSettings("review-ease"); !ok || !entry.Enabled {
+		t.Errorf("the rendered config lost the review-ease entry: %+v", cfg.AIFeatures)
+	}
+	if strings.Contains(string(data), "AIFeatures") {
+		t.Errorf("the entry a flag stands for must not be written out:\n%s", data)
+	}
+}
+
+func TestAutomaticAIFeatures(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = true
+
+[[AIFeatures]]
+ID = "feature-flags"
+Enabled = true
+Automatic = true
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+
+[[AIFeatures]]
+ID = "review-ease"
+Enabled = true
+Automatic = false
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	// File order first, then the legacy flag without an entry of its own; the
+	// review-ease entry beats its flag, and isn't automatic.
+	if got := strings.Join(cfg.AutomaticAIFeatures(), ","); got != "feature-flags,file-ordering" {
+		t.Errorf("AutomaticAIFeatures = %s", got)
 	}
 }

@@ -7,14 +7,15 @@
 //
 // The layer sits beside the two older AI paths rather than on top of them.
 // Plugins (server/plugins.go) remain separate binaries with their own config,
-// table and RPCs, and share only the subprocess helper with this package. The
+// table and RPCs, and share only the subprocess helper and the openrouter
+// client with this package. The
 // llm package's diff analysis keeps its own flags; this package reuses llm's
-// Client for Gemini and its call log (~/.crs/llm_calls.log).
+// Clients for Gemini and OpenRouter and its call log (~/.crs/llm_calls.log).
 //
 // Features reach a model through two seams: Provider for one-shot calls and
 // Agent for multi-turn work with tool callbacks. Neither seam names a backend.
-// Gemini and a command-backed provider — any CLI agent the user names — are
-// peers, chosen per feature in config (config.AIProviderFor).
+// Gemini, OpenRouter and a command-backed provider — any CLI agent the user
+// names — are peers, chosen per feature in config (config.AIProviderFor).
 package ai
 
 import (

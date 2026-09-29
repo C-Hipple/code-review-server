@@ -150,7 +150,6 @@ func (r *Registry) Describe(cfg config.Config) []Info {
 	out := make([]Info, 0, len(features))
 	for _, f := range features {
 		entry, _ := cfg.AIFeatureSettings(f.ID())
-		provider, _ := cfg.AIProviderFor(entry)
 		info := Info{
 			ID:        f.ID(),
 			Name:      f.Name(),
@@ -158,7 +157,7 @@ func (r *Registry) Describe(cfg config.Config) []Info {
 			Automatic: entry.Enabled && entry.Automatic,
 			Mode:      resolveMode(f, entry),
 			Modes:     modesOf(f),
-			Provider:  provider,
+			Provider:  cfg.AIProviderFor(entry).Provider,
 		}
 		if d, ok := f.(Describer); ok {
 			info.Description = d.Description()

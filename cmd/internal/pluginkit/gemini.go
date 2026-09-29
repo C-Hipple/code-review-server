@@ -20,7 +20,7 @@ type geminiContent struct {
 }
 
 // Schema is the subset of the OpenAPI schema dialect Gemini accepts as a
-// response schema.
+// response schema. JSONSchema renders it for OpenRouter.
 type Schema struct {
 	Type             string             `json:"type"`
 	Description      string             `json:"description,omitempty"`
@@ -83,10 +83,10 @@ func AnnotationsSchema(max int) *Schema {
 	}
 }
 
-// Generate sends a prompt to the latest Gemini Flash model and returns the
-// text of the first candidate. A non-nil schema asks for a JSON reply
-// matching it.
-func Generate(prompt string, schema *Schema, apiKey string) (string, error) {
+// generateGemini sends a prompt to the latest Gemini Flash model at endpoint
+// and returns the text of the first candidate. A non-nil schema asks for a
+// JSON reply matching it.
+func generateGemini(endpoint, apiKey, prompt string, schema *Schema) (string, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
@@ -104,7 +104,7 @@ func Generate(prompt string, schema *Schema, apiKey string) (string, error) {
 		return "", err
 	}
 
-	resp, err := http.Post(geminiEndpoint+apiKey, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := http.Post(endpoint+apiKey, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}

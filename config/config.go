@@ -52,14 +52,49 @@ type Plugin struct {
 	IncludeComments bool
 	IncludeBranch   bool
 	OnlyOnDemand    bool
+	// Provider and Model say which LLM backend the plugin should call:
+	// PluginProviderGemini or PluginProviderOpenRouter, and for OpenRouter the
+	// model to ask for. The server hands them to the plugin in the
+	// CRS_LLM_PROVIDER and CRS_LLM_MODEL environment variables; the bundled
+	// plugins honor them, and a plugin that calls no model ignores them. Empty
+	// leaves the variables to whatever the server's own environment says.
+	Provider string
+	Model    string
+}
+
+// LLM backends a [[Plugins]] entry can name. A plugin is itself a command, so
+// the AI features' command provider has no counterpart here.
+const (
+	PluginProviderGemini     = AIProviderGemini
+	PluginProviderOpenRouter = AIProviderOpenRouter
+)
+
+// Environment variables a plugin's Provider and Model reach it through.
+const (
+	PluginProviderEnv = "CRS_LLM_PROVIDER"
+	PluginModelEnv    = "CRS_LLM_MODEL"
+)
+
+// Env is what the server adds to the plugin's environment: its Provider and
+// Model, each only when set.
+func (p Plugin) Env() []string {
+	var env []string
+	if p.Provider != "" {
+		env = append(env, PluginProviderEnv+"="+p.Provider)
+	}
+	if p.Model != "" {
+		env = append(env, PluginModelEnv+"="+p.Model)
+	}
+	return env
 }
 
 // AI providers and execution modes a [[AIFeatures]] entry can name. They live
 // here, beside the validation that checks them, because config cannot import
 // the ai package (ai reads config).
 const (
-	AIProviderGemini  = "gemini"
-	AIProviderCommand = "command"
+	AIProviderGemini     = "gemini"
+	AIProviderOpenRouter = "openrouter"
+	AIProviderCommand    = "command"
 
 	// AIModeOneShot answers from a single model call.
 	AIModeOneShot = "oneshot"
@@ -73,15 +108,20 @@ const (
 type AISettings struct {
 	// DefaultProvider is the provider a feature uses when its entry sets
 	// neither Provider nor Command: "gemini" (the Gemini API, which needs
-	// GEMINI_API_KEY) or "command" (a program on this machine). Empty picks
-	// "command" when DefaultCommand is set and "gemini" otherwise. The whole
-	// order is on AIProviderFor.
+	// GEMINI_API_KEY), "openrouter" (any model OpenRouter serves, which needs
+	// OPENROUTER_API_KEY and a model) or "command" (a program on this machine).
+	// Empty picks "command" when DefaultCommand is set and "gemini" otherwise.
+	// The whole order is on AIProviderFor.
 	DefaultProvider string
 	// DefaultCommand is the command line the command provider runs, e.g.
 	// "claude -p". It is split into words like a shell would (quotes work, pipes
 	// and variables do not), receives the prompt on stdin, and must print its
 	// answer on stdout.
 	DefaultCommand string
+	// DefaultModel is the model the openrouter provider asks for, as OpenRouter
+	// names it, e.g. "anthropic/claude-sonnet-4.5". Only that provider reads it:
+	// Gemini stays on gemini-flash-latest, and a command picks its own model.
+	DefaultModel string
 }
 
 // AIFeature is one [[AIFeatures]] entry: it switches a registered AI feature on
@@ -96,15 +136,28 @@ type AIFeature struct {
 	// plugins run, instead of only when a client asks for it. It has no effect
 	// unless Enabled is set too.
 	Automatic bool
-	// Provider and Command override the [AI] defaults for this feature. A
-	// Command on its own also picks the command provider, over any [AI]
-	// DefaultProvider; see AIProviderFor.
+	// Provider, Command and Model override the [AI] defaults for this feature.
+	// A Command on its own also picks the command provider, over any [AI]
+	// DefaultProvider; a Model picks nothing. See AIProviderFor.
 	Provider string
 	Command  string
+	Model    string
 }
 
-// AIProviderFor resolves the provider and command a feature runs with. The
-// first of these that is set picks the provider:
+// AIProviderChoice is how a feature reaches a model, as AIProviderFor resolves
+// it from config.
+type AIProviderChoice struct {
+	// Provider is AIProviderGemini, AIProviderOpenRouter or AIProviderCommand.
+	Provider string
+	// Command is the command line the command provider runs; only it reads it.
+	Command string
+	// Model is the model the openrouter provider asks for; only it reads it.
+	Model string
+}
+
+// AIProviderFor resolves the provider a feature runs with, and the command
+// and model that provider reads. The first of these that is set picks the
+// provider:
 //
 //  1. the feature's Provider
 //  2. the feature's Command, which picks "command"
@@ -113,28 +166,32 @@ type AIFeature struct {
 //  5. otherwise "gemini"
 //
 // That is, the feature's own settings beat the [AI] defaults, and at each
-// level a named provider beats the one a command implies. GEMINI_API_KEY plays
-// no part in the choice: it is read only once "gemini" has been picked. The
-// command is the feature's Command, else [AI] DefaultCommand, and only the
-// command provider uses it.
-func (c Config) AIProviderFor(f AIFeature) (provider, command string) {
-	command = f.Command
-	if command == "" {
-		command = c.AI.DefaultCommand
+// level a named provider beats the one a command implies. No API key plays a
+// part in the choice: GEMINI_API_KEY and OPENROUTER_API_KEY are read only once
+// their provider has been picked. The command is the feature's Command, else
+// [AI] DefaultCommand, and the model the feature's Model, else [AI]
+// DefaultModel.
+func (c Config) AIProviderFor(f AIFeature) AIProviderChoice {
+	choice := AIProviderChoice{Command: f.Command, Model: f.Model}
+	if choice.Command == "" {
+		choice.Command = c.AI.DefaultCommand
+	}
+	if choice.Model == "" {
+		choice.Model = c.AI.DefaultModel
 	}
 	switch {
 	case f.Provider != "":
-		provider = f.Provider
+		choice.Provider = f.Provider
 	case f.Command != "":
-		provider = AIProviderCommand
+		choice.Provider = AIProviderCommand
 	case c.AI.DefaultProvider != "":
-		provider = c.AI.DefaultProvider
+		choice.Provider = c.AI.DefaultProvider
 	case c.AI.DefaultCommand != "":
-		provider = AIProviderCommand
+		choice.Provider = AIProviderCommand
 	default:
-		provider = AIProviderGemini
+		choice.Provider = AIProviderGemini
 	}
-	return provider, command
+	return choice
 }
 
 // AIFeatureSettings returns the [[AIFeatures]] entry for id, and false when

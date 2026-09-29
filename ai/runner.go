@@ -34,8 +34,8 @@ const (
 // produced and writes its call log entry.
 type Runner struct {
 	registry *Registry
-	// NewProvider builds the provider a run's config names. Tests replace it.
-	NewProvider func(provider, command string) (Provider, error)
+	// NewProvider builds the provider a run's config chose. Tests replace it.
+	NewProvider func(choice config.AIProviderChoice) (Provider, error)
 
 	slots    chan struct{}
 	inflight sync.Map // runKey -> struct{}
@@ -99,8 +99,7 @@ type claim struct {
 	job      Job
 	feature  Feature
 	mode     string
-	provider string
-	command  string
+	provider config.AIProviderChoice
 }
 
 // Dispatch starts job on its own goroutine and returns at once, unless it
@@ -153,8 +152,7 @@ func (r *Runner) claim(job Job) (claim, Outcome) {
 	if _, running := r.inflight.LoadOrStore(runKey(job.Owner, job.Repo, job.Number, job.Feature), struct{}{}); running {
 		return claim{}, OutcomeAlreadyRunning
 	}
-	provider, command := cfg.AIProviderFor(entry)
-	return claim{job: job, feature: f, mode: resolveMode(f, entry), provider: provider, command: command}, OutcomeStarted
+	return claim{job: job, feature: f, mode: resolveMode(f, entry), provider: cfg.AIProviderFor(entry)}, OutcomeStarted
 }
 
 // storedCovers reports whether the stored result was computed from exactly
@@ -193,7 +191,7 @@ func (r *Runner) execute(c claim) {
 	defer cancel()
 
 	start := time.Now()
-	model := &lazyProvider{build: func() (Provider, error) { return r.NewProvider(c.provider, c.command) }}
+	model := &lazyProvider{build: func() (Provider, error) { return r.NewProvider(c.provider) }}
 	sha, digest := job.SHA, job.Digest
 
 	var result Result
@@ -248,7 +246,7 @@ func (r *Runner) execute(c claim) {
 		ResponseSnippet: runLog.ResponseSnippet,
 	}
 	if model.built && model.buildErr != nil {
-		entry.Provider, entry.Model = c.provider, "unavailable: "+model.buildErr.Error()
+		entry.Provider, entry.Model = c.provider.Provider, "unavailable: "+model.buildErr.Error()
 	}
 	if model.calls == 0 {
 		entry.Call = fmt.Sprintf("no model call, took %s", duration.Round(time.Millisecond))

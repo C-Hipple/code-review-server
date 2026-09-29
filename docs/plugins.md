@@ -9,7 +9,7 @@ This image shows the plugin output in the bun_client when reviewing a PR in this
 
 Plugins are separate from the server's built-in [AI features](ai_features.md), which
 have their own config (`[[AIFeatures]]`), storage and RPCs. The two share only the
-code that runs a subprocess; an annotation's `source` field (`plugin` or `ai`) says
+code that runs a subprocess and the OpenRouter client; an annotation's `source` field (`plugin` or `ai`) says
 which one produced it.
 
 ## Configuration
@@ -44,6 +44,14 @@ Name = "Expensive Analysis"
 Command = "expensive_analysis"
 IncludeDiff = true
 OnlyOnDemand = true    # This plugin only runs when explicitly requested
+
+[[Plugins]]
+Name = "Summarize (Claude)"
+Command = "summarize_diff"
+IncludeDiff = true
+IncludeHeaders = true
+Provider = "openrouter"                  # Call OpenRouter instead of Gemini
+Model = "anthropic/claude-sonnet-4.5"    # The OpenRouter model to ask for
 ```
 
 ### Plugin Configuration Options
@@ -55,14 +63,54 @@ OnlyOnDemand = true    # This plugin only runs when explicitly requested
 - `IncludeComments` (bool, optional): Pass PR comments via `--comments` flag
 - `IncludeBranch` (bool, optional): Pass the PR's head branch name via `--branch` flag
 - `OnlyOnDemand` (bool, optional, default: false): If true, plugin only runs when explicitly requested via RerunPlugins
+- `Provider` (string, optional): The LLM backend the plugin should call — `gemini` or `openrouter`. See [Choosing a Model](#choosing-a-model)
+- `Model` (string, required with `Provider = "openrouter"`): The model to ask OpenRouter for, as OpenRouter names it (e.g. `anthropic/claude-sonnet-4.5`)
 
 > **Note:** The branch name is also available in the `--headers` JSON as the `head_ref` field. Use `IncludeBranch` when you want the branch as a simple standalone argument without parsing the full metadata JSON.
 
+## Choosing a Model
+
+The bundled LLM plugins — Summarize Diff, Security Check and Style Guidelines —
+call one of two backends:
+
+- **`gemini`** (the default): the latest Gemini Flash model
+  (`gemini-flash-latest`), with the key in `GEMINI_API_KEY`.
+- **`openrouter`**: any model [OpenRouter](https://openrouter.ai) serves —
+  Anthropic's, OpenAI's, Google's and many more — with the key in
+  `OPENROUTER_API_KEY`. OpenRouter has no default model and neither does the
+  plugin, so the entry names one in `Model`.
+
+A plugin's `Provider` and `Model` reach it as the environment variables
+`CRS_LLM_PROVIDER` and `CRS_LLM_MODEL`, alongside the rest of the server's
+environment (API keys included). The server sets each only when the entry
+does, so exporting them to the server itself switches every plugin that
+doesn't say otherwise:
+
+```bash
+export OPENROUTER_API_KEY="..."
+export CRS_LLM_PROVIDER=openrouter
+export CRS_LLM_MODEL=google/gemini-2.5-flash
+```
+
+The variables are passed rather than flags so that a plugin which calls no
+model — or picks one its own way — can ignore them: unlike an unknown flag, an
+unknown environment variable breaks nothing. Your own plugins are free to
+honor them too. A config naming any other `Provider`, or `openrouter` without a
+`Model`, is logged at startup and rejected by `UpdateConfig`. Plugins don't
+read the AI features' `[AI]` settings: a `DefaultProvider` or `DefaultModel`
+there doesn't reach them.
+
+The plugins ask Gemini for structured JSON output where they emit
+[annotations](#plugin-response-contract), and OpenRouter for the same schema
+through its structured outputs. Not every model behind OpenRouter supports
+those, so the prompt also spells out the JSON wanted; a reply that still isn't
+JSON becomes the plugin's body verbatim, without annotations.
+
 ## Included Plugins
 
-- **Summarize Diff**: Uses the latest Gemini Flash model (`gemini-flash-latest`) to explain what a PR is trying to accomplish and to mark its hotspots. Emits the [response contract](#plugin-response-contract): a markdown body stating the PR's goal and the approach it takes, plus up to four annotations on the lines carrying the key implementation or business logic — the ones that deserve the closest review. Mechanical changes (renames, moved code, formatting) are deliberately left unannotated.
-- **Security Check**: Uses the latest Gemini Flash model (`gemini-flash-latest`) to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
-- **Style Guidelines**: Uses the latest Gemini Flash model (`gemini-flash-latest`) to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
+- **Summarize Diff**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to explain what a PR is trying to accomplish and to mark its hotspots. Emits the [response contract](#plugin-response-contract): a markdown body stating the PR's goal and the approach it takes, plus up to four annotations on the lines carrying the key implementation or business logic — the ones that deserve the closest review. Mechanical changes (renames, moved code, formatting) are deliberately left unannotated.
+- **Security Check**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
+- **Style Guidelines**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` on OpenRouter. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, `--call-type`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
@@ -100,7 +148,7 @@ You can write a plugin in any language you like. The only requirement is that th
 
 The `example_plugin` included in this repository demonstrates the interface and potential options.
 
-Go plugins living in this repository share `cmd/internal/pluginkit`, which holds the response contract types, the diff line numbering that lets a model anchor annotations, and the Gemini call the bundled LLM plugins make.
+Go plugins living in this repository share `cmd/internal/pluginkit`, which holds the response contract types, the diff line numbering that lets a model anchor annotations, and the model call the bundled LLM plugins make: `pluginkit.ModelFromEnv()` builds the backend `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL` name (see [Choosing a Model](#choosing-a-model)), and its `Generate` takes the prompt and an optional response schema.
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
 
@@ -186,7 +234,7 @@ A line carrying several annotations prompts for which one to file. Annotations t
 
 ## On-Demand Plugins
 
-By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini or Claude).
+By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini, OpenRouter or Claude).
 
 To avoid unnecessary costs, you can mark a plugin as `OnlyOnDemand = true` in the configuration. These plugins will:
 - **Not run automatically** when a PR is fetched or updated
@@ -251,7 +299,7 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
    go install ./cmd/style_guidelines/...
    ```
 
-2. **Create your style guide** at `~/.config/style_guidelines.md`. Write your rules in plain Markdown — the entire file is used as the system prompt for Gemini. For example:
+2. **Create your style guide** at `~/.config/style_guidelines.md`. Write your rules in plain Markdown — the entire file goes into the model's prompt. For example:
    ```markdown
    # Style Guidelines
 
@@ -261,7 +309,7 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
    - Error messages must be lowercase and end without punctuation.
    ```
 
-3. **Set your Gemini API key:**
+3. **Set your Gemini API key** (or, to run it through OpenRouter, `OPENROUTER_API_KEY` plus `Provider` and `Model` in the entry below — see [Choosing a Model](#choosing-a-model)):
    ```sh
    export GEMINI_API_KEY=your_key_here
    ```

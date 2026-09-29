@@ -397,9 +397,9 @@ func TestCommentsAddressedEndToEnd(t *testing.T) {
 		{"id": "9001", "status": "addressed", "rationale": "The README now documents the flag."},
 		{"id": "5001", "status": "outstanding", "rationale": "Not asked, should be ignored."}
 	]}`}
-	r.NewProvider = func(provider, command string) (ai.Provider, error) {
-		if provider != config.AIProviderGemini || command != "" {
-			t.Errorf("provider settings = %q, %q", provider, command)
+	r.NewProvider = func(choice config.AIProviderChoice) (ai.Provider, error) {
+		if choice != (config.AIProviderChoice{Provider: config.AIProviderGemini}) {
+			t.Errorf("provider settings = %+v", choice)
 		}
 		return model, nil
 	}
@@ -722,7 +722,7 @@ func TestFeatureFlagsEndToEnd(t *testing.T) {
 		{"id": "1", "status": "gated", "flag": "new_checkout", "rationale": "Only runs when new_checkout is active."},
 		{"id": "2", "status": "ungated", "rationale": "Widens the currency column for every order."}
 	]}`}
-	r.NewProvider = func(string, string) (ai.Provider, error) { return model, nil }
+	r.NewProvider = func(config.AIProviderChoice) (ai.Provider, error) { return model, nil }
 	h := &RPCHandler{}
 	args := &RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: ai.FeatureFlagsID}
 	output := func() AIFeatureOutput {

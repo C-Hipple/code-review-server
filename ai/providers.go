@@ -17,41 +17,53 @@ import (
 // Errors should be *llm.CallError values attributed to the stage that failed,
 // so the call log can say where a run died.
 type Provider interface {
-	// Name identifies the backend, e.g. "gemini" or "command".
+	// Name identifies the backend, e.g. "gemini", "openrouter" or "command".
 	Name() string
 	// Model identifies what answers: a model name, or the command line.
 	Model() string
 	Generate(ctx context.Context, prompt string) (string, error)
 }
 
-// NewProvider builds the provider config names: config.AIProviderGemini or
-// config.AIProviderCommand, the latter running command. Failures are
-// *llm.CallError values at stage client-init.
-func NewProvider(provider, command string) (Provider, error) {
-	switch provider {
+// NewProvider builds the provider config chose: config.AIProviderGemini,
+// config.AIProviderOpenRouter asking for the choice's Model, or
+// config.AIProviderCommand running its Command. Failures are *llm.CallError
+// values at stage client-init.
+func NewProvider(choice config.AIProviderChoice) (Provider, error) {
+	switch choice.Provider {
 	case config.AIProviderGemini:
 		client, err := llm.NewClient(llm.ProviderGemini)
 		if err != nil {
 			return nil, err
 		}
 		return &clientProvider{client: client}, nil
+	case config.AIProviderOpenRouter:
+		if strings.TrimSpace(choice.Model) == "" {
+			return nil, &llm.CallError{Stage: llm.StageClientInit,
+				Err: fmt.Errorf("the openrouter provider has no model: set AI.DefaultModel or the feature's Model")}
+		}
+		client, err := llm.NewOpenRouterClient(choice.Model)
+		if err != nil {
+			return nil, err
+		}
+		return &clientProvider{client: client}, nil
 	case config.AIProviderCommand:
-		if strings.TrimSpace(command) == "" {
+		if strings.TrimSpace(choice.Command) == "" {
 			return nil, &llm.CallError{Stage: llm.StageClientInit,
 				Err: fmt.Errorf("the command provider has no command: set AI.DefaultCommand or the feature's Command")}
 		}
-		argv, err := subprocess.SplitCommand(command)
+		argv, err := subprocess.SplitCommand(choice.Command)
 		if err != nil {
 			return nil, &llm.CallError{Stage: llm.StageClientInit, Err: err}
 		}
-		return &commandProvider{command: command, argv: argv}, nil
+		return &commandProvider{command: choice.Command, argv: argv}, nil
 	default:
-		return nil, &llm.CallError{Stage: llm.StageClientInit, Err: fmt.Errorf("unknown AI provider %q", provider)}
+		return nil, &llm.CallError{Stage: llm.StageClientInit, Err: fmt.Errorf("unknown AI provider %q", choice.Provider)}
 	}
 }
 
-// clientProvider adapts an llm.Client — Gemini today — to the Provider seam.
-// The client itself is reused unchanged; only the deadline is added here.
+// clientProvider adapts an llm.Client — Gemini or OpenRouter — to the
+// Provider seam. The client itself is reused unchanged; only the deadline is
+// added here.
 type clientProvider struct {
 	client llm.Client
 }
@@ -60,9 +72,13 @@ func (p *clientProvider) Name() string  { return p.client.Provider() }
 func (p *clientProvider) Model() string { return p.client.Model() }
 
 // Generate returns when the client answers or the deadline passes, whichever
-// comes first. An abandoned call still finishes in the background, bounded by
-// the client's own HTTP timeout.
+// comes first. A client that takes a context (llm.ContextClient) has its
+// request cancelled at the deadline; any other's abandoned call still
+// finishes in the background, bounded by the client's own HTTP timeout.
 func (p *clientProvider) Generate(ctx context.Context, prompt string) (string, error) {
+	if c, ok := p.client.(llm.ContextClient); ok {
+		return c.GenerateContext(ctx, prompt)
+	}
 	type answer struct {
 		text string
 		err  error

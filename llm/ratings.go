@@ -3,8 +3,9 @@
 // and rates how easy the PR is to review ("easy", "medium", or "hard").
 //
 // The concrete backend is hidden behind the Client interface so the provider
-// can one day be swapped out; the only implementation today is the Gemini
-// client in gemini.go.
+// can be swapped out. Two HTTP backends implement it: Gemini (gemini.go),
+// which the diff analysis uses, and OpenRouter (openrouter.go), which AI
+// features can pick in config.
 //
 // Every call — including ones that fail before reaching the API — is
 // appended to ~/.crs/llm_calls.log (see call_log.go) so it's possible to see
@@ -39,14 +40,14 @@ type Client interface {
 	Generate(prompt string) (string, error)
 }
 
-// ProviderGemini names the Gemini backend (gemini.go), the one HTTP backend
-// this package ships.
+// ProviderGemini names the Gemini backend (gemini.go).
 const ProviderGemini = "gemini"
 
-// NewClient is the provider factory: it builds the named text-generation
-// backend. Backends that are not HTTP APIs — the ai package's command-backed
-// provider, which shells out to a CLI agent — are built by their own package
-// and only share the Client shape.
+// NewClient is the provider factory for the backends that need nothing but
+// their name: Gemini, whose model is pinned. OpenRouter needs a model named,
+// so it is built by NewOpenRouterClient. Backends that are not HTTP APIs — the
+// ai package's command-backed provider, which shells out to a CLI agent — are
+// built by their own package and only share the Client shape.
 func NewClient(provider string) (Client, error) {
 	switch provider {
 	case ProviderGemini:

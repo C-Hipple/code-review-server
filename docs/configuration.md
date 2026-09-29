@@ -282,13 +282,17 @@ Enabled = true
 Automatic = false              # true also runs it after a PR updates
 ```
 
-Each feature runs on one of two providers:
+Each feature runs on one of three providers:
 
 - **`gemini`** — the server calls Google's hosted Gemini API itself. It needs
   `GEMINI_API_KEY` exported.
+- **`openrouter`** — the server calls [OpenRouter](https://openrouter.ai)
+  itself, reaching models from Anthropic, OpenAI, Google and many others with
+  one key. It needs `OPENROUTER_API_KEY` exported and a model, named the way
+  OpenRouter names it, in the feature's `Model` or `[AI]` `DefaultModel`.
 - **`command`** — the server runs a program on this machine, such as
   `claude -p`, writing the prompt to its stdin and reading the answer from its
-  stdout. It needs that command line, and no `GEMINI_API_KEY`.
+  stdout. It needs that command line, and no API key.
 
 The first of these that is set picks a feature's provider:
 
@@ -298,8 +302,9 @@ The first of these that is set picks a feature's provider:
 4. `[AI]` `DefaultCommand`, which picks `command`
 5. none of them: `gemini`
 
-`GEMINI_API_KEY` never picks the provider; the server reads it only once a
-feature has landed on `gemini`. So for every feature on a program on this
+An API key never picks the provider; the server reads `GEMINI_API_KEY` only
+once a feature has landed on `gemini`, and `OPENROUTER_API_KEY` only once one
+has landed on `openrouter`. So for every feature on a program on this
 machine:
 
 ```toml
@@ -307,9 +312,18 @@ machine:
 DefaultCommand = "claude -p"   # rule 4
 ```
 
-and for every feature on the Gemini API, export `GEMINI_API_KEY` and either
+for every feature on the Gemini API, export `GEMINI_API_KEY` and either
 leave `[AI]` out (rule 5) or say so with `DefaultProvider = "gemini"` (rule 3,
-which also beats any `DefaultCommand`). See
+which also beats any `DefaultCommand`); and for every feature through
+OpenRouter, export `OPENROUTER_API_KEY` and name the provider and a model:
+
+```toml
+[AI]
+DefaultProvider = "openrouter"                 # rule 3
+DefaultModel = "anthropic/claude-sonnet-4.5"   # a feature's Model beats it
+```
+
+See
 [AI Features](ai_features.md#which-provider-runs-a-feature) for more examples,
 every setting, and how the reports decide.
 

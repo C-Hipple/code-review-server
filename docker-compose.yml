@@ -9,7 +9,7 @@ services:
       CRS_GITHUB_TOKEN: "${CRS_GITHUB_TOKEN}"
       # Optional: for summarize_diff and security_check plugins
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      # Optional: for AI features and plugins on the openrouter provider
+      # Optional: for AI features, plugins and experimental LLM features on the openrouter provider
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
     volumes:
       # Mount your config file (see sample.config.toml)

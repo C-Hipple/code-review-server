@@ -226,8 +226,15 @@ type Config struct {
 	// ExperimentalLLMReviewEase, when true, rates how easy each PR is to review
 	// ("easy", "medium", or "hard") in the same LLM call that computes the diff
 	// file ordering. The rating is exposed as the review_ease field in PR
-	// metadata and review list items. Off by default; requires GEMINI_API_KEY.
+	// metadata and review list items. Off by default.
 	ExperimentalLLMReviewEase bool
+	// ExperimentalLLMProvider is the backend both experimental helpers call:
+	// "gemini" (the default, with GEMINI_API_KEY) or "openrouter" (with
+	// OPENROUTER_API_KEY), which asks for ExperimentalLLMModel.
+	ExperimentalLLMProvider string
+	// ExperimentalLLMModel is the model the openrouter provider asks for, as
+	// OpenRouter names it. Gemini ignores it.
+	ExperimentalLLMModel string
 	// AI holds the defaults for the AI features, and AIFeatures switches them
 	// on one by one. Both are absent from the built-in defaults, so the AI layer
 	// does nothing until a config file enables a feature.
@@ -328,6 +335,8 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs                 map[string]RepoConfig
 		ExperimentalLLMFileOrdering bool
 		ExperimentalLLMReviewEase   bool
+		ExperimentalLLMProvider     string
+		ExperimentalLLMModel        string
 		AI                          AISettings
 		AIFeatures                  []AIFeature
 	}
@@ -402,6 +411,8 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs:                 repoConfigs,
 		ExperimentalLLMFileOrdering: intermediate_config.ExperimentalLLMFileOrdering,
 		ExperimentalLLMReviewEase:   intermediate_config.ExperimentalLLMReviewEase,
+		ExperimentalLLMProvider:     intermediate_config.ExperimentalLLMProvider,
+		ExperimentalLLMModel:        intermediate_config.ExperimentalLLMModel,
 		AI:                          intermediate_config.AI,
 		AIFeatures:                  intermediate_config.AIFeatures,
 	}, nil

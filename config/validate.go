@@ -93,12 +93,32 @@ func Validate(cfg *Config) []ValidationError {
 		}
 	}
 
+	problems = append(problems, validateExperimentalLLM(cfg)...)
 	problems = append(problems, validatePlugins(cfg)...)
 	return append(problems, validateAI(cfg)...)
 }
 
-// validPluginProviders are the LLM backends a [[Plugins]] entry may name.
-var validPluginProviders = map[string]bool{PluginProviderGemini: true, PluginProviderOpenRouter: true}
+// validLLMBackends are the LLM backends a [[Plugins]] entry, or the
+// experimental diff analysis, may name: the two HTTP APIs.
+var validLLMBackends = map[string]bool{AIProviderGemini: true, AIProviderOpenRouter: true}
+
+// validateExperimentalLLM checks the backend of the experimental diff
+// analysis: a known provider, and a model for OpenRouter while either helper
+// that would call it is switched on.
+func validateExperimentalLLM(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	p := cfg.ExperimentalLLMProvider
+	if p != "" && !validLLMBackends[p] {
+		problems = append(problems, rootError("ExperimentalLLMProvider",
+			"unknown provider %q (expected \"gemini\" or \"openrouter\")", p))
+	}
+	enabled := cfg.ExperimentalLLMFileOrdering || cfg.ExperimentalLLMReviewEase
+	if enabled && p == AIProviderOpenRouter && strings.TrimSpace(cfg.ExperimentalLLMModel) == "" {
+		problems = append(problems, rootError("ExperimentalLLMModel",
+			"the openrouter provider needs a model, e.g. \"google/gemini-2.5-flash\""))
+	}
+	return problems
+}
 
 // validatePlugins checks each [[Plugins]] entry's LLM backend: a known
 // provider, and a model wherever it names OpenRouter, which has no default.
@@ -107,7 +127,7 @@ func validatePlugins(cfg *Config) []ValidationError {
 	var problems []ValidationError
 	for i, p := range cfg.Plugins {
 		field := func(name string) string { return fmt.Sprintf("Plugins[%d].%s", i, name) }
-		if p.Provider != "" && !validPluginProviders[p.Provider] {
+		if p.Provider != "" && !validLLMBackends[p.Provider] {
 			problems = append(problems, rootError(field("Provider"),
 				"unknown provider %q (expected \"gemini\" or \"openrouter\")", p.Provider))
 		}

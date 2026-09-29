@@ -166,6 +166,21 @@ func TestValidateAI(t *testing.T) {
 			wantMessage: "needs a model",
 		},
 		{
+			name:        "unknown experimental LLM provider",
+			mutate:      func(c *Config) { c.ExperimentalLLMProvider = "command" },
+			wantField:   "ExperimentalLLMProvider",
+			wantMessage: "unknown provider",
+		},
+		{
+			name: "experimental LLM on openrouter without a model",
+			mutate: func(c *Config) {
+				c.ExperimentalLLMReviewEase = true
+				c.ExperimentalLLMProvider = "openrouter"
+			},
+			wantField:   "ExperimentalLLMModel",
+			wantMessage: "needs a model",
+		},
+		{
 			name:        "unknown plugin provider",
 			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: "p", Command: "p", Provider: "command"}} },
 			wantField:   "Plugins[0].Provider",
@@ -211,6 +226,33 @@ func TestValidateAIAcceptsWorkingSettings(t *testing.T) {
 		{Name: "b", Command: "b", Provider: "gemini"},
 		{Name: "c", Command: "c", Provider: "openrouter", Model: "google/gemini-2.5-flash"},
 	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
+func TestParseConfigReadsExperimentalLLMBackend(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMProvider = "openrouter"
+ExperimentalLLMModel = "google/gemini-2.5-flash"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.ExperimentalLLMProvider != "openrouter" || cfg.ExperimentalLLMModel != "google/gemini-2.5-flash" {
+		t.Errorf("unexpected experimental LLM backend: %q, %q", cfg.ExperimentalLLMProvider, cfg.ExperimentalLLMModel)
+	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
+func TestValidateLeavesAnIdleExperimentalLLMBackendAlone(t *testing.T) {
+	// Neither helper is on, so nothing would call OpenRouter: a half-set
+	// backend is not worth blocking a save over.
+	cfg := validConfig()
+	cfg.ExperimentalLLMProvider = "openrouter"
 	if problems := Validate(cfg); len(problems) != 0 {
 		t.Errorf("expected no problems, got %v", problems)
 	}

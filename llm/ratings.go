@@ -3,9 +3,10 @@
 // and rates how easy the PR is to review ("easy", "medium", or "hard").
 //
 // The concrete backend is hidden behind the Client interface so the provider
-// can be swapped out. Two HTTP backends implement it: Gemini (gemini.go),
-// which the diff analysis uses, and OpenRouter (openrouter.go), which AI
-// features can pick in config.
+// can be swapped out. Two HTTP backends implement it: Gemini (gemini.go) and
+// OpenRouter (openrouter.go). The diff analysis uses the one config's
+// ExperimentalLLMProvider names; AI features pick theirs through the ai
+// package.
 //
 // Every call — including ones that fail before reaching the API — is
 // appended to ~/.crs/llm_calls.log (see call_log.go) so it's possible to see
@@ -57,11 +58,25 @@ func NewClient(provider string) (Client, error) {
 	}
 }
 
-// DefaultClient returns the LLM backend used for the diff analysis below. The
-// analysis has no provider setting of its own, so it stays on Gemini; AI
-// features pick their provider from config through the ai package.
+// DefaultClient returns the LLM backend used for the diff analysis below:
+// the one config's ExperimentalLLMProvider names — Gemini unless it says
+// "openrouter", which asks for ExperimentalLLMModel. AI features pick their
+// provider from config through the ai package.
 func DefaultClient() (Client, error) {
-	return NewClient(ProviderGemini)
+	cfg := config.C()
+	switch cfg.ExperimentalLLMProvider {
+	case "", ProviderGemini:
+		return NewClient(ProviderGemini)
+	case ProviderOpenRouter:
+		if strings.TrimSpace(cfg.ExperimentalLLMModel) == "" {
+			return nil, &CallError{Stage: StageClientInit,
+				Err: fmt.Errorf("ExperimentalLLMProvider is openrouter but no ExperimentalLLMModel is set")}
+		}
+		return NewOpenRouterClient(cfg.ExperimentalLLMModel)
+	default:
+		return nil, &CallError{Stage: StageClientInit,
+			Err: fmt.Errorf("unknown ExperimentalLLMProvider %q", cfg.ExperimentalLLMProvider)}
+	}
 }
 
 // newClient is what analyzeDiff uses to build its backend; tests swap it out
@@ -472,11 +487,29 @@ func cleanFileName(line string) string {
 	}
 	s = strings.TrimPrefix(s, "- ")
 	s = strings.TrimPrefix(s, "* ")
+	s = trimListNumber(s)
 	s = strings.TrimSpace(s)
 	s = strings.Trim(s, "\"'`")
 	s = strings.TrimPrefix(s, "a/")
 	s = strings.TrimPrefix(s, "b/")
 	return strings.TrimSpace(s)
+}
+
+// trimListNumber drops a leading "1. " or "1) ", which some models add to a
+// list despite the prompt asking for bare paths. A path that merely starts
+// with digits ("2024/notes.md") keeps them, since no space follows.
+func trimListNumber(s string) string {
+	digits := 0
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits+1 >= len(s) {
+		return s
+	}
+	if (s[digits] == '.' || s[digits] == ')') && s[digits+1] == ' ' {
+		return s[digits+2:]
+	}
+	return s
 }
 
 // reorderFilesByNames reorders files to match the sequence of paths returned

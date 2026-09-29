@@ -251,7 +251,7 @@ The returned string is stored and exposed as the `release_status` field in PR me
 
 ## Experimental LLM Features
 
-These root-level flags enable LLM-powered helpers. Both are off by default and require a Gemini API key:
+These root-level flags enable LLM-powered helpers. Both are off by default and call Gemini unless told otherwise, with a Gemini API key:
 
 ```bash
 export GEMINI_API_KEY="Gemini API Key"
@@ -262,12 +262,21 @@ ExperimentalLLMFileOrdering = true
 ExperimentalLLMReviewEase = true
 ```
 
+To run them through [OpenRouter](https://openrouter.ai) instead — any model it serves, from Anthropic, OpenAI, Google and others — export `OPENROUTER_API_KEY` and name the provider and a model:
+
+```toml
+ExperimentalLLMProvider = "openrouter"         # default: "gemini"
+ExperimentalLLMModel = "google/gemini-2.5-flash"
+```
+
+`ExperimentalLLMModel` is read only by `openrouter`, which has no default model; with either helper on, `openrouter` without a model is logged at startup and rejected by `UpdateConfig`. These two settings are separate from the AI features' `[AI]` table, and aren't part of the config RPCs: set them in the file (a save from a client keeps them).
+
 - **ExperimentalLLMFileOrdering**: Orders the files in a PR diff via an LLM so the PR reads top-to-bottom (integration points first, then implementation, then styling, then tests) instead of the default test-files-last sort.
 - **ExperimentalLLMReviewEase**: Rates how easy each PR is to review — `easy`, `medium`, or `hard` — in the same LLM call used for the file ordering. The rating is exposed as the `review_ease` field in PR metadata (`GetPR`) and in review list items (`GetAllReviews`), and is appended as a tag (e.g. `:easy:`) on PR headlines in the rendered org content.
 
 Results are cached in the database per PR head SHA, so the LLM is queried at most once per PR revision.
 
-Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used, input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
+Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used (`gemini (gemini-flash-latest)` or `openrouter (<model>)`), input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
 
 ## AI Features
 

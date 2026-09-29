@@ -159,6 +159,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	out, err := subprocess.Run(context.Background(), subprocess.Command{
 		Name:    plugin.Command,
 		Args:    args,
+		Env:     plugin.Env(),
 		Timeout: pluginTimeout,
 	})
 	resultStr := out.Stdout

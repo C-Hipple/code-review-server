@@ -251,7 +251,7 @@ The returned string is stored and exposed as the `release_status` field in PR me
 
 ## Experimental LLM Features
 
-These root-level flags enable LLM-powered helpers. Both are off by default and require a Gemini API key:
+These root-level flags enable LLM-powered helpers. Both are off by default and call Gemini unless told otherwise, with a Gemini API key:
 
 ```bash
 export GEMINI_API_KEY="Gemini API Key"
@@ -262,12 +262,21 @@ ExperimentalLLMFileOrdering = true
 ExperimentalLLMReviewEase = true
 ```
 
+To run them through [OpenRouter](https://openrouter.ai) instead — any model it serves, from Anthropic, OpenAI, Google and others — export `OPENROUTER_API_KEY` and name the provider and a model:
+
+```toml
+ExperimentalLLMProvider = "openrouter"         # default: "gemini"
+ExperimentalLLMModel = "google/gemini-2.5-flash"
+```
+
+`ExperimentalLLMModel` is read only by `openrouter`, which has no default model; with either helper on, `openrouter` without a model is logged at startup and rejected by `UpdateConfig`. These two settings are separate from the AI features' `[AI]` table, and aren't part of the config RPCs: set them in the file (a save from a client keeps them).
+
 - **ExperimentalLLMFileOrdering**: Orders the files in a PR diff via an LLM so the PR reads top-to-bottom (integration points first, then implementation, then styling, then tests) instead of the default test-files-last sort.
 - **ExperimentalLLMReviewEase**: Rates how easy each PR is to review — `easy`, `medium`, or `hard` — in the same LLM call used for the file ordering. The rating is exposed as the `review_ease` field in PR metadata (`GetPR`) and in review list items (`GetAllReviews`), and is appended as a tag (e.g. `:easy:`) on PR headlines in the rendered org content.
 
 Results are cached in the database per PR head SHA, so the LLM is queried at most once per PR revision.
 
-Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used, input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
+Every LLM call is appended to `~/.crs/llm_calls.log` (respects `CRS_HOME`). Each report records which PR and code path triggered the call, which provider/model was used (`gemini (gemini-flash-latest)` or `openrouter (<model>)`), input sizes, duration, and the outcome — `SUCCESS`, `PARTIAL` (e.g. the response's review-ease line couldn't be parsed), or `FAILURE` with the stage that failed (`client-init`, `request`, `http-status`, `decode`, `empty-response`, or `parse`) — including a snippet of the raw response when parsing had problems. Check this log when a PR is missing its review-ease tag.
 
 ## AI Features
 
@@ -282,13 +291,17 @@ Enabled = true
 Automatic = false              # true also runs it after a PR updates
 ```
 
-Each feature runs on one of two providers:
+Each feature runs on one of three providers:
 
 - **`gemini`** — the server calls Google's hosted Gemini API itself. It needs
   `GEMINI_API_KEY` exported.
+- **`openrouter`** — the server calls [OpenRouter](https://openrouter.ai)
+  itself, reaching models from Anthropic, OpenAI, Google and many others with
+  one key. It needs `OPENROUTER_API_KEY` exported and a model, named the way
+  OpenRouter names it, in the feature's `Model` or `[AI]` `DefaultModel`.
 - **`command`** — the server runs a program on this machine, such as
   `claude -p`, writing the prompt to its stdin and reading the answer from its
-  stdout. It needs that command line, and no `GEMINI_API_KEY`.
+  stdout. It needs that command line, and no API key.
 
 The first of these that is set picks a feature's provider:
 
@@ -298,8 +311,9 @@ The first of these that is set picks a feature's provider:
 4. `[AI]` `DefaultCommand`, which picks `command`
 5. none of them: `gemini`
 
-`GEMINI_API_KEY` never picks the provider; the server reads it only once a
-feature has landed on `gemini`. So for every feature on a program on this
+An API key never picks the provider; the server reads `GEMINI_API_KEY` only
+once a feature has landed on `gemini`, and `OPENROUTER_API_KEY` only once one
+has landed on `openrouter`. So for every feature on a program on this
 machine:
 
 ```toml
@@ -307,9 +321,18 @@ machine:
 DefaultCommand = "claude -p"   # rule 4
 ```
 
-and for every feature on the Gemini API, export `GEMINI_API_KEY` and either
+for every feature on the Gemini API, export `GEMINI_API_KEY` and either
 leave `[AI]` out (rule 5) or say so with `DefaultProvider = "gemini"` (rule 3,
-which also beats any `DefaultCommand`). See
+which also beats any `DefaultCommand`); and for every feature through
+OpenRouter, export `OPENROUTER_API_KEY` and name the provider and a model:
+
+```toml
+[AI]
+DefaultProvider = "openrouter"                 # rule 3
+DefaultModel = "anthropic/claude-sonnet-4.5"   # a feature's Model beats it
+```
+
+See
 [AI Features](ai_features.md#which-provider-runs-a-feature) for more examples,
 every setting, and how the reports decide.
 

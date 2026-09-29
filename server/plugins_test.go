@@ -174,6 +174,43 @@ func TestRunPlugins_PassesAutomaticCallType(t *testing.T) {
 	}
 }
 
+func TestRunPlugins_PassesTheLLMBackendInTheEnvironment(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	// A backend exported to the server reaches a plugin that sets none of its
+	// own; a plugin's Provider and Model replace it.
+	t.Setenv(config.PluginProviderEnv, "gemini")
+	t.Setenv(config.PluginModelEnv, "")
+	record := func(name string) (string, string) {
+		out := filepath.Join(dir, name+".env")
+		script := filepath.Join(dir, name+".sh")
+		body := "#!/bin/sh\nprintf '%s|%s' \"$" + config.PluginProviderEnv + "\" \"$" + config.PluginModelEnv + "\" > " + out + "\n"
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return script, out
+	}
+	plainScript, plainOut := record("plain")
+	routedScript, routedOut := record("routed")
+
+	config.SetC(config.Config{
+		DB: db,
+		Plugins: []config.Plugin{
+			{Name: "plain", Command: plainScript},
+			{Name: "routed", Command: routedScript, Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"},
+		},
+	})
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	if got := recordedArgs(t, plainOut); got != "gemini|" {
+		t.Errorf("plain plugin saw %q, want the server's environment", got)
+	}
+	if got := recordedArgs(t, routedOut); got != "openrouter|anthropic/claude-sonnet-4.5" {
+		t.Errorf("routed plugin saw %q", got)
+	}
+}
+
 func TestRunPluginsForce_PassesRerunCallType(t *testing.T) {
 	db := setupTestDB(t)
 	dir := t.TempDir()

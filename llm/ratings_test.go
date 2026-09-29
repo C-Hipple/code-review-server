@@ -120,6 +120,10 @@ func TestCleanFileName(t *testing.T) {
 		{"\"server/server.go\"", "server/server.go"},
 		{"a/server/server.go", "server/server.go"},
 		{"b/server/server.go", "server/server.go"},
+		{"1. server/server.go", "server/server.go"},
+		{"12) `server/server.go`", "server/server.go"},
+		{"2024/notes.md", "2024/notes.md"},
+		{"3.go", "3.go"},
 		{"", ""},
 		{"```", ""},
 	}
@@ -128,6 +132,31 @@ func TestCleanFileName(t *testing.T) {
 			t.Errorf("[%d] cleanFileName(%q) = %q, want %q", i, tc.in, got, tc.want)
 		}
 	}
+}
+
+func TestDefaultClientFollowsConfig(t *testing.T) {
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	t.Setenv("GEMINI_API_KEY", "gemini-key")
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+	config.SetC(config.Config{})
+	if c, err := DefaultClient(); err != nil || c.Provider() != ProviderGemini {
+		t.Errorf("no provider set: %v, %v; want gemini", c, err)
+	}
+
+	config.SetC(config.Config{ExperimentalLLMProvider: "openrouter", ExperimentalLLMModel: "google/gemini-2.5-flash"})
+	c, err := DefaultClient()
+	if err != nil || c.Provider() != ProviderOpenRouter || c.Model() != "google/gemini-2.5-flash" {
+		t.Errorf("openrouter: %v, %v", c, err)
+	}
+
+	config.SetC(config.Config{ExperimentalLLMProvider: "openrouter"})
+	_, err = DefaultClient()
+	wantCallError(t, err, StageClientInit)
+
+	config.SetC(config.Config{ExperimentalLLMProvider: "command"})
+	_, err = DefaultClient()
+	wantCallError(t, err, StageClientInit)
 }
 
 func TestReorderFilesByNames(t *testing.T) {

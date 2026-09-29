@@ -54,7 +54,7 @@ func testRunner(t *testing.T, entries []config.AIFeature, features ...Feature) (
 		reg.MustRegister(f)
 	}
 	r := NewRunner(reg)
-	r.NewProvider = func(provider, command string) (Provider, error) {
+	r.NewProvider = func(config.AIProviderChoice) (Provider, error) {
 		return nil, errors.New("no provider in this test")
 	}
 	return r, db, crsHome
@@ -355,8 +355,8 @@ func TestRunnerBuildsTheConfiguredProviderLazily(t *testing.T) {
 	}, quiet, chatty)
 
 	var built []string
-	r.NewProvider = func(provider, command string) (Provider, error) {
-		built = append(built, provider+"|"+command)
+	r.NewProvider = func(choice config.AIProviderChoice) (Provider, error) {
+		built = append(built, choice.Provider+"|"+choice.Command)
 		return &scriptedProvider{t: t, answers: []string{"hello"}}, nil
 	}
 
@@ -384,7 +384,7 @@ func TestRunnerLogsAProviderThatCouldNotBeBuilt(t *testing.T) {
 		return Result{Log: RunLog{Warnings: []string{"model unavailable: " + err.Error()}}}, nil
 	}}
 	r, _, crsHome := testRunner(t, nil, f)
-	r.NewProvider = func(string, string) (Provider, error) { return nil, errors.New("GEMINI_API_KEY not set") }
+	r.NewProvider = func(config.AIProviderChoice) (Provider, error) { return nil, errors.New("GEMINI_API_KEY not set") }
 
 	r.RunSync(job("fake", TriggerExplicit, "s", "d"))
 	log := callLog(t, crsHome)

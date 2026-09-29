@@ -34,6 +34,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     ```bash
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
     export GEMINI_API_KEY="Gemini Token"  # Only for plugins, the experimental LLM features, and AI features on the gemini provider.
+    export OPENROUTER_API_KEY="OpenRouter Key"  # Only for AI features, plugins and experimental LLM features configured to use the openrouter provider.
     ```
 
     That token is the only required setup. With no config file, the server runs a built-in default configuration — a **Waiting On Me** section and a **Review Requested** section, found through GitHub search and identified by whoever the token belongs to. No repo list, no username.

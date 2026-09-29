@@ -1,70 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"crs/cmd/internal/pluginkit"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 )
 
-type GeminiPart struct {
-	Text string `json:"text"`
-}
-
-type GeminiContent struct {
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
-}
-
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-type PRMetadata struct {
-	Number      int      `json:"number"`
-	Title       string   `json:"title"`
-	Author      string   `json:"author"`
-	BaseRef     string   `json:"base_ref"`
-	HeadRef     string   `json:"head_ref"`
-	State       string   `json:"state"`
-	Milestone   string   `json:"milestone"`
-	Labels      []string `json:"labels"`
-	Assignees   []string `json:"assignees"`
-	Reviewers   []string `json:"reviewers"`
-	Draft       bool     `json:"draft"`
-	CIStatus    string   `json:"ci_status"`
-		CIFailures         []string `json:"ci_failures"`
-		Body               string   `json:"body"`
-		URL                string   `json:"url"`
-		WorktreePath       string   `json:"worktree_path"`
-	}
-
-func callGemini(diff string, metadata PRMetadata, geminiToken string) (string, error) {
-	// Using gemini-flash-latest, which tracks the newest Flash release
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + geminiToken
-
-	var contextInfo string
-	if metadata.Title != "" {
-		contextInfo += fmt.Sprintf("PR Title: %s\n", metadata.Title)
-	}
-	if metadata.Body != "" {
-		contextInfo += fmt.Sprintf("PR Description: %s\n", metadata.Body)
-	}
-
-	prompt := fmt.Sprintf(`Analyze the following PR diff for potential security issues, specifically focusing on endpoints.
+func buildPrompt(diff string, metadata pluginkit.PRMetadata) string {
+	return fmt.Sprintf(`Analyze the following PR diff for potential security issues, specifically focusing on endpoints.
 
 
 If the code is not relevant to the tasks below, simply respond with "no security changes found."  Do not try to infer risks beyond the scope of the current changes.
@@ -85,44 +30,7 @@ Be terse and professional. No fluff.
 
 %sDiff:
 %s
-`, contextInfo, diff)
-
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Parts: []GeminiPart{
-					{Text: prompt},
-				},
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", err
-	}
-
-	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
-	}
-
-	return "", fmt.Errorf("no content in response")
+`, metadata.Context(), diff)
 }
 
 func main() {
@@ -144,16 +52,16 @@ func main() {
 	_ = number
 	_ = commentsJSON
 
-	var metadata PRMetadata
+	var metadata pluginkit.PRMetadata
 	if *headersJSON != "" {
 		if err := json.Unmarshal([]byte(*headersJSON), &metadata); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to parse headers: %v\n", err)
 		}
 	}
 
-	geminiToken := os.Getenv("GEMINI_API_KEY")
-	if geminiToken == "" {
-		fmt.Println("Error: GEMINI_API_KEY environment variable not set")
+	model, err := pluginkit.ModelFromEnv()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -162,9 +70,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	result, err := callGemini(*diff, metadata, geminiToken)
+	result, err := model.Generate(buildPrompt(*diff, metadata), nil)
 	if err != nil {
-		fmt.Printf("Error calling Gemini: %v\n", err)
+		fmt.Printf("Error calling %s: %v\n", model, err)
 		os.Exit(1)
 	}
 

@@ -53,7 +53,7 @@ RUN bun --filter frontend build && \
 # =============================================================================
 FROM debian:bookworm-slim
 
-# ca-certificates for HTTPS calls to GitHub API / Gemini
+# ca-certificates for HTTPS calls to GitHub API / Gemini / OpenRouter
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*

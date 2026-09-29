@@ -137,6 +137,14 @@ several modules; `crs-client.el` is the entry point that loads them all
 
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
 
+Submitting (`C-c C-c`, `crs-submit-review`) runs in the background: the command
+returns as soon as the request is sent, so you can read on or move to the next
+PR while GitHub takes the review and the server refetches the PR. When the
+server replies, a message says what went out — `Approved acme/widgets #42`,
+naming any replies GitHub refused — and the review buffer is redrawn from the
+reply. A PR takes one submit at a time, and a failed submit leaves your review
+feedback in place to submit again.
+
 When the server has an [AI feature](ai_features.md) enabled, `C` in a review
 buffer (`crs-get-ai-output`) opens its report for the PR — for example, which
 review comments are still outstanding — running it first when it never ran or its

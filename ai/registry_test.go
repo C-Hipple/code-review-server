@@ -142,7 +142,7 @@ func TestDescribeMarksAppliedFeatures(t *testing.T) {
 	for _, info := range infos {
 		applied[info.ID] = info.Applied
 	}
-	want := map[string]bool{CommentsAddressedID: false, FeatureFlagsID: false, FileOrderingID: true, ReviewEaseID: true}
+	want := map[string]bool{CommentsAddressedID: false, FeatureFlagsID: false, ChangeDiagramID: false, FileOrderingID: true, ReviewEaseID: true}
 	for id, w := range want {
 		if got, ok := applied[id]; !ok || got != w {
 			t.Errorf("%s: applied = %v (listed %v), want %v", id, got, ok, w)

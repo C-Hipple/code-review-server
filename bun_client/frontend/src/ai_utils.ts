@@ -4,10 +4,11 @@
  * The server registers AI features (docs/ai_features.md), switches them on in
  * config, and serves each one's result for a PR through ListAIFeatures,
  * RunAIFeature and GetAIOutput. A result follows the plugin response contract
- * (body + annotations) plus a typed report; comments-addressed is the first
- * feature, and the only one with a report this client knows how to render —
- * anything else (feature-flags, say) renders its markdown body, and is counted
- * on its toolbar button by the `outstanding` list it serves.
+ * (body + annotations) plus a typed report. Two features have a report this
+ * client renders itself: comments-addressed, and change-diagram, whose report
+ * is raw Mermaid source drawn with the mermaid library. Anything else
+ * (feature-flags, say) renders its markdown body, and is counted on its
+ * toolbar button by the `outstanding` list it serves.
  *
  * Applied features (file-ordering, review-ease) have no report: the server
  * applies their results to the diff's file order and the review list's ease
@@ -20,6 +21,7 @@ import type { StatusVariant } from './design';
 import type { PluginBody, PRAnnotation } from './plugin_utils';
 
 export const COMMENTS_ADDRESSED = 'comments-addressed';
+export const CHANGE_DIAGRAM = 'change-diagram';
 
 /** A registered feature, merged with how the server's config sets it up. */
 export interface AIFeatureInfo {
@@ -202,6 +204,30 @@ export function attentionCount(output: AIFeatureOutput | null | undefined): numb
         return output.outstanding.length;
     }
     return null;
+}
+
+// --- change-diagram -------------------------------------------------------
+
+/** The change-diagram report: the diagram's raw Mermaid source. */
+export interface ChangeDiagramReport {
+    mermaid: string;
+    /** The keyword the diagram declares itself with, e.g. `flowchart`. */
+    diagram_type: string;
+}
+
+/**
+ * The change-diagram report in an output, or null when the output isn't one
+ * (another feature, no result yet, or a run that failed).
+ */
+export function changeDiagram(
+    output: AIFeatureOutput | null | undefined
+): ChangeDiagramReport | null {
+    if (!output || output.feature !== CHANGE_DIAGRAM) return null;
+    const report = output.report as Partial<ChangeDiagramReport> | null;
+    if (!report || typeof report.mermaid !== 'string' || report.mermaid.trim() === '') {
+        return null;
+    }
+    return { mermaid: report.mermaid, diagram_type: report.diagram_type ?? '' };
 }
 
 export function isPending(output: AIFeatureOutput | null | undefined): boolean {

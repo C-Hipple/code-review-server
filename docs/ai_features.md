@@ -1,13 +1,15 @@
 # AI Features
 
 AI features are units of AI work the server runs on a pull request and serves
-to every client. Four are registered. Two produce a report a client opens:
+to every client. Five are registered. Three produce a report a client opens:
 
 - **comments-addressed** answers *"are all the review comments addressed, and
   what is still outstanding?"*
 - **feature-flags** answers *"is every change in this PR behind a feature
   flag?"* — how safe the PR is to approve, if its flags keep what it changes
   switched off.
+- **[change-diagram](#change-diagram)** draws what the PR changes as a Mermaid
+  diagram, served as raw Mermaid for each client to render.
 
 The other two are *applied*: the server applies what they produce to what it
 already shows, so there is no report to open.
@@ -46,7 +48,7 @@ Mode = "oneshot"    # or "agent"
 
 | Field       | Default                                  | Meaning                                                                                  |
 |-------------|------------------------------------------|------------------------------------------------------------------------------------------|
-| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`, `feature-flags`, `file-ordering`, `review-ease` |
+| `ID`        | required                                 | The feature to configure. Registered today: `comments-addressed`, `feature-flags`, `change-diagram`, `file-ordering`, `review-ease` |
 | `Enabled`   | `false`                                  | Switches the feature on. Without it the feature is listed but can't run                 |
 | `Automatic` | `false`                                  | Also run it after a PR is fetched or updated, the way plugins run. Needs `Enabled`       |
 | `Mode`      | the feature's default                    | `oneshot` (one model call) or `agent` (a multi-turn tool loop); see [Modes](#modes)      |
@@ -189,9 +191,9 @@ say — doesn't fail a
 feature that can manage without one: comments-addressed still produces its
 deterministic report, and feature-flags still settles the files its path rules
 decide; each leaves what it needed the model for unclear, and says why.
-file-ordering and review-ease need the model: without one their run fails at
-`client-init`, and the diff keeps its default order and the list gets no new
-rating.
+change-diagram, file-ordering and review-ease need the model: without one their
+run fails at `client-init`, so there is no diagram, the diff keeps its default
+order and the list gets no new rating.
 
 ## Modes
 
@@ -205,7 +207,7 @@ rating.
   a file as of the PR head from the local clone (or GitHub); feature-flags adds
   [`search_code`](#agent-mode-and-search_code).
 
-file-ordering and review-ease run `oneshot` only.
+change-diagram, file-ordering and review-ease run `oneshot` only.
 
 ## Running
 
@@ -245,8 +247,8 @@ differ — so resolving a thread, a new or edited comment, a new review or
 dismissal, and a push each make a report stale. Local (unsubmitted) comments
 and reactions are not inputs.
 
-A feature that reads only the code — feature-flags, file-ordering and
-review-ease — is keyed by the head SHA alone: both of its digests read
+A feature that reads only the code — feature-flags, change-diagram,
+file-ordering and review-ease — is keyed by the head SHA alone: both of its digests read
 `code-only`, so only a push makes its report stale, and a new comment neither
 makes it stale nor costs a model call.
 
@@ -443,6 +445,64 @@ gated change, as the code spells it) and `rationale`.
 ones, and `annotations` marks those with a head line (a warning for ungated,
 info for unclear); a whole-file change, such as a lockfile, anchors to none.
 
+## change-diagram
+
+Draws what a PR changes as a [Mermaid](https://mermaid.js.org) flowchart, so a
+reviewer can see how the pieces fit together before reading the diff: the
+packages, files, functions, types, endpoints or components the PR adds, changes
+or removes, and how they connect — calls, data flow, reads and writes.
+
+```toml
+[[AIFeatures]]
+ID = "change-diagram"
+Enabled = true
+Automatic = true    # optional: draw each PR's diagram as it arrives
+```
+
+The server serves the **raw Mermaid source**; each client renders it. The web
+client draws it with the mermaid library in a modal that takes most of the
+screen, and Emacs shows the source in a
+[`mermaid-mode`](https://github.com/abrochard/mermaid-mode) buffer.
+
+The model is sent the PR title, the list of changed files and the diff, cut at
+200 KB as for file-ordering, and asked for a flowchart of about 30 nodes at
+most, each node marked `:::added`, `:::changed` or `:::removed`. Tests, docs and
+lockfiles are left out unless they are what the PR is about.
+
+What the model answers is checked and cleaned before it is stored:
+
+- **The diagram is kept alone.** A mermaid code fence wins over any other, and
+  whatever precedes the diagram's first line — chatter, comments, front matter —
+  is dropped. The first line must declare a diagram that can describe code:
+  `flowchart` or `graph` (with an optional direction), or `sequenceDiagram`,
+  `classDiagram`, `stateDiagram`, `erDiagram`, a C4 diagram, `block-beta`,
+  `architecture-beta` or `mindmap`. An answer without one fails at stage
+  `parse`, its raw text in the call log.
+- **Interactions and directives are removed.** The diagram is model output
+  steered by a PR's diff, so `click` statements (and `link` / `callback` in a
+  class diagram), which make a node a link or run a function, and `%%{init}%%`
+  directives, which reconfigure the renderer, are dropped. The web client also
+  renders at mermaid's `strict` security level, which encodes HTML in labels
+  and disables clicks whatever the source says.
+- **A flowchart gets the change classes.** The server defines `added` (green),
+  `changed` (amber) and `removed` (red, dashed) at the end, replacing any
+  definition the model gave, so every diagram colors them alike and the web
+  client's legend holds.
+- **It must be renderable.** A diagram over 50,000 bytes — mermaid's own limit —
+  fails at stage `parse`. Whether it parses is left to the renderer: the web
+  client shows mermaid's error beside the source when it doesn't.
+
+The result's `report` is:
+
+| Field          | Meaning                                                              |
+|----------------|----------------------------------------------------------------------|
+| `mermaid`      | The diagram's raw Mermaid source, ready to render                    |
+| `diagram_type` | The keyword the diagram declares itself with, e.g. `flowchart`       |
+
+Its `body` is the same source in a ```` ```mermaid ```` fence, for a client that
+only renders markdown bodies. The diagram reads only the code, so only a push
+makes it stale.
+
 ## file-ordering
 
 Orders the files of a PR's diff so a reviewer can read the PR from top to
@@ -510,11 +570,21 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   The review list offers the same without opening the review: each PR's **✦ AI**
   button, beside its Plugins button, opens a page with every enabled feature's
   report for that PR. The applied features get no button: their results are
-  the diff's order and the list's review-ease pill.
+  the diff's order and the list's review-ease pill. The change diagram's button
+  opens a modal that takes most of the screen, drawing the diagram with the
+  mermaid library (loaded the first time a diagram is drawn): it opens fitted
+  to the window, zooms with **−** / **+** / **1:1**, pans by dragging, and
+  shows the raw source on **Source**; the AI page draws it inline.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
   an enabled feature in its own buffer, which polls while a run is pending. In
   that buffer, `r` refreshes, `R` re-runs and `q` quits. The applied features
   aren't offered; review-ease shows as the headline tag in the reviews buffer.
+  The change diagram has a dedicated command, `crs-show-change-diagram` (`M` in
+  a review buffer or on a PR in the reviews buffer; with `M-x` elsewhere it asks
+  for a PR URL or `owner/repo#number`). It shows the raw Mermaid source alone in
+  a buffer of its own, in `mermaid-mode` when that is installed — so its
+  `C-c C-b` renders the diagram with `mmdc` — with the status in the header
+  line. The same `r`, `R` and `q` apply.
 
 Both run the feature on open when it never ran or went stale.
 

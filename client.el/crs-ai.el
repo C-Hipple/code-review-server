@@ -19,7 +19,9 @@
 ;;
 ;; The features the server applies itself — file-ordering orders the diff,
 ;; review-ease tags the PR in the review list — have no report, and are
-;; never offered here.
+;; never offered here.  The change diagram is offered, but opens in the
+;; mermaid-mode buffer of crs-diagram.el, which renders through the same
+;; functions via `crs--ai-insert-function'.
 
 ;;; Code:
 
@@ -28,6 +30,7 @@
 (require 'markdown-mode)
 
 (declare-function crs--get-current-review-info "crs-review")
+(declare-function crs--diagram-open "crs-diagram")
 
 (defun crs--ai-true-p (value)
   "Non-nil when VALUE is JSON true (false arrives as `:json-false')."
@@ -92,13 +95,14 @@ describes it, and no run is already in flight."
                            "\n" "\n  " (or (cdr (assq 'content annotation)) "")))))))))
 
 (defun crs--ai-render (buffer output)
-  "Render OUTPUT into BUFFER, keeping point where the reader left it."
+  "Render OUTPUT into BUFFER, keeping point where the reader left it.
+BUFFER's `crs--ai-insert-function' inserts it, by default as a report."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((inhibit-read-only t)
             (pos (point)))
         (erase-buffer)
-        (crs--insert-ai-output output)
+        (funcall (or crs--ai-insert-function #'crs--insert-ai-output) output)
         (goto-char (min pos (point-max))))
       (setq crs--ai-output output))))
 
@@ -224,6 +228,14 @@ Fetches them with ListAIFeatures the first time."
            (choice (completing-read "AI feature: " names nil t)))
       (cdr (assoc choice names))))))
 
+(defun crs--ai-feature-buffer (owner repo number feature)
+  "Show FEATURE's buffer for OWNER/REPO #NUMBER and return it.
+The change diagram gets its mermaid-mode buffer, any other feature a
+report buffer."
+  (if (equal (cdr (assq 'id feature)) crs-change-diagram-feature-id)
+      (crs--diagram-open owner repo number)
+    (crs--ai-open owner repo number feature)))
+
 (defun crs--ai-open (owner repo number feature)
   "Show FEATURE's output for OWNER/REPO #NUMBER in its buffer and return it."
   (let ((buffer (get-buffer-create
@@ -265,17 +277,18 @@ stale, and keeps the buffer updated while the run is pending."
          (number (nth 2 info)))
     (crs--ai-with-features
      (lambda ()
-       (let ((buffer (crs--ai-open owner repo number
-                                   (crs--ai-choose-feature crs-ai-features))))
+       (let ((buffer (crs--ai-feature-buffer owner repo number
+                                             (crs--ai-choose-feature crs-ai-features))))
          (crs--ai-fetch buffer t))))))
 
 ;;;###autoload
 (defun crs-run-ai-feature (&optional force)
   "Run an AI feature for the current PR and show its buffer.
-From an AI output buffer, runs that buffer's feature.  With a prefix
-argument FORCE, run even when the report already covers the PR."
+From an AI output buffer (or the change diagram's), runs that buffer's
+feature.  With a prefix argument FORCE, run even when the report
+already covers the PR."
   (interactive "P")
-  (if (derived-mode-p 'crs-ai-output-mode)
+  (if crs--ai-feature
       (crs--ai-run (current-buffer) force)
     (let* ((info (crs--get-current-review-info))
            (owner (nth 0 info))
@@ -283,8 +296,8 @@ argument FORCE, run even when the report already covers the PR."
            (number (nth 2 info)))
       (crs--ai-with-features
        (lambda ()
-         (crs--ai-run (crs--ai-open owner repo number
-                                    (crs--ai-choose-feature crs-ai-features))
+         (crs--ai-run (crs--ai-feature-buffer owner repo number
+                                              (crs--ai-choose-feature crs-ai-features))
                       force))))))
 
 (defun crs-ai-refresh ()

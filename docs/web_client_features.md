@@ -535,9 +535,10 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ---
 
-### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`)
+### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
 
-The server's [AI features](ai_features.md) — comments-addressed and feature-flags — have two
+The server's [AI features](ai_features.md) — comments-addressed, feature-flags and
+change-diagram — have two
 surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
 enabled by default, and an older server without the AI RPCs just shows neither.
 
@@ -568,6 +569,16 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   clicking an item's location closes the modal, reveals the thread in the diff and
   scrolls to it (threads carry `data-thread-root`), or opens the outdated-comments
   panel for a thread no longer in the diff.
+- **change-diagram** draws the raw Mermaid source in its `report.mermaid` with the
+  [mermaid](https://mermaid.js.org) library (`MermaidDiagram.tsx`, `mermaid_utils.ts`),
+  loaded as a separate chunk the first time a diagram is drawn and run at
+  `securityLevel: 'strict'`, themed to match the app's light or dark background.
+  Its modal takes most of the screen (the design `Modal`'s `full` size). The diagram
+  opens fitted to the canvas (enlarged at most 1.5×); **−** / **+** step the zoom,
+  **1:1** draws it at its natural size, dragging pans it, and a legend explains the
+  added / changed / removed colors. **Source** shows the raw Mermaid, **Copy source**
+  copies it, and a diagram mermaid can't parse shows the parse error above its
+  source. The AI view draws the diagram inline in its card.
 - **Any other feature** renders its markdown `body` with `PluginBodyView`.
 
 ## 4. Protocol methods used — and not used

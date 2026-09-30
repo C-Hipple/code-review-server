@@ -3,6 +3,7 @@ import {
     attentionCount,
     attentionItems,
     canJumpTo,
+    changeDiagram,
     commentsReport,
     isPending,
     itemLocation,
@@ -213,5 +214,43 @@ describe('presentation', () => {
 
     test('polling backs off', () => {
         expect(pollDelayMs(0)).toBeLessThan(pollDelayMs(20));
+    });
+});
+
+describe('change-diagram', () => {
+    const diagramOutput = (fields: Partial<AIFeatureOutput> = {}): AIFeatureOutput => ({
+        feature: 'change-diagram',
+        name: 'Change diagram',
+        status: 'success',
+        body: { body_type: 'markdown', body_content: '```mermaid\nflowchart TD\n```\n' },
+        annotations: [],
+        report: { mermaid: 'flowchart TD\n  a --> b', diagram_type: 'flowchart' },
+        outstanding: null,
+        covers_sha: 'sha-1',
+        covers_digest: 'code-only',
+        current_sha: 'sha-1',
+        current_digest: 'code-only',
+        stale: false,
+        truncated: false,
+        updated_at: '2026-09-01T10:00:00Z',
+        ...fields,
+    });
+
+    test('reads the raw Mermaid source from the report', () => {
+        expect(changeDiagram(diagramOutput())).toEqual({
+            mermaid: 'flowchart TD\n  a --> b',
+            diagram_type: 'flowchart',
+        });
+    });
+
+    test('is null for anything but a change diagram with source', () => {
+        expect(changeDiagram(null)).toBeNull();
+        expect(changeDiagram(diagramOutput({ report: null, status: 'error' }))).toBeNull();
+        expect(changeDiagram(diagramOutput({ report: { mermaid: '  ' } }))).toBeNull();
+        expect(changeDiagram(diagramOutput({ feature: 'feature-flags' }))).toBeNull();
+    });
+
+    test('has nothing to count on its toolbar button', () => {
+        expect(attentionCount(diagramOutput())).toBeNull();
     });
 });

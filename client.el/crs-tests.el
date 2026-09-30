@@ -23,7 +23,7 @@
   (should (featurep 'crs-client))
   (dolist (feat '(crs-vars crs-html crs-rpc crs-render crs-list-mode
                   crs-review crs-comments crs-review-actions crs-plugins
-                  crs-ai))
+                  crs-ai crs-diagram))
     (should (featurep feat))))
 
 (ert-deftest crs-test-key-commands-defined ()
@@ -42,6 +42,7 @@
                 crs-get-plugin-output crs-rerun-plugin crs-run-on-demand-plugin
                 crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
                 crs-ai-list-features crs-quit-ai-output
+                crs-show-change-diagram
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -65,7 +66,9 @@
                 crs--insert-plugin-output-entry
                 crs--insert-ai-output crs--ai-should-run-p crs--ai-pending-p
                 crs--ai-buffer-name crs--ai-choose-feature
-                crs--ai-report-features))
+                crs--ai-report-features crs--ai-feature-buffer
+                crs--insert-diagram crs--diagram-source crs--diagram-open
+                crs--diagram-buffer-name crs--parse-pr-ref crs--diagram-read-pr))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -78,7 +81,8 @@
                  crs--comment-owner crs--comment-filename crs--comment-position
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map
                  crs-ai-features crs--ai-owner crs--ai-feature crs--ai-output
-                 crs--ai-poll-timer))
+                 crs--ai-poll-timer crs--ai-insert-function
+                 crs-change-diagram-feature-id))
     (should (boundp var))))
 
 ;;; --- Modes can be entered without error ---
@@ -752,6 +756,178 @@ the functions scheduled."
                            "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"comments-addressed\",\"Force\":true}]"))
             (should (string-match-p "Refreshing" (buffer-string))))
         (kill-buffer buffer)))))
+
+;;; --- Change diagram (crs-diagram.el) ---
+
+(defconst crs-test--diagram-source
+  "flowchart TD\n    main[\"src/main.ts: main\"]:::changed --> greet[\"src/greet.ts: greet\"]:::added"
+  "Mermaid source as the server serves it in a change-diagram report.")
+
+(defun crs-test--diagram-output (&rest overrides)
+  "A change-diagram GetAIOutput entry, with OVERRIDES (KEY VALUE ...) applied."
+  (let ((output (list (cons 'feature "change-diagram")
+                      (cons 'name "Change diagram")
+                      (cons 'status "success")
+                      (cons 'body `((body_type . "markdown")
+                                    (body_content . ,(concat "```mermaid\n"
+                                                             crs-test--diagram-source
+                                                             "\n```\n"))))
+                      (cons 'annotations [])
+                      (cons 'report `((mermaid . ,crs-test--diagram-source)
+                                      (diagram_type . "flowchart")))
+                      (cons 'stale :json-false)
+                      (cons 'truncated :json-false)
+                      (cons 'updated_at "2026-09-01T10:00:00Z"))))
+    (while overrides
+      (setf (alist-get (pop overrides) output) (pop overrides)))
+    output))
+
+(defmacro crs-test--in-diagram-buffer (&rest body)
+  "Run BODY in a fresh change-diagram buffer for acme/widgets #42, then kill it."
+  (declare (indent 0))
+  `(let ((buffer (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                   (crs--diagram-open "acme" "widgets" 42))))
+     (unwind-protect
+         (with-current-buffer buffer ,@body)
+       (kill-buffer buffer))))
+
+(ert-deftest crs-test-parse-pr-ref ()
+  "A PR is named by its URL, anywhere on a line, or as owner/repo#number."
+  (should (equal (crs--parse-pr-ref "https://github.com/acme/widgets/pull/42")
+                 '("acme" "widgets" 42)))
+  (should (equal (crs--parse-pr-ref "** TODO Add greeting https://github.com/acme/widgets/pull/42 :easy:")
+                 '("acme" "widgets" 42)))
+  (should (equal (crs--parse-pr-ref " acme/widgets#42 ") '("acme" "widgets" 42)))
+  (should-not (crs--parse-pr-ref "widgets 42"))
+  (should-not (crs--parse-pr-ref "see acme/widgets#42 for details"))
+  (should-not (crs--parse-pr-ref nil)))
+
+(ert-deftest crs-test-diagram-shows-the-raw-mermaid ()
+  "The diagram buffer holds the report's Mermaid source and nothing else."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.GetAIOutput"
+         . ((output . ((change-diagram . ,(crs-test--diagram-output)))))))
+    (crs-show-change-diagram "acme" "widgets" 42)
+    (let ((buffer (get-buffer (crs--diagram-buffer-name "acme" "widgets" 42))))
+      (unwind-protect
+          (progn
+            ;; A current diagram needs no run and no poll.
+            (should (equal (mapcar #'car calls) '("RPCHandler.GetAIOutput")))
+            (should (equal (json-encode (cdar calls))
+                           "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"change-diagram\"}]"))
+            (should-not timers)
+            (with-current-buffer buffer
+              (should (equal (buffer-string) (concat crs-test--diagram-source "\n")))
+              (should buffer-read-only)
+              (should crs-diagram-view-mode)
+              (if (fboundp 'mermaid-mode)
+                  (should (derived-mode-p 'mermaid-mode))
+                (should (eq major-mode 'fundamental-mode)))
+              (should (string-match-p "Change diagram: acme/widgets #42" header-line-format))
+              (should (string-match-p "Status: success" header-line-format))
+              (should-not (string-match-p "changed since" header-line-format))))
+        (kill-buffer buffer)))))
+
+(ert-deftest crs-test-diagram-runs-when-never-drawn ()
+  "A PR with no diagram yet asks for a run and polls; the buffer stays Mermaid."
+  (let ((none '((body_type . "markdown") (body_content . ""))))
+    (crs-test--with-fake-rpc
+        `(("RPCHandler.GetAIOutput"
+           . ((output . ((change-diagram
+                          . ,(crs-test--diagram-output 'status "not-run" 'report nil
+                                                       'updated_at "" 'body none))))))
+          ("RPCHandler.RunAIFeature"
+           . ((okay . t) (outcome . "started")
+              (output . ,(crs-test--diagram-output 'status "pending" 'report nil
+                                                   'updated_at "" 'body none)))))
+      (crs-test--in-diagram-buffer
+        (crs--ai-fetch buffer t)
+        (should (equal (mapcar #'car (reverse calls))
+                       '("RPCHandler.GetAIOutput" "RPCHandler.RunAIFeature")))
+        (should (= (length timers) 1))
+        (should (string-match-p "\\`%% Drawing the diagram" (buffer-string)))
+        (should (string-match-p "Status: pending" header-line-format))))))
+
+(ert-deftest crs-test-diagram-rerun-forces ()
+  "Re-running from the diagram buffer forces a fresh run of the diagram."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.RunAIFeature"
+         . ((okay . t) (outcome . "started")
+            (output . ,(crs-test--diagram-output 'status "pending")))))
+    (crs-test--in-diagram-buffer
+      (crs-ai-rerun)
+      (should (equal (json-encode (cdar calls))
+                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"change-diagram\",\"Force\":true}]"))
+      ;; The previous diagram stays while the new one is drawn.
+      (should (equal (buffer-string) (concat crs-test--diagram-source "\n")))
+      (should (string-match-p "Refreshing" header-line-format)))))
+
+(ert-deftest crs-test-diagram-without-a-diagram ()
+  "Why there is no diagram is a Mermaid comment; staleness is in the header."
+  (crs-test--in-diagram-buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (crs--insert-diagram
+       (crs-test--diagram-output
+        'status "error" 'report nil
+        'body '((body_content . "**Change diagram failed.**\n\nresponse contained no Mermaid diagram"))))
+      (should (equal (buffer-string)
+                     "%% **Change diagram failed.**\n%%\n%% response contained no Mermaid diagram\n"))
+      (erase-buffer)
+      (crs--insert-diagram (crs-test--diagram-output 'status "not-run" 'report nil))
+      (should (string-match-p "\\`%% No diagram for this PR yet" (buffer-string)))
+      (erase-buffer)
+      (crs--insert-diagram (crs-test--diagram-output 'stale t 'updated_at "100%"))
+      (should (string-match-p "R re-runs" header-line-format))
+      ;; A `%' in the header line is literal text, not a mode-line construct.
+      (should (string-match-p "Updated 100%%" header-line-format)))))
+
+(ert-deftest crs-test-diagram-from-the-ai-chooser ()
+  "Choosing the change diagram from `crs-get-ai-output' opens its mermaid buffer."
+  (let ((crs-ai-features (list `((id . ,crs-change-diagram-feature-id)
+                                 (name . "Change diagram") (enabled . t)))))
+    (crs-test--with-fake-rpc
+        `(("RPCHandler.GetAIOutput"
+           . ((output . ((change-diagram . ,(crs-test--diagram-output)))))))
+      (with-temp-buffer
+        (rename-buffer (crs--review-buffer-name "acme" "widgets" 42) t)
+        (crs-get-ai-output))
+      (let ((buffer (get-buffer (crs--diagram-buffer-name "acme" "widgets" 42))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should crs-diagram-view-mode)
+              (should (equal (buffer-string) (concat crs-test--diagram-source "\n"))))
+          (kill-buffer buffer))))))
+
+(ert-deftest crs-test-diagram-read-pr ()
+  "The PR comes from the buffer, else the line at point."
+  (with-temp-buffer
+    (rename-buffer (crs--review-buffer-name "acme" "widgets" 42) t)
+    (should (equal (crs--diagram-read-pr) '("acme" "widgets" 42))))
+  (with-temp-buffer
+    (insert "** Add greeting  https://github.com/acme/gadgets/pull/7\n")
+    (goto-char (point-min))
+    (should (equal (crs--diagram-read-pr) '("acme" "gadgets" 7))))
+  (crs-test--in-diagram-buffer
+    (should (equal (crs--diagram-read-pr) '("acme" "widgets" 42)))))
+
+(ert-deftest crs-test-diagram-keys-bound ()
+  "The diagram is reachable from the review and list buffers, and navigable."
+  (should (eq (lookup-key my-code-review-mode-map (kbd "M")) #'crs-show-change-diagram))
+  (should (eq (lookup-key crs-list-mode-map (kbd "M")) #'crs-show-change-diagram))
+  (should (eq (lookup-key crs-diagram-view-mode-map (kbd "r")) #'crs-ai-refresh))
+  (should (eq (lookup-key crs-diagram-view-mode-map (kbd "R")) #'crs-ai-rerun))
+  (should (eq (lookup-key crs-diagram-view-mode-map (kbd "q")) #'crs-quit-ai-output)))
+
+(ert-deftest crs-test-diagram-killing-the-buffer-stops-polling ()
+  "A pending poll timer does not outlive the diagram buffer."
+  (let ((buffer (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                  (crs--diagram-open "acme" "widgets" 42))))
+    (with-current-buffer buffer
+      (setq crs--ai-poll-timer (run-with-timer 3600 nil #'ignore)))
+    (let ((timer (buffer-local-value 'crs--ai-poll-timer buffer)))
+      (kill-buffer buffer)
+      (should-not (memq timer timer-list)))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

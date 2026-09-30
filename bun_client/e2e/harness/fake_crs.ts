@@ -25,6 +25,15 @@ interface Request {
     id: number | string;
 }
 
+// The change diagram the fake serves for every PR, as the server stores it:
+// the model's flowchart, with the change classes the server defines appended.
+const DIAGRAM_SOURCE = `flowchart TD
+    main["src/main.ts: main"]:::changed --> greet["src/greet.ts: greet"]:::added
+    greet --> punct["src/greet.ts: punctuation"]:::added
+    classDef added fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef changed fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef removed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray: 5 5`;
+
 interface State {
     prs: PRFixture[];
     localComments: Map<string, CommentJSON[]>;
@@ -38,9 +47,13 @@ interface State {
     syncUpdated: boolean;
     nextCommentId: number;
     nextReviewId: number;
-    // AI features: whether comments-addressed is enabled, the runs in flight
-    // (polls left before each lands) and the PRs that have a result.
+    // AI features: whether comments-addressed is enabled, whether
+    // change-diagram is and the Mermaid source it serves, the runs in flight
+    // (polls left before each lands) and the results there are — both keyed
+    // by PR and feature.
     aiEnabled: boolean;
+    diagramEnabled: boolean;
+    diagramSource: string;
     aiRuns: Map<string, number>;
     aiDone: Set<string>;
 }
@@ -58,6 +71,8 @@ function freshState(): State {
         nextCommentId: 9001,
         nextReviewId: 800,
         aiEnabled: true,
+        diagramEnabled: false,
+        diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Map(),
         aiDone: new Set(),
     };
@@ -176,13 +191,45 @@ const APPLIED_AI_FEATURES = [
     },
 ];
 
+// change-diagram: off unless a test turns it on (E2E.SetDiagram), so the
+// other specs see only comments-addressed.
+const DIAGRAM_FEATURE = {
+    id: 'change-diagram',
+    name: 'Change diagram',
+    description: 'Draws a Mermaid diagram of what the PR changes.',
+    automatic: false,
+    mode: 'oneshot',
+    modes: ['oneshot'],
+    provider: 'gemini',
+};
+
+// The report features the fake knows, each with whether it is enabled now.
+function reportFeatures() {
+    return [
+        { ...AI_FEATURE, enabled: state.aiEnabled },
+        { ...DIAGRAM_FEATURE, enabled: state.diagramEnabled },
+    ];
+}
+
+// A feature's canned result, once its run has landed.
+function aiResult(pr: PRFixture, feature: string) {
+    if (feature === DIAGRAM_FEATURE.id) {
+        return {
+            body: '```mermaid\n' + state.diagramSource + '\n```\n',
+            report: { mermaid: state.diagramSource, diagram_type: 'flowchart' },
+            outstanding: null,
+        };
+    }
+    return commentsAddressedReport(pr);
+}
+
 // One feature's output for a PR, in the shape GetAIOutput serves. A run in
 // flight reads "pending" for one poll, then the canned report lands.
-function aiOutput(pr: PRFixture) {
-    const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+function aiOutput(pr: PRFixture, feature = AI_FEATURE) {
+    const k = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:${feature.id}`;
     const base = {
-        feature: AI_FEATURE.id,
-        name: AI_FEATURE.name,
+        feature: feature.id,
+        name: feature.name,
         annotations: [],
         covers_sha: '',
         covers_digest: '',
@@ -217,7 +264,7 @@ function aiOutput(pr: PRFixture) {
             updated_at: '',
         };
     }
-    const { report, outstanding, body } = commentsAddressedReport(pr);
+    const { report, outstanding, body } = aiResult(pr, feature.id);
     return {
         ...base,
         status: 'success',
@@ -402,12 +449,13 @@ const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
 
     'RPCHandler.ListAIFeatures': () => ({
-        features: [{ ...AI_FEATURE, enabled: state.aiEnabled }, ...APPLIED_AI_FEATURES],
+        features: [...reportFeatures(), ...APPLIED_AI_FEATURES],
     }),
 
     'RPCHandler.RunAIFeature': args => {
         const pr = findPR(args);
-        if (args.Feature !== AI_FEATURE.id) {
+        const feature = reportFeatures().find(f => f.id === args.Feature);
+        if (!feature) {
             return {
                 okay: false,
                 outcome: 'unknown-feature',
@@ -415,35 +463,48 @@ const handlers: Record<string, (args: any) => unknown> = {
                 output: null,
             };
         }
-        if (!state.aiEnabled) {
+        if (!feature.enabled) {
             return {
                 okay: false,
                 outcome: 'disabled',
                 message: 'not enabled',
-                output: aiOutput(pr),
+                output: aiOutput(pr, feature),
             };
         }
-        const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+        const k = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:${feature.id}`;
         if (state.aiRuns.has(k)) {
-            return { okay: true, outcome: 'already-running', message: '', output: aiOutput(pr) };
+            return {
+                okay: true,
+                outcome: 'already-running',
+                message: '',
+                output: aiOutput(pr, feature),
+            };
         }
         if (!args.Force && state.aiDone.has(k)) {
-            return { okay: true, outcome: 'up-to-date', message: '', output: aiOutput(pr) };
+            return {
+                okay: true,
+                outcome: 'up-to-date',
+                message: '',
+                output: aiOutput(pr, feature),
+            };
         }
         state.aiDone.delete(k);
         state.aiRuns.set(k, 1);
         return {
             okay: true,
             outcome: 'started',
-            message: `Running ${AI_FEATURE.name} for PR ${pr.item.number}`,
-            output: aiOutput(pr),
+            message: `Running ${feature.name} for PR ${pr.item.number}`,
+            output: aiOutput(pr, feature),
         };
     },
 
+    // One feature when asked for (enabled or not), else every enabled one.
     'RPCHandler.GetAIOutput': args => {
         const pr = findPR(args);
-        if (!state.aiEnabled && !args.Feature) return { output: {} };
-        return { output: { [AI_FEATURE.id]: aiOutput(pr) } };
+        const features = args.Feature
+            ? reportFeatures().filter(f => f.id === args.Feature)
+            : reportFeatures().filter(f => f.enabled);
+        return { output: Object.fromEntries(features.map(f => [f.id, aiOutput(pr, f)])) };
     },
 
     // --- Test control surface -------------------------------------------------
@@ -484,6 +545,13 @@ const handlers: Record<string, (args: any) => unknown> = {
 
     'E2E.SetAIEnabled': args => {
         state.aiEnabled = !!args.enabled;
+        return { okay: true };
+    },
+
+    // Turn change-diagram on or off, optionally serving other Mermaid source.
+    'E2E.SetDiagram': args => {
+        state.diagramEnabled = !!args.enabled;
+        if (typeof args.mermaid === 'string') state.diagramSource = args.mermaid;
         return { okay: true };
     },
 };

@@ -158,7 +158,7 @@ Modal dialog with backdrop and ESC key handling.
 - `onClose`: `() => void` - Close handler
 - `title`: `string` - Modal title
 - `footer`: `React.ReactNode` - Optional footer
-- `size`: `'sm' | 'md' | 'lg' | 'xl'` (default: `'md'`)
+- `size`: `'sm' | 'md' | 'lg' | 'xl' | 'full'` (default: `'md'`). `full` takes most of the screen, and its body is a flex column content can grow to fill
 
 **Examples:**
 

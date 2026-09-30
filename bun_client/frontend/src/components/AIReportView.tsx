@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
     attentionItems,
     canJumpTo,
+    changeDiagram,
     commentsReport,
     isPending,
     itemLocation,
@@ -17,6 +18,7 @@ import {
 } from '../ai_utils';
 import { Badge, Button } from '../design';
 import { relativeTime } from '../discussion_utils';
+import MermaidDiagram from './MermaidDiagram';
 import PluginBodyView from './PluginBodyView';
 
 interface AIReportViewProps {
@@ -26,6 +28,8 @@ interface AIReportViewProps {
     gaveUp?: boolean;
     /** Takes the reviewer to an item's thread in the diff. Without it, locations are plain text. */
     onJumpToItem?: (item: ReportItem) => void;
+    /** Grow to fill the parent, a flex column, as the change diagram does in its modal. */
+    fill?: boolean;
 }
 
 /**
@@ -33,7 +37,8 @@ interface AIReportViewProps {
  * view both show it: what the run's state is, then the report itself.
  *
  * comments-addressed gets a structured view — what needs attention, with a
- * way to jump to each thread; any other feature renders its markdown body.
+ * way to jump to each thread; change-diagram draws its Mermaid source; any
+ * other feature renders its markdown body.
  */
 export default function AIReportView({
     output,
@@ -41,15 +46,18 @@ export default function AIReportView({
     notice,
     gaveUp,
     onJumpToItem,
+    fill,
 }: AIReportViewProps) {
     const pending = isPending(output);
     const report = commentsReport(output);
+    const diagram = changeDiagram(output);
     const hasResult = !!output && output.status !== 'not-run' && output.updated_at !== '';
+    const grow: React.CSSProperties = fill ? { flex: 1, minHeight: 0 } : {};
 
     return (
         <div
             data-testid="ai-report"
-            style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+            style={{ display: 'flex', flexDirection: 'column', gap: '14px', ...grow }}
         >
             <StatusLine output={output} report={report} />
 
@@ -72,12 +80,25 @@ export default function AIReportView({
                 </div>
             )}
 
-            <div style={{ opacity: pending && hasResult ? 0.55 : 1 }}>
+            <div
+                style={{
+                    opacity: pending && hasResult ? 0.55 : 1,
+                    ...(fill && { display: 'flex', flexDirection: 'column', ...grow }),
+                }}
+            >
                 {report ? (
                     <CommentsReportView
                         report={report}
                         attention={attentionItems(output)}
                         onJump={onJumpToItem}
+                    />
+                ) : diagram ? (
+                    <MermaidDiagram
+                        source={diagram.mermaid}
+                        legend={
+                            diagram.diagram_type === 'flowchart' || diagram.diagram_type === 'graph'
+                        }
+                        fill={fill}
                     />
                 ) : (
                     hasResult &&

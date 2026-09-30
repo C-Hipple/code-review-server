@@ -116,8 +116,10 @@ type responseFormat struct {
 
 type chatRequest struct {
 	Model          string          `json:"model"`
-	Messages       []message       `json:"messages"`
+	Messages       []any           `json:"messages"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Tools          []toolSpec      `json:"tools,omitempty"`
+	ToolChoice     any             `json:"tool_choice,omitempty"`
 }
 
 type apiErrorBody struct {
@@ -127,14 +129,19 @@ type apiErrorBody struct {
 	Message string `json:"message"`
 }
 
+// replyMessage is the part of a choice's message this package reads.
+type replyMessage struct {
+	Content   *string    `json:"content"`
+	Refusal   *string    `json:"refusal"`
+	ToolCalls []ToolCall `json:"tool_calls"`
+}
+
 type chatResponse struct {
 	Choices []struct {
-		Message struct {
-			Content *string `json:"content"`
-			Refusal *string `json:"refusal"`
-		} `json:"message"`
-		FinishReason string        `json:"finish_reason"`
-		Error        *apiErrorBody `json:"error"`
+		// Message is kept raw so a chat can send it back exactly as it came.
+		Message      json.RawMessage `json:"message"`
+		FinishReason string          `json:"finish_reason"`
+		Error        *apiErrorBody   `json:"error"`
 	} `json:"choices"`
 	Error *apiErrorBody `json:"error"`
 }
@@ -144,7 +151,7 @@ type chatResponse struct {
 func (c *Client) Complete(ctx context.Context, prompt string, schema *JSONSchema) (string, error) {
 	body := chatRequest{
 		Model:    c.Model,
-		Messages: []message{{Role: "user", Content: prompt}},
+		Messages: []any{message{Role: "user", Content: prompt}},
 	}
 	if schema != nil {
 		body.ResponseFormat = &responseFormat{
@@ -152,14 +159,131 @@ func (c *Client) Complete(ctx context.Context, prompt string, schema *JSONSchema
 			JSONSchema: jsonSchemaFormat{Name: schema.Name, Strict: true, Schema: schema.Schema},
 		}
 	}
-	data, err := json.Marshal(body)
+	reply, _, finishReason, err := c.send(ctx, body)
 	if err != nil {
 		return "", err
+	}
+	if reply.Content == nil || strings.TrimSpace(*reply.Content) == "" {
+		if reply.Refusal != nil && *reply.Refusal != "" {
+			return "", fmt.Errorf("%w: the model refused: %s", ErrEmptyResponse, *reply.Refusal)
+		}
+		return "", fmt.Errorf("%w (finish reason %q)", ErrEmptyResponse, finishReason)
+	}
+	return *reply.Content, nil
+}
+
+// Tool is a function the model may call during a Chat. Parameters is the JSON
+// Schema of its arguments object.
+type Tool struct {
+	Name        string
+	Description string
+	Parameters  any
+}
+
+type toolFunction struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+type toolSpec struct {
+	Type     string       `json:"type"`
+	Function toolFunction `json:"function"`
+}
+
+// ToolCall is one call the model asked for. Arguments is the JSON object of
+// its arguments, as a string: the model wrote it, so it may not parse.
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// Message is one entry of a Chat's conversation. Build them with
+// SystemMessage, UserMessage and ToolMessage; an assistant message is the one
+// Chat returned, sent back as is.
+type Message struct {
+	raw json.RawMessage
+}
+
+func (m Message) MarshalJSON() ([]byte, error) { return m.raw, nil }
+
+func newMessage(v any) Message {
+	raw, _ := json.Marshal(v) // plain strings: cannot fail
+	return Message{raw: raw}
+}
+
+// SystemMessage carries instructions that frame the whole conversation.
+func SystemMessage(text string) Message { return newMessage(message{Role: "system", Content: text}) }
+
+// UserMessage is a turn from the caller.
+func UserMessage(text string) Message { return newMessage(message{Role: "user", Content: text}) }
+
+// ToolMessage answers the tool call with id.
+func ToolMessage(id, content string) Message {
+	return newMessage(struct {
+		Role       string `json:"role"`
+		ToolCallID string `json:"tool_call_id"`
+		Content    string `json:"content"`
+	}{"tool", id, content})
+}
+
+// ChatReply is the model's turn in a Chat.
+type ChatReply struct {
+	// Message is the reply to append to the conversation. It is the message
+	// exactly as OpenRouter sent it, so whatever a model needs back to carry
+	// on — its reasoning, say — goes back too.
+	Message   Message
+	Text      string
+	ToolCalls []ToolCall
+}
+
+// Chat sends a conversation with the tools the model may call and returns its
+// next turn: text, tool calls, or both. A non-empty require names the tool the
+// model must call this turn; empty leaves the choice to the model.
+func (c *Client) Chat(ctx context.Context, messages []Message, tools []Tool, require string) (ChatReply, error) {
+	body := chatRequest{Model: c.Model}
+	for _, m := range messages {
+		body.Messages = append(body.Messages, m)
+	}
+	for _, t := range tools {
+		body.Tools = append(body.Tools, toolSpec{Type: "function", Function: toolFunction(t)})
+	}
+	if require != "" {
+		body.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": require}}
+	}
+	reply, raw, finishReason, err := c.send(ctx, body)
+	if err != nil {
+		return ChatReply{}, err
+	}
+	out := ChatReply{Message: Message{raw: raw}, ToolCalls: reply.ToolCalls}
+	if reply.Content != nil {
+		out.Text = *reply.Content
+	}
+	if strings.TrimSpace(out.Text) == "" && len(out.ToolCalls) == 0 {
+		if reply.Refusal != nil && *reply.Refusal != "" {
+			return ChatReply{}, fmt.Errorf("%w: the model refused: %s", ErrEmptyResponse, *reply.Refusal)
+		}
+		return ChatReply{}, fmt.Errorf("%w (finish reason %q)", ErrEmptyResponse, finishReason)
+	}
+	return out, nil
+}
+
+// send posts a chat completion and returns the first choice's message, both
+// parsed and raw, with its finish reason.
+func (c *Client) send(ctx context.Context, body chatRequest) (replyMessage, json.RawMessage, string, error) {
+	var reply replyMessage
+	data, err := json.Marshal(body)
+	if err != nil {
+		return reply, nil, "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(data))
 	if err != nil {
-		return "", err
+		return reply, nil, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -168,36 +292,36 @@ func (c *Client) Complete(ctx context.Context, prompt string, schema *JSONSchema
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", err
+		return reply, nil, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return "", &APIError{StatusCode: resp.StatusCode, Message: errorMessage(raw)}
+		return reply, nil, "", &APIError{StatusCode: resp.StatusCode, Message: errorMessage(raw)}
 	}
 
 	var parsed chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDecode, err)
+		return reply, nil, "", fmt.Errorf("%w: %v", ErrDecode, err)
 	}
 	if parsed.Error != nil {
-		return "", &APIError{StatusCode: resp.StatusCode, Message: parsed.Error.String()}
+		return reply, nil, "", &APIError{StatusCode: resp.StatusCode, Message: parsed.Error.String()}
 	}
 	if len(parsed.Choices) == 0 {
-		return "", ErrEmptyResponse
+		return reply, nil, "", ErrEmptyResponse
 	}
 	choice := parsed.Choices[0]
 	if choice.Error != nil {
-		return "", &APIError{StatusCode: resp.StatusCode, Message: choice.Error.String()}
+		return reply, nil, "", &APIError{StatusCode: resp.StatusCode, Message: choice.Error.String()}
 	}
-	if choice.Message.Content == nil || strings.TrimSpace(*choice.Message.Content) == "" {
-		if choice.Message.Refusal != nil && *choice.Message.Refusal != "" {
-			return "", fmt.Errorf("%w: the model refused: %s", ErrEmptyResponse, *choice.Message.Refusal)
-		}
-		return "", fmt.Errorf("%w (finish reason %q)", ErrEmptyResponse, choice.FinishReason)
+	if len(choice.Message) == 0 || string(choice.Message) == "null" {
+		return reply, nil, "", fmt.Errorf("%w (finish reason %q)", ErrEmptyResponse, choice.FinishReason)
 	}
-	return *choice.Message.Content, nil
+	if err := json.Unmarshal(choice.Message, &reply); err != nil {
+		return reply, nil, "", fmt.Errorf("%w: %v", ErrDecode, err)
+	}
+	return reply, choice.Message, choice.FinishReason, nil
 }
 
 func (e *apiErrorBody) String() string {

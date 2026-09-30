@@ -106,11 +106,18 @@ through its structured outputs. Not every model behind OpenRouter supports
 those, so the prompt also spells out the JSON wanted; a reply that still isn't
 JSON becomes the plugin's body verbatim, without annotations.
 
+Style Guidelines is the exception: it runs an agentic tool loop rather than a
+single prompt, so the model it calls must support **tool calling** (Gemini's
+function calling, or OpenRouter's tool calls — most current models do; check
+the model's page on OpenRouter for "tools"). Its answers arrive as tool calls,
+so it asks for no structured output. See
+[Style Guidelines Plugin](#style-guidelines-plugin).
+
 ## Included Plugins
 
 - **Summarize Diff**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to explain what a PR is trying to accomplish and to mark its hotspots. Emits the [response contract](#plugin-response-contract): a markdown body stating the PR's goal and the approach it takes, plus up to four annotations on the lines carrying the key implementation or business logic — the ones that deserve the closest review. Mechanical changes (renames, moved code, formatting) are deliberately left unannotated.
 - **Security Check**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to analyze the diff for potential security risks, specifically looking for unprotected sensitive endpoints, hardcoded secrets, or missing security decorators (like `@authenticated`).
-- **Style Guidelines**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model), to evaluate a PR's diff against your personal style guide. Reads rules from `~/.config/style_guidelines.md` and reports violations, compliance highlights, and an overall assessment. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each line that breaks a guideline. Requires `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` on OpenRouter. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
+- **Style Guidelines**: Uses the latest Gemini Flash model (`gemini-flash-latest`), or [the model you choose](#choosing-a-model) (it must support tool calling), to check a PR's diff against your style guide — a single Markdown file, or a whole directory of them. It runs two agentic phases: a reviewer that searches and reads the guide to find violations, then a validator that checks each finding against the guide and drops the ones that are wrong or out of scope, such as a frontend rule applied to backend code. Emits the [response contract](#plugin-response-contract): a markdown body holding the report, plus an annotation on each confirmed violation. Requires `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` on OpenRouter. See [Style Guidelines Plugin](#style-guidelines-plugin) below.
 - **Claude Review**: Runs `claude -p "review PR #<number> on repo <owner>/<repo>" --model sonnet` via the Claude CLI. Written in Zig. Build with `zig build` inside `cmd/claude_review/` and place the resulting binary on your `$PATH`.
 
 Plugins are expected to accept flags like `--owner`, `--repo`, `--number`, `--call-type`, and any of the optional content flags enabled above (`--diff`, `--headers`, `--comments`, `--branch`).
@@ -148,7 +155,7 @@ You can write a plugin in any language you like. The only requirement is that th
 
 The `example_plugin` included in this repository demonstrates the interface and potential options.
 
-Go plugins living in this repository share `cmd/internal/pluginkit`, which holds the response contract types, the diff line numbering that lets a model anchor annotations, and the model call the bundled LLM plugins make: `pluginkit.ModelFromEnv()` builds the backend `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL` name (see [Choosing a Model](#choosing-a-model)), and its `Generate` takes the prompt and an optional response schema.
+Go plugins living in this repository share `cmd/internal/pluginkit`, which holds the response contract types, the diff line numbering that lets a model anchor annotations, and the model call the bundled LLM plugins make: `pluginkit.ModelFromEnv()` builds the backend `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL` name (see [Choosing a Model](#choosing-a-model)), and its `Generate` takes the prompt and an optional response schema. A plugin that wants a multi-turn tool loop instead starts a `Chat` with `Model.NewChat(system, tools)`: `AddUser` and `AddToolResults` extend the conversation, and `Next` asks for the model's next turn — text, tool calls, or both — optionally requiring a named tool. `Chat` speaks each backend's native tool calling and keeps the transcript in the backend's own shape, so what a model hands back with its calls (Gemini's thought signatures, OpenRouter's reasoning) is resent untouched; the loop itself — which tools to run, when to stop — is the plugin's. `style_guidelines` is the worked example.
 
 When your plugin runs, its standard output (stdout) is captured and stored in the database. Clients can then retrieve and display this output when you are reviewing a PR. For example, in the web client, plugin outputs appear in a dedicated "Plugins" section for each PR.
 
@@ -290,7 +297,7 @@ Reruns are also visible to the plugin itself: a plugin invoked through `RerunPlu
 
 ## Style Guidelines Plugin
 
-The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your own style rules.
+The `style_guidelines` plugin checks PR diffs against your own style rules, written in Markdown. The rules can be a single file or, for a large project, a directory of files — one per language, layer or topic.
 
 ### Setup
 
@@ -299,7 +306,18 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
    go install ./cmd/style_guidelines/...
    ```
 
-2. **Create your style guide** at `~/.config/style_guidelines.md`. Write your rules in plain Markdown — the entire file goes into the model's prompt. For example:
+2. **Write your style guide.** The plugin looks for it in this order, using the first it finds:
+
+   | Where | How |
+   |-------|-----|
+   | `--style-guide-dir <dir>` | A flag, for running the plugin by hand. The server doesn't pass it. |
+   | `CRS_STYLE_GUIDE_DIR` | An environment variable naming a directory. The server passes its own environment to every plugin, so export it where you start the server. `~/` is expanded. |
+   | `~/.config/style_guidelines/` | A directory, used if it exists. |
+   | `~/.config/style_guidelines.md` | A single file — the original location, still the default. |
+
+   A directory named by the flag or the variable must exist; the plugin fails rather than silently falling back. Every `.md`, `.markdown` and `.mdx` file under it is read, recursively, skipping hidden files and directories (such as `.git`), up to 500 files of at most 1 MiB each. Point it at the guide itself, not at a whole repository.
+
+   A single file, in plain Markdown:
    ```markdown
    # Style Guidelines
 
@@ -309,9 +327,25 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
    - Error messages must be lowercase and end without punctuation.
    ```
 
-3. **Set your Gemini API key** (or, to run it through OpenRouter, `OPENROUTER_API_KEY` plus `Provider` and `Model` in the entry below — see [Choosing a Model](#choosing-a-model)):
+   Or a directory, laid out however suits the project:
+   ```
+   style-guide/
+   ├── README.md          # rules for everything
+   ├── backend/
+   │   ├── python.md
+   │   └── api-design.md
+   ├── frontend/
+   │   ├── react.md
+   │   └── css.md
+   └── testing.md
+   ```
+
+   Say what each rule covers. The validation phase rejects a rule applied outside its scope, and it judges scope from the file's path, its headings and the text around the rule: a file named `frontend/react.md`, or a heading like "## Backend (Python)", does that job.
+
+3. **Set your Gemini API key** (or, to run it through OpenRouter, `OPENROUTER_API_KEY` plus `Provider` and `Model` in the entry below — see [Choosing a Model](#choosing-a-model)). The model must support tool calling:
    ```sh
    export GEMINI_API_KEY=your_key_here
+   export CRS_STYLE_GUIDE_DIR=~/code/myproject/docs/style-guide   # optional
    ```
 
 4. **Add to `~/.config/codereviewserver.toml`:**
@@ -323,13 +357,30 @@ The `style_guidelines` plugin evaluates PR diffs against a Markdown file of your
    IncludeHeaders = true
    ```
 
+### How It Works
+
+The plugin runs its own small agentic loop, twice. In each phase the model is given the PR's title and description, its diff with head-side line numbers, and the guide, plus two tools for reading the guide:
+
+- `search_style_guide` — a case-insensitive regular expression search over the guide (or one file of it), returning `file:line: text` for each match.
+- `read_style_guide` — a guide file, or a range of its lines, numbered.
+
+A guide of up to about 40 KB goes into the prompt whole; a larger one is given as an index of its files and their headings, and the model reads the sections that bear on the diff with the tools. Each phase ends when the model calls its submit tool; the loop checks the answer and hands any problem back as the tool's result, so the model can correct it and submit again.
+
+1. **Review** (`submit_findings`, up to 12 turns). The model finds the rules that apply to each changed file and submits up to 25 candidate findings, each naming the file and line, a severity, the guide file and the rule it breaks. Only lines the PR adds can be flagged: a finding on a file that isn't in the diff, a line the diff doesn't show, or an unchanged line is sent back to be fixed.
+2. **Validation** (`submit_verdicts`, up to 10 turns). A fresh conversation, told to be skeptical, takes each candidate back to the guide and the diff and confirms it only if the rule exists as cited, applies to that file (a frontend rule on backend code, a Python rule on Go, or a test convention on production code is rejected), is actually broken by the line, and isn't a duplicate. It can adjust the severity and rewrite the remark. A candidate it gives no verdict is treated as rejected. A review with no candidates skips this phase.
+
+On its last turn, or when the phase's deadline is under 45 seconds away, the model is made to call the submit tool. The whole run is bounded at 4½ minutes, inside the server's 5-minute plugin timeout, with the review phase getting at most 2½ of them.
+
 ### Output
 
 The plugin emits the [response contract](#plugin-response-contract).
 
-Its markdown body is a brief report with:
-- Specific violations (with file/line references where available)
-- Areas of the diff that comply well with the guidelines
-- An overall style compliance assessment
+Its markdown body is a report with:
+- The validator's overall assessment of the diff's compliance
+- The confirmed violations, worst first, each with its file and line, severity, remark and the guide rule it breaks
+- The findings dismissed on validation, each with the reason — so you can see what was filtered out, and spot a guide rule whose scope needs stating more clearly
+- A footer naming the guide it read, the model, and the turns and tool calls each phase took
 
-Alongside the report it returns up to ten annotations, one per line of the diff that breaks a guideline, so violations render inline in the diff as well as in the report. Each annotation names the guideline broken and how to fix the line, with a severity of `info` for a nit, `warning` for a clear violation, or `error` for one that breaks a guideline stated as a hard requirement. A diff the model can't number — one with no parseable hunks — yields no annotations, and the report alone is returned.
+Alongside the report it returns up to ten annotations — the most severe confirmed violations — so they render inline in the diff as well as in the report. Each annotation says what's wrong and how to fix the line, followed by the guide file it comes from, with a severity of `info` for a nit, `warning` for a clear violation, or `error` for one that breaks a rule the guide states as a hard requirement. Dismissed findings are never annotated.
+
+If the validation phase fails (an API error, or the model never submits), the report lists the candidates as unconfirmed and no annotations are returned, rather than putting unchecked findings in the diff. If the review phase fails, the plugin prints the error and exits non-zero, as before. A diff with no parseable hunks can't be anchored, so it yields no annotations, and the report alone is returned.

@@ -260,7 +260,14 @@ func (s *Store) fetch(key string) (Entry, error) {
 	s.inflight[key] = pending
 	s.mu.Unlock()
 
-	pending.entry, pending.err = s.download(key)
+	// The caller's cache miss may predate a fetch that finished since: it
+	// wrote the file before leaving inflight, so look again rather than
+	// download the image twice.
+	if entry, ok := s.lookupKey(key); ok {
+		pending.entry = entry
+	} else {
+		pending.entry, pending.err = s.download(key)
+	}
 
 	s.mu.Lock()
 	delete(s.inflight, key)

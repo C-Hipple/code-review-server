@@ -6,6 +6,7 @@ import (
 	"crs/llm"
 	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"slices"
 	"sort"
@@ -148,6 +149,10 @@ type ReportItem struct {
 	LastAuthor   string    `json:"last_author"`
 	LastActivity time.Time `json:"last_activity"`
 	HTMLURL      string    `json:"html_url,omitempty"`
+	// CodeContext is the code a thread was left on: the last lines of GitHub's
+	// diff hunk, ending at the commented line. Set only on threads that are not
+	// addressed, since those are the ones a reader still has to look at.
+	CodeContext string `json:"code_context,omitempty"`
 }
 
 // ChangeRequest is a reviewer whose latest decisive review requests changes.
@@ -545,7 +550,7 @@ Judge only the items listed. Keep each rationale to one sentence that names the 
 			}
 			b.WriteString("\n")
 			for _, cm := range w.thread.Comments {
-				body, cut := clip(cm.Body, maxCommentChars)
+				body, cut := clip(plainText(cm.Body), maxCommentChars)
 				if cut {
 					w.complete = false
 					truncated = true
@@ -554,7 +559,7 @@ Judge only the items listed. Keep each rationale to one sentence that names the 
 			}
 		case KindConversation:
 			hasConversation = true
-			body, cut := clip(w.comment.Body, maxCommentChars)
+			body, cut := clip(plainText(w.comment.Body), maxCommentChars)
 			if cut {
 				w.complete = false
 				truncated = true
@@ -572,7 +577,7 @@ Judge only the items listed. Keep each rationale to one sentence that names the 
 			if isBot(cm.Author) {
 				continue
 			}
-			body, cut := clip(cm.Body, maxCommentChars)
+			body, cut := clip(plainText(cm.Body), maxCommentChars)
 			line := fmt.Sprintf("- %s (%s): %s\n", cm.Author, formatTime(cm.CreatedAt), body)
 			if used+len(line) > maxConversationCtx {
 				b.WriteString("- ... (the rest of the conversation was omitted to fit)\n")
@@ -856,6 +861,11 @@ func finishReport(req Request, items []*workItem, report CommentsReport, insuffi
 		}
 		return a.created.Before(b.created)
 	})
+	for _, w := range items {
+		if w.thread != nil && w.item.Status != ItemAddressed {
+			w.item.CodeContext = codeContext(w.thread.DiffHunk)
+		}
+	}
 
 	outstanding := []ReportItem{}
 	for _, w := range items {
@@ -1091,7 +1101,55 @@ func describeItem(it ReportItem) string {
 	if it.ModelNote != "" {
 		s += "  \n  _" + it.ModelNote + "_"
 	}
+	if it.CodeContext != "" {
+		// Indented to sit inside the list item.
+		marker := codeFenceFor(it.CodeContext)
+		s += "\n\n  " + marker + "diff\n  " + strings.ReplaceAll(it.CodeContext, "\n", "\n  ") + "\n  " + marker
+	}
 	return s
+}
+
+// codeContextLines is how many lines of a thread's diff hunk the report keeps.
+const codeContextLines = 8
+
+// maxCodeLineRunes caps each kept line, so a minified line can't bloat the
+// report.
+const maxCodeLineRunes = 240
+
+// codeContext is the tail of a review comment's diff hunk. GitHub's hunk runs
+// from its "@@" header down to the commented line, so its last lines are the
+// code the comment is about. The header goes when lines are cut: its line
+// numbers would no longer match the first line shown.
+func codeContext(hunk string) string {
+	hunk = strings.TrimRight(strings.ReplaceAll(hunk, "\r\n", "\n"), "\n")
+	if strings.TrimSpace(hunk) == "" {
+		return ""
+	}
+	lines := strings.Split(hunk, "\n")
+	if len(lines) > codeContextLines {
+		lines = lines[len(lines)-codeContextLines:]
+	}
+	for i, line := range lines {
+		if utf8.RuneCountInString(line) > maxCodeLineRunes {
+			lines[i] = string([]rune(line)[:maxCodeLineRunes]) + "…"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// codeFenceFor is a markdown code fence longer than any run of backticks in
+// code, so the code can't close it early.
+func codeFenceFor(code string) string {
+	longest, run := 0, 0
+	for _, r := range code {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	return strings.Repeat("`", max(3, longest+1))
 }
 
 func sourceLabel(source string) string {
@@ -1123,12 +1181,67 @@ func readFileTool(read func(ctx context.Context, path string) (string, error)) T
 	}
 }
 
-var htmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+var (
+	htmlComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+	// svgElement is an inline SVG, drawing and all: review bots put badges and
+	// icons in front of their comments, and none of it is text.
+	svgElement = regexp.MustCompile(`(?s)<svg\b.*?</svg\s*>`)
+	imgTag     = regexp.MustCompile(`<img\b[^<>]*>`)
+	imgAlt     = regexp.MustCompile(`\balt\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	// htmlTag is an opening or closing tag of an element GitHub renders in a
+	// comment. Only known, lowercase names with attribute-shaped contents
+	// match, so text like Vec<String>, Pair<A, B> or a<b and c>d survives.
+	htmlTag    = regexp.MustCompile(`</?(a|abbr|b|blockquote|br|code|dd|del|details|div|dl|dt|em|h[1-6]|hr|i|ins|kbd|li|ol|p|picture|pre|q|s|samp|source|span|strong|sub|summary|sup|svg|table|tbody|td|tfoot|th|thead|tr|tt|u|ul|var)(?:\s+(?:open|[^<>=]*=[^<>]*))?\s*/?>`)
+	blankLines = regexp.MustCompile(`\n[ \t]*\n(?:[ \t]*\n)+`)
+)
 
-// excerpt is a comment body shortened to one line for lists.
+// htmlBlockTags are the tags that break a line when rendered; the rest are
+// inline and vanish without a trace.
+var htmlBlockTags = map[string]bool{
+	"blockquote": true, "br": true, "dd": true, "details": true, "div": true, "dl": true, "dt": true,
+	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true, "hr": true, "li": true,
+	"ol": true, "p": true, "pre": true, "summary": true, "table": true, "tr": true, "ul": true,
+}
+
+// plainText is a comment body with its HTML reduced to the text a reader sees:
+// comments and inline SVGs dropped, an image replaced by its alt text in
+// brackets (a bot's "P1" badge reads "[P1]"), other tags removed and entities
+// decoded. Markdown is left as it is, and so is anything inside backticks,
+// where a tag is code rather than markup.
+func plainText(body string) string {
+	parts := strings.Split(htmlComment.ReplaceAllString(body, ""), "`")
+	// Even parts are outside code spans and fences.
+	for i := 0; i < len(parts); i += 2 {
+		s := svgElement.ReplaceAllString(parts[i], "")
+		s = imgTag.ReplaceAllStringFunc(s, func(tag string) string {
+			m := imgAlt.FindStringSubmatch(tag)
+			if m == nil {
+				return ""
+			}
+			if alt := strings.TrimSpace(m[1] + m[2]); alt != "" {
+				return "[" + alt + "]"
+			}
+			return ""
+		})
+		s = htmlTag.ReplaceAllStringFunc(s, func(tag string) string {
+			name := htmlTag.FindStringSubmatch(tag)[1]
+			if htmlBlockTags[name] {
+				return "\n"
+			}
+			if name == "td" || name == "th" {
+				return " "
+			}
+			return ""
+		})
+		parts[i] = html.UnescapeString(s)
+	}
+	s := strings.Join(parts, "`")
+	return strings.TrimSpace(blankLines.ReplaceAllString(s, "\n\n"))
+}
+
+// excerpt is a comment body shortened to one line of plain text for lists.
 func excerpt(body string) string {
-	s := htmlComment.ReplaceAllString(body, "")
-	s = strings.Join(strings.Fields(s), " ")
+	s := strings.Join(strings.Fields(plainText(body)), " ")
 	if utf8.RuneCountInString(s) > excerptChars {
 		runes := []rune(s)
 		s = strings.TrimSpace(string(runes[:excerptChars])) + "…"

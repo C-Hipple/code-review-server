@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // scriptedProvider answers each Generate call with the next scripted answer
@@ -740,5 +741,154 @@ func TestCutConversationContextDiscardsConversationVerdicts(t *testing.T) {
 	}
 	if it := itemByRoot(t, report, "9001"); it.Status != ItemUnclear || !report.Truncated {
 		t.Errorf("a verdict made without the whole conversation must degrade to unclear: %+v", it)
+	}
+}
+
+func TestExcerptDropsBotMarkup(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "badge image in a link",
+			body: `<a href="#"><img alt="P1" src="https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=7" align="top"></a> **Missing null check**` +
+				"\n\nThe lookup can return nil.",
+			want: "[P1] **Missing null check** The lookup can return nil.",
+		},
+		{
+			name: "inline svg",
+			body: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><title>logic</title>` +
+				`<path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0z"/></svg> **logic:** Off by one.`,
+			want: "**logic:** Off by one.",
+		},
+		{
+			name: "image with no alt text",
+			body: `<img src="https://example.com/icon.svg"> Rename this.`,
+			want: "Rename this.",
+		},
+		{
+			name: "html comments and footers",
+			body: "Nit: rename.<!-- greptile_comment -->\n<sub>Reply to this to let me know.</sub>",
+			want: "Nit: rename. Reply to this to let me know.",
+		},
+		{
+			name: "block tags break words apart",
+			body: "<details><summary>Prompt</summary>Fix it<br>now</details>",
+			want: "Prompt Fix it now",
+		},
+		{
+			name: "tags with attributes, self-closing tags and open details",
+			body: `<details open><summary>Why</summary><p align="left">Nil map<br/>write</p></details>`,
+			want: "Why Nil map write",
+		},
+		{
+			name: "comparisons are not tags",
+			body: "Fails when a<b and c>d.",
+			want: "Fails when a<b and c>d.",
+		},
+		{
+			name: "entities are decoded",
+			body: "Use a &lt;div&gt; &amp; keep it",
+			want: "Use a <div> & keep it",
+		},
+		{
+			name: "code and generics survive",
+			body: "Return `Vec<String>` and keep `<br>` in the template; Pair<A, B> and <T> too.",
+			want: "Return `Vec<String>` and keep `<br>` in the template; Pair<A, B> and <T> too.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := excerpt(tt.body); got != tt.want {
+				t.Errorf("excerpt(%q)\n got %q\nwant %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBotMarkupDoesNotEatThePromptBudget(t *testing.T) {
+	// An inline SVG longer than a comment's prompt budget is not evidence; the
+	// comment's text still fits, so the model's verdict on it stands.
+	svg := `<svg viewBox="0 0 16 16">` + strings.Repeat(`<path d="M0 0h16v16H0z"/>`, 200) + `</svg>`
+	d := discussion(thread(false, cmt("5001", "greptile-apps[bot]", svg+" Punctuation needs a default.", at(0))))
+	model := &scriptedProvider{t: t, answers: []string{verdictJSON(entry("5001", "addressed", "A default was added."))}}
+	_, report := run(t, request(d, model))
+
+	it := itemByRoot(t, report, "5001")
+	if it.Status != ItemAddressed || it.Source != SourceModel || report.Truncated {
+		t.Errorf("the model's verdict should stand on the comment's text: %+v (truncated %v)", it, report.Truncated)
+	}
+	if it.Excerpt != "Punctuation needs a default." {
+		t.Errorf("excerpt = %q", it.Excerpt)
+	}
+	if strings.Contains(model.prompts[0], "<svg") || !strings.Contains(model.prompts[0], "Punctuation needs a default.") {
+		t.Errorf("the prompt should carry the text without the SVG:\n%s", model.prompts[0])
+	}
+}
+
+func TestCodeContextOnlyOnThreadsNotAddressed(t *testing.T) {
+	longHunk := "@@ -1,12 +1,12 @@\n" + strings.Join([]string{
+		" line 1", " line 2", " line 3", "-line 4", "+line 4b", " line 5", " line 6", " line 7", " line 8", "+line 9",
+	}, "\n")
+	open := thread(false,
+		cmt("5001", "bob", "Line 9 needs a guard.", at(0)),
+		cmt("5002", "bob", "Still missing.", at(3)), // after the latest commit: outstanding
+	)
+	open.DiffHunk = longHunk
+	short := thread(false,
+		cmt("6001", "carol", "Is this right?", at(0)),
+		cmt("6002", "alice", "Looking.", at(3)),
+	)
+	short.Path = "src/main.ts"
+	short.DiffHunk = "@@ -1,3 +1,4 @@\n-console.log('hello');\n+console.log(message);\n"
+	resolved := thread(true, cmt("7001", "dave", "Rename.", at(0)))
+	resolved.Path = "src/zz.ts"
+	resolved.DiffHunk = "@@ -1 +1 @@\n+x"
+	d := discussion(open, short, resolved)
+	d.Conversation = []Comment{cmt("9001", "carol", "Question?", at(3))}
+	res, report := run(t, request(d, &scriptedProvider{t: t, answers: []string{verdictJSON(entry("9001", "outstanding", "Unanswered."))}}))
+
+	got := itemByRoot(t, report, "5001").CodeContext
+	want := strings.Join([]string{" line 3", "-line 4", "+line 4b", " line 5", " line 6", " line 7", " line 8", "+line 9"}, "\n")
+	if got != want {
+		t.Errorf("a long hunk keeps its last %d lines and loses its header:\n got %q\nwant %q", codeContextLines, got, want)
+	}
+	if got := itemByRoot(t, report, "6001").CodeContext; got != "@@ -1,3 +1,4 @@\n-console.log('hello');\n+console.log(message);" {
+		t.Errorf("a short hunk is kept whole: %q", got)
+	}
+	if got := itemByRoot(t, report, "7001").CodeContext; got != "" {
+		t.Errorf("an addressed thread carries no code context: %q", got)
+	}
+	if got := itemByRoot(t, report, "9001").CodeContext; got != "" {
+		t.Errorf("a conversation comment has no code: %q", got)
+	}
+
+	outstanding := res.Outstanding.([]ReportItem)
+	if len(outstanding) == 0 || outstanding[0].CodeContext == "" {
+		t.Errorf("the served outstanding list should carry the code context: %+v", outstanding)
+	}
+	body := res.Body.BodyContent
+	if !strings.Contains(body, "\n  ```diff\n   line 3\n  -line 4\n") {
+		t.Errorf("the markdown should show the context inside the item:\n%s", body)
+	}
+	if strings.Contains(body, "+x") {
+		t.Errorf("the addressed thread's code should not be in the markdown:\n%s", body)
+	}
+}
+
+func TestCodeContextClipsLongLinesAndFencesBackticks(t *testing.T) {
+	long := "+" + strings.Repeat("x", 500)
+	if got := codeContext(long); utf8.RuneCountInString(got) != maxCodeLineRunes+1 || !strings.HasSuffix(got, "…") {
+		t.Errorf("a long line should be clipped to %d runes plus an ellipsis, got %d", maxCodeLineRunes, utf8.RuneCountInString(got))
+	}
+	if got := codeContext("\n \n"); got != "" {
+		t.Errorf("a blank hunk has no context: %q", got)
+	}
+	if got := codeFenceFor("+x := \"```\""); got != "````" {
+		t.Errorf("fence = %q, want one backtick longer than the code's", got)
+	}
+	if got := codeFenceFor("+x"); got != "```" {
+		t.Errorf("fence = %q, want ```", got)
 	}
 }

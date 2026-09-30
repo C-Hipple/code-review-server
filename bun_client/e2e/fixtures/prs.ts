@@ -179,6 +179,12 @@ export function buildFixtures(): PRFixture[] {
                     body: 'Should punctuation have a default?',
                     path: 'src/greet.ts',
                     position: '3',
+                    diff_hunk: [
+                        '@@ -3,7 +3,8 @@',
+                        ' export interface Greeting {',
+                        '     name: string;',
+                        '+    punctuation: string;',
+                    ].join('\n'),
                     review_id: 700,
                 }),
                 comment({
@@ -304,6 +310,11 @@ export function commentsAddressedReport(pr: PRFixture) {
             last_author: last.author,
             last_activity: last.created_at,
             html_url: root.html_url,
+            // The server keeps the last 8 lines of an open thread's hunk.
+            code_context:
+                !root.resolved && root.diff_hunk
+                    ? root.diff_hunk.split('\n').slice(-8).join('\n')
+                    : undefined,
         };
     });
     const outstanding = items.filter(i => i.status === 'outstanding');

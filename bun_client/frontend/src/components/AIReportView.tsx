@@ -16,7 +16,7 @@ import {
     type CommentsReport,
     type ReportItem,
 } from '../ai_utils';
-import { Badge, Button } from '../design';
+import { Badge, Button, colors } from '../design';
 import { relativeTime } from '../discussion_utils';
 import MermaidDiagram from './MermaidDiagram';
 import PluginBodyView from './PluginBodyView';
@@ -375,6 +375,7 @@ function ItemList({ items, onJump }: { items: ReportItem[]; onJump?: (item: Repo
                             </a>
                         )}
                     </div>
+                    {item.code_context && <CodeContext code={item.code_context} />}
                     <div style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
                         <strong>{item.author}</strong>: {item.excerpt}
                     </div>
@@ -402,5 +403,56 @@ function ItemList({ items, onJump }: { items: ReportItem[]; onJump?: (item: Repo
                 </div>
             ))}
         </div>
+    );
+}
+
+/** A diff line's background: added, removed, a hunk header, or plain context. */
+function diffLineBackground(line: string): string {
+    if (line.startsWith('@@')) return colors.diffHunkBg;
+    if (line.startsWith('+')) return colors.diffAddBg;
+    if (line.startsWith('-')) return colors.diffDelBg;
+    return 'transparent';
+}
+
+/**
+ * The code an open thread was left on, as GitHub shows it above a comment. The
+ * context ends at the commented line, which gets an accent bar.
+ */
+function CodeContext({ code }: { code: string }) {
+    const lines = code.split('\n');
+    return (
+        <pre
+            data-testid="ai-item-code"
+            aria-label="Code the comment was left on"
+            style={{
+                margin: '0 0 8px',
+                padding: '4px 0',
+                border: '1px solid var(--border)',
+                borderRadius: '4px',
+                background: 'var(--bg-secondary)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12px',
+                lineHeight: 1.5,
+                color: 'var(--text-primary)',
+                overflowX: 'auto',
+            }}
+        >
+            {lines.map((line, i) => (
+                <span
+                    key={i}
+                    style={{
+                        display: 'block',
+                        minWidth: 'fit-content',
+                        padding: '0 8px',
+                        whiteSpace: 'pre',
+                        background: diffLineBackground(line),
+                        boxShadow:
+                            i === lines.length - 1 ? 'inset 3px 0 0 var(--accent)' : undefined,
+                    }}
+                >
+                    {line || ' '}
+                </span>
+            ))}
+        </pre>
     );
 }

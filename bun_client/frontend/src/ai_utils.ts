@@ -115,6 +115,11 @@ export interface ReportItem {
     last_author: string;
     last_activity: string;
     html_url?: string;
+    /**
+     * The code a thread was left on: the last lines of GitHub's diff hunk,
+     * ending at the commented line. Only on threads that aren't addressed.
+     */
+    code_context?: string;
 }
 
 export interface ChangeRequest {

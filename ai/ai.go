@@ -217,6 +217,10 @@ type Thread struct {
 	// Line is the thread's line in the head version of Path; 0 when it has none
 	// there (the thread is outdated, or sits on a removed line).
 	Line int
+	// DiffHunk is GitHub's diff_hunk for the root comment: the hunk from its
+	// "@@" header down to the commented line, as the diff stood when the
+	// comment was left. Empty when GitHub gave none.
+	DiffHunk string
 	// Comments are the thread's comments in posting order, root first.
 	Comments []Comment
 }

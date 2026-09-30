@@ -565,9 +565,10 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
 - **comments-addressed** renders from the typed `report`: the verdict and summary,
   a "Needs attention" list (the served `outstanding` list — outstanding, then
   unclear) with each item's status and whether GitHub or the model decided it,
-  active change requests, and the addressed items collapsed. In the review's modal,
-  clicking an item's location closes the modal, reveals the thread in the diff and
-  scrolls to it (threads carry `data-thread-root`), or opens the outdated-comments
+  the code an open thread was left on (its `code_context`, with the commented
+  line marked), active change requests, and the addressed items collapsed. In the
+  review's modal, clicking an item's location closes the modal, reveals the thread
+  in the diff and scrolls to it (threads carry `data-thread-root`), or opens the outdated-comments
   panel for a thread no longer in the diff.
 - **change-diagram** draws the raw Mermaid source in its `report.mermaid` with the
   [mermaid](https://mermaid.js.org) library (`MermaidDiagram.tsx`, `mermaid_utils.ts`),

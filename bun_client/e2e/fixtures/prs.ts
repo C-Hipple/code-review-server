@@ -180,7 +180,14 @@ function longReport(heading: string, findings: number) {
 export function buildFixtures(): PRFixture[] {
     return [
         {
-            item: item({ title: 'Add greeting helper', repo: 'widgets', number: 42 }),
+            // Rated by review-ease, which the fake serves while it is on
+            // (E2E.SetReviewEase), as the server does. #40 has no rating.
+            item: item({
+                title: 'Add greeting helper',
+                repo: 'widgets',
+                number: 42,
+                review_ease: 'easy',
+            }),
             body: 'Adds a `formatGreeting` helper and uses it from the CLI.\n\nCloses #12.',
             baseRef: 'main',
             headRef: 'alice/greeting',
@@ -241,6 +248,7 @@ export function buildFixtures(): PRFixture[] {
                 status: 'WAITING',
                 tags: 'widgets,draft',
                 author: 'dave',
+                review_ease: 'medium',
             }),
             body: 'Work in progress.',
             baseRef: 'main',
@@ -264,6 +272,7 @@ export function buildFixtures(): PRFixture[] {
                 section: 'My PRs',
                 section_priority: 2,
                 author: 'carol',
+                review_ease: 'hard',
             }),
             body: 'Widens the gadget.',
             baseRef: 'main',

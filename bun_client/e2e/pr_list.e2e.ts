@@ -80,6 +80,71 @@ test.describe('PR list', () => {
         await expect(page.getByText('1 of 4')).toBeVisible();
     });
 
+    test('narrows by review ease', async ({ page }) => {
+        await page.goto('/');
+        const nav = page.getByRole('navigation', { name: 'Filter by state' });
+        const level = (label: string) =>
+            page.getByRole('checkbox', { name: new RegExp(`^${label}`) });
+
+        await expect(
+            page
+                .locator('.crs-row')
+                .filter({ hasText: 'Add greeting helper' })
+                .locator('.crs-ease-pill')
+        ).toHaveText('EASY');
+        // Easiest first, each level with its open-PR count: the medium PR is a draft.
+        await expect(
+            page.locator('.crs-facet-item').filter({ has: page.locator('.crs-ease-pill') })
+        ).toHaveText([/EASY\s*1/, /MEDIUM\s*0/, /HARD\s*1/]);
+
+        await level('EASY').check();
+        await expect(page.getByText('1 of 4')).toBeVisible();
+        await expect(page.getByText('Add greeting helper')).toBeVisible();
+        await expect(page.getByText('Fix gadget overflow')).toHaveCount(0);
+        // Like the other narrowing, it applies before the state counts.
+        await expect(nav.getByRole('button', { name: /Open\s*1/ })).toBeVisible();
+        await expect(nav.getByRole('button', { name: /Draft\s*0/ })).toBeVisible();
+
+        // Levels OR together, and a PR with no rating matches none of them.
+        await level('MEDIUM').check();
+        await level('HARD').check();
+        await nav.getByRole('button', { name: /Everything/ }).click();
+        await expect(page.getByText('3 of 4')).toBeVisible();
+        await expect(page.getByText('Bump dependencies')).toHaveCount(0);
+
+        // Clearing the filters clears the levels too.
+        await page.getByRole('textbox', { name: 'Filter reviews' }).fill('no such pr');
+        await page.getByRole('button', { name: 'Clear filters' }).click();
+        await expect(page.getByText('4 of 4')).toBeVisible();
+        await expect(level('EASY')).not.toBeChecked();
+    });
+
+    test('offers no review-ease filter while no PR is rated', async ({ page, backend }) => {
+        await backend.setReviewEase(false);
+        await page.goto('/');
+
+        await expect(page.getByText('Add greeting helper')).toBeVisible();
+        await expect(page.locator('.crs-ease-pill')).toHaveCount(0);
+        await expect(page.getByText('Review ease', { exact: true })).toHaveCount(0);
+    });
+
+    test('keeps a checked review-ease level after the ratings go', async ({ page, backend }) => {
+        await page.goto('/');
+        const easy = page.getByRole('checkbox', { name: /^EASY/ });
+        await easy.check();
+        await expect(page.getByText('1 of 4')).toBeVisible();
+
+        // Nothing is rated now, so nothing matches, but the level stays to be unchecked.
+        await backend.setReviewEase(false);
+        await page.getByRole('button', { name: 'Refresh' }).click();
+        await expect(page.getByText(/No\s+Open\s+PRs match the current filters/)).toBeVisible();
+        await expect(easy).toBeChecked();
+        // A click, not uncheck(): unchecking takes the whole list, checkbox and all.
+        await easy.click();
+        await expect(page.getByText('2 of 4')).toBeVisible();
+        await expect(page.getByText('Review ease', { exact: true })).toHaveCount(0);
+    });
+
     test('shows how many comments each PR has', async ({ page }) => {
         await page.goto('/');
 

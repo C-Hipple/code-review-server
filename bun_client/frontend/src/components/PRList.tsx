@@ -8,8 +8,11 @@ import {
     Select,
     getStatusTone,
     mapReviewEase,
+    reviewEaseDisplay,
     Theme,
     ReviewLocation,
+    type ReviewEaseDisplay,
+    type ReviewEaseLevel,
 } from '../design';
 import {
     PR_STATES,
@@ -20,8 +23,11 @@ import {
     formatRelativeTime,
     groupBySection,
     itemMatchesQuery,
+    itemMatchesReviewEase,
     parseGitHubPRUrl,
     prState,
+    reviewEaseFacets,
+    reviewEaseLevel,
     uniqueValues,
 } from '../pr_list_utils';
 import type { Facet, PRState, ReviewItem } from '../pr_list_utils';
@@ -176,6 +182,20 @@ const COMMENT_ICON = (
     </Icon>
 );
 
+/** A review-ease rating as the pill a row carries; the ease filter shows the same. */
+function EasePill({ ease }: { ease: ReviewEaseDisplay }) {
+    const tone = getStatusTone(ease.variant);
+    return (
+        <span
+            className="crs-ease-pill"
+            style={{ color: tone.fg, background: tone.bg, borderColor: tone.border }}
+            title={`Review ease: ${ease.label.toLowerCase()}`}
+        >
+            {ease.label}
+        </span>
+    );
+}
+
 export default function PRList({
     onOpenReview,
     onOpenPluginOutput,
@@ -197,6 +217,9 @@ export default function PRList({
     // so the two controls can never disagree about what is filtered.
     const [repoFilters, setRepoFilters] = useState<Set<string>>(new Set());
     const [authorFilters, setAuthorFilters] = useState<Set<string>>(new Set());
+    // Review-ease levels, checked the same way: easy and medium together hide
+    // just the hard ones.
+    const [easeFilters, setEaseFilters] = useState<Set<string>>(new Set());
     const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
 
     // The list opens on the PRs that still need a review; the choice sticks so
@@ -275,19 +298,28 @@ export default function PRList({
         () => facetsByOpenCount(items, i => authorLogin(i.author)),
         [items]
     );
+    const easeFacets = useMemo(() => reviewEaseFacets(items), [items]);
+    // The server sends ratings only while the review-ease AI feature is on, so
+    // its filter appears once a PR has one. A checked level keeps it up too, or
+    // a refresh that drops the ratings would leave a filter nobody can see.
+    const showEaseFilter = useMemo(
+        () => easeFilters.size > 0 || items.some(item => reviewEaseLevel(item) !== null),
+        [items, easeFilters]
+    );
 
-    // Narrowing (repo / author / text) applies first, so the sidebar counts
-    // describe what the current search would actually turn up. An empty set
-    // means "no constraint" rather than "nothing matches".
+    // Narrowing (repo / author / review ease / text) applies first, so the
+    // sidebar counts describe what the current search would actually turn up.
+    // An empty set means "no constraint" rather than "nothing matches".
     const narrowed = useMemo(
         () =>
             items.filter(
                 item =>
                     (repoFilters.size === 0 || repoFilters.has(item.repo)) &&
                     (authorFilters.size === 0 || authorFilters.has(authorLogin(item.author))) &&
+                    itemMatchesReviewEase(item, easeFilters) &&
                     itemMatchesQuery(item, query)
             ),
-        [items, repoFilters, authorFilters, query]
+        [items, repoFilters, authorFilters, easeFilters, query]
     );
 
     const counts = useMemo(() => countByState(narrowed), [narrowed]);
@@ -302,13 +334,18 @@ export default function PRList({
 
     const sections = useMemo(() => groupBySection(visible), [visible]);
 
-    const hasNarrowFilters = query.trim() !== '' || repoFilters.size > 0 || authorFilters.size > 0;
+    const hasNarrowFilters =
+        query.trim() !== '' ||
+        repoFilters.size > 0 ||
+        authorFilters.size > 0 ||
+        easeFilters.size > 0;
     const allCollapsed = sections.length > 0 && collapsedSections.size >= sections.length;
 
     const clearFilters = () => {
         setQuery('');
         setRepoFilters(new Set());
         setAuthorFilters(new Set());
+        setEaseFilters(new Set());
     };
 
     const toggleFacet = (
@@ -453,6 +490,19 @@ export default function PRList({
                     </div>
                 </div>
 
+                {showEaseFilter && (
+                    <FacetList
+                        label="Review ease"
+                        facets={easeFacets}
+                        selected={easeFilters}
+                        onToggle={value => toggleFacet(setEaseFilters, value)}
+                        onClear={() => setEaseFilters(new Set())}
+                        collapsible={isMobile}
+                        renderValue={level => (
+                            <EasePill ease={reviewEaseDisplay(level as ReviewEaseLevel)} />
+                        )}
+                    />
+                )}
                 <FacetList
                     label="Repos"
                     facets={repoFacets}
@@ -640,13 +690,23 @@ interface FacetListProps {
     onClear: () => void;
     /** Fold into a disclosure — on phones the lists would bury the reviews. */
     collapsible: boolean;
+    /** Draws a value in place of its plain text. */
+    renderValue?: (value: string) => ReactNode;
 }
 
 /**
  * A checkable list of values with their open-PR counts. Ten rows are visible
  * (see `--facet-row-height` in App.css); the rest scroll.
  */
-function FacetList({ label, facets, selected, onToggle, onClear, collapsible }: FacetListProps) {
+function FacetList({
+    label,
+    facets,
+    selected,
+    onToggle,
+    onClear,
+    collapsible,
+    renderValue,
+}: FacetListProps) {
     if (facets.length === 0) return null;
 
     const header = (
@@ -673,9 +733,13 @@ function FacetList({ label, facets, selected, onToggle, onClear, collapsible }: 
                         checked={selected.has(facet.value)}
                         onChange={() => onToggle(facet.value)}
                     />
-                    <span className="crs-facet-name" title={facet.value}>
-                        {facet.value}
-                    </span>
+                    {renderValue ? (
+                        renderValue(facet.value)
+                    ) : (
+                        <span className="crs-facet-name" title={facet.value}>
+                            {facet.value}
+                        </span>
+                    )}
                     <span
                         className="crs-facet-count"
                         title={`${facet.openCount} open ${facet.openCount === 1 ? 'PR' : 'PRs'}`}
@@ -722,7 +786,6 @@ function PRRow({
     const state = prState(item);
     const tone = stateTone(state);
     const ease = mapReviewEase(item.review_ease);
-    const easeTone = ease ? getStatusTone(ease.variant) : null;
     const relative = formatRelativeTime(item.created_at);
     const teams = teamChips(item.required_teams);
     const comments = item.comment_count ?? 0;
@@ -767,19 +830,7 @@ function PRRow({
                 <span className="crs-row-body">
                     <span className="crs-row-title-line">
                         <span className="crs-row-title">{item.title}</span>
-                        {ease && easeTone && (
-                            <span
-                                className="crs-row-ease"
-                                style={{
-                                    color: easeTone.fg,
-                                    background: easeTone.bg,
-                                    borderColor: easeTone.border,
-                                }}
-                                title={`Review ease: ${ease.label.toLowerCase()}`}
-                            >
-                                {ease.label}
-                            </span>
-                        )}
+                        {ease && <EasePill ease={ease} />}
                     </span>
                     <span className="crs-row-meta">
                         {isPR ? (

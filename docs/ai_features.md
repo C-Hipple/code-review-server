@@ -561,8 +561,8 @@ Automatic = true    # rate each PR as it arrives, so the list shows it
 
 It is an applied feature: the rating is the `review_ease` field of review list
 items (`GetAllReviews`) and of PR metadata (`GetPR`), a pill beside the PR in
-the web client's list, and a tag such as `:easy:` on the PR's headline in the
-org content. After a push, a PR keeps its latest rating until the new head's
+the web client's list (whose sidebar can narrow the list to one or more
+levels), and a tag such as `:easy:` on the PR's headline in the org content. After a push, a PR keeps its latest rating until the new head's
 is stored.
 
 The model is sent the same input as for file-ordering and answers with a
@@ -583,7 +583,7 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   The review list offers the same without opening the review: each PR's **✦ AI**
   button, beside its Plugins button, opens a page with every enabled feature's
   report for that PR. The applied features get no button: their results are
-  the diff's order and the list's review-ease pill. The change diagram's button
+  the diff's order and the list's review-ease pill and filter. The change diagram's button
   opens a modal that takes most of the screen, drawing the diagram with the
   mermaid library (loaded the first time a diagram is drawn): it opens fitted
   to the window, zooms with **−** / **+** / **1:1**, pans by dragging, and

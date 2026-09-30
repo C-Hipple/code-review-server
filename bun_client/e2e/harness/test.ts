@@ -70,6 +70,11 @@ class Backend {
         return this.rpc('E2E.SetAIEnabled', { enabled });
     }
 
+    /** Turn review-ease on or off; while it is off the backend serves no ratings. */
+    setReviewEase(enabled: boolean) {
+        return this.rpc('E2E.SetReviewEase', { enabled });
+    }
+
     /** Turn change-diagram on or off, optionally serving `mermaid` as its diagram. */
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });

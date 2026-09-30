@@ -47,11 +47,13 @@ interface State {
     syncUpdated: boolean;
     nextCommentId: number;
     nextReviewId: number;
-    // AI features: whether comments-addressed is enabled, whether
+    // AI features: whether comments-addressed is enabled, whether review-ease
+    // is (the fixtures' ratings are served only while it is), whether
     // change-diagram is and the Mermaid source it serves, the runs in flight
     // (polls left before each lands) and the results there are — both keyed
     // by PR and feature.
     aiEnabled: boolean;
+    reviewEaseEnabled: boolean;
     diagramEnabled: boolean;
     diagramSource: string;
     aiRuns: Map<string, number>;
@@ -71,6 +73,7 @@ function freshState(): State {
         nextCommentId: 9001,
         nextReviewId: 800,
         aiEnabled: true,
+        reviewEaseEnabled: true,
         diagramEnabled: false,
         diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Map(),
@@ -105,6 +108,11 @@ function locals(pr: PRFixture): CommentJSON[] {
     return list;
 }
 
+// The rating the server serves for a PR: none while review-ease is off.
+function reviewEase(pr: PRFixture): string {
+    return state.reviewEaseEnabled ? pr.item.review_ease : '';
+}
+
 function payload(pr: PRFixture) {
     const all = [...pr.comments, ...locals(pr)];
     const reviewers = (s: string) =>
@@ -135,7 +143,7 @@ function payload(pr: PRFixture) {
             repo_path: pr.repoPath,
             worktree_path: '',
             release_status: '',
-            review_ease: '',
+            review_ease: reviewEase(pr),
             changed_files: (pr.diff.match(/^diff --git /gm) || []).length,
             additions: (pr.diff.match(/^\+(?!\+\+)/gm) || []).length,
             deletions: (pr.diff.match(/^-(?!--)/gm) || []).length,
@@ -163,9 +171,10 @@ const AI_FEATURE = {
 
 // Features whose results the server applies to what it already serves — the
 // diff's file order, the review list's ease pill — rather than a report. They
-// are always listed as enabled, the way a server whose config switches them on
-// lists them, so the tests that expect no AI buttons also prove the client
-// never offers a report for one.
+// are listed as enabled, the way a server whose config switches them on lists
+// them, so the tests that expect no AI buttons also prove the client never
+// offers a report for one. Only review-ease can be switched off
+// (E2E.SetReviewEase).
 const APPLIED_AI_FEATURES = [
     {
         id: 'file-ordering',
@@ -299,7 +308,11 @@ const handlers: Record<string, (args: any) => unknown> = {
         content: '',
         // Counted like the server does, from the PR's GitHub comments: local
         // drafts don't count until they are submitted.
-        items: state.prs.map(p => ({ ...p.item, comment_count: p.comments.length })),
+        items: state.prs.map(p => ({
+            ...p.item,
+            review_ease: reviewEase(p),
+            comment_count: p.comments.length,
+        })),
     }),
 
     'RPCHandler.GetPR': args => payload(findPR(args)),
@@ -449,7 +462,12 @@ const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
 
     'RPCHandler.ListAIFeatures': () => ({
-        features: [...reportFeatures(), ...APPLIED_AI_FEATURES],
+        features: [
+            ...reportFeatures(),
+            ...APPLIED_AI_FEATURES.map(f =>
+                f.id === 'review-ease' ? { ...f, enabled: state.reviewEaseEnabled } : f
+            ),
+        ],
     }),
 
     'RPCHandler.RunAIFeature': args => {
@@ -545,6 +563,12 @@ const handlers: Record<string, (args: any) => unknown> = {
 
     'E2E.SetAIEnabled': args => {
         state.aiEnabled = !!args.enabled;
+        return { okay: true };
+    },
+
+    // Turn review-ease on or off: while it is off no PR carries a rating.
+    'E2E.SetReviewEase': args => {
+        state.reviewEaseEnabled = !!args.enabled;
         return { okay: true };
     },
 

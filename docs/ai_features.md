@@ -614,6 +614,12 @@ the raw response is included), `INSUFFICIENT-INPUT` with what was missing, or
 `empty-response`, `parse`, `exit-status` (the command exited non-zero) or
 `timeout`.
 
+The server's own log carries each run too, as plugin runs' do: an `AI feature
+run triggered` line when it starts — before an automatic run waits for its
+slot — naming the feature, PR, trigger, mode, provider and head SHA, then `AI
+feature run finished` with the status, model calls and duration, or `AI
+feature run failed` at `ERROR` with the stage and the error.
+
 ## Rollout and rollback
 
 The AI layer ships switched off: `[AI]` and `[[AIFeatures]]` are absent from

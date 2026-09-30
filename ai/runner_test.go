@@ -5,9 +5,11 @@ import (
 	"crs/config"
 	"crs/database"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -289,6 +291,67 @@ func TestRunnerRecordsInputFailures(t *testing.T) {
 	}
 	if log := callLog(t, crsHome); !strings.Contains(log, `FAILURE at stage "input"`) || !strings.Contains(log, "GitHub is down") {
 		t.Errorf("call log should attribute the failure:\n%s", log)
+	}
+}
+
+// serverLog captures what the runner logs through slog until the test ends.
+func serverLog(t *testing.T) func() string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(lockedWriter{&mu, &buf}, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  *strings.Builder
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+func TestRunnerLogsWhenARunIsTriggeredAndWhenItEnds(t *testing.T) {
+	ok := &fakeFeature{id: "logged"}
+	failing := &fakeFeature{id: "logged-failing", run: func(context.Context, Request) (Result, error) {
+		return Result{}, errors.New("model said no")
+	}}
+	r, _, _ := testRunner(t, nil, ok, failing)
+	logs := serverLog(t)
+
+	r.RunSync(job("logged", TriggerExplicit, "sha-1", "d"))
+	r.RunSync(job("logged-failing", TriggerRerun, "sha-2", "d"))
+
+	lines := map[string]string{}
+	for _, line := range strings.Split(logs(), "\n") {
+		for _, msg := range []string{"AI feature run triggered", "AI feature run finished", "AI feature run failed"} {
+			if strings.Contains(line, `msg="`+msg+`"`) {
+				lines[msg] += line + "\n"
+			}
+		}
+	}
+	for msg, wants := range map[string][]string{
+		"AI feature run triggered": {"feature=logged ", "feature=logged-failing ", "trigger=explicit", "trigger=rerun", "mode=oneshot", "sha=sha-1", "sha=sha-2"},
+		"AI feature run finished":  {"feature=logged ", "status=success", "sha=sha-1"},
+		"AI feature run failed":    {"level=ERROR", "feature=logged-failing ", "status=error", "sha=sha-2", "stage=feature", `error="model said no"`},
+	} {
+		for _, want := range wants {
+			if !strings.Contains(lines[msg], want) {
+				t.Errorf("%q lines missing %q:\n%s", msg, want, lines[msg])
+			}
+		}
+	}
+	if strings.Contains(lines["AI feature run finished"], "logged-failing") {
+		t.Errorf("a failed run was logged as finished:\n%s", lines["AI feature run finished"])
 	}
 }
 

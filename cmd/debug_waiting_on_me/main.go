@@ -195,10 +195,13 @@ func explain(pr *github.PullRequest, login string, interacted git_tools.Interact
 	if state.MyReviewDismissed {
 		reasons = append(reasons, "your last review was dismissed")
 	}
-	if state.HasUnrespondedComments {
+	if state.HasUnrespondedComments && !state.MyApprovalStands {
 		reasons = append(reasons, "unresponded comments")
 	}
 	if len(reasons) == 0 {
+		if state.HasUnrespondedComments {
+			return false, "you approved it; replies since then don't count"
+		}
 		return false, "no open request, no dismissal, no unresponded comments"
 	}
 	return true, strings.Join(reasons, "; ")

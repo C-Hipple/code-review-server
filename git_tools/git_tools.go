@@ -1022,6 +1022,10 @@ type InteractionState struct {
 	// dismissal). GitHub does not put me back in RequestedReviewers in that case,
 	// so this is the only signal that I owe a re-review.
 	MyReviewDismissed bool
+	// MyApprovalStands is true when my most recent verdict on the PR — my latest
+	// APPROVED, CHANGES_REQUESTED or DISMISSED review — is an approval. A
+	// COMMENTED review after it doesn't withdraw the approval, on GitHub or here.
+	MyApprovalStands bool
 }
 
 func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews []*github.PullRequestReview, reviewComments []*github.PullRequestComment, issueComments []*github.IssueComment) InteractionState {
@@ -1045,7 +1049,12 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 	// dismissal rewrites the review's state to DISMISSED, so a dismissed
 	// verdict stops clearing anything and MyReviewDismissed flags the PR
 	// instead.
+	//
+	// myLatestVerdict, which MyApprovalStands reads, counts DISMISSED reviews
+	// as verdicts too: only an approval or a change request can be dismissed,
+	// and a dismissed approval no longer stands.
 	var myLatestReview *github.PullRequestReview
+	var myLatestVerdict *github.PullRequestReview
 	var myVerdictTime time.Time
 	for _, r := range reviews {
 		if r == nil || r.SubmittedAt == nil || r.User == nil || r.User.Login == nil {
@@ -1054,6 +1063,12 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		if strings.EqualFold(*r.User.Login, myLogin) {
 			if myLatestReview == nil || r.SubmittedAt.After(myLatestReview.SubmittedAt.Time) {
 				myLatestReview = r
+			}
+			switch r.GetState() {
+			case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+				if myLatestVerdict == nil || r.SubmittedAt.After(myLatestVerdict.SubmittedAt.Time) {
+					myLatestVerdict = r
+				}
 			}
 			if (r.GetState() == "APPROVED" || r.GetState() == "CHANGES_REQUESTED") && r.SubmittedAt.After(myVerdictTime) {
 				myVerdictTime = r.SubmittedAt.Time
@@ -1068,6 +1083,7 @@ func CalculateInteractionState(myLogin string, pr *github.PullRequest, reviews [
 		}
 	}
 	state.MyReviewDismissed = myLatestReview != nil && myLatestReview.GetState() == "DISMISSED"
+	state.MyApprovalStands = myLatestVerdict != nil && myLatestVerdict.GetState() == "APPROVED"
 
 	// Fetch Review Comments
 	// Group comments by their "thread", remembering who spoke last and when.
@@ -1466,7 +1482,14 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 	// A PR is "Waiting on me" if:
 	// 1. I have a pending review request on it, OR
 	// 2. my last review was dismissed (so I owe a re-review), OR
-	// 3. I have unresponded comments.
+	// 3. I have unresponded comments and haven't approved the PR.
+	//
+	// Case 3 ends at an approval. Once I've approved I'm not holding the PR
+	// up, so a reply that arrives afterwards — typically the author
+	// acknowledging a non-blocking comment — is not waiting on me. An author
+	// who does need me again re-requests my review (case 1), and a dismissed
+	// approval comes back through case 2. Requesting changes gets no such pass:
+	// a reply to that is usually "fixed", and my verdict still blocks the PR.
 	//
 	// Case 1 is deliberately unconditional. GitHub clears a review request
 	// the moment the requested reviewer submits a review, and "re-request
@@ -1524,12 +1547,13 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
 			<-sem
 
-			shouldFilter := state.MyReviewDismissed || state.HasUnrespondedComments
+			shouldFilter := state.MyReviewDismissed || (state.HasUnrespondedComments && !state.MyApprovalStands)
 
 			slog.Debug("FilterWaitingOnMe",
 				"repo", *pr.Base.Repo.Name, "number", *pr.Number, "included", shouldFilter,
 				"requested", false, "review_dismissed", state.MyReviewDismissed,
 				"unresponded_comments", state.HasUnrespondedComments,
+				"approval_stands", state.MyApprovalStands,
 				"last_me", state.LastMeTime, "last_others", state.LastOthersTime,
 				"last_commit", state.LastCommitTime)
 

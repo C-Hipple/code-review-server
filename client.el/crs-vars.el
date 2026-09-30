@@ -28,6 +28,11 @@
 Chunks are kept unjoined so that accumulating a large single-line reply
 costs one concatenation when it completes rather than one per chunk.")
 
+(defvar crs--review-submits (make-hash-table :test 'equal)
+  "Review submits awaiting the server's reply, keyed by PR (\"owner/repo #N\").
+Each value is the server process the submit was sent to.  A PR takes one
+submit at a time, since a second would post its pending comments again.")
+
 (defcustom crs-debug nil
   "When non-nil, log JSON-RPC responses to the *Messages* buffer.
 Off by default: a reply can run to megabytes (a GetPR reply carries the

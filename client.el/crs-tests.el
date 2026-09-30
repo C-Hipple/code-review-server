@@ -73,7 +73,8 @@
 
 (ert-deftest crs-test-buffer-local-state-declared ()
   "Buffer-local state variables are declared (centralized in crs-vars)."
-  (dolist (var '(crs--process crs--pending-requests crs-reviews-buffer-name
+  (dolist (var '(crs--process crs--pending-requests crs--review-submits
+                 crs-reviews-buffer-name
                  crs--buffer-owner crs--buffer-diff crs--buffer-comments
                  crs--buffer-metadata crs--buffer-show-comments
                  crs--buffer-annotations crs--buffer-show-annotations
@@ -928,6 +929,141 @@ the functions scheduled."
     (let ((timer (buffer-local-value 'crs--ai-poll-timer buffer)))
       (kill-buffer buffer)
       (should-not (memq timer timer-list)))))
+
+;;; --- Submitting a review ---
+
+(defmacro crs-test--with-held-rpc (&rest body)
+  "Run BODY with RPCs held for BODY to answer, and output recorded.
+Binds `sent' to the (METHOD PARAMS CALLBACK) of each request, most recent
+first, and `events' to what the user was shown, most recent first: each is
+\(message . TEXT) or (render BUFFER CONTENT INHIBIT-MESSAGE)."
+  (declare (indent 0))
+  `(let ((sent '())
+         (events '()))
+     (cl-letf (((symbol-function 'crs--send-request)
+                (lambda (method params callback)
+                  (push (list method params callback) sent)))
+               ((symbol-function 'message)
+                (lambda (format-string &rest args)
+                  (when format-string
+                    (push (cons 'message (apply #'format-message format-string args))
+                          events))))
+               ((symbol-function 'crs--render-and-update)
+                (lambda (buffer content &rest _)
+                  (push (list 'render buffer content inhibit-message) events))))
+       ,@body)))
+
+(defmacro crs-test--with-review-buffer (feedback &rest body)
+  "Run BODY in a fresh review buffer for acme/widgets #42 holding FEEDBACK.
+The buffer is bound to `buffer' and killed afterwards."
+  (declare (indent 1))
+  `(let ((buffer (get-buffer-create (crs--review-buffer-name "acme" "widgets" 42))))
+     (clrhash crs--review-submits)
+     (unwind-protect
+         (progn
+           (with-current-buffer buffer
+             (setq crs--buffer-review-feedback ,feedback))
+           ,@body)
+       (kill-buffer buffer))))
+
+(defconst crs-test--submit-reply
+  '((okay . t)
+    (metadata . ((number . 42) (title . "Widgets")))
+    (reviews . [((id . 1) (user . "me") (state . "APPROVED"))]))
+  "A SubmitReview reply: the PR as the server refetched it.")
+
+(ert-deftest crs-test-review-submitted-message ()
+  "A finished submit names its PR, and the replies it left behind."
+  (should (equal (crs--review-submitted-message "APPROVE" "acme/widgets #42" nil)
+                 "Approved acme/widgets #42"))
+  (should (equal (crs--review-submitted-message "REQUEST_CHANGES" "acme/widgets #42" [])
+                 "Requested changes on acme/widgets #42"))
+  (should (equal (crs--review-submitted-message "COMMENT" "acme/widgets #42" nil)
+                 "Review submitted on acme/widgets #42"))
+  (should (equal (crs--review-submitted-message
+                  "APPROVE" "acme/widgets #42" ["reply to comment 7: 422 Validation Failed"])
+                 (concat "Approved acme/widgets #42, but 1 reply could not be posted"
+                         " and is still pending: reply to comment 7: 422 Validation Failed")))
+  (should (equal (crs--review-submitted-message "COMMENT" "acme/widgets #42" ["a" "b"])
+                 (concat "Review submitted on acme/widgets #42, but 2 replies could not"
+                         " be posted and are still pending: a; b"))))
+
+(ert-deftest crs-test-submit-review-runs-in-the-background ()
+  "Submitting returns once the request is sent; the reply is announced, then drawn."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "APPROVE"))
+      (should (= (length sent) 1))
+      (should (equal (nth 0 (car sent)) "RPCHandler.SubmitReview"))
+      (should (equal (json-encode (nth 1 (car sent)))
+                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Event\":\"APPROVE\",\"Body\":\"Ship it\"}]"))
+      ;; Nothing has come back yet: the reviewer is told it is under way,
+      ;; and the buffer is as it was.
+      (should (equal events '((message . "Approving acme/widgets #42..."))))
+      (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+      ;; The server replies: the outcome is shown, then the buffer is redrawn
+      ;; from the reply with the outcome kept in the echo area.
+      (funcall (nth 2 (car sent)) crs-test--submit-reply)
+      (should (equal (reverse events)
+                     `((message . "Approving acme/widgets #42...")
+                       (message . "Approved acme/widgets #42")
+                       (render ,buffer ,crs-test--submit-reply t))))
+      (should-not (buffer-local-value 'crs--buffer-review-feedback buffer)))))
+
+(ert-deftest crs-test-submit-review-failure-keeps-the-draft ()
+  "A submit the server refuses says so, and leaves the feedback to retry with."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "REQUEST_CHANGES"))
+      (funcall (nth 2 (car sent)) '((error . "GitHub said no")))
+      (should (equal (car events)
+                     '(message . "Review on acme/widgets #42 was not submitted: GitHub said no")))
+      (should-not (assq 'render events))
+      (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it")))))
+
+(ert-deftest crs-test-submit-review-keeps-a-draft-written-mid-submit ()
+  "Feedback written while the submit was in flight is not the feedback that went out."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "COMMENT")
+        (setq crs--buffer-review-feedback "One more thing"))
+      (funcall (nth 2 (car sent)) crs-test--submit-reply)
+      (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer)
+                     "One more thing")))))
+
+(ert-deftest crs-test-submit-review-one-at-a-time ()
+  "A PR with a submit in flight takes no other until the reply lands."
+  (let ((crs--process (make-pipe-process :name "crs-test-server" :noquery t)))
+    (unwind-protect
+        (crs-test--with-review-buffer "Ship it"
+          (crs-test--with-held-rpc
+            (with-current-buffer buffer
+              (crs-submit-review "APPROVE")
+              (should-error (crs-submit-review "APPROVE") :type 'user-error)
+              (should (= (length sent) 1))
+              ;; Answered, even with an error: the PR can be submitted again.
+              (funcall (nth 2 (car sent)) '((error . "GitHub said no")))
+              (crs-submit-review "APPROVE")
+              (should (= (length sent) 2))
+              ;; A server that exits takes its unanswered submits with it.
+              (delete-process crs--process)
+              (crs-submit-review "APPROVE")
+              (should (= (length sent) 3)))))
+      (delete-process crs--process))))
+
+(ert-deftest crs-test-submit-review-reply-after-the-buffer-is-gone ()
+  "A reply for a review buffer that was closed is still announced."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "APPROVE"))
+      (kill-buffer buffer)
+      (funcall (nth 2 (car sent)) crs-test--submit-reply)
+      (should (equal (car events) '(message . "Approved acme/widgets #42")))
+      (should-not (assq 'render events)))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

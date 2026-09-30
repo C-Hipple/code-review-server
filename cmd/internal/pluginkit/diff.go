@@ -107,3 +107,39 @@ func PromptDiff(diff string) (rendered, fileList string) {
 	}
 	return rendered, strings.Join(files, "\n")
 }
+
+// HeadLine is a line of the diff an annotation can anchor to.
+type HeadLine struct {
+	Added   bool
+	Content string
+}
+
+// DiffHeadLines is, for each file NumberedDiff finds, the head-side lines it
+// numbers — the added and unchanged lines an annotation can anchor to — by
+// line number.
+func DiffHeadLines(diff string) map[string]map[int]HeadLine {
+	lines := map[string]map[int]HeadLine{}
+	rendered, _ := NumberedDiff(diff)
+	var current map[int]HeadLine
+	for _, line := range strings.Split(rendered, "\n") {
+		if name, ok := strings.CutPrefix(line, "=== FILE: "); ok {
+			name = strings.TrimSuffix(name, " ===")
+			if lines[name] == nil {
+				lines[name] = map[int]HeadLine{}
+			}
+			current = lines[name]
+			continue
+		}
+		if current == nil || len(line) < 2 || (line[0] != '+' && line[0] != ' ') {
+			continue
+		}
+		number, content, found := strings.Cut(line[2:], " | ")
+		if !found {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(number)); err == nil {
+			current[n] = HeadLine{Added: line[0] == '+', Content: content}
+		}
+	}
+	return lines
+}

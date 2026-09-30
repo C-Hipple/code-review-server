@@ -152,3 +152,32 @@ func TestPromptDiffListsFiles(t *testing.T) {
 		t.Errorf("rendered diff missing a numbered line:\n%s", rendered)
 	}
 }
+
+func TestDiffHeadLines(t *testing.T) {
+	diff := `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,3 @@
+ package a
+-var x = 1
++var x = 2
+ var y = 3
+diff --git a/gone.go b/gone.go
+--- a/gone.go
++++ /dev/null
+@@ -1,1 +0,0 @@
+-package gone
+`
+	got := DiffHeadLines(diff)
+	want := map[int]HeadLine{
+		1: {Content: "package a"},
+		2: {Added: true, Content: "var x = 2"},
+		3: {Content: "var y = 3"},
+	}
+	if !reflect.DeepEqual(got["a.go"], want) {
+		t.Errorf("a.go lines = %v, want %v", got["a.go"], want)
+	}
+	if lines, ok := got["gone.go"]; !ok || len(lines) != 0 {
+		t.Errorf("a deleted file should be listed with no lines: %v", got)
+	}
+}

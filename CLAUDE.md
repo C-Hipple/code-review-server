@@ -56,7 +56,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `subprocess/` — runs a command with a timeout, capturing stdout/stderr; shared by plugins and the command provider
 - `org/` — org-mode serialization for the Emacs client
 - `utils/` — diff parsing utilities
-- `cmd/` — plugin binaries (summarize_diff, security_check, etc.). The bundled LLM plugins call `pluginkit.ModelFromEnv()`, which picks Gemini or OpenRouter from `CRS_LLM_PROVIDER`/`CRS_LLM_MODEL` — set by the server from a `[[Plugins]]` entry's `Provider`/`Model` (`config.Plugin.Env`)
+- `cmd/` — plugin binaries (summarize_diff, security_check, etc.). The bundled LLM plugins call `pluginkit.ModelFromEnv()`, which picks Gemini or OpenRouter from `CRS_LLM_PROVIDER`/`CRS_LLM_MODEL` — set by the server from a `[[Plugins]]` entry's `Provider`/`Model` (`config.Plugin.Env`). `style_guidelines` is agentic instead: it drives its own two-phase tool loop (review, then validate the findings) over `pluginkit.Chat`, which speaks Gemini function calling and OpenRouter tool calls natively, and reads its guide from a file or a directory (`CRS_STYLE_GUIDE_DIR`)
 
 ### Clients
 - `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio, and `lsp_pool.ts` keeps language servers (`diff-lsp`, `gopls`, ...) running across LSP WebSockets so reopening a review doesn't re-index the workspace. The change diagram is drawn with the `mermaid` library (`MermaidDiagram.tsx`), imported lazily in `mermaid_utils.ts` so it stays out of the main bundle
@@ -83,4 +83,5 @@ DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT th
 - `CRS_HOME` — override `~/.crs` directory
 - `GEMINI_API_KEY` — for the summarization plugin and AI features using the `gemini` provider (`ai/`, through `llm/`)
 - `OPENROUTER_API_KEY` — for AI features and plugins using the `openrouter` provider
+- `CRS_STYLE_GUIDE_DIR` — a directory of Markdown files for the `style_guidelines` plugin, in place of `~/.config/style_guidelines.md`
 - `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL` — which backend the bundled LLM plugins call; the server sets them per plugin, and a value exported to the server reaches every plugin that doesn't set its own

@@ -42,7 +42,7 @@ A PR is included when any of the following is true:
 
 1.  **You have an open review request.** GitHub clears a review request as soon as you submit a review, and re-requesting a review puts you back in the PR's requested reviewers — so being listed there means the request is outstanding, no matter how recently you reviewed or commented. This is what makes re-review requests show up.
 2.  **Your most recent review was dismissed.** Stale-review dismissal and CODEOWNERS re-requests throw away your approval *without* adding you back to the requested reviewers, so this is the only signal that you owe a re-review.
-3.  **You have unresponded comments.** You participated in a review thread (or the PR conversation) and someone else replied after you.
+3.  **You have unresponded comments, and you haven't approved the PR.** You participated in a review thread (or the PR conversation) and someone else replied after you. Approving ends this: a reply that comes in after your approval, such as the author acknowledging a non-blocking suggestion, doesn't put the PR back in your court. If the author needs you again, re-requesting your review brings it back (case 1), and so does a dismissal of your approval (case 2). Requesting changes gets no such pass: a reply to your change request is the author answering it.
 
 `FilterWaitingOnAuthor` is the complement: it excludes PRs where you have an open request or a dismissed review, so a PR never lands in both sections.
 

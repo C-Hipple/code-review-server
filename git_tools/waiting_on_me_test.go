@@ -116,6 +116,28 @@ func TestFilterWaitingOnMe(t *testing.T) {
 			shouldInclude: false,
 		},
 		{
+			// Once I've approved, a reply in one of my threads — the author
+			// acknowledging a non-blocking comment — is not waiting on me.
+			name: "Not requested, unresponded comments after my approval",
+			pr:   makePR(10, "other"),
+			state: InteractionState{
+				HasUnrespondedComments: true,
+				MyApprovalStands:       true,
+			},
+			shouldInclude: false,
+		},
+		{
+			// Re-requesting my review is how an author asks me back after an
+			// approval, and it wins over the approval.
+			name: "Re-requested after my approval",
+			pr:   makePR(11, myLogin),
+			state: InteractionState{
+				HasUnrespondedComments: true,
+				MyApprovalStands:       true,
+			},
+			shouldInclude: true,
+		},
+		{
 			name: "Personally requested, never acted (fresh request)",
 			pr:   makePR(6, myLogin),
 			state: InteractionState{
@@ -480,6 +502,9 @@ func TestCalculateInteractionStateVerdictClearsThreads(t *testing.T) {
 			wantUnresponded: false,
 		},
 		{
+			// The state still reports the reply; it's FilterWaitingOnMe that
+			// ignores it while my approval stands (see
+			// TestFilterWaitingOnMeApprovalEndsThreads).
 			name:    "Reply after my approval re-flags",
 			reviews: []*github.PullRequestReview{makeReview(myLogin, "APPROVED", now.Add(-25*time.Minute))},
 			// Thread reply at -20m postdates the -25m approval.
@@ -592,6 +617,190 @@ func TestCalculateInteractionStateReviewDismissed(t *testing.T) {
 			state := CalculateInteractionState(myLogin, &github.PullRequest{}, tt.reviews, nil, nil)
 			if state.MyReviewDismissed != tt.expectDismissed {
 				t.Errorf("MyReviewDismissed: expected %v, got %v", tt.expectDismissed, state.MyReviewDismissed)
+			}
+		})
+	}
+}
+
+// TestCalculateInteractionStateApprovalStands covers which review decides
+// whether my approval stands: my latest verdict, as on GitHub — a COMMENTED
+// review after an approval leaves it in place, a later change request or a
+// dismissal withdraws it.
+func TestCalculateInteractionStateApprovalStands(t *testing.T) {
+	myLogin := "myself"
+	now := time.Now()
+
+	makeReview := func(user, state string, submittedAt time.Time) *github.PullRequestReview {
+		return &github.PullRequestReview{
+			User:        &github.User{Login: github.Ptr(user)},
+			State:       github.Ptr(state),
+			SubmittedAt: &github.Timestamp{Time: submittedAt},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		reviews     []*github.PullRequestReview
+		expectStand bool
+	}{
+		{
+			name:        "No reviews",
+			expectStand: false,
+		},
+		{
+			name:        "My approval",
+			reviews:     []*github.PullRequestReview{makeReview(myLogin, "APPROVED", now.Add(-time.Hour))},
+			expectStand: true,
+		},
+		{
+			name: "Approved, then commented",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "APPROVED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "COMMENTED", now.Add(-time.Hour)),
+			},
+			expectStand: true,
+		},
+		{
+			name: "Approved, then requested changes",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "APPROVED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "CHANGES_REQUESTED", now.Add(-time.Hour)),
+			},
+			expectStand: false,
+		},
+		{
+			name: "Requested changes, then approved",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "CHANGES_REQUESTED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "APPROVED", now.Add(-time.Hour)),
+			},
+			expectStand: true,
+		},
+		{
+			name:        "My approval was dismissed",
+			reviews:     []*github.PullRequestReview{makeReview(myLogin, "DISMISSED", now.Add(-time.Hour))},
+			expectStand: false,
+		},
+		{
+			// Only my latest verdict counts, as on GitHub: dismissing it
+			// doesn't revive the older approval it replaced.
+			name: "Approved twice, the latest dismissed",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "APPROVED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "DISMISSED", now.Add(-time.Hour)),
+			},
+			expectStand: false,
+		},
+		{
+			name: "Dismissed, then approved again",
+			reviews: []*github.PullRequestReview{
+				makeReview(myLogin, "DISMISSED", now.Add(-2*time.Hour)),
+				makeReview(myLogin, "APPROVED", now.Add(-time.Hour)),
+			},
+			expectStand: true,
+		},
+		{
+			name:        "Someone else's approval",
+			reviews:     []*github.PullRequestReview{makeReview("other", "APPROVED", now.Add(-time.Hour))},
+			expectStand: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := CalculateInteractionState(myLogin, &github.PullRequest{}, tt.reviews, nil, nil)
+			if state.MyApprovalStands != tt.expectStand {
+				t.Errorf("MyApprovalStands: expected %v, got %v", tt.expectStand, state.MyApprovalStands)
+			}
+		})
+	}
+}
+
+// TestFilterWaitingOnMeApprovalEndsThreads is modeled on the false positive
+// that introduced the approval rule: I approved with two inline suggestions,
+// the author replied to one ("I'll leave it for now"), a review bot commented
+// after that, and the PR sat in Waiting on Me with nothing left for me to do.
+// The same history under a change request still counts — there the reply is
+// the author answering my block.
+func TestFilterWaitingOnMeApprovalEndsThreads(t *testing.T) {
+	const myLogin = "myself"
+	cfg := config.C()
+	cfg.GithubUsername = myLogin
+	config.SetC(cfg)
+
+	owner, repo := "owner", "repo"
+	reviewedAt := time.Now().Add(-48 * time.Hour)
+	repliedAt := reviewedAt.Add(21 * time.Hour)
+	botAt := repliedAt.Add(10 * time.Hour)
+
+	makeReview := func(user, state string, submittedAt time.Time) *github.PullRequestReview {
+		return &github.PullRequestReview{
+			User:        &github.User{Login: github.Ptr(user)},
+			State:       github.Ptr(state),
+			SubmittedAt: &github.Timestamp{Time: submittedAt},
+		}
+	}
+	makeComment := func(id int64, user string, createdAt time.Time, inReplyTo int64) *github.PullRequestComment {
+		c := &github.PullRequestComment{
+			ID:        github.Ptr(id),
+			User:      &github.User{Login: github.Ptr(user)},
+			CreatedAt: &github.Timestamp{Time: createdAt},
+		}
+		if inReplyTo != 0 {
+			c.InReplyTo = github.Ptr(inReplyTo)
+		}
+		return c
+	}
+
+	// My two inline comments ride on my review; the author answers one of
+	// them, and the bot opens a thread of its own.
+	reviewComments := []*github.PullRequestComment{
+		makeComment(1, myLogin, reviewedAt, 0),
+		makeComment(2, myLogin, reviewedAt, 0),
+		makeComment(3, "author", repliedAt, 1),
+		makeComment(4, "review-bot[bot]", botAt, 0),
+	}
+
+	tests := []struct {
+		name          string
+		number        int
+		myReview      string
+		shouldInclude bool
+	}{
+		{name: "Approved", number: 600, myReview: "APPROVED", shouldInclude: false},
+		{name: "Requested changes", number: 601, myReview: "CHANGES_REQUESTED", shouldInclude: true},
+		{name: "Commented only", number: 602, myReview: "COMMENTED", shouldInclude: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := []*github.PullRequestReview{
+				makeReview("other-reviewer", "APPROVED", reviewedAt.Add(-time.Hour)),
+				makeReview(myLogin, tt.myReview, reviewedAt),
+				// GitHub wraps the author's thread reply in a COMMENTED review.
+				makeReview("author", "COMMENTED", repliedAt),
+				makeReview("review-bot[bot]", "COMMENTED", botAt),
+			}
+			pr := &github.PullRequest{
+				Number: github.Ptr(tt.number),
+				User:   &github.User{Login: github.Ptr("author")},
+				Base: &github.PullRequestBranch{Repo: &github.Repository{
+					Owner: &github.User{Login: github.Ptr(owner)}, Name: github.Ptr(repo),
+				}},
+				// Submitting my review cleared my request; someone else's is open.
+				RequestedReviewers: []*github.User{{Login: github.Ptr("other")}},
+			}
+
+			state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, nil)
+			if !state.HasUnrespondedComments {
+				t.Fatalf("expected the author's reply to leave my thread unresponded, got %+v", state)
+			}
+			cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, tt.number)
+			GlobalCache.Set(cacheKey, state, 1*time.Hour)
+
+			included := len(FilterWaitingOnMe([]*github.PullRequest{pr})) > 0
+			if included != tt.shouldInclude {
+				t.Errorf("expected included=%v, got %v (state %+v)", tt.shouldInclude, included, state)
 			}
 		})
 	}

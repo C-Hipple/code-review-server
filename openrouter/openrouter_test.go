@@ -186,3 +186,73 @@ func TestCompleteStopsAtTheDeadline(t *testing.T) {
 		t.Error("Complete outlived its deadline")
 	}
 }
+
+func TestChatSendsToolsAndReturnsToolCalls(t *testing.T) {
+	var requests []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decoding the request: %v", err)
+		}
+		requests = append(requests, body)
+		if len(requests) == 1 {
+			w.Write([]byte(`{"choices": [{"message": {"role": "assistant", "content": null, "reasoning": "think", "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{\"path\": \"a.md\"}"}}
+			]}, "finish_reason": "tool_calls"}]}`))
+			return
+		}
+		w.Write([]byte(`{"choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}]}`))
+	}))
+	defer srv.Close()
+	c := testClient(srv)
+
+	tools := []Tool{{Name: "read", Description: "Read a file.", Parameters: map[string]any{"type": "object"}}}
+	messages := []Message{SystemMessage("be brief"), UserMessage("go")}
+	reply, err := c.Chat(context.Background(), messages, tools, "read")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if reply.Text != "" || len(reply.ToolCalls) != 1 || reply.ToolCalls[0].ID != "call_1" ||
+		reply.ToolCalls[0].Function.Name != "read" || reply.ToolCalls[0].Function.Arguments != `{"path": "a.md"}` {
+		t.Fatalf("unexpected reply: %+v", reply)
+	}
+	first := requests[0]
+	if tl, _ := first["tools"].([]any); len(tl) != 1 || tl[0].(map[string]any)["type"] != "function" ||
+		tl[0].(map[string]any)["function"].(map[string]any)["name"] != "read" {
+		t.Errorf("tools = %v", first["tools"])
+	}
+	if choice, _ := first["tool_choice"].(map[string]any); choice["function"].(map[string]any)["name"] != "read" {
+		t.Errorf("tool_choice = %v", first["tool_choice"])
+	}
+
+	messages = append(messages, reply.Message, ToolMessage("call_1", "the file"))
+	reply, err = c.Chat(context.Background(), messages, tools, "")
+	if err != nil || reply.Text != "done" || len(reply.ToolCalls) != 0 {
+		t.Fatalf("second Chat = %+v, %v", reply, err)
+	}
+	second := requests[1]
+	if _, ok := second["tool_choice"]; ok {
+		t.Error("an empty require should leave tool_choice to the model")
+	}
+	sent, _ := second["messages"].([]any)
+	if len(sent) != 4 {
+		t.Fatalf("messages = %v", second["messages"])
+	}
+	// The assistant turn goes back exactly as it came, reasoning included.
+	if m := sent[2].(map[string]any); m["reasoning"] != "think" || m["tool_calls"] == nil {
+		t.Errorf("assistant message = %v", m)
+	}
+	if m := sent[3].(map[string]any); m["role"] != "tool" || m["tool_call_id"] != "call_1" || m["content"] != "the file" {
+		t.Errorf("tool message = %v", m)
+	}
+	if m := sent[0].(map[string]any); m["role"] != "system" || m["content"] != "be brief" {
+		t.Errorf("system message = %v", m)
+	}
+}
+
+func TestChatRejectsAnEmptyTurn(t *testing.T) {
+	srv := serve(t, http.StatusOK, `{"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}]}`)
+	if _, err := testClient(srv).Chat(context.Background(), []Message{UserMessage("go")}, nil, ""); !errors.Is(err, ErrEmptyResponse) {
+		t.Errorf("Chat = %v, want ErrEmptyResponse", err)
+	}
+}

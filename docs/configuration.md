@@ -12,7 +12,7 @@ The config file is optional. With a token set and no `~/.config/codereviewserver
 
 | Section | What it holds |
 | --- | --- |
-| **Waiting On Me** | PRs in your court right now: an open review request (yours or one of your teams'), an approval that CODEOWNERS dismissed, or a comment thread waiting on your reply. |
+| **Waiting On Me** | PRs in your court right now: an open review request (yours or one of your teams'), an approval that CODEOWNERS dismissed, or a comment thread waiting on your reply on a PR you haven't approved. |
 | **Review Requested** | Everything you or your teams have been asked to review, whether or not it is your turn — the same list as github.com's "Review requests". |
 
 Neither default names a repository or a user. They find their PRs through GitHub search rather than by listing configured repos, and the login they search for comes from the API token (see [Identity](#identity)), so a token is the only setup step.

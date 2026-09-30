@@ -78,6 +78,13 @@ func TestExplain(t *testing.T) {
 			wantReason: "unresponded comments",
 		},
 		{
+			name:       "unresponded comments after my approval",
+			pr:         makePR(9, "someone-else"),
+			state:      git_tools.InteractionState{HasUnrespondedComments: true, MyApprovalStands: true},
+			wantMatch:  false,
+			wantReason: "you approved it",
+		},
+		{
 			name:       "nothing outstanding",
 			pr:         makePR(5, "someone-else"),
 			wantMatch:  false,

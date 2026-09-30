@@ -321,6 +321,46 @@ test.describe('review view', () => {
         await expect(page.getByText('summarize').first()).toBeVisible();
     });
 
+    test("collapses a plugin's output from its name", async ({ page }) => {
+        await openReview(page);
+        await page.getByRole('button', { name: /^Plugins/ }).click();
+
+        // Short output starts expanded.
+        const summarize = page.getByRole('button', { name: /^summarize/ });
+        await expect(summarize).toHaveAttribute('aria-expanded', 'true');
+        await expect(page.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+
+        await summarize.click();
+        await expect(summarize).toHaveAttribute('aria-expanded', 'false');
+        await expect(summarize).toContainText('3 lines');
+        await expect(page.getByRole('heading', { name: 'Summary', exact: true })).toHaveCount(0);
+
+        await summarize.click();
+        await expect(page.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+    });
+
+    test('starts every plugin collapsed when the output is over 300 lines', async ({ page }) => {
+        await openReview(
+            page,
+            { owner: 'acme', repo: 'widgets', number: 43 },
+            'Refactor build scripts'
+        );
+        await page.getByRole('button', { name: /^Plugins/ }).click();
+
+        const lint = page.getByRole('button', { name: /^lint/ });
+        const security = page.getByRole('button', { name: /^security/ });
+        await expect(lint).toHaveAttribute('aria-expanded', 'false');
+        await expect(lint).toContainText('201 lines');
+        await expect(security).toHaveAttribute('aria-expanded', 'false');
+        await expect(page.getByText('Lint finding 1', { exact: true })).toHaveCount(0);
+
+        // Expanding one leaves the other collapsed.
+        await lint.click();
+        await expect(page.getByText('Lint finding 1', { exact: true })).toBeVisible();
+        await expect(security).toHaveAttribute('aria-expanded', 'false');
+        await expect(page.getByText('Security finding 1', { exact: true })).toHaveCount(0);
+    });
+
     test('saves the review feedback draft and pre-fills the submit body', async ({
         page,
         backend,

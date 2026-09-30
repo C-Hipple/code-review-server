@@ -97,16 +97,31 @@ export function mapStatusToVariant(status: string): StatusVariant {
     return 'neutral';
 }
 
+/** The levels a review-ease rating falls into. */
+export type ReviewEaseLevel = 'easy' | 'medium' | 'hard';
+
+/** Every review-ease level, easiest first. */
+export const REVIEW_EASE_LEVELS: readonly ReviewEaseLevel[] = ['easy', 'medium', 'hard'];
+
 /**
  * How a review-ease rating should be displayed
  */
 export interface ReviewEaseDisplay {
+    /** The level the rating falls into, which the review list filters on. */
+    level: ReviewEaseLevel;
     label: string;
     variant: StatusVariant;
 }
 
+const REVIEW_EASE_DISPLAY: Record<ReviewEaseLevel, ReviewEaseDisplay> = {
+    easy: { level: 'easy', label: 'EASY', variant: 'success' },
+    medium: { level: 'medium', label: 'MEDIUM', variant: 'warning' },
+    hard: { level: 'hard', label: 'HARD', variant: 'danger' },
+};
+
 /**
- * Map the backend's review-ease rating to a display label and badge variant.
+ * Map the backend's review-ease rating to its level, display label and badge
+ * variant.
  *
  * The backend currently rates review ease as "easy" | "medium" | "hard", but
  * the rating scheme may change (e.g. to a numeric 0-100 score). Keep all
@@ -116,16 +131,15 @@ export interface ReviewEaseDisplay {
  * rendered.
  */
 export function mapReviewEase(ease: string | undefined): ReviewEaseDisplay | null {
-    switch ((ease || '').toLowerCase()) {
-        case 'easy':
-            return { label: 'EASY', variant: 'success' };
-        case 'medium':
-            return { label: 'MEDIUM', variant: 'warning' };
-        case 'hard':
-            return { label: 'HARD', variant: 'danger' };
-        default:
-            return null;
-    }
+    // Today a rating is its level's own name.
+    const rating = (ease || '').toLowerCase();
+    const level = REVIEW_EASE_LEVELS.find(l => l === rating);
+    return level ? REVIEW_EASE_DISPLAY[level] : null;
+}
+
+/** How a level is displayed, for a control that offers every level. */
+export function reviewEaseDisplay(level: ReviewEaseLevel): ReviewEaseDisplay {
+    return REVIEW_EASE_DISPLAY[level];
 }
 
 /**

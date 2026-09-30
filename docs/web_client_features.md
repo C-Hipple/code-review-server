@@ -158,7 +158,7 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   "Other", in the order the server sent them. Each section is a collapsible header
   with its own count, plus a global collapse/expand toggle in the toolbar.
 - **Per-item row** — lifecycle pill (open / draft / merged / closed, in a fixed-width
-  column so titles align), title, `review_ease` pill when the review-ease AI feature is enabled,
+  column so titles align), title, `review_ease` pill once the review-ease AI feature has rated the PR,
   and a meta line of repo, `#number`, author login, a relative timestamp from
   `created_at` (full timestamp on hover), and the required-team chips.
 - **Comment count** — a speech bubble with `comment_count` at the row's right edge,
@@ -194,6 +194,15 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   controls can't disagree. Narrowing (and the text filter) is applied before the state
   counts, so the sidebar describes what the current search holds. On phones both lists
   fold into disclosures so they don't bury the reviews.
+- **Review-ease narrowing** — once the [review-ease](ai_features.md#review-ease) AI
+  feature has rated a PR, a Review ease list sits above the repo list: Easy / Medium /
+  Hard, each drawn as the pill the rows carry and shown with its open-PR count, counted
+  like the repo and author lists but always in the scale's order. It narrows the same
+  way (checked levels OR together and AND with the other filters, before the state
+  counts, and the clear actions reset it), and a PR with no rating matches no level.
+  The server sends no rating while the feature is off, so the list is hidden until some
+  PR carries one, except that it stays while a level is checked so a refresh that drops
+  the ratings can't leave an invisible filter behind.
 - **Manual open form** — a collapsed disclosure in the sidebar taking owner / repo /
   number, for PRs not in any section.
 - **Refresh** — re-issues `GetAllReviews`; a failed load offers a retry.

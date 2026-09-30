@@ -1,4 +1,5 @@
 import { expect, test, describe } from 'bun:test';
+import { mapReviewEase, REVIEW_EASE_LEVELS, reviewEaseDisplay } from './design/styles/utils';
 import {
     authorLogin,
     countByState,
@@ -6,9 +7,12 @@ import {
     formatRelativeTime,
     groupBySection,
     itemMatchesQuery,
+    itemMatchesReviewEase,
     parseGitHubPRUrl,
     parseTags,
     prState,
+    reviewEaseFacets,
+    reviewEaseLevel,
     uniqueValues,
 } from './pr_list_utils';
 import type { ReviewItem } from './pr_list_utils';
@@ -221,6 +225,71 @@ describe('facetsByOpenCount', () => {
 
     test('is empty for no items', () => {
         expect(facetsByOpenCount([], i => i.repo)).toEqual([]);
+    });
+});
+
+describe('reviewEaseLevel', () => {
+    test('reads each rating case-insensitively', () => {
+        expect(reviewEaseLevel(item({ review_ease: 'easy' }))).toBe('easy');
+        expect(reviewEaseLevel(item({ review_ease: 'Medium' }))).toBe('medium');
+        expect(reviewEaseLevel(item({ review_ease: 'HARD' }))).toBe('hard');
+    });
+
+    test('is null for an unrated PR or a rating it does not know', () => {
+        expect(reviewEaseLevel(item())).toBeNull();
+        expect(reviewEaseLevel(item({ review_ease: '' }))).toBeNull();
+        expect(reviewEaseLevel(item({ review_ease: '42' }))).toBeNull();
+    });
+
+    test('offers the pill each level is shown with in a row', () => {
+        for (const level of REVIEW_EASE_LEVELS) {
+            expect(mapReviewEase(level)).toEqual(reviewEaseDisplay(level));
+        }
+    });
+});
+
+describe('itemMatchesReviewEase', () => {
+    const easy = item({ review_ease: 'easy' });
+    const hard = item({ review_ease: 'hard' });
+    const unrated = item({ review_ease: '' });
+
+    test('no level selected matches everything, rated or not', () => {
+        for (const i of [easy, hard, unrated]) {
+            expect(itemMatchesReviewEase(i, new Set())).toBe(true);
+        }
+    });
+
+    test('matches any of the selected levels', () => {
+        const levels = new Set(['easy', 'medium']);
+        expect(itemMatchesReviewEase(easy, levels)).toBe(true);
+        expect(itemMatchesReviewEase(hard, levels)).toBe(false);
+    });
+
+    test('an unrated PR matches no level', () => {
+        expect(itemMatchesReviewEase(unrated, new Set(['easy', 'medium', 'hard']))).toBe(false);
+    });
+});
+
+describe('reviewEaseFacets', () => {
+    test('lists every level easiest first, counting the open PRs rated it', () => {
+        const facets = reviewEaseFacets([
+            item({ review_ease: 'hard' }),
+            item({ review_ease: 'hard' }),
+            item({ review_ease: 'easy' }),
+            item({ review_ease: 'easy', status: 'WAITING' }),
+            item({ review_ease: 'medium', status: 'DONE', tags: 'repo,merged' }),
+            item({ review_ease: '' }),
+        ]);
+        // Scale order, not count order, and a level nobody open is rated stays at zero.
+        expect(facets).toEqual([
+            { value: 'easy', openCount: 1 },
+            { value: 'medium', openCount: 0 },
+            { value: 'hard', openCount: 2 },
+        ]);
+    });
+
+    test('is every level at zero for no items', () => {
+        expect(reviewEaseFacets([]).map(f => f.openCount)).toEqual([0, 0, 0]);
     });
 });
 

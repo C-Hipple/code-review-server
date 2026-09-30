@@ -402,7 +402,8 @@ details[open] > summary.crs-sidebar-label::after {
     color: var(--accent);
 }
 
-.crs-row-ease {
+/* Review-ease rating: beside a row's title, and on the ease filter's options. */
+.crs-ease-pill {
     padding: 1px 6px;
     border: 1px solid transparent;
     border-radius: 999px;

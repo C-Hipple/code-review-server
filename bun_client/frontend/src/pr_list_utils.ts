@@ -8,6 +8,7 @@
  * derivations can be unit tested without rendering.
  */
 
+import { mapReviewEase, REVIEW_EASE_LEVELS, type ReviewEaseLevel } from './design/styles/utils';
 import { teamSearchTerms, type RequiredTeam } from './team_utils';
 
 /** Matches the ReviewItem struct from the Go backend. */
@@ -181,6 +182,40 @@ export function facetsByOpenCount(items: ReviewItem[], key: (item: ReviewItem) =
         (a, b) =>
             b.openCount - a.openCount || a.value.toLowerCase().localeCompare(b.value.toLowerCase())
     );
+}
+
+/**
+ * The level of an item's review-ease rating, or null while it has none: the
+ * server sends a rating only once the review-ease AI feature is on and has
+ * rated the PR. Read through mapReviewEase, like the row's pill, so the filter
+ * and the pill can't disagree about what a rating means.
+ */
+export function reviewEaseLevel(item: ReviewItem): ReviewEaseLevel | null {
+    return mapReviewEase(item.review_ease)?.level ?? null;
+}
+
+/**
+ * Whether an item passes the review-ease filter. No level selected is no
+ * constraint; otherwise the item must be rated one of the selected levels, so
+ * an unrated PR drops out as soon as any level is checked.
+ */
+export function itemMatchesReviewEase(item: ReviewItem, levels: ReadonlySet<string>): boolean {
+    if (levels.size === 0) return true;
+    const level = reviewEaseLevel(item);
+    return level !== null && levels.has(level);
+}
+
+/**
+ * The review-ease filter's options: every level, easiest first, each with how
+ * many open PRs are rated it. Counted like facetsByOpenCount (rows, over all
+ * items), but kept in the scale's order rather than sorted by count.
+ */
+export function reviewEaseFacets(items: ReviewItem[]): Facet[] {
+    return REVIEW_EASE_LEVELS.map(level => ({
+        value: level,
+        openCount: items.filter(item => prState(item) === 'open' && reviewEaseLevel(item) === level)
+            .length,
+    }));
 }
 
 /** Unique, case-insensitively sorted values of a field across items. */

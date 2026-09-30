@@ -103,6 +103,8 @@ test.describe('AI view', () => {
         ).toBeVisible();
         await expect(page.getByText('1 outstanding of 1 item(s); 0 addressed.')).toBeVisible();
         await expect(page.getByText('Should punctuation have a default?')).toBeVisible();
+        // The open thread shows the code it was left on.
+        await expect(page.getByTestId('ai-item-code')).toContainText('+    punctuation: string;');
 
         // Never run for this PR, so opening the page asked for a run, then polled.
         const runs = await backend.calls('RunAIFeature');

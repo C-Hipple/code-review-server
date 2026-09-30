@@ -320,7 +320,20 @@ nullable `thread_id`, `kind` (`thread` or `conversation`), `status`
 (`addressed`, `outstanding`, `unclear`), `source` (`github` or `model`),
 `rationale`, an optional `model_note`, and display fields: `author`,
 `excerpt`, `path`, `line`, `outdated`, `resolved`, `resolved_by`, `replies`,
-`last_author`, `last_activity`, `html_url`.
+`last_author`, `last_activity`, `html_url`, and `code_context`.
+
+`excerpt` is the comment's first 200 characters as one line of plain text:
+HTML comments and inline SVGs are dropped, an image becomes its alt text in
+brackets (the `P1` badge a review bot puts in front of its comments reads
+`[P1]`), other HTML tags are removed and entities decoded. Markdown, and
+anything inside backticks, is left as written. The model's prompt gets comment
+bodies cleaned the same way (with their line breaks), so a bot's badge markup
+doesn't use up a comment's 2,000 characters.
+
+`code_context` is set on threads that are not addressed: the last 8 lines of
+GitHub's `diff_hunk` for the thread's first comment, which ends at the
+commented line. The `@@` header is kept only when the whole hunk fits. The
+markdown body shows it as a `diff` block under the item.
 
 `outstanding` lists every item still needing attention — outstanding first,
 then unclear — whether or not it can be anchored to a line, and `annotations`

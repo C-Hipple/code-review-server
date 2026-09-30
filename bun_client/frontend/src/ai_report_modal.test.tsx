@@ -117,6 +117,25 @@ describe('AIReportModal', () => {
         expect(html).toContain('The model judged 1 item(s)');
     });
 
+    test('shows the code an open thread was left on, ending at the commented line', () => {
+        const withCode: ReportItem = {
+            ...outstanding,
+            code_context: ' export interface Greeting {\n-    name?: string;\n+    name: string;',
+        };
+        const html = render(output({ outstanding: [withCode] }));
+        expect(html).toContain('data-testid="ai-item-code"');
+        expect(html).toContain('export interface Greeting {');
+        expect(html).toContain('+    name: string;');
+        expect(html).toContain('var(--diff-add-bg)');
+        expect(html).toContain('var(--diff-del-bg)');
+        // The last line is the one the comment is on.
+        expect(html).toMatch(/inset 3px 0 0 var\(--accent\)[^>]*>\+ {4}name: string;/);
+    });
+
+    test('shows no code block for an item without code context', () => {
+        expect(render(output())).not.toContain('ai-item-code');
+    });
+
     test('warns when the report no longer describes the PR', () => {
         const html = render(output({ stale: true }));
         expect(html).toContain('Out of date');

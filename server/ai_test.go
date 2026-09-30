@@ -492,7 +492,7 @@ func TestAIDiscussionPartitionsComments(t *testing.T) {
 	details := &PRDetails{
 		Metadata: PRMetadata{Author: "alice"},
 		Comments: []CommentJSON{
-			{ID: "5001", Author: "bob", Body: "Root", Path: "src/greet.ts", Position: "3", CreatedAt: aiAt(0), ThreadID: "PRRT_1", Resolved: true, ResolvedBy: "alice"},
+			{ID: "5001", Author: "bob", Body: "Root", Path: "src/greet.ts", Position: "3", CreatedAt: aiAt(0), ThreadID: "PRRT_1", Resolved: true, ResolvedBy: "alice", DiffHunk: "@@ -1,3 +1,3 @@\n+root"},
 			{ID: "9001", Author: "dave", Body: "Conversation", CreatedAt: aiAt(0.5)},
 			{ID: "7001", Author: "local", Body: "My draft", Path: "src/main.ts", Position: "2"},
 			{ID: "6001", Author: "carol", Body: "Removed line", Path: "src/main.ts", Position: "1", CreatedAt: aiAt(0.25), ThreadID: "PRRT_2"},
@@ -535,7 +535,7 @@ func TestAIDiscussionPartitionsComments(t *testing.T) {
 	}
 	greet := byRoot["5001"]
 	if len(greet.Comments) != 2 || greet.Comments[1].ID != "5002" || !greet.Resolved || greet.ResolvedBy != "alice" ||
-		greet.ThreadID != "PRRT_1" || greet.Line != 3 || greet.Outdated {
+		greet.ThreadID != "PRRT_1" || greet.Line != 3 || greet.Outdated || greet.DiffHunk != "@@ -1,3 +1,3 @@\n+root" {
 		t.Errorf("greet thread: %+v", greet)
 	}
 	if removed := byRoot["6001"]; removed.Line != 0 {

@@ -2399,6 +2399,7 @@ func aiDiscussion(details *PRDetails, rawComments string) ai.Discussion {
 				ResolvedBy: r.ResolvedBy,
 				Outdated:   r.Outdated,
 				Path:       r.Path,
+				DiffHunk:   r.DiffHunk,
 			}
 			if !t.Outdated {
 				t.Line = headLines[root]

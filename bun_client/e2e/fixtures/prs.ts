@@ -163,6 +163,20 @@ const GADGETS_DIFF = [
     '',
 ].join('\n');
 
+/** A plugin result whose markdown report is a heading and then `findings` bullets. */
+function longReport(heading: string, findings: number) {
+    const content = [
+        `## ${heading}`,
+        ...Array.from({ length: findings }, (_, i) => `- ${heading} finding ${i + 1}`),
+    ].join('\n');
+    return {
+        result: content,
+        status: 'success',
+        body: { body_type: 'markdown', body_content: content },
+        annotations: [],
+    };
+}
+
 export function buildFixtures(): PRFixture[] {
     return [
         {
@@ -235,7 +249,12 @@ export function buildFixtures(): PRFixture[] {
             diff: WIDGETS_DIFF,
             comments: [],
             reviews: [],
-            plugins: {},
+            // 201 + 101 lines: over the 300 past which the plugin output
+            // starts collapsed, though neither report is on its own.
+            plugins: {
+                lint: longReport('Lint', 200),
+                security: longReport('Security', 100),
+            },
         },
         {
             item: item({

@@ -113,3 +113,25 @@ export function canRerunPlugin(plugin: PluginResult): boolean {
 export function totalAnnotationCount(plugins: Record<string, PluginResult>): number {
     return Object.values(plugins).reduce((sum, p) => sum + (p.annotations?.length ?? 0), 0);
 }
+
+/**
+ * Past this many output lines across every plugin, the plugin output surfaces
+ * open with each plugin collapsed, so one long report doesn't bury the rest.
+ */
+export const COLLAPSE_PLUGINS_OVER_LINES = 300;
+
+/**
+ * Lines a plugin's card shows when expanded: its body's lines (the source, for
+ * an HTML body) plus one per annotation. A trailing newline adds no line.
+ */
+export function pluginOutputLineCount(plugin: PluginResult): number {
+    const content = resolvePluginBody(plugin).body_content.replace(/\n+$/, '');
+    const bodyLines = content === '' ? 0 : content.split('\n').length;
+    return bodyLines + (plugin.annotations?.length ?? 0);
+}
+
+/** Whether every plugin starts collapsed: their output together is over the limit. */
+export function collapsePluginsByDefault(plugins: Record<string, PluginResult>): boolean {
+    const total = Object.values(plugins).reduce((sum, p) => sum + pluginOutputLineCount(p), 0);
+    return total > COLLAPSE_PLUGINS_OVER_LINES;
+}

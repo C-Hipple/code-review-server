@@ -166,6 +166,10 @@ test.describe('PR list', () => {
         await expect(page).toHaveURL(/view=plugins/);
         await expect(page.getByRole('heading', { name: 'Summary' })).toBeVisible();
         await expect(page.getByText('greeting helper', { exact: true })).toBeVisible();
+
+        // Each plugin's output collapses from its name.
+        await page.getByRole('button', { name: /^summarize/ }).click();
+        await expect(page.getByRole('heading', { name: 'Summary' })).toHaveCount(0);
     });
 
     test('opens AI reports from a row', async ({ page }) => {

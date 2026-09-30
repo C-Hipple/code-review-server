@@ -2,6 +2,9 @@ import { expect, test, describe } from 'bun:test';
 import {
     annotationSeverityVariant,
     canRerunPlugin,
+    collapsePluginsByDefault,
+    COLLAPSE_PLUGINS_OVER_LINES,
+    pluginOutputLineCount,
     resolvePluginBody,
     sortedAnnotations,
     totalAnnotationCount,
@@ -168,5 +171,71 @@ describe('totalAnnotationCount', () => {
 
     test('is zero with no plugins', () => {
         expect(totalAnnotationCount({})).toBe(0);
+    });
+});
+
+/** A plugin whose markdown body is `lines` lines long. */
+function linesOfOutput(lines: number): PluginResult {
+    const content = Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n');
+    return {
+        result: content,
+        status: 'success',
+        body: { body_type: 'markdown', body_content: content },
+    };
+}
+
+describe('pluginOutputLineCount', () => {
+    test('counts the lines of the body', () => {
+        expect(pluginOutputLineCount(linesOfOutput(12))).toBe(12);
+    });
+
+    test('does not count a trailing newline as a line', () => {
+        expect(pluginOutputLineCount({ result: 'one\ntwo\n\n', status: 'success' })).toBe(2);
+    });
+
+    test('is zero for an empty body', () => {
+        expect(pluginOutputLineCount({ result: '', status: 'pending' })).toBe(0);
+    });
+
+    test('counts the raw result when there is no parsed body', () => {
+        expect(pluginOutputLineCount({ result: 'a\nb\nc', status: 'success' })).toBe(3);
+    });
+
+    test('adds one line per annotation', () => {
+        const plugin: PluginResult = {
+            result: '',
+            status: 'success',
+            body: { body_type: 'markdown', body_content: 'Found two issues.' },
+            annotations: [
+                { filename: 'a.py', line: 1, severity: 'error', content: 'x' },
+                { filename: 'a.py', line: 2, severity: 'error', content: 'y' },
+            ],
+        };
+        expect(pluginOutputLineCount(plugin)).toBe(3);
+    });
+});
+
+describe('collapsePluginsByDefault', () => {
+    test('keeps output up to the limit expanded', () => {
+        expect(
+            collapsePluginsByDefault({
+                summarize: linesOfOutput(COLLAPSE_PLUGINS_OVER_LINES - 100),
+                security: linesOfOutput(100),
+            })
+        ).toBe(false);
+    });
+
+    test('collapses once the output of every plugin together is over the limit', () => {
+        // Neither plugin is over the limit on its own.
+        expect(
+            collapsePluginsByDefault({
+                summarize: linesOfOutput(COLLAPSE_PLUGINS_OVER_LINES - 100),
+                security: linesOfOutput(101),
+            })
+        ).toBe(true);
+    });
+
+    test('is false with no plugins', () => {
+        expect(collapsePluginsByDefault({})).toBe(false);
     });
 });

@@ -1,7 +1,14 @@
 import { Button, colors, shadows } from '../../design';
-import { canRerunPlugin, resolvePluginBody, sortedAnnotations } from '../../plugin_utils';
+import { usePluginCollapse } from '../../hooks/usePluginCollapse';
+import {
+    canRerunPlugin,
+    pluginOutputLineCount,
+    resolvePluginBody,
+    sortedAnnotations,
+} from '../../plugin_utils';
 import PluginAnnotations from '../PluginAnnotations';
 import PluginBodyView from '../PluginBodyView';
+import PluginCollapseToggle from '../PluginCollapseToggle';
 import type { PluginResult } from './types';
 
 interface PluginsPanelProps {
@@ -12,7 +19,9 @@ interface PluginsPanelProps {
     onClose: () => void;
 }
 
-// Right-hand drawer showing each plugin's status and (markdown) output.
+// Right-hand drawer showing each plugin's status and (markdown) output. Each
+// plugin's output collapses from its name; all start collapsed when there's a
+// lot of it (see usePluginCollapse).
 export default function PluginsPanel({
     pluginOutputs,
     executingPlugins,
@@ -20,6 +29,8 @@ export default function PluginsPanel({
     onExecutePlugin,
     onClose,
 }: PluginsPanelProps) {
+    const { isCollapsed, toggle } = usePluginCollapse(pluginOutputs);
+
     return (
         <div
             style={{
@@ -91,100 +102,116 @@ export default function PluginsPanel({
                                 gap: '20px',
                             }}
                         >
-                            {Object.entries(pluginOutputs).map(([name, data]) => (
-                                <div
-                                    key={name}
-                                    style={{
-                                        background: 'var(--bg-primary)',
-                                        border: '1px solid var(--border)',
-                                        borderRadius: '8px',
-                                        overflow: 'hidden',
-                                    }}
-                                >
+                            {Object.entries(pluginOutputs).map(([name, data]) => {
+                                const collapsed = isCollapsed(name);
+                                return (
                                     <div
+                                        key={name}
                                         style={{
-                                            padding: '10px 15px',
-                                            background: 'var(--bg-secondary)',
-                                            borderBottom: '1px solid var(--border)',
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            alignItems: 'center',
+                                            background: 'var(--bg-primary)',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '8px',
+                                            overflow: 'hidden',
                                         }}
                                     >
-                                        <span style={{ fontWeight: 600, fontSize: '14px' }}>
-                                            {name}
-                                        </span>
                                         <div
                                             style={{
+                                                padding: '10px 15px',
+                                                background: 'var(--bg-secondary)',
+                                                borderBottom: collapsed
+                                                    ? 'none'
+                                                    : '1px solid var(--border)',
                                                 display: 'flex',
+                                                justifyContent: 'space-between',
                                                 alignItems: 'center',
                                                 gap: '8px',
                                             }}
                                         >
-                                            {canRerunPlugin(data) && (
-                                                <Button
-                                                    onClick={() => onExecutePlugin(name)}
-                                                    loading={executingPlugins.has(name)}
-                                                    variant="secondary"
-                                                    size="sm"
-                                                    title={`Re-run ${name}`}
-                                                >
-                                                    Re-run
-                                                </Button>
-                                            )}
-                                            <span
+                                            <PluginCollapseToggle
+                                                name={name}
+                                                collapsed={collapsed}
+                                                lineCount={pluginOutputLineCount(data)}
+                                                onToggle={() => toggle(name)}
+                                                style={{ fontSize: '14px' }}
+                                            />
+                                            <div
                                                 style={{
-                                                    fontSize: '11px',
-                                                    padding: '2px 10px',
-                                                    borderRadius: '12px',
-                                                    fontWeight: 600,
-                                                    background:
-                                                        data.status === 'success'
-                                                            ? colors.bgSuccessDim
-                                                            : data.status === 'pending'
-                                                              ? colors.bgWarningDim
-                                                              : colors.bgDangerDim,
-                                                    color:
-                                                        data.status === 'success'
-                                                            ? colors.textSuccess
-                                                            : data.status === 'pending'
-                                                              ? colors.textWarning
-                                                              : colors.textDanger,
-                                                    border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '8px',
                                                 }}
                                             >
-                                                {data.status.toUpperCase()}
-                                            </span>
-                                            {data.status.toLowerCase() === 'deferred' && (
-                                                <Button
-                                                    onClick={() => onExecutePlugin(name)}
-                                                    loading={executingPlugins.has(name)}
-                                                    variant="secondary"
-                                                    size="sm"
+                                                {canRerunPlugin(data) && (
+                                                    <Button
+                                                        onClick={() => onExecutePlugin(name)}
+                                                        loading={executingPlugins.has(name)}
+                                                        variant="secondary"
+                                                        size="sm"
+                                                        title={`Re-run ${name}`}
+                                                    >
+                                                        Re-run
+                                                    </Button>
+                                                )}
+                                                <span
+                                                    style={{
+                                                        fontSize: '11px',
+                                                        padding: '2px 10px',
+                                                        borderRadius: '12px',
+                                                        fontWeight: 600,
+                                                        background:
+                                                            data.status === 'success'
+                                                                ? colors.bgSuccessDim
+                                                                : data.status === 'pending'
+                                                                  ? colors.bgWarningDim
+                                                                  : colors.bgDangerDim,
+                                                        color:
+                                                            data.status === 'success'
+                                                                ? colors.textSuccess
+                                                                : data.status === 'pending'
+                                                                  ? colors.textWarning
+                                                                  : colors.textDanger,
+                                                        border: `1px solid ${data.status === 'success' ? colors.borderSuccessDim : data.status === 'pending' ? colors.borderWarningDim : colors.borderDangerDim}`,
+                                                    }}
                                                 >
-                                                    Execute
-                                                </Button>
-                                            )}
+                                                    {data.status.toUpperCase()}
+                                                </span>
+                                                {data.status.toLowerCase() === 'deferred' && (
+                                                    <Button
+                                                        onClick={() => onExecutePlugin(name)}
+                                                        loading={executingPlugins.has(name)}
+                                                        variant="secondary"
+                                                        size="sm"
+                                                    >
+                                                        Execute
+                                                    </Button>
+                                                )}
+                                            </div>
                                         </div>
+                                        {!collapsed && (
+                                            <>
+                                                <div
+                                                    className="plugin-output markdown-content"
+                                                    style={{
+                                                        padding: '15px',
+                                                        fontSize: '14px',
+                                                        lineHeight: '1.6',
+                                                        color: 'var(--text-primary)',
+                                                        background: 'var(--bg-primary)',
+                                                    }}
+                                                >
+                                                    <PluginBodyView
+                                                        body={resolvePluginBody(data)}
+                                                        emptyLabel="No output produced."
+                                                    />
+                                                </div>
+                                                <PluginAnnotations
+                                                    annotations={sortedAnnotations(data)}
+                                                />
+                                            </>
+                                        )}
                                     </div>
-                                    <div
-                                        className="plugin-output markdown-content"
-                                        style={{
-                                            padding: '15px',
-                                            fontSize: '14px',
-                                            lineHeight: '1.6',
-                                            color: 'var(--text-primary)',
-                                            background: 'var(--bg-primary)',
-                                        }}
-                                    >
-                                        <PluginBodyView
-                                            body={resolvePluginBody(data)}
-                                            emptyLabel="No output produced."
-                                        />
-                                    </div>
-                                    <PluginAnnotations annotations={sortedAnnotations(data)} />
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>

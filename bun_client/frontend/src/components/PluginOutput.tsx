@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
 import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
+import { usePluginCollapse } from '../hooks/usePluginCollapse';
 import {
     canRerunPlugin,
+    pluginOutputLineCount,
     resolvePluginBody,
     sortedAnnotations,
     type PluginResult,
 } from '../plugin_utils';
 import PluginAnnotations from './PluginAnnotations';
 import PluginBodyView from './PluginBodyView';
+import PluginCollapseToggle from './PluginCollapseToggle';
 
 interface PluginOutputProps {
     owner: string;
@@ -34,6 +37,7 @@ export default function PluginOutput({
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
     const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
+    const { isCollapsed, toggle } = usePluginCollapse(pluginOutput);
 
     useEffect(() => {
         loadPluginOutput();
@@ -147,6 +151,7 @@ export default function PluginOutput({
                             const plugin = pluginOutput[pluginName];
                             const body = resolvePluginBody(plugin);
                             const annotations = sortedAnnotations(plugin);
+                            const collapsed = isCollapsed(pluginName);
                             return (
                                 <Card
                                     key={pluginName}
@@ -158,7 +163,9 @@ export default function PluginOutput({
                                         style={{
                                             padding: '12px 16px',
                                             background: 'var(--bg-tertiary)',
-                                            borderBottom: '1px solid var(--border)',
+                                            borderBottom: collapsed
+                                                ? 'none'
+                                                : '1px solid var(--border)',
                                             display: 'flex',
                                             alignItems: 'center',
                                             gap: '10px',
@@ -178,16 +185,17 @@ export default function PluginOutput({
                                         <Badge variant={mapStatusToVariant(plugin.status)}>
                                             {plugin.status}
                                         </Badge>
-                                        <span
+                                        <PluginCollapseToggle
+                                            name={pluginName}
+                                            collapsed={collapsed}
+                                            lineCount={pluginOutputLineCount(plugin)}
+                                            onToggle={() => toggle(pluginName)}
                                             style={{
-                                                fontWeight: 600,
                                                 fontSize: '15px',
                                                 fontFamily: 'var(--font-mono)',
                                                 flex: 1,
                                             }}
-                                        >
-                                            {pluginName}
-                                        </span>
+                                        />
                                         {annotations.length > 0 && (
                                             <Badge variant="info" size="sm" pill>
                                                 {annotations.length} annotation
@@ -205,20 +213,24 @@ export default function PluginOutput({
                                             </Button>
                                         )}
                                     </div>
-                                    <div
-                                        className="markdown-content"
-                                        style={{
-                                            padding: '16px',
-                                            maxHeight: '400px',
-                                            overflowY: 'auto',
-                                            fontSize: '14px',
-                                            lineHeight: '1.6',
-                                            color: 'var(--text-primary)',
-                                        }}
-                                    >
-                                        <PluginBodyView body={body} />
-                                    </div>
-                                    <PluginAnnotations annotations={annotations} />
+                                    {!collapsed && (
+                                        <>
+                                            <div
+                                                className="markdown-content"
+                                                style={{
+                                                    padding: '16px',
+                                                    maxHeight: '400px',
+                                                    overflowY: 'auto',
+                                                    fontSize: '14px',
+                                                    lineHeight: '1.6',
+                                                    color: 'var(--text-primary)',
+                                                }}
+                                            >
+                                                <PluginBodyView body={body} />
+                                            </div>
+                                            <PluginAnnotations annotations={annotations} />
+                                        </>
+                                    )}
                                 </Card>
                             );
                         })}

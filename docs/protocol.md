@@ -821,7 +821,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 #### `AIFeature` Object
 | Field         | Type     | Description                                                              |
 |---------------|----------|--------------------------------------------------------------------------|
-| `id`          | string   | Stable identifier, e.g. `comments-addressed` or `feature-flags`         |
+| `id`          | string   | Stable identifier, e.g. `comments-addressed`, `feature-flags` or `change-diagram` |
 | `name`        | string   | Label to show, e.g. `Comments addressed?`                                |
 | `description` | string   | One-paragraph explanation                                                |
 | `enabled`     | bool     | Whether an `[[AIFeatures]]` entry switches it on                         |
@@ -886,7 +886,7 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 | `status`         | string         | `pending` while a run is in flight (the output may still carry the previous result), `not-run` before the first one, otherwise the stored run's: `success`, `error` or `insufficient-input` |
 | `body`           | PluginBody     | The result rendered as markdown; an error's body says why the run failed    |
 | `annotations`    | []PRAnnotation | Diff annotations, each with `source: "ai"` and `feature` set                |
-| `report`         | object         | The feature's typed report, `null` when it has none; each feature documents its shape ([comments-addressed](ai_features.md#the-report), [feature-flags](ai_features.md#the-feature-flags-report), [file-ordering](ai_features.md#file-ordering), [review-ease](ai_features.md#review-ease)) |
+| `report`         | object         | The feature's typed report, `null` when it has none; each feature documents its shape ([comments-addressed](ai_features.md#the-report), [feature-flags](ai_features.md#the-feature-flags-report), [change-diagram](ai_features.md#change-diagram) (the raw Mermaid source, in `mermaid`), [file-ordering](ai_features.md#file-ordering), [review-ease](ai_features.md#review-ease)) |
 | `outstanding`    | array          | For features that track it, every item still needing attention — including ones no diff line can anchor; `null` otherwise |
 | `covers_sha`     | string         | Head SHA the stored result was computed from                                |
 | `covers_digest`  | string         | Inputs digest the stored result was computed from; `code-only` for a feature that reads only the code, whose results the head SHA alone keys |

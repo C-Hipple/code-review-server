@@ -1353,6 +1353,16 @@ canvas {
     height: auto;
 }
 
+/* A Mermaid diagram (MermaidDiagram.tsx) whose size is known: the SVG fills
+   the wrapper, which is sized to the zoom, instead of the width and max-width
+   mermaid gives it. */
+.mermaid-sized > svg {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+}
+
 /* Comfortable, finger-sized tap targets on touch / small viewports. */
 @media (max-width: 768px) {
     button,

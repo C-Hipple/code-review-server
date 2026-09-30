@@ -151,6 +151,15 @@ review comments are still outstanding — running it first when it never ran or 
 report is stale. The report buffer updates itself while a run is pending; `r`
 refreshes it, `R` forces a re-run and `q` quits.
 
+The [change diagram](ai_features.md#change-diagram) has a command of its own:
+`M` in a review buffer, or on a PR's line in the reviews buffer, runs
+`crs-show-change-diagram`, which shows the diagram's raw Mermaid source in a
+buffer of its own — in [`mermaid-mode`](https://github.com/abrochard/mermaid-mode)
+when it is installed, so `C-c C-b` renders it with `mmdc` and `C-c C-o` opens it
+in the Mermaid live editor. Called with `M-x` anywhere else, it asks for the PR as
+a URL or `owner/repo#number`. The same `r`, `R` and `q` apply, and the header line
+says whether the diagram still describes the PR.
+
 ### Embedded screenshots
 
 Descriptions, reviews and comments are rendered with `shr`, and screenshots in

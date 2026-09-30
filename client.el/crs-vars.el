@@ -176,6 +176,16 @@ The server gives a run five minutes, so this leaves room for one to land."
   "Timer polling a pending run for this AI output buffer.")
 (defvar-local crs--ai-poll-started nil
   "When the current round of polling began, as a float time.")
+(defvar-local crs--ai-insert-function nil
+  "Function inserting an output into this AI buffer, or nil for a report.
+It takes one argument, the feature's entry of a GetAIOutput reply.  Nil
+means `crs--insert-ai-output'; the change-diagram buffer inserts the
+diagram's Mermaid source instead (crs-diagram.el).")
+
+(defconst crs-change-diagram-feature-id "change-diagram"
+  "ID of the server's change-diagram AI feature.
+Its report is a diagram, which `crs-show-change-diagram' shows in a
+mermaid-mode buffer of its own rather than as a markdown report.")
 
 (provide 'crs-vars)
 ;;; crs-vars.el ends here

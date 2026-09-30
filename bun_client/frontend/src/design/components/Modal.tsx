@@ -13,8 +13,11 @@ export interface ModalProps {
     children: React.ReactNode;
     /** Footer content (e.g., action buttons) */
     footer?: React.ReactNode;
-    /** Modal size */
-    size?: 'sm' | 'md' | 'lg' | 'xl';
+    /**
+     * Modal size. `full` takes most of the screen, and its body is a flex
+     * column that content can grow to fill.
+     */
+    size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 }
 
 /**
@@ -43,7 +46,9 @@ export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }:
         md: '600px',
         lg: '800px',
         xl: '1000px',
+        full: '96vw',
     };
+    const full = size === 'full';
 
     const overlayStyle: React.CSSProperties = {
         position: 'fixed',
@@ -67,7 +72,8 @@ export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }:
         boxShadow: shadows.lg,
         width: '100%',
         maxWidth: sizeMap[size],
-        maxHeight: '90vh',
+        maxHeight: full ? '100%' : '90vh',
+        ...(full && { height: '92vh' }),
         display: 'flex',
         flexDirection: 'column',
     };
@@ -84,6 +90,7 @@ export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }:
         padding: spacing.xl,
         overflowY: 'auto',
         flex: 1,
+        ...(full && { display: 'flex', flexDirection: 'column', minHeight: 0 }),
     };
 
     const footerStyle: React.CSSProperties = {

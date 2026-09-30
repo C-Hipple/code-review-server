@@ -23,6 +23,7 @@
 (require 'crs-review-actions)
 (require 'crs-plugins)
 (require 'crs-ai)
+(require 'crs-diagram)
 
 
 ;;; Keybindings
@@ -40,6 +41,7 @@
   "RET" #'crs-start-review-at-point
   "<return>" #'crs-start-review-at-point
   "g" #'crs-refresh-reviews
+  "M" #'crs-show-change-diagram
   "q" #'quit-window)
 
 (define-keymap :keymap my-code-review-mode-map
@@ -59,6 +61,7 @@
   "D" #'crs-run-on-demand-plugin
   "R" #'crs-rerun-plugin
   "C" #'crs-get-ai-output
+  "M" #'crs-show-change-diagram
   "H" #'crs-toggle-comments
   "A" #'crs-toggle-annotations
   "f" #'crs-set-review-feedback
@@ -91,6 +94,11 @@
   "R" #'crs-ai-rerun
   "q" #'crs-quit-ai-output)
 
+(define-keymap :keymap crs-diagram-view-mode-map
+  "r" #'crs-ai-refresh
+  "R" #'crs-ai-rerun
+  "q" #'crs-quit-ai-output)
+
 (with-eval-after-load 'evil
   ;; Global normal-state leader bindings: available in any buffer/mode,
   ;; not only crs-list-mode.  Use `evil-global-set-key' rather than
@@ -110,6 +118,7 @@
     (kbd "RET") #'crs-start-review-at-point
     (kbd "<return>") #'crs-start-review-at-point
     "g" #'crs-refresh-reviews
+    "M" #'crs-show-change-diagram
     "q" #'quit-window)
   ;; my-code-review-mode: normal state
   (evil-define-key 'normal my-code-review-mode-map
@@ -130,6 +139,7 @@
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
     "C" #'crs-get-ai-output
+    "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
@@ -159,6 +169,7 @@
     "D" #'crs-run-on-demand-plugin
     "R" #'crs-rerun-plugin
     "C" #'crs-get-ai-output
+    "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
     "f" #'crs-set-review-feedback
@@ -196,6 +207,12 @@
     "w" #'crs-wash-plugin-output)
   ;; crs-ai-output-mode
   (evil-define-key 'normal crs-ai-output-mode-map
+    "r" #'crs-ai-refresh
+    "R" #'crs-ai-rerun
+    "q" #'crs-quit-ai-output)
+  ;; crs-diagram-view-mode: a minor mode, since the diagram buffer's major
+  ;; mode is mermaid-mode.
+  (evil-define-minor-mode-key 'normal 'crs-diagram-view-mode
     "r" #'crs-ai-refresh
     "R" #'crs-ai-rerun
     "q" #'crs-quit-ai-output))

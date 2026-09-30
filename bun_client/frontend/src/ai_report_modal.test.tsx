@@ -152,6 +152,50 @@ describe('AIReportModal', () => {
         expect(html).toContain('Missing input:');
     });
 
+    test('draws the change diagram in a modal that takes most of the screen', () => {
+        const diagramFeature = { ...feature, id: 'change-diagram', name: 'Change diagram' };
+        const html = render(
+            output({
+                feature: 'change-diagram',
+                name: 'Change diagram',
+                body: {
+                    body_type: 'markdown',
+                    body_content: '```mermaid\nflowchart TD\n  a --> b\n```\n',
+                },
+                report: { mermaid: 'flowchart TD\n  a --> b', diagram_type: 'flowchart' },
+                outstanding: null,
+            }),
+            diagramFeature
+        );
+        expect(html).toContain('max-width:96vw');
+        expect(html).toContain('height:92vh');
+        expect(html).toContain('data-testid="mermaid-diagram"');
+        // mermaid draws in an effect, after this static render.
+        expect(html).toContain('Drawing the diagram');
+        expect(html).toContain('Copy source');
+        expect(html).toContain('Added');
+        expect(html).toContain('Removed');
+        expect(html).not.toContain('<code');
+
+        // A failed run has no diagram: its body says why.
+        const failed = render(
+            output({
+                feature: 'change-diagram',
+                name: 'Change diagram',
+                status: 'error',
+                body: { body_type: 'markdown', body_content: '**Change diagram failed.**' },
+                report: null,
+                outstanding: null,
+            }),
+            diagramFeature
+        );
+        expect(failed).not.toContain('mermaid-diagram');
+        expect(failed).toContain('<strong>Change diagram failed.</strong>');
+
+        // Every other report opens at the usual width.
+        expect(render(output())).toContain('max-width:1000px');
+    });
+
     test("renders another feature's markdown body", () => {
         const html = render(
             output({

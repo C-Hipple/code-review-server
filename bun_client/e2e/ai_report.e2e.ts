@@ -168,3 +168,77 @@ test.describe('AI view', () => {
         expect(await backend.calls('RunAIFeature')).toHaveLength(0);
     });
 });
+
+// change-diagram: the report is raw Mermaid, drawn by the mermaid library.
+test.describe('Change diagram', () => {
+    const button = /Change diagram/;
+
+    test('draws the diagram in a modal that takes most of the screen', async ({
+        page,
+        backend,
+    }) => {
+        await backend.setDiagram(true);
+        await openReview(page);
+
+        await page.getByRole('button', { name: button }).click();
+        const dialog = modal(page, 'Change diagram');
+        const svg = dialog.locator('.mermaid-canvas svg');
+        await expect(svg).toBeVisible();
+        await expect(svg).toContainText('src/greet.ts: greet');
+        await expect(svg).toContainText('src/main.ts: main');
+        await expect(dialog.getByText('Added', { exact: true })).toBeVisible();
+
+        // Never run for this PR, so opening it asked for a run.
+        const runs = await backend.calls('RunAIFeature');
+        expect(runs.map(c => c.params)).toEqual([
+            { Owner: 'acme', Repo: 'widgets', Number: 42, Feature: 'change-diagram', Force: false },
+        ]);
+
+        // Most of the 1400×900 viewport.
+        const box = (await dialog.boundingBox())!;
+        expect(box.width).toBeGreaterThan(1300);
+        expect(box.height).toBeGreaterThan(800);
+
+        // Zoom steps from the fitted scale; 1:1 draws it at its natural size.
+        const zoom = dialog.getByTestId('mermaid-zoom');
+        const fitted = await zoom.textContent();
+        const fittedWidth = (await svg.boundingBox())!.width;
+        await dialog.getByRole('button', { name: 'Zoom out' }).click();
+        await expect(zoom).not.toHaveText(fitted!);
+        expect((await svg.boundingBox())!.width).toBeLessThan(fittedWidth);
+        await dialog.getByRole('button', { name: '1:1' }).click();
+        await expect(zoom).toHaveText('100%');
+
+        // The raw source is a click away.
+        await dialog.getByRole('button', { name: 'Source', exact: true }).click();
+        await expect(dialog.getByTestId('mermaid-source')).toContainText('flowchart TD');
+        await expect(svg).toHaveCount(0);
+        await dialog.getByRole('button', { name: 'Diagram' }).click();
+        await expect(svg).toBeVisible();
+
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+    });
+
+    test('shows the source when mermaid cannot draw it', async ({ page, backend }) => {
+        await backend.setDiagram(true, 'flowchart TD\n    a[unclosed --> b');
+        await openReview(page);
+
+        await page.getByRole('button', { name: button }).click();
+        const dialog = modal(page, 'Change diagram');
+        await expect(dialog.getByRole('alert')).toContainText(
+            'Mermaid could not draw this diagram'
+        );
+        await expect(dialog.getByTestId('mermaid-source')).toContainText('a[unclosed --> b');
+        await expect(dialog.locator('.mermaid-canvas')).toHaveCount(0);
+    });
+
+    test('the AI view draws it inline', async ({ page, backend }) => {
+        await backend.setDiagram(true);
+        await page.goto('/?owner=acme&repo=widgets&number=42&view=ai');
+
+        await expect(page.locator('.mermaid-canvas svg')).toContainText('src/greet.ts: greet');
+        // Beside comments-addressed, which runs as before.
+        await expect(page.getByText('Needs attention (1)')).toBeVisible();
+    });
+});

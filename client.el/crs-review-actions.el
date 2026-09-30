@@ -20,7 +20,7 @@
 (declare-function crs--render-and-update "crs-render")
 (declare-function crs--review-buffer-name "crs-review")
 
-(defun crs--pr-ref (owner repo number)
+(defun crs--pr-label (owner repo number)
   "OWNER/REPO #NUMBER, the way messages name a PR."
   (format "%s/%s #%d" owner repo number))
 
@@ -60,7 +60,7 @@ so it stops counting once that process is gone."
 BODY is the feedback that was sent.  The message comes first; the review
 buffer is then redrawn from RESULT, which is the PR as the server
 refetched it once the review was in."
-  (let ((ref (crs--pr-ref owner repo number))
+  (let ((ref (crs--pr-label owner repo number))
         (err (cdr (assq 'error result))))
     (remhash ref crs--review-submits)
     (if err
@@ -97,7 +97,7 @@ review.  A PR takes one submit at a time."
          (owner (nth 0 info))
          (repo (nth 1 info))
          (number (nth 2 info))
-         (ref (crs--pr-ref owner repo number))
+         (ref (crs--pr-label owner repo number))
          (body crs--buffer-review-feedback))
     (when (crs--review-submit-in-flight-p ref)
       (user-error "A review on %s is already being submitted" ref))

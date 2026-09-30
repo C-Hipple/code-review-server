@@ -178,6 +178,10 @@ func (r *Runner) execute(c claim) {
 	job := c.job
 	key := runKey(job.Owner, job.Repo, job.Number, job.Feature)
 	defer r.inflight.Delete(key)
+	// Logged before an automatic run waits for its slot, so a queued run shows
+	// up when it was triggered rather than when it got to go.
+	slog.Info("AI feature run triggered", "feature", c.feature.ID(), "repo", job.Repo, "pr", job.Number,
+		"trigger", job.Trigger, "mode", c.mode, "provider", c.provider.Provider, "sha", job.SHA)
 	if job.Trigger == TriggerAutomatic {
 		r.slots <- struct{}{}
 		defer func() { <-r.slots }()
@@ -266,8 +270,13 @@ func (r *Runner) execute(c claim) {
 	}
 	llm.AppendCallReport(entry)
 
-	slog.Info("AI feature run finished", "feature", c.feature.ID(), "repo", job.Repo, "pr", job.Number,
-		"trigger", job.Trigger, "status", status, "model_calls", model.calls, "duration_ms", duration.Milliseconds())
+	attrs := []any{"feature", c.feature.ID(), "repo", job.Repo, "pr", job.Number, "trigger", job.Trigger,
+		"status", status, "sha", sha, "model_calls", model.calls, "duration_ms", duration.Milliseconds()}
+	if err != nil {
+		slog.Error("AI feature run failed", append(attrs, "stage", entry.Stage, "error", err)...)
+		return
+	}
+	slog.Info("AI feature run finished", attrs...)
 }
 
 // buildRequest runs the job's Build, turning a panic into an error: it runs on

@@ -188,4 +188,110 @@ func TestUpdateIsEmpty(t *testing.T) {
 	if (Update{Repos: &repos}).IsEmpty() {
 		t.Error("clearing a list is still a change")
 	}
+	plugins := []Plugin{}
+	if (Update{Plugins: &plugins}).IsEmpty() {
+		t.Error("clearing the plugins is still a change")
+	}
+	if (Update{AI: &AISettings{}}).IsEmpty() {
+		t.Error("clearing [AI] is still a change")
+	}
+	features := []AIFeature{}
+	if (Update{AIFeatures: &features}).IsEmpty() {
+		t.Error("clearing the AI features is still a change")
+	}
+}
+
+func TestUpdateRenderReplacesPluginsAndAI(t *testing.T) {
+	useTempConfig(t, sampleConfig)
+
+	plugins := []Plugin{
+		{Name: "Summarize", Command: "summarize_diff", IncludeDiff: true, Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"},
+		{Name: "Style", Command: "style_guidelines", IncludeDiff: true, IncludeHeaders: true, OnlyOnDemand: true},
+	}
+	ai := AISettings{DefaultCommand: "claude -p"}
+	features := []AIFeature{
+		{ID: "comments-addressed", Enabled: true, Automatic: true, Mode: "agent"},
+		{ID: "review-ease", Enabled: false},
+	}
+	data, cfg, err := Update{Plugins: &plugins, AI: &ai, AIFeatures: &features}.Render()
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	if len(cfg.Plugins) != 2 || cfg.Plugins[0] != plugins[0] || cfg.Plugins[1] != plugins[1] {
+		t.Errorf("plugins did not round-trip: %+v", cfg.Plugins)
+	}
+	if cfg.AI != ai {
+		t.Errorf("[AI] did not round-trip: %+v", cfg.AI)
+	}
+	if len(cfg.AIFeatures) != 2 || cfg.AIFeatures[0] != features[0] || cfg.AIFeatures[1] != features[1] {
+		t.Errorf("[[AIFeatures]] did not round-trip: %+v", cfg.AIFeatures)
+	}
+	if len(cfg.RawWorkflows) != 1 || cfg.SleepDuration != 5*time.Minute {
+		t.Errorf("settings the update leaves alone should be untouched: %+v", cfg)
+	}
+
+	written := string(data)
+	// Unset options stay out of the file, as they do for workflows...
+	for _, unset := range []string{"IncludeComments", "IncludeBranch", "DefaultProvider", "DefaultModel", "Command = ''"} {
+		if strings.Contains(written, unset) {
+			t.Errorf("unset %s should be omitted, got:\n%s", unset, written)
+		}
+	}
+	// ...but Enabled is written either way: an entry switched off reads plainer
+	// saying so.
+	if strings.Count(written, "Enabled = ") != 2 {
+		t.Errorf("expected both entries to say whether they are enabled, got:\n%s", written)
+	}
+}
+
+func TestUpdateRenderRemovesEmptiedPluginsAndAI(t *testing.T) {
+	useTempConfig(t, sampleConfig+`
+[AI]
+DefaultCommand = "claude -p"
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+`)
+	plugins := []Plugin{}
+	features := []AIFeature{}
+	data, cfg, err := Update{Plugins: &plugins, AI: &AISettings{}, AIFeatures: &features}.Render()
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if len(cfg.Plugins) != 0 || cfg.AI != (AISettings{}) || len(cfg.AIFeatures) != 0 {
+		t.Errorf("expected plugins and AI settings cleared, got %+v %+v %+v", cfg.Plugins, cfg.AI, cfg.AIFeatures)
+	}
+	for _, key := range []string{"Plugins", "[AI]", "AIFeatures"} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("an emptied %s should leave the file, got:\n%s", key, data)
+		}
+	}
+}
+
+func TestApplyReportsDuplicatePluginsAndAIFeatures(t *testing.T) {
+	path := useTempConfig(t, sampleConfig)
+
+	plugins := []Plugin{{Name: "Summarize", Command: "a"}, {Name: "Summarize", Command: "b"}}
+	features := []AIFeature{{ID: "review-ease"}, {ID: "file-ordering"}, {ID: "review-ease", Enabled: true}}
+	problems, err := Apply(Update{Plugins: &plugins, AIFeatures: &features}, Validate)
+	if err != nil {
+		t.Fatalf("duplicates should be validation problems, not an error: %v", err)
+	}
+	fields := map[string]bool{}
+	for _, p := range problems {
+		fields[p.Field] = true
+	}
+	if !fields["Plugins[1].Name"] || !fields["AIFeatures[2].ID"] || len(problems) != 2 {
+		t.Errorf("expected the second Summarize and the second review-ease reported, got %v", problems)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(after) != sampleConfig {
+		t.Errorf("a rejected update must not touch the file, got:\n%s", after)
+	}
 }

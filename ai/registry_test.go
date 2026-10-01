@@ -176,6 +176,52 @@ func TestLegacyFlagsNameTheAppliedFeatures(t *testing.T) {
 	}
 }
 
+func TestTypesDescribeWhatAnEntryCanSet(t *testing.T) {
+	cfg, err := config.ParseConfigForTest([]byte(`
+ExperimentalLLMReviewEase = true
+ExperimentalLLMProvider = "openrouter"
+ExperimentalLLMModel = "google/gemini-2.5-flash"
+`))
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	types := map[string]TypeInfo{}
+	var order []string
+	for _, info := range DefaultRegistry.Types(*cfg) {
+		types[info.ID] = info
+		order = append(order, info.ID)
+	}
+	if len(order) != len(DefaultRegistry.Features()) {
+		t.Fatalf("Types listed %v, want every registered feature", order)
+	}
+
+	ca := types[CommentsAddressedID]
+	if ca.Name == "" || ca.Description == "" || ca.Applied {
+		t.Errorf("comments-addressed: %+v", ca)
+	}
+	if strings.Join(ca.Modes, ",") != "oneshot,agent" {
+		t.Errorf("comments-addressed modes = %v, want its default first", ca.Modes)
+	}
+	if ca.LegacyKey != "" || ca.Legacy != nil {
+		t.Errorf("no legacy flag stands for comments-addressed: %+v", ca)
+	}
+
+	re := types[ReviewEaseID]
+	if !re.Applied || strings.Join(re.Modes, ",") != "oneshot" {
+		t.Errorf("review-ease: %+v", re)
+	}
+	if re.LegacyKey != "ExperimentalLLMReviewEase" || re.Legacy == nil {
+		t.Fatalf("review-ease should name the flag that switches it on: %+v", re)
+	}
+	want := config.AIFeature{ID: ReviewEaseID, Enabled: true, Automatic: true, Provider: "openrouter", Model: "google/gemini-2.5-flash"}
+	if *re.Legacy != want {
+		t.Errorf("review-ease legacy entry = %+v, want %+v", *re.Legacy, want)
+	}
+	if fo := types[FileOrderingID]; fo.LegacyKey != "" || fo.Legacy != nil {
+		t.Errorf("the file-ordering flag is off: %+v", fo)
+	}
+}
+
 func TestLegacyBackendKeysBuildTheirProvider(t *testing.T) {
 	// What llm.DefaultClient did for the experimental analysis: Gemini unless
 	// ExperimentalLLMProvider says openrouter, which asks for

@@ -56,7 +56,7 @@ Model = "anthropic/claude-sonnet-4.5"    # The OpenRouter model to ask for
 
 ### Plugin Configuration Options
 
-- `Name` (string, required): Display name for the plugin
+- `Name` (string, required): Display name for the plugin; unique across plugins
 - `Command` (string, required): Executable name on your `$PATH`
 - `IncludeDiff` (bool, optional): Pass the PR diff via `--diff` flag
 - `IncludeHeaders` (bool, optional): Pass PR metadata via `--headers` flag (includes `head_ref` among other fields)

@@ -499,13 +499,27 @@ Configuration tab. Built on `GetConfig` / `UpdateConfig`.
   yet and the editor is showing the server's built-in defaults; the usual "editing
   `<path>`" line is replaced by one saying that saving is what creates the file.
 - Workflow list: collapsible cards, add / delete (with confirmation) / reorder.
-- **Pickers are built from the reply's `workflow_types` and `filters` registries**, not
-  hard-coded — so the editor keeps working when the server gains a type or filter.
-  Fields not used by the selected workflow type are hidden, and filters that require
-  an argument get a second input.
+- Plugin list (`[[Plugins]]`): the same cards, with the command, which PR data it is
+  passed (`--diff`, `--headers`, `--comments`, `--branch`), on-demand only, and the LLM
+  provider and model it receives as `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL`.
+- **AI features**: the `[AI]` defaults (provider, command, model), then one card per
+  feature in the reply's `ai_features` registry, with an enable checkbox in its header.
+  Expanded, a card sets Automatic, the mode (only offered when the feature has more
+  than one), and its own provider, command and model, and says which provider it
+  would run on — `resolveAIProvider` mirrors the server's `AIProviderFor`. An entry is
+  written only once a feature is changed, and one the editor created that ends up
+  setting nothing is dropped again. A feature a legacy key (`legacy_key`) switches on
+  shows as on with a note, and editing it seeds the new entry from what the key stood
+  for. Entries naming no registered feature get a card of their own to remove them.
+- **Pickers are built from the reply's `workflow_types`, `filters` and `ai_features`
+  registries**, not hard-coded — so the editor keeps working when the server gains a
+  type, filter or AI feature. Fields not used by the selected workflow type are hidden,
+  and filters that require an argument get a second input.
 - Validation runs client-side for immediate feedback and again on the server; both
   produce the same `{workflow, field, message}` shape, and messages are attached to
-  the offending field. Messages stay hidden until the first save attempt.
+  the offending field — for plugins and AI settings by the field's prefix
+  (`Plugins[1].Model`, `AI.DefaultCommand`, `AIFeatures[0].Mode`; see `groupProblems`).
+  Messages stay hidden until the first save attempt.
 - Server-side rejections (`okay: false` with `errors`) are rendered as field errors,
   not as an opaque failure. Stale server errors clear as soon as the draft changes.
 - Dirty tracking, so Save is meaningful.
@@ -679,10 +693,11 @@ Ordered roughly by how much time they'll cost you if missed.
    `adjacent_repo` / `adjacent_number`, not `metadata.url`.
 8. **`UpdateConfig` rejections are not RPC errors.** A refused config comes back
    `okay: false` with `errors`. Treat it as field-level validation feedback.
-9. **`UpdateConfig` is partial, except `Workflows`.** Omitted fields keep their
-   on-disk value; sending `Workflows` replaces the entire list.
-10. **Build config pickers from the registries.** `workflow_types` and `filters` come
-   with every `GetConfig` reply; hard-coded lists rot.
+9. **`UpdateConfig` is partial, but lists are whole.** Omitted fields keep their
+   on-disk value; sending `Workflows`, `Plugins` or `AIFeatures` replaces the entire
+   list, and `AI` the whole `[AI]` table.
+10. **Build config pickers from the registries.** `workflow_types`, `filters` and
+   `ai_features` come with every `GetConfig` reply; hard-coded lists rot.
 11. **Framing.** One JSON object per line on stdout; buffer partial reads. Monitor
    `stderr` — the server logs there.
 12. **Plugin bodies can legitimately be empty.** Only fall back to raw `result` when

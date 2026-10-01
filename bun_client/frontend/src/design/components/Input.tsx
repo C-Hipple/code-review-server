@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { colors, borderRadius, spacing, transitions } from '../styles/tokens';
 import { fontSize } from '../styles/typography';
 
@@ -29,11 +29,15 @@ export function Input({
     ...props
 }: InputProps) {
     const hasValue = value !== undefined && value !== '';
+    // Ties the label to the control, so it names the input for assistive tech.
+    const generatedId = useId();
+    const id = props.id ?? generatedId;
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
             {label && (
                 <label
+                    htmlFor={id}
                     style={{
                         fontSize: fontSize.sm,
                         color: colors.textSecondary,
@@ -61,6 +65,7 @@ export function Input({
                     </span>
                 )}
                 <input
+                    id={id}
                     style={{
                         width: '100%',
                         background: colors.bgPrimary,
@@ -127,10 +132,13 @@ export interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextArea
  * TextArea component with consistent styling
  */
 export function TextArea({ label, error, style, ...props }: TextAreaProps) {
+    const generatedId = useId();
+    const id = props.id ?? generatedId;
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
             {label && (
                 <label
+                    htmlFor={id}
                     style={{
                         fontSize: fontSize.sm,
                         color: colors.textSecondary,
@@ -141,6 +149,7 @@ export function TextArea({ label, error, style, ...props }: TextAreaProps) {
                 </label>
             )}
             <textarea
+                id={id}
                 style={{
                     width: '100%',
                     boxSizing: 'border-box',

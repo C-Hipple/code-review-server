@@ -121,13 +121,20 @@ func validateLegacyLLM(cfg *Config) []ValidationError {
 	return problems
 }
 
-// validatePlugins checks each [[Plugins]] entry's LLM backend: a known
-// provider, and a model wherever it names OpenRouter, which has no default.
-// Duplicate names are rejected earlier, when the file is parsed.
+// validatePlugins checks each [[Plugins]] entry: a name to show and key its
+// results by, a command to run, and its LLM backend — a known provider, and a
+// model wherever it names OpenRouter, which has no default. Duplicate names are
+// rejected earlier, when the file is parsed.
 func validatePlugins(cfg *Config) []ValidationError {
 	var problems []ValidationError
 	for i, p := range cfg.Plugins {
 		field := func(name string) string { return fmt.Sprintf("Plugins[%d].%s", i, name) }
+		if strings.TrimSpace(p.Name) == "" {
+			problems = append(problems, rootError(field("Name"), "is required"))
+		}
+		if strings.TrimSpace(p.Command) == "" {
+			problems = append(problems, rootError(field("Command"), "is required"))
+		}
 		if p.Provider != "" && !validLLMBackends[p.Provider] {
 			problems = append(problems, rootError(field("Provider"),
 				"unknown provider %q (expected \"gemini\" or \"openrouter\")", p.Provider))

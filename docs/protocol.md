@@ -909,7 +909,7 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 
 ### `RPCHandler.GetConfig`
 
-Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. The reply also carries the workflow type and filter registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
+Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. The reply also carries the workflow type, filter and AI feature registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
 
 **Arguments** (`GetConfigArgs`):
 ```json
@@ -926,6 +926,7 @@ Returns the server's configuration file, re-read from disk so the client sees ed
 | `using_defaults` | bool               | `true` when no file exists at `path` and the built-in defaults are running |
 | `workflow_types` | []WorkflowTypeInfo | Workflow types this server can run                                 |
 | `filters`        | []FilterInfo       | Filters a workflow may use                                         |
+| `ai_features`    | []AIFeatureTypeInfo | AI features an `[[AIFeatures]]` entry may name                    |
 
 If the file on disk no longer parses, `okay` is `false` and `config` describes the configuration still running in memory.
 
@@ -947,7 +948,11 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 | `SectionPriority`             | map[string]int    | Section title → priority (lower sorts first)                     |
 | `SectionSorting`              | map[string]string | Section title → `newest_first` / `oldest_first`                  |
 | `Workflows`                   | []Workflow        | Configured workflows                                             |
-| `Plugins`                     | []Plugin          | Configured plugins (read-only; `UpdateConfig` does not set them) |
+| `Plugins`                     | []Plugin          | Configured plugins (see [Plugins](plugins.md#plugin-configuration-options)) |
+| `AI`                          | AISettings        | The `[AI]` table: `DefaultProvider`, `DefaultCommand`, `DefaultModel` |
+| `AIFeatures`                  | []AIFeature       | The `[[AIFeatures]]` entries the file has (see below)            |
+
+`Plugins`, `AI` and `AIFeatures` use the TOML key names as field names: a plugin is `Name`, `Command`, `IncludeDiff`, `IncludeHeaders`, `IncludeComments`, `IncludeBranch`, `OnlyOnDemand`, `Provider` and `Model`, and an AI feature entry is `ID`, `Enabled`, `Mode`, `Automatic`, `Provider`, `Command` and `Model` (see [AI Features](ai_features.md#enabling-a-feature)). `AIFeatures` holds only the entries in the file: a feature switched on by a legacy root-level key such as `ExperimentalLLMReviewEase` has none, and its `ai_features` entry says so instead.
 
 #### `Workflow` Object
 
@@ -980,6 +985,20 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 
 `Name`, `WorkflowType`, and `SectionTitle` are required by every type and are not repeated in `required_fields`. Clients can use these two lists to decide which fields to show for the selected type.
 
+#### `AIFeatureTypeInfo` Object
+
+| Field         | Type      | Description                                                                 |
+|---------------|-----------|------------------------------------------------------------------------------|
+| `id`          | string    | Value to put in an entry's `ID`                                              |
+| `name`        | string    | Label to show                                                                |
+| `description` | string    | What the feature does                                                        |
+| `modes`       | []string  | Modes an entry's `Mode` may name, the feature's default first                |
+| `applied`     | bool      | Whether the server applies the result (diff order, review ease) rather than offering a report |
+| `legacy_key`  | string    | The root-level key that switches the feature on in the file, e.g. `ExperimentalLLMReviewEase`; omitted when none does |
+| `legacy`      | AIFeature | The entry `legacy_key` stands for. It applies only while `AIFeatures` has no entry for the feature, which would win |
+
+Unlike `ListAIFeatures`, this describes what can be configured, not how the running config resolves it: a client editing the config can work out a feature's provider from the draft it holds (see [Which provider runs a feature](ai_features.md#which-provider-runs-a-feature)).
+
 #### `FilterInfo` Object
 
 | Field          | Type   | Description                                                   |
@@ -1001,7 +1020,7 @@ On success the file is replaced atomically and the previous contents are kept al
 
 The background workflow manager re-derives its workflows from the config at the start of every sync cycle, so a saved change takes effect on the next sync rather than immediately.
 
-**Arguments** (`UpdateConfigArgs`): any subset of the `Config` fields listed under `GetConfig`, except `Plugins` (which the server never rewrites).
+**Arguments** (`UpdateConfigArgs`): any subset of the `Config` fields listed under `GetConfig`.
 
 | Field                         | Type              | Required | Description                                      |
 |-------------------------------|-------------------|----------|--------------------------------------------------|
@@ -1015,6 +1034,11 @@ The background workflow manager re-derives its workflows from the config at the 
 | `SectionPriority`             | map[string]int    | No       | Replaces the section priority map                |
 | `SectionSorting`              | map[string]string | No       | Replaces the section sorting map                 |
 | `Workflows`                   | []Workflow        | No       | Replaces the whole workflow list                 |
+| `Plugins`                     | []Plugin          | No       | Replaces the whole plugin list; `[]` removes it  |
+| `AI`                          | AISettings        | No       | Replaces the `[AI]` table; all-empty removes it  |
+| `AIFeatures`                  | []AIFeature       | No       | Replaces every `[[AIFeatures]]` entry; `[]` removes them |
+
+Problems with a plugin or an AI setting are root-level (`workflow` is `-1`), and their `field` says which entry they belong to: `Plugins[1].Model`, `AI.DefaultCommand`, `AIFeatures[0].Mode`, indexed into the lists as sent. Two plugins with one name, or two AI feature entries with one ID, are reported the same way.
 
 **Reply** (`UpdateConfigReply`):
 

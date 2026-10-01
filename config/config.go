@@ -43,23 +43,26 @@ type RepoConfig struct {
 	ReleaseCheckCommand string
 }
 
-// Plugin defines the configuration for an installed plugin
+// Plugin defines the configuration for an installed plugin.
+//
+// As on RawWorkflow, the toml tags only matter when the server writes the
+// config back out: omitempty keeps unset options out of the file.
 type Plugin struct {
-	Name            string
-	Command         string
-	IncludeDiff     bool
-	IncludeHeaders  bool
-	IncludeComments bool
-	IncludeBranch   bool
-	OnlyOnDemand    bool
+	Name            string `toml:"Name"`
+	Command         string `toml:"Command"`
+	IncludeDiff     bool   `toml:"IncludeDiff,omitempty"`
+	IncludeHeaders  bool   `toml:"IncludeHeaders,omitempty"`
+	IncludeComments bool   `toml:"IncludeComments,omitempty"`
+	IncludeBranch   bool   `toml:"IncludeBranch,omitempty"`
+	OnlyOnDemand    bool   `toml:"OnlyOnDemand,omitempty"`
 	// Provider and Model say which LLM backend the plugin should call:
 	// PluginProviderGemini or PluginProviderOpenRouter, and for OpenRouter the
 	// model to ask for. The server hands them to the plugin in the
 	// CRS_LLM_PROVIDER and CRS_LLM_MODEL environment variables; the bundled
 	// plugins honor them, and a plugin that calls no model ignores them. Empty
 	// leaves the variables to whatever the server's own environment says.
-	Provider string
-	Model    string
+	Provider string `toml:"Provider,omitempty"`
+	Model    string `toml:"Model,omitempty"`
 }
 
 // LLM backends a [[Plugins]] entry can name. A plugin is itself a command, so
@@ -112,36 +115,36 @@ type AISettings struct {
 	// OPENROUTER_API_KEY and a model) or "command" (a program on this machine).
 	// Empty picks "command" when DefaultCommand is set and "gemini" otherwise.
 	// The whole order is on AIProviderFor.
-	DefaultProvider string
+	DefaultProvider string `toml:"DefaultProvider,omitempty"`
 	// DefaultCommand is the command line the command provider runs, e.g.
 	// "claude -p". It is split into words like a shell would (quotes work, pipes
 	// and variables do not), receives the prompt on stdin, and must print its
 	// answer on stdout.
-	DefaultCommand string
+	DefaultCommand string `toml:"DefaultCommand,omitempty"`
 	// DefaultModel is the model the openrouter provider asks for, as OpenRouter
 	// names it, e.g. "anthropic/claude-sonnet-4.5". Only that provider reads it:
 	// Gemini stays on gemini-flash-latest, and a command picks its own model.
-	DefaultModel string
+	DefaultModel string `toml:"DefaultModel,omitempty"`
 }
 
 // AIFeature is one [[AIFeatures]] entry: it switches a registered AI feature on
 // and says how it runs.
 type AIFeature struct {
 	// ID names the feature, e.g. "comments-addressed".
-	ID      string
-	Enabled bool
+	ID      string `toml:"ID"`
+	Enabled bool   `toml:"Enabled"`
 	// Mode is AIModeOneShot or AIModeAgent; empty uses the feature's default.
-	Mode string
+	Mode string `toml:"Mode,omitempty"`
 	// Automatic also runs the feature after a PR is fetched or updated, the way
 	// plugins run, instead of only when a client asks for it. It has no effect
 	// unless Enabled is set too.
-	Automatic bool
+	Automatic bool `toml:"Automatic,omitempty"`
 	// Provider, Command and Model override the [AI] defaults for this feature.
 	// A Command on its own also picks the command provider, over any [AI]
 	// DefaultProvider; a Model picks nothing. See AIProviderFor.
-	Provider string
-	Command  string
-	Model    string
+	Provider string `toml:"Provider,omitempty"`
+	Command  string `toml:"Command,omitempty"`
+	Model    string `toml:"Model,omitempty"`
 }
 
 // AIProviderChoice is how a feature reaches a model, as AIProviderFor resolves
@@ -239,6 +242,22 @@ func (c Config) AIFeatureSettings(id string) (AIFeature, bool) {
 		return f, true
 	}
 	return c.legacy.entry(id)
+}
+
+// LegacyAIFeature returns the root-level key that switches the feature id on
+// in the config file, and the [[AIFeatures]] entry it stands for, whether or
+// not the file also has an entry of its own (which would win). ok is false
+// when no legacy flag that is on stands for id.
+func (c Config) LegacyAIFeature(id string) (key string, entry AIFeature, ok bool) {
+	entry, ok = c.legacy.entry(id)
+	if !ok {
+		return "", AIFeature{}, false
+	}
+	key = "ExperimentalLLMFileOrdering"
+	if id == legacyReviewEaseID {
+		key = "ExperimentalLLMReviewEase"
+	}
+	return key, entry, true
 }
 
 // AutomaticAIFeatures returns the IDs of the AI features config enables to run

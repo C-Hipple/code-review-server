@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { colors, borderRadius, spacing, transitions } from '../styles/tokens';
 import { fontSize } from '../styles/typography';
 
@@ -13,10 +13,14 @@ export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElemen
  * Select dropdown component with consistent styling
  */
 export function Select({ label, options, style, children, ...props }: SelectProps) {
+    // Ties the label to the control, so it names the select for assistive tech.
+    const generatedId = useId();
+    const id = props.id ?? generatedId;
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.xs }}>
             {label && (
                 <label
+                    htmlFor={id}
                     style={{
                         fontSize: fontSize.sm,
                         color: colors.textSecondary,
@@ -27,6 +31,7 @@ export function Select({ label, options, style, children, ...props }: SelectProp
                 </label>
             )}
             <select
+                id={id}
                 style={{
                     background: colors.bgPrimary,
                     border: `1px solid ${colors.border}`,

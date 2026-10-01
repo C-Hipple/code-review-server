@@ -64,10 +64,10 @@ The config file is the source of truth, but you don't have to edit it by hand. C
 
 Things worth knowing before editing the config from a client:
 
-- **Updates are partial.** A client sends only the settings it means to change; everything else in the file — including keys the server doesn't know about — is left as it is. Sending `Workflows` replaces the whole workflow list, which is how entries are added, removed, or reordered.
+- **Updates are partial.** A client sends only the settings it means to change; everything else in the file — including keys the server doesn't know about — is left as it is. Sending `Workflows`, `Plugins` or `AIFeatures` replaces that whole list, which is how entries are added, removed, or reordered; sending `AI` replaces the `[AI]` table.
 - **Nothing is written unless it validates.** The server checks the configuration the update would produce and refuses to write one it can't run, reporting each problem against the field that caused it. The rules are listed below.
 - **The previous file is kept as `codereviewserver.toml.bak`.** Comments and the original key ordering are **not** preserved when the server rewrites the file, so keep your own copy if a hand-written config has comments you care about.
-- **Changes apply on the next sync.** The background workflow manager reloads the config at the start of each cycle (`SleepDuration` minutes apart), so a saved workflow starts collecting PRs on the following sync rather than instantly.
+- **Changes apply on the next sync.** The background workflow manager reloads the config at the start of each cycle (`SleepDuration` minutes apart), so a saved workflow starts collecting PRs on the following sync rather than instantly. Plugins and AI features read the running config each time they run, so a change to them applies from their next run.
 - **Removed workflows leave their PRs behind until the next sync.** At the end of each cycle the server releases every claim held by a workflow the config no longer defines, then deletes the items nobody claims any more and any section left empty that no workflow writes into. Re-pointing a workflow's `SectionTitle` clears out the old section the same way. A workflow that is still in the file but fails to validate keeps its items — only a workflow actually removed from `Workflows` loses them.
 
 ### Validation Rules
@@ -90,6 +90,11 @@ Per workflow:
 - `PRState` is set to something other than `open`, `closed`, or `all`.
 - The workflow has no repositories to work with: neither its own `Repos` nor a root-level `Repos` list. (The search-driven types — `WaitingOnMeWorkflow` and `MyReviewRequestsWorkflow` — need no repositories and are exempt.)
 - `ProjectListWorkflow` is missing `JiraEpic`, or `SingleRepoSyncReviewRequestsWorkflow` is missing a valid `Repo`.
+
+Plugins and AI features:
+
+- A plugin is missing its `Name` or `Command`, two plugins share a `Name`, a plugin's `Provider` is not `gemini` or `openrouter`, or it names `openrouter` without a `Model`.
+- See [AI Features](ai_features.md#enabling-a-feature) for what an `[AI]` table or an `[[AIFeatures]]` entry is rejected for.
 
 ## Workflows
 

@@ -181,6 +181,18 @@ func TestValidateAI(t *testing.T) {
 			wantMessage: "needs a model",
 		},
 		{
+			name:        "plugin without a name",
+			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: " ", Command: "p"}} },
+			wantField:   "Plugins[0].Name",
+			wantMessage: "required",
+		},
+		{
+			name:        "plugin without a command",
+			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: "p"}} },
+			wantField:   "Plugins[0].Command",
+			wantMessage: "required",
+		},
+		{
 			name:        "unknown plugin provider",
 			mutate:      func(c *Config) { c.Plugins = []Plugin{{Name: "p", Command: "p", Provider: "command"}} },
 			wantField:   "Plugins[0].Provider",
@@ -361,6 +373,32 @@ Enabled = false
 	}
 	if _, ok := cfg.AIFeatureSettings("review-ease"); ok {
 		t.Error("a flag set to false adds nothing")
+	}
+}
+
+func TestLegacyAIFeature(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+ExperimentalLLMFileOrdering = true
+ExperimentalLLMReviewEase = false
+
+[[AIFeatures]]
+ID = "file-ordering"
+Enabled = false
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	// Reported even though the file's own entry wins: an editor showing that
+	// entry needs to know what removing it would fall back to.
+	key, entry, ok := cfg.LegacyAIFeature("file-ordering")
+	if !ok || key != "ExperimentalLLMFileOrdering" || !entry.Enabled || !entry.Automatic || entry.Provider != AIProviderGemini {
+		t.Errorf("file-ordering: %q %+v %v", key, entry, ok)
+	}
+	if key, _, ok := cfg.LegacyAIFeature("review-ease"); ok {
+		t.Errorf("a flag set to false stands for nothing, got %q", key)
+	}
+	if key, _, ok := cfg.LegacyAIFeature("comments-addressed"); ok {
+		t.Errorf("no flag stands for comments-addressed, got %q", key)
 	}
 }
 

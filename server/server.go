@@ -1094,8 +1094,8 @@ func aiFeatureOutput(owner, repo string, number int, f ai.Feature) (AIFeatureOut
 //
 // Clients read and edit the server's TOML config (~/.config/codereviewserver.toml)
 // through GetConfig and UpdateConfig. GetConfig also hands back the workflow
-// type and filter registries so a client can build its pickers from what this
-// server actually supports rather than hard-coding them.
+// type, filter and AI feature registries so a client can build its pickers from
+// what this server actually supports rather than hard-coding them.
 
 // ConfigView is the client-facing view of the configuration file. SleepDuration
 // is expressed in minutes, matching the TOML field rather than the
@@ -1112,6 +1112,11 @@ type ConfigView struct {
 	SectionSorting       map[string]string    `json:"SectionSorting"`
 	Workflows            []config.RawWorkflow `json:"Workflows"`
 	Plugins              []config.Plugin      `json:"Plugins"`
+	// AI and AIFeatures are the [AI] table and the [[AIFeatures]] entries the
+	// file has. A feature a legacy root-level flag switches on has no entry
+	// here; the ai_features registry in the reply says which.
+	AI         config.AISettings  `json:"AI"`
+	AIFeatures []config.AIFeature `json:"AIFeatures"`
 }
 
 // newConfigView builds the view from a loaded config, normalizing nil maps and
@@ -1129,6 +1134,8 @@ func newConfigView(cfg config.Config) ConfigView {
 		SectionSorting:       cfg.SectionSorting,
 		Workflows:            cfg.RawWorkflows,
 		Plugins:              cfg.Plugins,
+		AI:                   cfg.AI,
+		AIFeatures:           cfg.AIFeatures,
 	}
 	if view.Repos == nil {
 		view.Repos = []string{}
@@ -1144,6 +1151,9 @@ func newConfigView(cfg config.Config) ConfigView {
 	}
 	if view.Plugins == nil {
 		view.Plugins = []config.Plugin{}
+	}
+	if view.AIFeatures == nil {
+		view.AIFeatures = []config.AIFeature{}
 	}
 	return view
 }
@@ -1161,6 +1171,8 @@ type ConfigPayload struct {
 	UsingDefaults bool                         `json:"using_defaults"`
 	WorkflowTypes []workflows.WorkflowTypeInfo `json:"workflow_types"`
 	Filters       []workflows.FilterInfo       `json:"filters"`
+	// AIFeatureTypes lists the AI features an [[AIFeatures]] entry can name.
+	AIFeatureTypes []ai.TypeInfo `json:"ai_features"`
 }
 
 func (p *ConfigPayload) populate(cfg config.Config) {
@@ -1169,6 +1181,7 @@ func (p *ConfigPayload) populate(cfg config.Config) {
 	p.UsingDefaults = cfg.UsingDefaults
 	p.WorkflowTypes = workflows.WorkflowTypes()
 	p.Filters = workflows.FilterTypes()
+	p.AIFeatureTypes = aiRunner.Registry().Types(cfg)
 
 	path, err := config.ConfigPath()
 	if err != nil {
@@ -1200,8 +1213,9 @@ func (h *RPCHandler) GetConfig(args *GetConfigArgs, reply *GetConfigReply) error
 }
 
 // UpdateConfigArgs is a partial update: every field is optional and a field
-// left out (null) keeps whatever is on disk. Sending Workflows replaces the
-// whole list, which is how a client removes or reorders entries.
+// left out (null) keeps whatever is on disk. Sending Workflows, Plugins or
+// AIFeatures replaces the whole list, which is how a client removes or reorders
+// entries, and sending AI replaces the whole [AI] table.
 type UpdateConfigArgs struct {
 	Repos                *[]string             `json:"Repos"`
 	SleepDuration        *int                  `json:"SleepDuration"`
@@ -1213,6 +1227,9 @@ type UpdateConfigArgs struct {
 	SectionPriority      *map[string]int       `json:"SectionPriority"`
 	SectionSorting       *map[string]string    `json:"SectionSorting"`
 	Workflows            *[]config.RawWorkflow `json:"Workflows"`
+	Plugins              *[]config.Plugin      `json:"Plugins"`
+	AI                   *config.AISettings    `json:"AI"`
+	AIFeatures           *[]config.AIFeature   `json:"AIFeatures"`
 }
 
 // UpdateConfigReply carries the same body as GetConfig plus any validation
@@ -1232,7 +1249,9 @@ type UpdateConfigReply struct {
 //
 // Nothing is written unless validation passes. The background workflow manager
 // re-derives its workflows from the config at the top of each cycle, so a saved
-// change takes effect on the next sync.
+// workflow change takes effect on the next sync. Plugins and AI features read
+// the running config whenever they run, so a change to them applies to the
+// next run.
 func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply) error {
 	reply.Errors = []config.ValidationError{}
 
@@ -1247,6 +1266,9 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 		SectionPriority:      args.SectionPriority,
 		SectionSorting:       args.SectionSorting,
 		Workflows:            normalizeWorkflows(args.Workflows),
+		Plugins:              normalizePlugins(args.Plugins),
+		AI:                   normalizeAISettings(args.AI),
+		AIFeatures:           normalizeAIFeatures(args.AIFeatures),
 	}
 
 	if update.IsEmpty() {
@@ -1320,6 +1342,56 @@ func normalizeWorkflows(wfs *[]config.RawWorkflow) *[]config.RawWorkflow {
 		wf.Filters = trimList(wf.Filters)
 		wf.Teams = trimList(wf.Teams)
 		cleaned = append(cleaned, wf)
+	}
+	return &cleaned
+}
+
+// normalizePlugins trims the string fields of each submitted plugin, as
+// normalizeWorkflows does for workflows: a stray space in a name would key its
+// results apart from the plugin's, and one in a command would fail to run.
+func normalizePlugins(plugins *[]config.Plugin) *[]config.Plugin {
+	if plugins == nil {
+		return nil
+	}
+	cleaned := make([]config.Plugin, 0, len(*plugins))
+	for _, p := range *plugins {
+		p.Name = strings.TrimSpace(p.Name)
+		p.Command = strings.TrimSpace(p.Command)
+		p.Provider = strings.TrimSpace(p.Provider)
+		p.Model = strings.TrimSpace(p.Model)
+		cleaned = append(cleaned, p)
+	}
+	return &cleaned
+}
+
+// normalizeAISettings trims the [AI] defaults.
+func normalizeAISettings(settings *config.AISettings) *config.AISettings {
+	if settings == nil {
+		return nil
+	}
+	cleaned := config.AISettings{
+		DefaultProvider: strings.TrimSpace(settings.DefaultProvider),
+		DefaultCommand:  strings.TrimSpace(settings.DefaultCommand),
+		DefaultModel:    strings.TrimSpace(settings.DefaultModel),
+	}
+	return &cleaned
+}
+
+// normalizeAIFeatures trims the string fields of each submitted [[AIFeatures]]
+// entry, keeping their order so validation problems still index what the
+// client sent.
+func normalizeAIFeatures(features *[]config.AIFeature) *[]config.AIFeature {
+	if features == nil {
+		return nil
+	}
+	cleaned := make([]config.AIFeature, 0, len(*features))
+	for _, f := range *features {
+		f.ID = strings.TrimSpace(f.ID)
+		f.Mode = strings.TrimSpace(f.Mode)
+		f.Provider = strings.TrimSpace(f.Provider)
+		f.Command = strings.TrimSpace(f.Command)
+		f.Model = strings.TrimSpace(f.Model)
+		cleaned = append(cleaned, f)
 	}
 	return &cleaned
 }

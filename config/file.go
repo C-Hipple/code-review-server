@@ -39,6 +39,11 @@ type Update struct {
 	SectionPriority      *map[string]int
 	SectionSorting       *map[string]string
 	Workflows            *[]RawWorkflow
+	// Plugins, AI and AIFeatures each replace the whole [[Plugins]] list,
+	// [AI] table or [[AIFeatures]] list. An empty one removes it from the file.
+	Plugins    *[]Plugin
+	AI         *AISettings
+	AIFeatures *[]AIFeature
 }
 
 // IsEmpty reports whether the update carries no changes at all.
@@ -46,7 +51,7 @@ func (u Update) IsEmpty() bool {
 	return u.Repos == nil && u.SleepDuration == nil && u.JiraDomain == nil &&
 		u.GithubUsername == nil && u.RepoLocation == nil && u.AutoWorktree == nil &&
 		u.DesktopNotifications == nil && u.SectionPriority == nil && u.SectionSorting == nil &&
-		u.Workflows == nil
+		u.Workflows == nil && u.Plugins == nil && u.AI == nil && u.AIFeatures == nil
 }
 
 // setKey writes v into the TOML document when the update supplies it.
@@ -54,6 +59,50 @@ func setKey[T any](doc map[string]any, key string, v *T) {
 	if v != nil {
 		doc[key] = *v
 	}
+}
+
+// setList writes a list of tables into the TOML document when the update
+// supplies it, and removes the key when the list is empty rather than leaving
+// an empty array behind.
+func setList[T any](doc map[string]any, key string, v *[]T) {
+	if v == nil {
+		return
+	}
+	if len(*v) == 0 {
+		delete(doc, key)
+		return
+	}
+	doc[key] = *v
+}
+
+// duplicates reports the [[Plugins]] names and [[AIFeatures]] IDs the update
+// repeats. parseConfig refuses a file with either, so they are caught here,
+// before Render, as validation problems rather than as a failure to render.
+func (u Update) duplicates() []ValidationError {
+	var problems []ValidationError
+	if u.Plugins != nil {
+		seen := map[string]int{}
+		for i, p := range *u.Plugins {
+			if first, dup := seen[p.Name]; dup {
+				problems = append(problems, rootError(fmt.Sprintf("Plugins[%d].Name", i),
+					"duplicates the name of plugin %d; plugin names must be unique", first))
+			} else {
+				seen[p.Name] = i
+			}
+		}
+	}
+	if u.AIFeatures != nil {
+		seen := map[string]int{}
+		for i, f := range *u.AIFeatures {
+			if first, dup := seen[f.ID]; dup {
+				problems = append(problems, rootError(fmt.Sprintf("AIFeatures[%d].ID", i),
+					"duplicates the entry for %q at AIFeatures[%d]; a feature takes one entry", f.ID, first))
+			} else {
+				seen[f.ID] = i
+			}
+		}
+	}
+	return problems
 }
 
 // Render merges the update into the config file currently on disk and returns
@@ -101,6 +150,15 @@ func (u Update) Render() ([]byte, *Config, error) {
 	if u.Workflows != nil {
 		doc["Workflows"] = stripInheritedUsernames(*u.Workflows, docString(doc, "GithubUsername"))
 	}
+	setList(doc, "Plugins", u.Plugins)
+	if u.AI != nil {
+		if *u.AI == (AISettings{}) {
+			delete(doc, "AI")
+		} else {
+			doc["AI"] = *u.AI
+		}
+	}
+	setList(doc, "AIFeatures", u.AIFeatures)
 
 	data, err := toml.Marshal(doc)
 	if err != nil {
@@ -195,6 +253,9 @@ func Apply(u Update, validate func(*Config) []ValidationError) ([]ValidationErro
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
+	if problems := u.duplicates(); len(problems) > 0 {
+		return problems, nil
+	}
 	data, cfg, err := u.Render()
 	if err != nil {
 		return nil, err

@@ -58,6 +58,41 @@ interface State {
     diagramSource: string;
     aiRuns: Map<string, number>;
     aiDone: Set<string>;
+    // What the Server Configuration tab edits: UpdateConfig merges each field
+    // it is sent into this, the way the server merges an update into the file.
+    config: Record<string, unknown>;
+}
+
+const CONFIG_PATH = '/tmp/crs-e2e/codereviewserver.toml';
+
+function freshConfig(): Record<string, unknown> {
+    return {
+        Repos: ['acme/widgets', 'acme/gadgets'],
+        SleepDuration: 10,
+        JiraDomain: '',
+        GithubUsername: 'e2e-reviewer',
+        RepoLocation: '~/src',
+        AutoWorktree: false,
+        DesktopNotifications: false,
+        SectionPriority: {},
+        SectionSorting: {},
+        Workflows: [],
+        Plugins: [
+            {
+                Name: 'summarize',
+                Command: 'summarize_diff',
+                IncludeDiff: true,
+                IncludeHeaders: true,
+                IncludeComments: false,
+                IncludeBranch: false,
+                OnlyOnDemand: false,
+                Provider: '',
+                Model: '',
+            },
+        ],
+        AI: { DefaultProvider: '', DefaultCommand: '', DefaultModel: '' },
+        AIFeatures: [],
+    };
 }
 
 function freshState(): State {
@@ -78,6 +113,7 @@ function freshState(): State {
         diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Map(),
         aiDone: new Set(),
+        config: freshConfig(),
     };
 }
 
@@ -211,6 +247,53 @@ const DIAGRAM_FEATURE = {
     modes: ['oneshot'],
     provider: 'gemini',
 };
+
+// Every AI feature as GetConfig describes it for the config editor. The
+// fixtures' review-ease ratings stand for a config that still switches it on
+// with the legacy root-level key.
+function configAIFeatureTypes() {
+    const features: Array<{
+        id: string;
+        name: string;
+        description: string;
+        modes: string[];
+        applied?: boolean;
+    }> = [AI_FEATURE, DIAGRAM_FEATURE, ...APPLIED_AI_FEATURES];
+    return features.map(f => ({
+        id: f.id,
+        name: f.name,
+        description: f.description,
+        modes: f.modes,
+        applied: !!f.applied,
+        ...(f.id === 'review-ease'
+            ? {
+                  legacy_key: 'ExperimentalLLMReviewEase',
+                  legacy: {
+                      ID: 'review-ease',
+                      Enabled: true,
+                      Mode: '',
+                      Automatic: true,
+                      Provider: 'gemini',
+                      Command: '',
+                      Model: '',
+                  },
+              }
+            : {}),
+    }));
+}
+
+function configPayload(message = '') {
+    return {
+        okay: true,
+        message,
+        path: CONFIG_PATH,
+        using_defaults: false,
+        config: state.config,
+        workflow_types: [],
+        filters: [],
+        ai_features: configAIFeatureTypes(),
+    };
+}
 
 // The report features the fake knows, each with whether it is enabled now.
 function reportFeatures() {
@@ -435,27 +518,16 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { okay: true };
     },
 
-    'RPCHandler.GetConfig': () => ({
-        okay: true,
-        message: '',
-        path: '/tmp/crs-e2e/codereviewserver.toml',
-        using_defaults: false,
-        config: {
-            Repos: ['acme/widgets', 'acme/gadgets'],
-            SleepDuration: 10,
-            JiraDomain: '',
-            GithubUsername: 'e2e-reviewer',
-            RepoLocation: '~/src',
-            AutoWorktree: false,
-            DesktopNotifications: false,
-            SectionPriority: {},
-            SectionSorting: {},
-            Workflows: [],
-            Plugins: [],
-        },
-        workflow_types: [],
-        filters: [],
-    }),
+    'RPCHandler.GetConfig': () => configPayload(),
+
+    // Accepts whatever it is sent: validation is the real server's, and the
+    // client's own is what the e2e suite exercises.
+    'RPCHandler.UpdateConfig': args => {
+        for (const [field, value] of Object.entries(args)) {
+            if (value !== null && value !== undefined) state.config[field] = value;
+        }
+        return { ...configPayload(`Configuration saved to ${CONFIG_PATH}`), errors: [] };
+    },
 
     'RPCHandler.GetRateLimitHistory': () => ({ hours_back: 3, since: '', points: [] }),
 

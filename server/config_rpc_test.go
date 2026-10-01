@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crs/ai"
 	"crs/config"
 	"crs/workflows"
 	"os"
@@ -317,5 +318,176 @@ func TestUpdateConfigUpdatesGlobalSettings(t *testing.T) {
 	// Workflows weren't part of the update, so they must survive untouched.
 	if len(reply.Config.Workflows) != 1 {
 		t.Errorf("expected the existing workflow to survive, got %+v", reply.Config.Workflows)
+	}
+}
+
+func TestGetConfigReturnsPluginsAndAI(t *testing.T) {
+	// Root-level keys go first: after testConfigTOML they would land in its
+	// [[Workflows]] table.
+	useTempConfig(t, "ExperimentalLLMReviewEase = true\n"+testConfigTOML+`
+[[Plugins]]
+Name = "Summarize"
+Command = "summarize_diff"
+Provider = "openrouter"
+Model = "anthropic/claude-sonnet-4.5"
+
+[AI]
+DefaultCommand = "claude -p"
+
+[[AIFeatures]]
+ID = "comments-addressed"
+Enabled = true
+Mode = "agent"
+`)
+
+	h := &RPCHandler{}
+	reply := &GetConfigReply{}
+	if err := h.GetConfig(&GetConfigArgs{}, reply); err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+
+	if len(reply.Config.Plugins) != 1 || reply.Config.Plugins[0].Model != "anthropic/claude-sonnet-4.5" {
+		t.Errorf("unexpected plugins in reply: %+v", reply.Config.Plugins)
+	}
+	if reply.Config.AI.DefaultCommand != "claude -p" {
+		t.Errorf("expected [AI] in reply, got %+v", reply.Config.AI)
+	}
+	// Only the file's own entries: the review-ease flag is reported through
+	// the registry instead.
+	if len(reply.Config.AIFeatures) != 1 || reply.Config.AIFeatures[0].Mode != "agent" {
+		t.Errorf("unexpected AI features in reply: %+v", reply.Config.AIFeatures)
+	}
+
+	var reviewEase *ai.TypeInfo
+	for i := range reply.AIFeatureTypes {
+		if reply.AIFeatureTypes[i].ID == ai.ReviewEaseID {
+			reviewEase = &reply.AIFeatureTypes[i]
+		}
+	}
+	if len(reply.AIFeatureTypes) != len(aiRunner.Registry().Features()) || reviewEase == nil {
+		t.Fatalf("expected the AI feature registry for client pickers, got %+v", reply.AIFeatureTypes)
+	}
+	if reviewEase.LegacyKey != "ExperimentalLLMReviewEase" || reviewEase.Legacy == nil || !reviewEase.Legacy.Enabled {
+		t.Errorf("expected review-ease to name the flag that switches it on, got %+v", reviewEase)
+	}
+}
+
+func TestGetConfigSendsEmptyListsNotNull(t *testing.T) {
+	useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	reply := &GetConfigReply{}
+	if err := h.GetConfig(&GetConfigArgs{}, reply); err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if reply.Config.Plugins == nil || reply.Config.AIFeatures == nil {
+		t.Errorf("expected [] rather than null for absent lists, got %+v / %+v", reply.Config.Plugins, reply.Config.AIFeatures)
+	}
+}
+
+func TestUpdateConfigSavesPluginsAndAI(t *testing.T) {
+	path := useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	plugins := []config.Plugin{{
+		Name:        " Style Guidelines ",
+		Command:     "style_guidelines ",
+		IncludeDiff: true,
+		Provider:    "openrouter",
+		Model:       " google/gemini-2.5-flash",
+	}}
+	settings := config.AISettings{DefaultProvider: "command", DefaultCommand: " claude -p "}
+	features := []config.AIFeature{
+		{ID: " feature-flags", Enabled: true, Automatic: true, Mode: "agent"},
+		{ID: "change-diagram", Enabled: true, Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"},
+	}
+	reply := &UpdateConfigReply{}
+	args := &UpdateConfigArgs{Plugins: &plugins, AI: &settings, AIFeatures: &features}
+	if err := h.UpdateConfig(args, reply); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+	if !reply.Okay {
+		t.Fatalf("expected the update to be accepted, got %v", reply.Errors)
+	}
+
+	wantPlugin := config.Plugin{Name: "Style Guidelines", Command: "style_guidelines", IncludeDiff: true, Provider: "openrouter", Model: "google/gemini-2.5-flash"}
+	if len(reply.Config.Plugins) != 1 || reply.Config.Plugins[0] != wantPlugin {
+		t.Errorf("expected the plugin trimmed and saved, got %+v", reply.Config.Plugins)
+	}
+	if reply.Config.AI.DefaultCommand != "claude -p" {
+		t.Errorf("expected [AI] trimmed and saved, got %+v", reply.Config.AI)
+	}
+	if len(reply.Config.AIFeatures) != 2 || reply.Config.AIFeatures[0].ID != "feature-flags" {
+		t.Errorf("expected the AI features saved in order, got %+v", reply.Config.AIFeatures)
+	}
+	// The running config is reloaded, so the features apply to the next run.
+	if got := config.C().AutomaticAIFeatures(); len(got) != 1 || got[0] != "feature-flags" {
+		t.Errorf("expected feature-flags to run automatically now, got %v", got)
+	}
+	if len(reply.Config.Workflows) != 1 {
+		t.Errorf("workflows weren't part of the update and must survive, got %+v", reply.Config.Workflows)
+	}
+
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read written config: %v", err)
+	}
+	for _, want := range []string{"[[Plugins]]", "[AI]", "[[AIFeatures]]", "style_guidelines"} {
+		if !strings.Contains(string(written), want) {
+			t.Errorf("expected %s on disk, got:\n%s", want, written)
+		}
+	}
+}
+
+func TestUpdateConfigRejectsInvalidPluginsAndAI(t *testing.T) {
+	path := useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	plugins := []config.Plugin{{Name: "Summarize", Command: "summarize_diff", Provider: "openrouter"}}
+	features := []config.AIFeature{
+		{ID: "not-a-feature", Enabled: true, Provider: "gemini"},
+		{ID: "review-ease", Mode: "agent"},
+	}
+	reply := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{Plugins: &plugins, AIFeatures: &features}, reply); err != nil {
+		t.Fatalf("a rejected update should not be an RPC error, got %v", err)
+	}
+	if reply.Okay {
+		t.Fatal("expected the update to be rejected")
+	}
+	fields := map[string]bool{}
+	for _, e := range reply.Errors {
+		fields[e.Field] = true
+		if e.Workflow != -1 {
+			t.Errorf("plugin and AI problems are root-level, got workflow %d", e.Workflow)
+		}
+	}
+	for _, want := range []string{"Plugins[0].Model", "AIFeatures[0].ID", "AIFeatures[1].Mode"} {
+		if !fields[want] {
+			t.Errorf("expected a %s problem, got %v", want, reply.Errors)
+		}
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(after) != testConfigTOML {
+		t.Errorf("a rejected update must leave the file alone, got:\n%s", after)
+	}
+}
+
+func TestUpdateConfigReportsDuplicatePluginNames(t *testing.T) {
+	useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	// Names differing only by whitespace are the same name once trimmed.
+	plugins := []config.Plugin{{Name: "Summarize", Command: "a"}, {Name: "Summarize ", Command: "b"}}
+	reply := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{Plugins: &plugins}, reply); err != nil {
+		t.Fatalf("a duplicate plugin name should be a validation problem, got RPC error %v", err)
+	}
+	if reply.Okay || len(reply.Errors) != 1 || reply.Errors[0].Field != "Plugins[1].Name" {
+		t.Errorf("expected the second Summarize reported, got %+v", reply.Errors)
 	}
 }

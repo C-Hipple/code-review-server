@@ -150,6 +150,50 @@ type Info struct {
 	Applied bool `json:"applied"`
 }
 
+// TypeInfo is a registered feature as a config editor needs it: what it is and
+// which settings it takes, the way workflows.WorkflowTypeInfo describes a
+// workflow type. Unlike Info it says nothing about how config sets it up,
+// except for LegacyKey and Legacy.
+type TypeInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Modes lists the execution modes the feature supports, default first.
+	Modes   []string `json:"modes"`
+	Applied bool     `json:"applied"`
+	// LegacyKey names the root-level key that switches the feature on in the
+	// config file (ExperimentalLLMFileOrdering, ExperimentalLLMReviewEase), and
+	// Legacy is the [[AIFeatures]] entry it stands for. Both are empty unless
+	// such a flag is on. The flag applies only while the file has no entry of
+	// its own for the feature.
+	LegacyKey string            `json:"legacy_key,omitempty"`
+	Legacy    *config.AIFeature `json:"legacy,omitempty"`
+}
+
+// Types returns every registered feature for a config editor's pickers, with
+// the legacy flags cfg sets.
+func (r *Registry) Types(cfg config.Config) []TypeInfo {
+	features := r.Features()
+	out := make([]TypeInfo, 0, len(features))
+	for _, f := range features {
+		info := TypeInfo{
+			ID:      f.ID(),
+			Name:    f.Name(),
+			Modes:   modesOf(f),
+			Applied: IsApplied(f),
+		}
+		if d, ok := f.(Describer); ok {
+			info.Description = d.Description()
+		}
+		if key, entry, ok := cfg.LegacyAIFeature(f.ID()); ok {
+			info.LegacyKey = key
+			info.Legacy = &entry
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 // Describe returns every registered feature, enabled or not, as cfg configures
 // it. Disabled ones are listed too so a client can say what could be turned on.
 func (r *Registry) Describe(cfg config.Config) []Info {

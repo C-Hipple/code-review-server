@@ -63,6 +63,9 @@ command provider with no command, a command line that can't be split — is
 logged at startup and rejected by `UpdateConfig`; so is an enabled feature
 that would use the openrouter provider with no model.
 
+The web client edits all of this in Preferences → **Server Configuration**,
+under AI Features (see [Clients](clients.md#preferences)).
+
 ## Providers
 
 A feature reaches a model through a provider. There are three, and none is

@@ -1,5 +1,11 @@
 import type { AIFeatureInfo, AIFeatureOutput, RunAIFeatureReply } from './ai_utils';
-import type { ConfigReply, WorkflowEntry } from './config_utils';
+import type {
+    AIFeatureEntry,
+    AISettings,
+    ConfigReply,
+    PluginEntry,
+    WorkflowEntry,
+} from './config_utils';
 
 export const API_BASE =
     typeof window !== 'undefined' &&
@@ -71,7 +77,8 @@ export async function getConfig(): Promise<ConfigReply> {
 
 /**
  * Saves a partial configuration change. Fields left out keep whatever is on
- * disk; sending `Workflows` replaces the whole list.
+ * disk; sending `Workflows`, `Plugins` or `AIFeatures` replaces the whole list,
+ * and sending `AI` the whole `[AI]` table.
  *
  * A config the server rejects comes back as `okay: false` with `errors`
  * populated rather than as a thrown error — the file is left untouched.
@@ -91,6 +98,9 @@ export interface UpdateConfigArgs {
     SectionPriority?: Record<string, number>;
     SectionSorting?: Record<string, string>;
     Workflows?: WorkflowEntry[];
+    Plugins?: PluginEntry[];
+    AI?: AISettings;
+    AIFeatures?: AIFeatureEntry[];
 }
 
 export interface PRRef {

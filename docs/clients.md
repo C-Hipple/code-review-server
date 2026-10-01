@@ -19,11 +19,15 @@ For a full inventory of what this client does — architecture, HTTP surface, ev
 The gear icon next to the header opens Preferences, which has two tabs:
 
 - **Appearance** — theme, preferred review location, and diff font size. These are client-side settings stored in the browser's local storage.
-- **Server Configuration** — an editor for the server's TOML config (`~/.config/codereviewserver.toml`), covering the global settings and the workflow list.
+- **Server Configuration** — an editor for the server's TOML config (`~/.config/codereviewserver.toml`), covering the global settings, the workflow list, the plugins and the AI features.
 
 In the Server Configuration tab, each workflow is a collapsible card you can expand to edit, reorder with the arrow buttons, or delete. **+ Add workflow** appends a new one. The workflow type and filter dropdowns are populated from the registries the server sends with the config, so they always offer what the running server supports; filters that need an argument (`FilterByLabel` and friends) get an extra input for it, and fields that don't apply to the selected workflow type are hidden.
 
-The editor validates as you go and blocks a save while anything is wrong — a missing section title, a duplicate workflow name, a repository that isn't in `owner/repo` form. The server validates again before writing and reports anything the client missed against the field that caused it, so a config that can't run never reaches disk. See [Configuration](configuration.md#editing-the-config-from-a-client) for what saving does to the file and when the changes take effect.
+Plugins are cards in the same style: the command to run, which PR data it is passed (`--diff`, `--headers`, `--comments`, `--branch`), whether it runs only on demand, and the LLM provider and model it is handed through `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL`.
+
+Under **AI Features**, the defaults every feature inherits (`[AI]`: provider, command, model) sit above one card per feature the server has registered. The checkbox on a card switches the feature on; expanding it sets whether it runs automatically, its mode (for features with more than one), and a provider, command or model of its own. Each card says which provider the feature would run on, worked out from the settings as they stand, the same way the server does. A feature that a legacy key such as `ExperimentalLLMReviewEase` still switches on shows as on, with a note; changing it writes an `[[AIFeatures]]` entry, which takes precedence over the key.
+
+The editor validates as you go and blocks a save while anything is wrong — a missing section title, a duplicate workflow name, a repository that isn't in `owner/repo` form, an OpenRouter plugin or feature with no model, an enabled feature that would run a command when none is set. The server validates again before writing and reports anything the client missed against the field that caused it, so a config that can't run never reaches disk. See [Configuration](configuration.md#editing-the-config-from-a-client) for what saving does to the file and when the changes take effect.
 
 ## TUI Client
 

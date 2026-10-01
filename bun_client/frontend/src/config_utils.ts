@@ -5,6 +5,10 @@
  * replies. Validation here is a client-side convenience so the user gets
  * feedback before a round trip; the server validates again before it writes
  * anything, and its errors are reported in the same shape.
+ *
+ * Problems with a plugin or an AI setting are root-level (`workflow: -1`) and
+ * name what they are about in `field`, as the server does: `Plugins[0].Model`,
+ * `AI.DefaultCommand`, `AIFeatures[2].Mode`. `groupProblems` sorts them out.
  */
 
 export interface WorkflowEntry {
@@ -32,6 +36,44 @@ export interface PluginEntry {
     IncludeComments?: boolean;
     IncludeBranch?: boolean;
     OnlyOnDemand?: boolean;
+    /** The LLM backend the plugin calls: '', 'gemini' or 'openrouter'. */
+    Provider?: string;
+    /** The OpenRouter model to ask for; required with Provider 'openrouter'. */
+    Model?: string;
+}
+
+/** The `[AI]` table: defaults every `[[AIFeatures]]` entry inherits. */
+export interface AISettings {
+    DefaultProvider?: string;
+    DefaultCommand?: string;
+    DefaultModel?: string;
+}
+
+/** One `[[AIFeatures]]` entry. */
+export interface AIFeatureEntry {
+    ID: string;
+    Enabled?: boolean;
+    /** '', 'oneshot' or 'agent'; empty runs the feature's default mode. */
+    Mode?: string;
+    Automatic?: boolean;
+    Provider?: string;
+    Command?: string;
+    Model?: string;
+}
+
+/** An AI feature the server has registered, as `GetConfig` describes it. */
+export interface AIFeatureTypeInfo {
+    id: string;
+    name: string;
+    description: string;
+    /** Supported execution modes, default first. */
+    modes: string[];
+    /** Applied to what the server serves (diff order, review ease) rather than a report. */
+    applied: boolean;
+    /** The root-level key (e.g. ExperimentalLLMReviewEase) that switches it on, if any. */
+    legacy_key?: string;
+    /** The entry that legacy key stands for while the file has none of its own. */
+    legacy?: AIFeatureEntry;
 }
 
 export interface ServerConfig {
@@ -47,6 +89,8 @@ export interface ServerConfig {
     SectionSorting: Record<string, string>;
     Workflows: WorkflowEntry[];
     Plugins: PluginEntry[];
+    AI?: AISettings;
+    AIFeatures?: AIFeatureEntry[] | null;
 }
 
 export interface WorkflowTypeInfo {
@@ -81,6 +125,7 @@ export interface ConfigReply {
     using_defaults?: boolean;
     workflow_types: WorkflowTypeInfo[];
     filters: FilterInfo[];
+    ai_features?: AIFeatureTypeInfo[];
     /** Only present on UpdateConfig replies. */
     errors?: ConfigValidationError[];
 }
@@ -95,6 +140,9 @@ export interface ConfigDraft {
     AutoWorktree: boolean;
     DesktopNotifications: boolean;
     Workflows: WorkflowEntry[];
+    Plugins: PluginEntry[];
+    AI: Required<AISettings>;
+    AIFeatures: AIFeatureEntry[];
 }
 
 export const PR_STATE_OPTIONS = [
@@ -110,6 +158,68 @@ export const NOTIFICATION_OPTIONS = [
     { value: 'off', label: 'Never notify' },
 ];
 
+export const AI_PROVIDER_GEMINI = 'gemini';
+export const AI_PROVIDER_OPENROUTER = 'openrouter';
+export const AI_PROVIDER_COMMAND = 'command';
+
+const AI_PROVIDERS = [AI_PROVIDER_GEMINI, AI_PROVIDER_OPENROUTER, AI_PROVIDER_COMMAND];
+/** A plugin is itself a command, so it calls one of the two APIs or neither. */
+const PLUGIN_PROVIDERS = [AI_PROVIDER_GEMINI, AI_PROVIDER_OPENROUTER];
+const AI_MODES = ['oneshot', 'agent'];
+
+export const PLUGIN_PROVIDER_OPTIONS = [
+    { value: '', label: 'Not set (CRS_LLM_PROVIDER, else Gemini)' },
+    { value: AI_PROVIDER_GEMINI, label: 'Gemini (GEMINI_API_KEY)' },
+    { value: AI_PROVIDER_OPENROUTER, label: 'OpenRouter (OPENROUTER_API_KEY)' },
+];
+
+export const AI_DEFAULT_PROVIDER_OPTIONS = [
+    { value: '', label: 'Not set (a default command if one is set, else Gemini)' },
+    { value: AI_PROVIDER_GEMINI, label: 'Gemini API (GEMINI_API_KEY)' },
+    { value: AI_PROVIDER_OPENROUTER, label: 'OpenRouter (OPENROUTER_API_KEY)' },
+    { value: AI_PROVIDER_COMMAND, label: 'Command on this machine' },
+];
+
+export const AI_FEATURE_PROVIDER_OPTIONS = [
+    { value: '', label: 'Inherit the [AI] defaults' },
+    { value: AI_PROVIDER_GEMINI, label: 'Gemini API' },
+    { value: AI_PROVIDER_OPENROUTER, label: 'OpenRouter' },
+    { value: AI_PROVIDER_COMMAND, label: 'Command on this machine' },
+];
+
+export const AI_MODE_LABELS: Record<string, string> = {
+    oneshot: 'One-shot (a single model call)',
+    agent: 'Agent (a multi-turn tool loop)',
+};
+
+/** A plugin with every field present, so drafts compare equal to what the server sends back. */
+function fullPlugin(plugin: Partial<PluginEntry>): PluginEntry {
+    return {
+        Name: plugin.Name ?? '',
+        Command: plugin.Command ?? '',
+        IncludeDiff: !!plugin.IncludeDiff,
+        IncludeHeaders: !!plugin.IncludeHeaders,
+        IncludeComments: !!plugin.IncludeComments,
+        IncludeBranch: !!plugin.IncludeBranch,
+        OnlyOnDemand: !!plugin.OnlyOnDemand,
+        Provider: plugin.Provider ?? '',
+        Model: plugin.Model ?? '',
+    };
+}
+
+/** An AI feature entry with every field present, like `fullPlugin`. */
+export function fullAIFeature(entry: Partial<AIFeatureEntry> & { ID: string }): AIFeatureEntry {
+    return {
+        ID: entry.ID,
+        Enabled: !!entry.Enabled,
+        Mode: entry.Mode ?? '',
+        Automatic: !!entry.Automatic,
+        Provider: entry.Provider ?? '',
+        Command: entry.Command ?? '',
+        Model: entry.Model ?? '',
+    };
+}
+
 /** Builds the editable draft from a config fetched from the server. */
 export function draftFromConfig(config: ServerConfig): ConfigDraft {
     return {
@@ -121,7 +231,76 @@ export function draftFromConfig(config: ServerConfig): ConfigDraft {
         AutoWorktree: !!config.AutoWorktree,
         DesktopNotifications: !!config.DesktopNotifications,
         Workflows: (config.Workflows ?? []).map(w => ({ ...w })),
+        Plugins: (config.Plugins ?? []).map(fullPlugin),
+        AI: {
+            DefaultProvider: config.AI?.DefaultProvider ?? '',
+            DefaultCommand: config.AI?.DefaultCommand ?? '',
+            DefaultModel: config.AI?.DefaultModel ?? '',
+        },
+        AIFeatures: (config.AIFeatures ?? []).map(fullAIFeature),
     };
+}
+
+/** A blank plugin. Most plugins read the diff, so that starts on. */
+export function emptyPlugin(): PluginEntry {
+    return fullPlugin({ IncludeDiff: true });
+}
+
+/**
+ * The entry an AI feature starts from when the editor first changes it: what
+ * the legacy key stands for when one switches it on, so the feature keeps
+ * running as it did, and switched off otherwise.
+ */
+export function seedAIFeature(info: AIFeatureTypeInfo | undefined, id: string): AIFeatureEntry {
+    return fullAIFeature({ ...(info?.legacy ?? {}), ID: id });
+}
+
+/** Reports whether an entry sets nothing, so removing it changes nothing either. */
+export function isBlankAIFeature(entry: AIFeatureEntry): boolean {
+    return (
+        !entry.Enabled &&
+        !entry.Automatic &&
+        !entry.Mode?.trim() &&
+        !entry.Provider?.trim() &&
+        !entry.Command?.trim() &&
+        !entry.Model?.trim()
+    );
+}
+
+/** How an AI feature reaches a model, as the server resolves it from the config. */
+export interface AIProviderChoice {
+    provider: string;
+    /** The command line the command provider runs; only it reads this. */
+    command: string;
+    /** The model the openrouter provider asks for; only it reads this. */
+    model: string;
+}
+
+/**
+ * Resolves the provider an AI feature runs with, mirroring the server's
+ * `AIProviderFor`: the first of the feature's Provider, the feature's Command
+ * (which picks "command"), [AI] DefaultProvider, [AI] DefaultCommand (which
+ * picks "command") that is set wins, and "gemini" when none is.
+ */
+export function resolveAIProvider(ai: AISettings, entry: AIFeatureEntry): AIProviderChoice {
+    const feature = {
+        provider: entry.Provider?.trim() ?? '',
+        command: entry.Command?.trim() ?? '',
+        model: entry.Model?.trim() ?? '',
+    };
+    const defaults = {
+        provider: ai.DefaultProvider?.trim() ?? '',
+        command: ai.DefaultCommand?.trim() ?? '',
+        model: ai.DefaultModel?.trim() ?? '',
+    };
+    const command = feature.command || defaults.command;
+    const model = feature.model || defaults.model;
+    let provider = AI_PROVIDER_GEMINI;
+    if (feature.provider) provider = feature.provider;
+    else if (feature.command) provider = AI_PROVIDER_COMMAND;
+    else if (defaults.provider) provider = defaults.provider;
+    else if (defaults.command) provider = AI_PROVIDER_COMMAND;
+    return { provider, command, model };
 }
 
 /** A blank workflow, pre-filled with the first non-deprecated type. */
@@ -196,6 +375,27 @@ export function cleanDraft(draft: ConfigDraft): ConfigDraft {
                 return joinFilter(name.trim(), arg.trim());
             }),
         })),
+        Plugins: draft.Plugins.map(plugin => ({
+            ...plugin,
+            Name: plugin.Name?.trim() ?? '',
+            Command: plugin.Command?.trim() ?? '',
+            Provider: plugin.Provider?.trim() ?? '',
+            Model: plugin.Model?.trim() ?? '',
+        })),
+        AI: {
+            DefaultProvider: draft.AI.DefaultProvider.trim(),
+            DefaultCommand: draft.AI.DefaultCommand.trim(),
+            DefaultModel: draft.AI.DefaultModel.trim(),
+        },
+        // Entries keep their order: the server reports problems by index.
+        AIFeatures: draft.AIFeatures.map(entry => ({
+            ...entry,
+            ID: entry.ID?.trim() ?? '',
+            Mode: entry.Mode?.trim() ?? '',
+            Provider: entry.Provider?.trim() ?? '',
+            Command: entry.Command?.trim() ?? '',
+            Model: entry.Model?.trim() ?? '',
+        })),
     };
 }
 
@@ -223,7 +423,8 @@ function workflowError(workflow: number, field: string, message: string): Config
 export function validateDraft(
     rawDraft: ConfigDraft,
     workflowTypes: WorkflowTypeInfo[],
-    filters: FilterInfo[]
+    filters: FilterInfo[],
+    aiFeatures: AIFeatureTypeInfo[] = []
 ): ConfigValidationError[] {
     const draft = cleanDraft(rawDraft);
     const problems: ConfigValidationError[] = [];
@@ -332,21 +533,190 @@ export function validateDraft(
         }
     });
 
+    problems.push(...validatePlugins(draft.Plugins));
+    problems.push(...validateAI(draft.AI, draft.AIFeatures, aiFeatures));
     return problems;
 }
 
-/** Groups problems by workflow index so each editor card can show its own. */
-export function problemsByWorkflow(
-    problems: ConfigValidationError[]
-): Map<number, ConfigValidationError[]> {
-    const grouped = new Map<number, ConfigValidationError[]>();
-    problems.forEach(problem => {
-        const existing = grouped.get(problem.workflow);
-        if (existing) {
-            existing.push(problem);
+/** Checks the [[Plugins]] entries the way the server does. */
+function validatePlugins(plugins: PluginEntry[]): ConfigValidationError[] {
+    const problems: ConfigValidationError[] = [];
+    const seenNames = new Map<string, number>();
+    plugins.forEach((plugin, index) => {
+        const field = (name: string) => `Plugins[${index}].${name}`;
+        const name = plugin.Name ?? '';
+        if (!name) {
+            problems.push(globalError(field('Name'), 'is required'));
+        } else if (seenNames.has(name)) {
+            problems.push(
+                globalError(
+                    field('Name'),
+                    `duplicates the name of plugin ${(seenNames.get(name) as number) + 1}; plugin names must be unique`
+                )
+            );
         } else {
-            grouped.set(problem.workflow, [problem]);
+            seenNames.set(name, index);
         }
+        if (!plugin.Command) {
+            problems.push(globalError(field('Command'), 'is required'));
+        }
+        const provider = plugin.Provider ?? '';
+        if (provider && !PLUGIN_PROVIDERS.includes(provider)) {
+            problems.push(
+                globalError(
+                    field('Provider'),
+                    `unknown provider "${provider}" (expected "gemini" or "openrouter")`
+                )
+            );
+        }
+        if (provider === AI_PROVIDER_OPENROUTER && !plugin.Model) {
+            problems.push(
+                globalError(
+                    field('Model'),
+                    'the openrouter provider needs a model, e.g. "anthropic/claude-sonnet-4.5"'
+                )
+            );
+        }
+    });
+    return problems;
+}
+
+function unknownAIProvider(provider: string): string {
+    return `unknown provider "${provider}" (expected "gemini", "openrouter" or "command")`;
+}
+
+/** Checks [AI] and the [[AIFeatures]] entries the way the server does. */
+function validateAI(
+    ai: AISettings,
+    entries: AIFeatureEntry[],
+    registry: AIFeatureTypeInfo[]
+): ConfigValidationError[] {
+    const problems: ConfigValidationError[] = [];
+    const defaultProvider = ai.DefaultProvider ?? '';
+    if (defaultProvider && !AI_PROVIDERS.includes(defaultProvider)) {
+        problems.push(globalError('AI.DefaultProvider', unknownAIProvider(defaultProvider)));
+    }
+
+    const known = new Map(registry.map(info => [info.id, info]));
+    const seenIDs = new Map<string, number>();
+    entries.forEach((entry, index) => {
+        const field = (name: string) => `AIFeatures[${index}].${name}`;
+        const id = entry.ID ?? '';
+        const info = known.get(id);
+        if (!id) {
+            problems.push(globalError(field('ID'), 'is required'));
+        } else if (seenIDs.has(id)) {
+            problems.push(globalError(field('ID'), `"${id}" already has an entry`));
+        } else {
+            seenIDs.set(id, index);
+            if (known.size > 0 && !info) {
+                problems.push(globalError(field('ID'), `unknown AI feature "${id}"`));
+            }
+        }
+
+        const mode = entry.Mode ?? '';
+        if (mode && !AI_MODES.includes(mode)) {
+            problems.push(
+                globalError(field('Mode'), `unknown mode "${mode}" (expected "oneshot" or "agent")`)
+            );
+        } else if (mode && info && !info.modes.includes(mode)) {
+            problems.push(
+                globalError(
+                    field('Mode'),
+                    `${id} does not run in mode "${mode}" (supported: ${info.modes.join(', ')})`
+                )
+            );
+        }
+
+        const provider = entry.Provider ?? '';
+        if (provider && !AI_PROVIDERS.includes(provider)) {
+            problems.push(globalError(field('Provider'), unknownAIProvider(provider)));
+        }
+
+        // Only an enabled feature ever builds its provider, so a disabled entry
+        // left half-configured isn't worth blocking a save over.
+        if (entry.Enabled) {
+            const choice = resolveAIProvider(ai, entry);
+            if (choice.provider === AI_PROVIDER_COMMAND && !choice.command) {
+                problems.push(
+                    globalError(
+                        field('Command'),
+                        'the command provider needs a command: set one here or a default command'
+                    )
+                );
+            }
+            if (choice.provider === AI_PROVIDER_OPENROUTER && !choice.model) {
+                problems.push(
+                    globalError(
+                        field('Model'),
+                        'the openrouter provider needs a model: set one here or a default model'
+                    )
+                );
+            }
+        }
+    });
+    return problems;
+}
+
+/** Problems sorted by the part of the editor that shows them. */
+export interface GroupedProblems {
+    /** Root-level settings, and root keys the editor doesn't model. */
+    global: ConfigValidationError[];
+    workflows: Map<number, ConfigValidationError[]>;
+    /** Keyed by index into Plugins; `field` is the plugin's own field name. */
+    plugins: Map<number, ConfigValidationError[]>;
+    /** The [AI] table; `field` is the setting's name. */
+    ai: ConfigValidationError[];
+    /** Keyed by index into AIFeatures; `field` is the entry's own field name. */
+    aiFeatures: Map<number, ConfigValidationError[]>;
+}
+
+const INDEXED_FIELD = /^(Plugins|AIFeatures)\[(\d+)\]\.(.+)$/;
+
+function addTo(
+    map: Map<number, ConfigValidationError[]>,
+    key: number,
+    problem: ConfigValidationError
+) {
+    const existing = map.get(key);
+    if (existing) {
+        existing.push(problem);
+    } else {
+        map.set(key, [problem]);
+    }
+}
+
+/**
+ * Groups problems so each part of the editor can show its own: workflow
+ * problems by workflow index, and the root-level ones by the field they name —
+ * `Plugins[1].Model` goes to plugin 1 as `Model`, `AI.DefaultCommand` to the
+ * AI defaults as `DefaultCommand`.
+ */
+export function groupProblems(problems: ConfigValidationError[]): GroupedProblems {
+    const grouped: GroupedProblems = {
+        global: [],
+        workflows: new Map(),
+        plugins: new Map(),
+        ai: [],
+        aiFeatures: new Map(),
+    };
+    problems.forEach(problem => {
+        if (problem.workflow >= 0) {
+            addTo(grouped.workflows, problem.workflow, problem);
+            return;
+        }
+        const indexed = INDEXED_FIELD.exec(problem.field);
+        if (indexed) {
+            const [, list, index, field] = indexed;
+            const target = list === 'Plugins' ? grouped.plugins : grouped.aiFeatures;
+            addTo(target, Number(index), { ...problem, field });
+            return;
+        }
+        if (problem.field.startsWith('AI.')) {
+            grouped.ai.push({ ...problem, field: problem.field.slice('AI.'.length) });
+            return;
+        }
+        grouped.global.push(problem);
     });
     return grouped;
 }

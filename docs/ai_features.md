@@ -5,9 +5,9 @@ to every client. Five are registered. Three produce a report a client opens:
 
 - **comments-addressed** answers *"are all the review comments addressed, and
   what is still outstanding?"*
-- **feature-flags** answers *"is every change in this PR behind a feature
-  flag?"* — how safe the PR is to approve, if its flags keep what it changes
-  switched off.
+- **feature-flags** answers *"is every logic change in this PR behind a
+  feature flag?"* — how safe the PR is to approve, if its flags keep what it
+  changes switched off.
 - **[change-diagram](#change-diagram)** draws what the PR changes as a Mermaid
   diagram, served as raw Mermaid for each client to render.
 
@@ -344,8 +344,8 @@ marks the open threads that can (a warning for outstanding, info for unclear).
 
 ## feature-flags
 
-Answers *"is every change in this PR behind a feature flag?"* A flag here is
-anything that decides at run time whether code runs: a feature flag; a
+Answers *"is every logic change in this PR behind a feature flag?"* A flag
+here is anything that decides at run time whether code runs: a feature flag; a
 django-waffle flag, switch or sample; a LaunchDarkly, Unleash, Flipper,
 OpenFeature, GrowthBook or Statsig check; a settings or environment toggle; or
 an in-house helper of the same shape.
@@ -380,8 +380,17 @@ The model answers one question per change: *if this change were wrong, could
 it affect anyone while its flags are off, at their defaults?*
 
 - **`gated`** — no: it only runs while a flag is on. Code reachable only from
-  gated code, such as a new function whose only callers are behind the flag,
-  counts.
+  behind a flag counts: a function whose every caller is behind the flag, or a
+  change that only calls code which checks the flag itself.
+- **`definition`** — it only adds new definitions (functions, methods, classes,
+  types, constants, and the imports they need) that do nothing until something
+  calls them. That isn't a logic change: the code that calls them is, and it is
+  judged where the diff adds it. New code that takes effect without a new
+  caller is judged like any other change: it registers itself (a route,
+  handler, signal receiver, task or command), runs when loaded (Go's `init()`,
+  module-level statements), overrides or implements something existing code
+  already calls (`save()`, `__str__`, Go's `String()` or `MarshalJSON`), or
+  changes an existing definition.
 - **`ungated`** — yes. That includes refactors however safe they look, changes
   to what runs while the flag is off, removing a flag check, new routes, jobs,
   migrations and schema changes, dependency and configuration changes, and a
@@ -389,6 +398,15 @@ it affect anyone while its flags are off, at their defaults?*
 - **`no-effect`** — it can't change behaviour: comments, formatting, dead code.
 - **`unclear`** — it can't tell; for example, whether a flag check encloses the
   change is outside the diff shown.
+
+Whether a change to existing code runs without a flag often hinges on code the
+diff doesn't show: who calls it, or whether what it calls checks the flag
+itself. A model that can [search the repository](#agent-mode-and-search_code)
+is told to look the callers up before calling a change ungated. One that can't
+is told to call shared code (a model, a view, a widely used helper) ungated,
+but code that looks like part of a flagged feature (named for it, or in its
+module) unclear rather than ungated, since its callers may all be behind the
+flag. Such a report ends with a note that agent mode could settle it.
 
 The design goal is never to report a confidently wrong "all gated":
 
@@ -398,19 +416,21 @@ The design goal is never to report a confidently wrong "all gated":
   (`NEW_CHECKOUT` matches `"new-checkout"`). A verdict that names no flag, or a
   flag the code never mentions, goes back to unclear. This catches an invented
   flag; it can't prove the flag it found really encloses the change.
+- **A definition must add code.** A definition verdict on a change that adds
+  no lines (deleting a function, say) goes back to unclear.
 - **A cut prompt keeps only ungated verdicts.** If any change the model had to
-  judge didn't fit its prompt, its gated and no-effect verdicts are discarded:
-  whether code is reachable only from behind a flag can hinge on the part it
-  didn't see. Ungated verdicts stand, since they only ever ask the reviewer to
-  look.
+  judge didn't fit its prompt, its gated, definition and no-effect verdicts are
+  discarded: whether code is reachable only from behind a flag can hinge on the
+  part it didn't see. Ungated verdicts stand, since they only ever ask the
+  reviewer to look.
 - **No verdict, no status.** A change the model gave no verdict for — and every
   change, when the model can't be reached — stays unclear.
 - **No diff makes the run `insufficient-input`**, not a clean report.
 
 The verdict is `ungated` when any change runs without a flag, `unclear` when
-none is known to but some are unclear, `all-gated` when every change that
-affects behaviour is behind a flag, and `no-runtime-changes` when none affects
-behaviour (a tests-and-docs PR, say).
+none is known to but some are unclear, `all-gated` when every logic change is
+behind a flag, and `no-runtime-changes` when no change alters logic that runs
+(a tests-and-docs PR, say, or new definitions nothing calls yet).
 
 The prompt is bounded: at most 100 changes go to the model (the rest stay
 unclear, and the report is marked truncated), and the changes to judge fill up
@@ -431,17 +451,28 @@ exists, and a search the clone can't answer (it hasn't fetched the head yet,
 say) comes back to the model as an error rather than as no matches. Queries
 need at least three characters; at most 60 matches are returned.
 
+With `search_code` on offer, the prompt tells the model to use it before
+calling a change ungated or unclear because the diff doesn't show its
+callers: search for the changed function's name, read a caller whose flag
+check isn't on the matching line, and call the change gated, naming the flag,
+when every caller is behind one. The flag then counts as seen, since it came
+back from a tool. Shared code and new definitions need no search. A run has
+six turns, so at most five tool calls, and the model is told to spend them on
+the changes whose status hinges on them. An agent run without a local clone
+gets the one-shot guidance instead, and its report says the search needs one.
+
 ### The feature-flags report
 
 The result's `body` is a complete markdown report: the verdict, then the
 changes that run without a flag, the unclear ones, the gated ones with their
-flags, and those with no runtime effect. Its `report` is the typed version:
+flags, the new definitions, and those with no runtime effect. Its `report` is
+the typed version:
 
 | Field       | Meaning                                                                                        |
 |-------------|------------------------------------------------------------------------------------------------|
 | `verdict`   | `all-gated`, `ungated`, `unclear`, `no-runtime-changes` or `insufficient-input`                |
 | `summary`   | The verdict in one sentence                                                                    |
-| `counts`    | `total`, `gated`, `ungated`, `no_effect`, `unclear`, and `by_model` (changes the model decided) |
+| `counts`    | `total`, `gated`, `ungated`, `definitions`, `no_effect`, `unclear`, and `by_model` (changes the model decided) |
 | `flags`     | The flags that gate changes, in order of first appearance: `name` and how many `changes`       |
 | `changes`   | One per change, in diff order; see below                                                       |
 | `model`     | As for comments-addressed: `consulted`, `provider`, `model`, `mode`, `asked`, agent `turns` / `tool_calls`, and a `note` |
@@ -452,10 +483,10 @@ Each change carries `id` (its number in the diff, as the prompt numbers it),
 `path`, `line` and `end_line` (its span in the head version; absent for a
 whole file and for a deleted file), `context` (what the hunk header names,
 usually the enclosing function), `added`, `removed`, `new_file`,
-`deleted_file`, `status` (`gated`, `ungated`, `no-effect`, `unclear`), `source`
-(`model` when the model's verdict decided it, otherwise `rule`), `category`
-(`test`, `docs` or `lockfile`, for a file a path rule decided), `flag` (for a
-gated change, as the code spells it) and `rationale`.
+`deleted_file`, `status` (`gated`, `ungated`, `definition`, `no-effect`,
+`unclear`), `source` (`model` when the model's verdict decided it, otherwise
+`rule`), `category` (`test`, `docs` or `lockfile`, for a file a path rule
+decided), `flag` (for a gated change, as the code spells it) and `rationale`.
 
 `outstanding` lists the changes that run without a flag, then the unclear
 ones, and `annotations` marks those with a head line (a warning for ungated,

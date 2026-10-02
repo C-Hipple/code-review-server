@@ -55,6 +55,15 @@ index 6666666..7777777 100644
  # Shop
 +The new checkout is behind the new_checkout flag.
 `
+	defsDiff = `diff --git a/app/discounts.py b/app/discounts.py
+new file mode 100644
+index 0000000..aaaaaaa
+--- /dev/null
++++ b/app/discounts.py
+@@ -0,0 +1,2 @@
++def apply_discounts(total):
++    return total * 0.9
+`
 	lockDiff = `diff --git a/poetry.lock b/poetry.lock
 index 8888888..9999999 100644
 --- a/poetry.lock
@@ -272,6 +281,126 @@ func TestFlagsAgentCanFindTheFlagWithItsTools(t *testing.T) {
 	}
 }
 
+func TestFlagsNewDefinitionsAreJudgedWhereTheyreCalled(t *testing.T) {
+	// The new new_checkout() is a definition; its call site is change 1.
+	model := &scriptedProvider{t: t, answers: []string{flagsAnswer(
+		change("1", "gated", "new_checkout", "Behind the flag."),
+		change("2", "definition", "", "Only defines new_checkout(), called from change 1."),
+		change("3", "ungated", "", "Widens the currency column for every order."),
+	)}}
+	res, r := runFlags(t, flagsRequest(viewsDiff+modelsDiff, model))
+
+	if r.Counts != (FlagCounts{Total: 3, Gated: 1, Ungated: 1, Definitions: 1, ByModel: 3}) {
+		t.Errorf("counts = %+v", r.Counts)
+	}
+	if r.Summary != "1 of 3 change(s) run without a flag; 1 gated, 1 only adding definitions." {
+		t.Errorf("summary = %q", r.Summary)
+	}
+	if outstanding, _ := res.Outstanding.([]FlagChange); len(outstanding) != 1 || outstanding[0].ID != "3" {
+		t.Errorf("a definition doesn't need attention: %+v", outstanding)
+	}
+	body := res.Body.BodyContent
+	for _, want := range []string{"### New definitions (judged where they're called) (1)",
+		"**app/views.py:43** +3 −0 in `def old_checkout(request, cart):` _(model)_"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(model.prompts[0], `- "definition": the change only adds new definitions`) {
+		t.Error("the prompt should offer the definition status")
+	}
+
+	// A flagged call site and the definition it calls: every logic change is gated.
+	model = &scriptedProvider{t: t, answers: []string{flagsAnswer(
+		change("1", "gated", "new_checkout", "Behind the flag."),
+		change("2", "definition", "", "Only defines new_checkout()."),
+	)}}
+	_, r = runFlags(t, flagsRequest(viewsDiff, model))
+	if r.Verdict != VerdictAllGated || r.Summary != "Every logic change is behind a flag: 1 gated by `new_checkout`; 1 more only add definitions." {
+		t.Errorf("verdict %q: %s", r.Verdict, r.Summary)
+	}
+
+	// Definitions nothing calls yet change no logic.
+	model = &scriptedProvider{t: t, answers: []string{flagsAnswer(change("1", "definition", "", "Only defines apply_discounts()."))}}
+	_, r = runFlags(t, flagsRequest(defsDiff, model))
+	if r.Verdict != VerdictNoRuntimeChanges || !strings.Contains(r.Summary, "1 only add definitions nothing calls yet") {
+		t.Errorf("verdict %q: %s", r.Verdict, r.Summary)
+	}
+}
+
+func TestFlagsDefinitionMustAddCode(t *testing.T) {
+	removal := `diff --git a/app/utils.py b/app/utils.py
+index 1111111..2222222 100644
+--- a/app/utils.py
++++ b/app/utils.py
+@@ -20,3 +20,0 @@ def slugify(value):
+-def legacy_slug(value):
+-    return value.lower()
+-
+`
+	model := &scriptedProvider{t: t, answers: []string{flagsAnswer(change("1", "definition", "", "Removes a helper."))}}
+	_, r := runFlags(t, flagsRequest(removal, model))
+	if c := changeByID(t, r, "1"); c.Status != ChangeUnclear || c.Source != SourceModel || !strings.Contains(c.Rationale, "it adds no code") {
+		t.Errorf("deleting a definition isn't adding one: %+v", c)
+	}
+}
+
+func TestFlagsCallerLookupFollowsTheTools(t *testing.T) {
+	ungated := flagsAnswer(change("1", "ungated", "", "discounted_total() has callers outside any flag."))
+	const searchGuide, guessGuide = "use search_code to find the callers", `Say "unclear" when it looks like part of a flagged feature`
+	const agentHint, cloneHint = `Mode = "agent" lets it look them up`, "that needs a local clone under RepoLocation"
+
+	// One-shot: no lookup, so code that may belong to a flagged feature is
+	// unclear, and the report says agent mode could settle it.
+	model := &scriptedProvider{t: t, answers: []string{ungated}}
+	res, _ := runFlags(t, flagsRequest(nestedDiff, model))
+	if !strings.Contains(model.prompts[0], guessGuide) || strings.Contains(model.prompts[0], searchGuide) {
+		t.Errorf("one-shot prompt:\n%s", model.prompts[0])
+	}
+	if !strings.Contains(res.Body.BodyContent, agentHint) {
+		t.Errorf("one-shot body should point at agent mode:\n%s", res.Body.BodyContent)
+	}
+
+	// Nothing left open: no hint.
+	gated := flagsAnswer(change("1", "gated", "new_checkout", "Behind the flag."), change("2", "definition", "", "Only defines new_checkout()."))
+	res, _ = runFlags(t, flagsRequest(viewsDiff, &scriptedProvider{t: t, answers: []string{gated}}))
+	if strings.Contains(res.Body.BodyContent, agentHint) {
+		t.Errorf("nothing to settle, nothing to hint:\n%s", res.Body.BodyContent)
+	}
+
+	agentRequest := func(model *scriptedProvider, search bool) Request {
+		req := flagsRequest(nestedDiff, model)
+		req.Mode = config.AIModeAgent
+		req.Agent = NewProviderAgent(model)
+		req.ReadFile = func(context.Context, string) (string, error) { return "", errors.New("unused") }
+		if search {
+			req.SearchCode = func(context.Context, string) (string, error) { return "No matches.", nil }
+		}
+		return req
+	}
+
+	// Agent with search_code: told to look the callers up, within its budget.
+	model = &scriptedProvider{t: t, answers: []string{ungated}}
+	res, _ = runFlags(t, agentRequest(model, true))
+	if !strings.Contains(model.prompts[0], searchGuide) || !strings.Contains(model.prompts[0], "at most 5 tool calls") ||
+		strings.Contains(model.prompts[0], guessGuide) {
+		t.Errorf("agent prompt:\n%s", model.prompts[0])
+	}
+	if strings.Contains(res.Body.BodyContent, agentHint) || strings.Contains(res.Body.BodyContent, cloneHint) {
+		t.Errorf("an agent that could search needs no hint:\n%s", res.Body.BodyContent)
+	}
+
+	// Agent without a clone to search: it can't look callers up either.
+	model = &scriptedProvider{t: t, answers: []string{ungated}}
+	res, _ = runFlags(t, agentRequest(model, false))
+	if !strings.Contains(model.prompts[0], guessGuide) || strings.Contains(model.prompts[0], searchGuide) {
+		t.Errorf("agent prompt without search:\n%s", model.prompts[0])
+	}
+	if !strings.Contains(res.Body.BodyContent, cloneHint) || strings.Contains(res.Body.BodyContent, agentHint) {
+		t.Errorf("body should say search needs a clone:\n%s", res.Body.BodyContent)
+	}
+}
+
 func TestFlagsCutPromptTrustsOnlyUngatedVerdicts(t *testing.T) {
 	var big strings.Builder
 	big.WriteString("diff --git a/app/generated.py b/app/generated.py\nnew file mode 100644\n--- /dev/null\n+++ b/app/generated.py\n@@ -0,0 +1,4000 @@\n")
@@ -282,13 +411,14 @@ func TestFlagsCutPromptTrustsOnlyUngatedVerdicts(t *testing.T) {
 		change("1", "gated", "new_checkout", "Behind the flag."),
 		change("2", "no-effect", "", "Nothing calls it."),
 		change("3", "ungated", "", "Widens the column."),
+		change("4", "definition", "", "Only defines apply_discounts."),
 	)}}
-	res, r := runFlags(t, flagsRequest(viewsDiff+modelsDiff+big.String(), model))
+	res, r := runFlags(t, flagsRequest(viewsDiff+modelsDiff+defsDiff+big.String(), model))
 
 	if !r.Truncated || !res.Truncated {
 		t.Error("a change cut from the prompt makes the report truncated")
 	}
-	for _, id := range []string{"1", "2"} {
+	for _, id := range []string{"1", "2", "4"} {
 		if c := changeByID(t, r, id); c.Status != ChangeUnclear || !strings.Contains(c.Rationale, "not every change fit") {
 			t.Errorf("change %s must not stand on a partial view: %+v", id, c)
 		}
@@ -296,13 +426,16 @@ func TestFlagsCutPromptTrustsOnlyUngatedVerdicts(t *testing.T) {
 	if c := changeByID(t, r, "3"); c.Status != ChangeUngated {
 		t.Errorf("an ungated verdict stands: %+v", c)
 	}
-	if c := changeByID(t, r, "4"); c.Status != ChangeUnclear || c.Source != SourceRule || !strings.Contains(c.Rationale, "didn't fit its prompt") {
+	if c := changeByID(t, r, "4"); !strings.HasPrefix(c.Rationale, "The model called this a new definition, but not every change fit") {
+		t.Errorf("rationale = %q", c.Rationale)
+	}
+	if c := changeByID(t, r, "5"); c.Status != ChangeUnclear || c.Source != SourceRule || !strings.Contains(c.Rationale, "didn't fit its prompt") {
 		t.Errorf("the change that didn't fit = %+v", c)
 	}
-	if strings.Contains(model.prompts[0], "[Change 4]") {
+	if strings.Contains(model.prompts[0], "[Change 5]") {
 		t.Error("the change that didn't fit must not be in the prompt")
 	}
-	if r.Model.Asked != 3 {
+	if r.Model.Asked != 4 {
 		t.Errorf("asked = %d", r.Model.Asked)
 	}
 }
@@ -494,6 +627,7 @@ func TestParseFlagVerdicts(t *testing.T) {
 		{"id": 1, "status": "Gated", "flag": "` + "`new_checkout`" + `", "rationale": "Behind it."},
 		{"id": "Change 2", "status": "maybe", "rationale": "Hard to say."},
 		{"id": "#3", "status": "no-effect"},
+		{"id": "4", "status": " Definition "},
 		{"status": "ungated"}
 	]}` + "\n```"
 	got, err := parseFlagVerdicts(answer)
@@ -504,6 +638,7 @@ func TestParseFlagVerdicts(t *testing.T) {
 		{ID: "1", Status: ChangeGated, Flag: "new_checkout", Rationale: "Behind it."},
 		{ID: "2", Status: ChangeUnclear, Rationale: "Hard to say."},
 		{ID: "3", Status: ChangeNoEffect},
+		{ID: "4", Status: ChangeDefinition},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)
@@ -553,7 +688,7 @@ func TestFlagsReportJSONShape(t *testing.T) {
 	if doc.Report.Verdict != "ungated" || doc.Report.Flags == nil || doc.Report.Missing == nil {
 		t.Errorf("report = %+v", doc.Report)
 	}
-	for _, key := range []string{"total", "gated", "ungated", "no_effect", "unclear", "by_model"} {
+	for _, key := range []string{"total", "gated", "ungated", "definitions", "no_effect", "unclear", "by_model"} {
 		if _, ok := doc.Report.Counts[key]; !ok {
 			t.Errorf("counts missing %q", key)
 		}

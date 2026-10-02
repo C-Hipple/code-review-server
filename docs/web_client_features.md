@@ -616,7 +616,9 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   drawn and kept for both buttons, so a click rarely waits and the clipboard gets
   the image itself. Drawing, encoding and copying cost by the pixel, so past about
   4 million pixels the scale drops toward the diagram's natural size (and below it
-  only for one too large for a canvas). Drawing the image gives up after 20 seconds
+  only for one too large for a canvas). It's drawn on a canvas kept in memory
+  (`willReadFrequently`) rather than on the GPU, where Chrome spends seconds painting
+  and reading back even a small diagram. Drawing the image gives up after 20 seconds
   and copying it after 30, each with a reason, rather than spinning on. Safari
   won't read back a canvas an SVG with HTML labels was drawn on, so there the
   diagram is drawn again with SVG-text labels for the image. The AI view draws the

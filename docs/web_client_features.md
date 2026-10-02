@@ -604,11 +604,17 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   copies it, and a diagram mermaid can't parse shows the parse error above its
   source. **Copy image** puts the drawn diagram on the clipboard as a PNG and
   **Download image** saves it as one, named for the PR
-  (`acme-widgets-42-change-diagram.png`): twice its natural size (less for a diagram
-  too large for a canvas), on the theme's background with a margin, and with the
-  legend below it (`mermaid_image.ts`). Safari won't read back a canvas an SVG with
-  HTML labels was drawn on, so there the diagram is drawn again with SVG-text labels
-  for the image. The AI view draws the diagram inline in its card.
+  (`acme-widgets-42-change-diagram.png`): up to twice its natural size, on the
+  theme's background with a margin, and with the legend below it
+  (`mermaid_image.ts`). The PNG is made in the background once the diagram is
+  drawn and kept for both buttons, so a click rarely waits and the clipboard gets
+  the image itself. Drawing, encoding and copying cost by the pixel, so past about
+  4 million pixels the scale drops toward the diagram's natural size (and below it
+  only for one too large for a canvas). Drawing the image gives up after 20 seconds
+  and copying it after 30, each with a reason, rather than spinning on. Safari
+  won't read back a canvas an SVG with HTML labels was drawn on, so there the
+  diagram is drawn again with SVG-text labels for the image. The AI view draws the
+  diagram inline in its card.
 - **Any other feature** renders its markdown `body` with `PluginBodyView`.
 
 ## 4. Protocol methods used — and not used

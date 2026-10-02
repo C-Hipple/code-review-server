@@ -120,30 +120,24 @@ export default function MermaidDiagram({
         navigator.clipboard?.writeText(source).then(() => flashCopied('source'));
     };
 
-    // Makes a PNG of the diagram as drawn; null until it's drawn at a known size.
-    const size = svg?.size;
-    const makePng =
-        svg && size
-            ? () =>
-                  diagramPng({ source: svg.source, svg: svg.svg, size, dark }, legend ? LEGEND : [])
-            : null;
+    const png = useDiagramPng(svg, dark, legend ? LEGEND : []);
     const failedImage = (message: string) => setImageError({ source, message });
 
     const copyImage = () => {
-        if (!makePng) return;
+        if (!png) return;
         setImageError(null);
         setCopyingImage(true);
-        copyPng(makePng)
+        copyPng(png)
             .then(() => flashCopied('image'))
             .catch(e => failedImage(`Could not copy the image: ${errorText(e)}`))
             .finally(() => setCopyingImage(false));
     };
 
     const downloadImage = () => {
-        if (!makePng) return;
+        if (!png) return;
         setImageError(null);
         setSavingImage(true);
-        makePng()
+        Promise.resolve(png())
             .then(blob => downloadBlob(blob, `${imageName}.png`))
             .catch(e => failedImage(`Could not save the image: ${errorText(e)}`))
             .finally(() => setSavingImage(false));
@@ -309,7 +303,7 @@ export default function MermaidDiagram({
                 <Button size="sm" variant="secondary" onClick={copy}>
                     {copied === 'source' ? '✓ Copied' : 'Copy source'}
                 </Button>
-                {makePng && (
+                {png && (
                     <>
                         <Button
                             size="sm"
@@ -378,6 +372,69 @@ function Legend() {
             ))}
         </div>
     );
+}
+
+interface KeptPng {
+    of: object;
+    png: Promise<Blob>;
+    made?: Blob;
+}
+
+/**
+ * The PNG of a drawing, for Copy image and Download image: made in the
+ * background once the diagram is drawn, so a click rarely waits for it and
+ * the clipboard gets an image rather than the promise of one, and kept for
+ * both buttons. Returns a function giving the PNG once it's made, or until
+ * then the promise of it; null until the diagram is drawn at a known size. A
+ * failed attempt is forgotten, so the next call tries again.
+ */
+function useDiagramPng(
+    drawing: { source: string; svg: string; size: Size | null } | null,
+    dark: boolean,
+    legend: readonly LegendItem[]
+): (() => Blob | Promise<Blob>) | null {
+    const kept = useRef<KeptPng | null>(null);
+    const size = drawing?.size;
+    const png =
+        drawing && size
+            ? () => {
+                  let entry = kept.current;
+                  if (entry?.of !== drawing) {
+                      const made: KeptPng = {
+                          of: drawing,
+                          png: diagramPng(
+                              { source: drawing.source, svg: drawing.svg, size, dark },
+                              legend
+                          ),
+                      };
+                      made.png.then(
+                          blob => (made.made = blob),
+                          () => {
+                              if (kept.current === made) kept.current = null;
+                          }
+                      );
+                      kept.current = entry = made;
+                  }
+                  return entry.made ?? entry.png;
+              }
+            : null;
+
+    useEffect(() => {
+        if (!png) return;
+        return whenIdle(png);
+    }, [drawing]);
+
+    return png;
+}
+
+/** Runs `run` once the browser is idle (soon, where it can't tell); returns what cancels it. */
+function whenIdle(run: () => void): () => void {
+    if (typeof requestIdleCallback === 'function') {
+        const id = requestIdleCallback(() => run(), { timeout: 2000 });
+        return () => cancelIdleCallback(id);
+    }
+    const id = setTimeout(run, 200);
+    return () => clearTimeout(id);
 }
 
 /** Whether the app's theme is dark, kept current as the theme changes. */

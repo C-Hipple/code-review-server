@@ -23,7 +23,13 @@ const FeatureFlagsID = "feature-flags"
 // path rule decides. Path rules come first. A test file or a documentation
 // file has no runtime effect, and a dependency lockfile changes what every
 // build installs, which no flag can gate. The model judges every other hunk:
-// gated, ungated, no effect, or unclear.
+// gated, ungated, a definition, no effect, or unclear.
+//
+// Only logic changes count. A hunk that just adds a function, class, type or
+// constant is a definition: it runs where it's called, and that call site is
+// the change that gets judged. In agent mode the model is told to look a
+// changed function's callers up, since code only reached from behind a flag
+// is gated even though the diff shows no flag around it.
 //
 // The design goal is never to report a confidently wrong "all gated":
 //
@@ -47,9 +53,9 @@ func (FeatureFlags) ID() string   { return FeatureFlagsID }
 func (FeatureFlags) Name() string { return "Behind a flag?" }
 
 func (FeatureFlags) Description() string {
-	return "Reports which changes would take effect with every feature flag off. Path rules settle tests, " +
-		"docs and lockfiles; the model judges the rest, and a \"behind a flag\" verdict must name a flag " +
-		"found in the code it was shown."
+	return "Reports which logic changes would take effect with every feature flag off; new functions and " +
+		"classes are judged where they're called. Path rules settle tests, docs and lockfiles; the model " +
+		"judges the rest, and a \"behind a flag\" verdict must name a flag found in the code it was shown."
 }
 
 func (FeatureFlags) Modes() []string {
@@ -65,6 +71,10 @@ const (
 	ChangeGated = "gated"
 	// ChangeUngated takes effect whatever the flags say.
 	ChangeUngated = "ungated"
+	// ChangeDefinition only adds definitions — functions, classes, types,
+	// constants — that run where they're called. It isn't a logic change: the
+	// call sites are, and they're judged where the diff adds them.
+	ChangeDefinition = "definition"
 	// ChangeNoEffect can't change behaviour at all: tests, docs, comments.
 	ChangeNoEffect = "no-effect"
 	ChangeUnclear  = "unclear"
@@ -119,11 +129,12 @@ type FlagsReport struct {
 
 // FlagCounts tallies the changes by status.
 type FlagCounts struct {
-	Total    int `json:"total"`
-	Gated    int `json:"gated"`
-	Ungated  int `json:"ungated"`
-	NoEffect int `json:"no_effect"`
-	Unclear  int `json:"unclear"`
+	Total       int `json:"total"`
+	Gated       int `json:"gated"`
+	Ungated     int `json:"ungated"`
+	Definitions int `json:"definitions"`
+	NoEffect    int `json:"no_effect"`
+	Unclear     int `json:"unclear"`
 	// ByModel counts the changes whose status the model decided.
 	ByModel int `json:"by_model"`
 }
@@ -525,8 +536,16 @@ func (FeatureFlags) consultModel(ctx context.Context, req Request, items, toAsk 
 		case status == ChangeGated && !flagSeen(flag, seenCode):
 			rationale = fmt.Sprintf("The model called this gated by %q, which appears nowhere in the code it was shown, so the verdict isn't trusted. Its reason: %s", flag, rationale)
 			status, flag = ChangeUnclear, ""
-		case (status == ChangeGated || status == ChangeNoEffect) && !complete:
-			rationale = fmt.Sprintf("The model called this %s, but not every change fit its prompt, and what it didn't see could reach this code without a flag, so the verdict isn't trusted. Its reason: %s", status, rationale)
+		case status == ChangeDefinition && (w.hunk == nil || w.change.Added == 0):
+			// Deleting a definition, or a file with no text diff, adds none.
+			rationale = "The model called this a new definition, but it adds no code, so the verdict isn't trusted. Its reason: " + rationale
+			status = ChangeUnclear
+		case (status == ChangeGated || status == ChangeDefinition || status == ChangeNoEffect) && !complete:
+			called := status
+			if status == ChangeDefinition {
+				called = "a new definition"
+			}
+			rationale = fmt.Sprintf("The model called this %s, but not every change fit its prompt, and what it didn't see could reach this code without a flag, so the verdict isn't trusted. Its reason: %s", called, rationale)
 			status, flag = ChangeUnclear, ""
 		}
 		if status != ChangeGated {
@@ -581,14 +600,19 @@ func flagSeen(flag, seenCode string) bool {
 // toAsk — and every change that needed a judgment — made it in.
 func buildFlagsPrompt(req Request, items, toAsk []*flagWork) (string, string, bool) {
 	var b strings.Builder
-	b.WriteString(`You are helping a code reviewer judge how safe a pull request is to approve: is each change behind a feature flag — a feature flag, a waffle flag, switch or sample, a toggle, a kill switch, an experiment or a gate — so that it has no effect while the flag is off?
+	b.WriteString(`You are helping a code reviewer judge how safe a pull request is to approve: is each logic change behind a feature flag — a feature flag, a waffle flag, switch or sample, a toggle, a kill switch, an experiment or a gate — so that it has no effect while the flag is off?
 
 For each numbered change below, answer: "If this change were wrong, could it affect anyone while its flags are off, at their defaults?"
-- "gated": no — the change only runs while a flag is on. Name the flag in "flag", exactly as the code spells it (the flag's name or the constant holding it) and nothing else. Code that can only be reached from flag-gated code, such as a new function whose only callers are behind the flag, counts as gated.
+- "gated": no — the change only runs while a flag is on. Name the flag in "flag", exactly as the code spells it (the flag's name or the constant holding it) and nothing else. Code that can only be reached from behind a flag counts as gated: a function whose every caller is behind the flag, or a change that only calls code which checks the flag itself before doing anything.
+- "definition": the change only adds new definitions — functions, methods, classes, types, constants, and the imports they need — which do nothing until something calls them. Adding one is not a logic change: the code that calls it is, and that is judged where the diff adds it. It is not a definition, and is judged like any other change, when the new code takes effect without new code calling it: it registers itself (a route, view, handler, signal receiver, task, command, plugin or admin entry, a registering decorator), runs when it is loaded (Go's init(), module- or class-level statements), overrides or implements something existing code already calls (an overridden method, a framework hook such as save() or __str__, Go's String() or MarshalJSON, a method that makes a type satisfy an interface), or changes an existing definition — its body, signature, fields or defaults. A change that adds definitions and also changes code that runs is judged by the code that runs.
 - "ungated": yes — it runs whatever the flags say. That includes refactors, however behaviour-preserving they look; changes to what runs while the flag is off; removing a flag check, so the code it guarded always runs; new routes, handlers, scheduled jobs, signal receivers, migrations and schema changes; dependency, build and configuration changes; and a flag this diff turns on by default (a default of true, a migration creating it active, everyone=True), which protects nothing.
-- "no-effect": the change cannot affect behaviour at all: comments, documentation, formatting, or code nothing runs.
+- "no-effect": the change cannot affect behaviour at all: comments, documentation, formatting, or changes to code nothing runs.
 - "unclear": you cannot tell from what you were given — for example, whether a flag check encloses the change is outside the diff shown.
 Prefer "unclear" to guessing "gated". Keep each rationale to one sentence that names the evidence.
+
+`)
+	b.WriteString(flagsReachability(req))
+	b.WriteString(`
 
 Flag checks look like: django-waffle's flag_is_active, switch_is_active and sample_is_active, @waffle_flag and @waffle_switch, {% flag %} and {% switch %}; LaunchDarkly's variation and boolVariation; Unleash's isEnabled; Flipper.enabled?; OpenFeature's getBooleanValue; GrowthBook's isOn; Statsig's checkGate; settings or environment toggles; and in-house helpers of the same shape.
 `)
@@ -674,9 +698,23 @@ Flag checks look like: django-waffle's flag_is_active, switch_is_active and samp
 
 	b.WriteString(`
 Respond with only a JSON object — no prose, no code fence — with one entry per change under "Changes to judge":
-{"changes": [{"id": "<change number>", "status": "gated" | "ungated" | "no-effect" | "unclear", "flag": "<the flag, for gated>", "rationale": "<one sentence>"}]}
+{"changes": [{"id": "<change number>", "status": "gated" | "ungated" | "definition" | "no-effect" | "unclear", "flag": "<the flag, for gated>", "rationale": "<one sentence>"}]}
 `)
 	return b.String(), shown.String(), complete
+}
+
+// flagsReachability is the prompt's guidance for a change whose status hinges
+// on code outside the diff — its callers, or what it calls. An agent that can
+// search the repository is told to look the callers up; without a search, a
+// change that may only be reached from behind a flag is unclear rather than
+// ungated, so code a flag already guards elsewhere isn't reported as running
+// for everyone.
+func flagsReachability(req Request) string {
+	const question = "Whether a change to existing code runs without a flag can hinge on code the diff doesn't show: who calls it, or whether code it calls checks the flag itself. "
+	if canLookUpCallers(req) {
+		return question + fmt.Sprintf(`Look it up rather than guess. Before calling such a change "ungated" or "unclear", use search_code to find the callers of the function it changes (its name usually follows the hunk's @@), and read_file a caller whose flag check isn't on the line the search returns, or code the change calls that may check the flag. A change whose every caller is behind a flag is gated by that flag; when a caller is a helper, follow its callers in turn. Shared code with callers of its own — a model, a view, a utility used across the codebase — is ungated without a search, and a definition needs none. You can make at most %d tool calls, so spend them on the changes whose status hinges on them.`, agentMaxTurns-1)
+	}
+	return question + `Say "ungated" when the diff shows a way to reach the change without a flag, or when it is shared code with callers of its own — a model, a view, a utility used across the codebase. Say "unclear" when it looks like part of a flagged feature — named for it, in its module, or written for it — and its callers aren't shown: they may all be behind the flag.`
 }
 
 func countAskModel(items []*flagWork) int {
@@ -738,7 +776,7 @@ func parseFlagVerdicts(text string) ([]flagVerdict, error) {
 		}
 		status := strings.ToLower(strings.TrimSpace(e.Status))
 		switch status {
-		case ChangeGated, ChangeUngated, ChangeNoEffect, ChangeUnclear:
+		case ChangeGated, ChangeUngated, ChangeDefinition, ChangeNoEffect, ChangeUnclear:
 		default:
 			status = ChangeUnclear
 		}
@@ -771,6 +809,8 @@ func finishFlagsReport(req Request, files []changedFile, items []*flagWork, repo
 		case ChangeUngated:
 			report.Counts.Ungated++
 			outstanding = append(outstanding, c)
+		case ChangeDefinition:
+			report.Counts.Definitions++
 		case ChangeNoEffect:
 			report.Counts.NoEffect++
 		default:
@@ -834,16 +874,16 @@ func finishFlagsReport(req Request, files []changedFile, items []*flagWork, repo
 	if report.Truncated {
 		runLog.Input += " (prompt truncated)"
 	}
-	runLog.Parsed = fmt.Sprintf("verdict %s: %d gated, %d ungated, %d no effect, %d unclear (%d by model); %d flag(s)",
-		report.Verdict, report.Counts.Gated, report.Counts.Ungated, report.Counts.NoEffect, report.Counts.Unclear,
-		report.Counts.ByModel, len(report.Flags))
+	runLog.Parsed = fmt.Sprintf("verdict %s: %d gated, %d ungated, %d definition(s), %d no effect, %d unclear (%d by model); %d flag(s)",
+		report.Verdict, report.Counts.Gated, report.Counts.Ungated, report.Counts.Definitions, report.Counts.NoEffect,
+		report.Counts.Unclear, report.Counts.ByModel, len(report.Flags))
 	if report.Model.ToolCalls > 0 {
 		runLog.Parsed += fmt.Sprintf("; agent made %d tool call(s) over %d turn(s)", report.Model.ToolCalls, report.Model.Turns)
 	}
 
 	return Result{
 		Status:      status,
-		Body:        Body{BodyType: BodyMarkdown, BodyContent: renderFlagsReport(report)},
+		Body:        Body{BodyType: BodyMarkdown, BodyContent: renderFlagsReport(report, callerHint(req, report))},
 		Annotations: annotations,
 		Report:      report,
 		Outstanding: outstanding,
@@ -859,16 +899,26 @@ func summarizeFlags(r FlagsReport) string {
 	case VerdictInsufficientInput:
 		return "Not enough input to say whether the changes are behind a flag: " + strings.Join(r.Missing, "; ") + "."
 	case VerdictNoRuntimeChanges:
+		if c.Definitions > 0 {
+			return fmt.Sprintf("None of the %d change(s) changes logic that runs, so there is nothing to gate: %d only add definitions nothing calls yet.",
+				c.Total, c.Definitions)
+		}
 		return fmt.Sprintf("None of the %d change(s) affects how the code behaves, so there is nothing to gate.", c.Total)
 	case VerdictAllGated:
-		s := fmt.Sprintf("Every change that affects behaviour is behind a flag: %d gated by %s", c.Gated, flagList(r.Flags))
+		s := fmt.Sprintf("Every logic change is behind a flag: %d gated by %s", c.Gated, flagList(r.Flags))
+		if c.Definitions > 0 {
+			s += fmt.Sprintf("; %d more only add definitions", c.Definitions)
+		}
 		if c.NoEffect > 0 {
 			s += fmt.Sprintf("; %d more have no runtime effect", c.NoEffect)
 		}
 		return s + "."
 	case VerdictUnclear:
-		return fmt.Sprintf("Nothing is known to run without a flag, but %d of %d change(s) are unclear; %d gated, %d with no runtime effect.",
-			c.Unclear, c.Total, c.Gated, c.NoEffect)
+		s := fmt.Sprintf("Nothing is known to run without a flag, but %d of %d change(s) are unclear; %d gated", c.Unclear, c.Total, c.Gated)
+		if c.Definitions > 0 {
+			s += fmt.Sprintf(", %d only adding definitions", c.Definitions)
+		}
+		return s + fmt.Sprintf(", %d with no runtime effect.", c.NoEffect)
 	}
 	s := fmt.Sprintf("%d of %d change(s) run without a flag", c.Ungated, c.Total)
 	var rest []string
@@ -877,6 +927,9 @@ func summarizeFlags(r FlagsReport) string {
 	}
 	if c.Gated > 0 {
 		rest = append(rest, fmt.Sprintf("%d gated", c.Gated))
+	}
+	if c.Definitions > 0 {
+		rest = append(rest, fmt.Sprintf("%d only adding definitions", c.Definitions))
 	}
 	if c.NoEffect > 0 {
 		rest = append(rest, fmt.Sprintf("%d with no runtime effect", c.NoEffect))
@@ -903,8 +956,9 @@ func flagList(flags []FlagUse) string {
 }
 
 // renderFlagsReport is the report as markdown: the body every client can
-// render, so it stands on its own.
-func renderFlagsReport(r FlagsReport) string {
+// render, so it stands on its own. hint, when set, says how a run could have
+// settled more (see callerHint).
+func renderFlagsReport(r FlagsReport, hint string) string {
 	var b strings.Builder
 	b.WriteString("**" + r.Summary + "**\n")
 
@@ -926,6 +980,7 @@ func renderFlagsReport(r FlagsReport) string {
 	section("Runs without a flag", ChangeUngated)
 	section("Unclear", ChangeUnclear)
 	section("Behind a flag", ChangeGated)
+	section("New definitions (judged where they're called)", ChangeDefinition)
 	section("No runtime effect", ChangeNoEffect)
 
 	if len(r.Flags) > 0 {
@@ -944,6 +999,9 @@ func renderFlagsReport(r FlagsReport) string {
 	} else if r.Model.Consulted {
 		notes = append(notes, fmt.Sprintf("The model (%s) judged %d change(s); every flag it named was checked against the code it was shown. Tests, docs and lockfiles are decided by path.",
 			strings.TrimSpace(r.Model.Provider+" "+r.Model.Model), r.Model.Asked))
+		if hint != "" {
+			notes = append(notes, hint)
+		}
 	}
 	if len(notes) > 0 {
 		b.WriteString("\n---\n")
@@ -952,6 +1010,35 @@ func renderFlagsReport(r FlagsReport) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// canLookUpCallers reports whether the model runs as an agent with the tools
+// to find a changed function's callers and read around them.
+func canLookUpCallers(req Request) bool {
+	return req.Mode == config.AIModeAgent && req.Agent != nil && req.SearchCode != nil && req.ReadFile != nil
+}
+
+// callerHint is a note for a report whose model couldn't search for callers
+// and called a change ungated or unclear — the verdicts a look at a changed
+// function's callers could turn into gated. "" when there is nothing to say.
+func callerHint(req Request, r FlagsReport) string {
+	if !r.Model.Consulted || canLookUpCallers(req) {
+		return ""
+	}
+	open := false
+	for _, c := range r.Changes {
+		if c.Source == SourceModel && (c.Status == ChangeUngated || c.Status == ChangeUnclear) {
+			open = true
+			break
+		}
+	}
+	switch {
+	case !open:
+		return ""
+	case req.Mode == config.AIModeAgent:
+		return "The model couldn't search the repository for a changed function's callers, to see whether they are all behind a flag: that needs a local clone under RepoLocation."
+	}
+	return "The model saw only the diff, so it couldn't check whether a changed function's callers are all behind a flag. Mode = \"agent\" lets it look them up in a local clone under RepoLocation."
 }
 
 // describeChange is one change as a markdown list entry.

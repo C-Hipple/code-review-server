@@ -192,6 +192,9 @@ describe('AIReportModal', () => {
         // mermaid draws in an effect, after this static render.
         expect(html).toContain('Drawing the diagram');
         expect(html).toContain('Copy source');
+        // Copying or downloading it as an image waits for the drawing.
+        expect(html).not.toContain('Copy image');
+        expect(html).not.toContain('Download image');
         expect(html).toContain('Added');
         expect(html).toContain('Removed');
         expect(html).not.toContain('<code');

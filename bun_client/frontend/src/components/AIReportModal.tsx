@@ -1,5 +1,6 @@
 import {
     CHANGE_DIAGRAM,
+    reportImageName,
     type AIFeatureInfo,
     type AIFeatureOutput,
     type ReportItem,
@@ -76,6 +77,7 @@ export default function AIReportModal({
                 gaveUp={report.gaveUp}
                 onJumpToItem={onJumpToItem}
                 fill={diagram}
+                imageName={reportImageName(owner, repo, number, feature.id)}
             />
         </Modal>
     );

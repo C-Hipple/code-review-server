@@ -9,6 +9,7 @@ import {
     itemLocation,
     pollDelayMs,
     reportFeatures,
+    reportImageName,
     shouldRunOnOpen,
     statusLabel,
     statusVariant,
@@ -252,5 +253,16 @@ describe('change-diagram', () => {
 
     test('has nothing to count on its toolbar button', () => {
         expect(attentionCount(diagramOutput())).toBeNull();
+    });
+
+    test('is saved as an image named for the PR', () => {
+        expect(reportImageName('acme', 'widgets', 42, 'change-diagram')).toBe(
+            'acme-widgets-42-change-diagram'
+        );
+        expect(reportImageName('C-Hipple', 'code.review_server', 7, 'change-diagram')).toBe(
+            'C-Hipple-code.review_server-7-change-diagram'
+        );
+        // Nothing a file name can't hold.
+        expect(reportImageName('a/b', 'c d', 1, 'e:f')).toBe('a-b-c-d-1-e-f');
     });
 });

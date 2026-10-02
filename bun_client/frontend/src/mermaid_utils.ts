@@ -29,20 +29,41 @@ function loadMermaid(): Promise<Mermaid> {
     return loading;
 }
 
+// mermaid's configuration is global, and a render reads it as it draws, so
+// each render's initialize() waits until the render before it is done.
+let rendering: Promise<unknown> = Promise.resolve();
+
+export interface RenderOptions {
+    /**
+     * Draw the labels as HTML, in a <foreignObject> (true, mermaid's default,
+     * which wraps them between words), or as SVG text.
+     */
+    htmlLabels?: boolean;
+}
+
 /**
  * Draws Mermaid source as SVG markup, themed for a dark or light background.
  * Rejects with mermaid's parse error when the source isn't a valid diagram.
  */
-export async function renderMermaid(source: string, dark: boolean): Promise<string> {
-    const mermaid = await loadMermaid();
-    mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: dark ? 'dark' : 'default',
-        // Throw on a syntax error rather than drawing mermaid's error diagram.
-        suppressErrorRendering: true,
+export function renderMermaid(
+    source: string,
+    dark: boolean,
+    { htmlLabels = true }: RenderOptions = {}
+): Promise<string> {
+    const svg = rendering.then(async () => {
+        const mermaid = await loadMermaid();
+        mermaid.initialize({
+            startOnLoad: false,
+            securityLevel: 'strict',
+            theme: dark ? 'dark' : 'default',
+            htmlLabels,
+            // Throw on a syntax error rather than drawing mermaid's error diagram.
+            suppressErrorRendering: true,
+        });
+        const { svg } = await mermaid.render(`crs-mermaid-${++renders}`, source);
+        return svg;
     });
-    const { svg } = await mermaid.render(`crs-mermaid-${++renders}`, source);
+    rendering = svg.catch(() => {});
     return svg;
 }
 

@@ -182,3 +182,59 @@ func TestGetPRCommentCountsByAuthor(t *testing.T) {
 		t.Error("GetPRCommentCountsByAuthor on malformed JSON: want an error, got nil")
 	}
 }
+
+// GitHub answers "unknown" while it rechecks a PR's mergeability, which it does
+// after every push and every move of the base branch. An unknown for the head
+// already recorded must keep the answer recorded for it, or a conflict would
+// vanish from the review list each time anyone merged elsewhere; an unknown for
+// a new head must not, since that answer was about other code.
+func TestRecordPRMergeabilityKeepsTheAnswerForTheSameHead(t *testing.T) {
+	db := newTestDB(t)
+
+	const (
+		prNumber = 12
+		repo     = "code-review-server"
+	)
+	check := func(step, wantState, wantSHA string) {
+		t.Helper()
+		state, sha, err := db.GetPRMergeability(prNumber, repo)
+		if err != nil {
+			t.Fatalf("%s: GetPRMergeability: %v", step, err)
+		}
+		if state != wantState || sha != wantSHA {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", step, state, sha, wantState, wantSHA)
+		}
+	}
+	record := func(sha, state string) {
+		t.Helper()
+		if err := db.RecordPRMergeability(prNumber, repo, sha, state); err != nil {
+			t.Fatalf("RecordPRMergeability(%q, %q): %v", sha, state, err)
+		}
+	}
+
+	check("nothing recorded", "", "")
+
+	record("sha1", "conflicting")
+	check("first answer", "conflicting", "sha1")
+
+	// The base branch moved; GitHub is rechecking the same head.
+	record("sha1", "unknown")
+	check("unknown for the same head", "conflicting", "sha1")
+
+	// A real answer always replaces the recorded one.
+	record("sha1", "mergeable")
+	check("new answer for the same head", "mergeable", "sha1")
+
+	// A push: GitHub hasn't checked the new head yet.
+	record("sha2", "unknown")
+	check("unknown for a new head", "unknown", "sha2")
+
+	record("sha2", "conflicting")
+	check("answer for the new head", "conflicting", "sha2")
+
+	// Same number in another repo is another PR.
+	if err := db.RecordPRMergeability(prNumber, "other-repo", "sha9", "mergeable"); err != nil {
+		t.Fatalf("record other repo: %v", err)
+	}
+	check("after another repo's PR", "conflicting", "sha2")
+}

@@ -484,6 +484,12 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
+	// Each open PR's row on the review list says whether it still merges
+	// cleanly. Checked here, for the PRs that made it into the section, since
+	// every kind of workflow ends up here and the list endpoint most of them
+	// draw from doesn't report it.
+	recordMergeability(db, prs)
+
 	ttl := time.Now().Add(2 * time.Hour).Unix()
 
 	// Build FileChanges for each PR in parallel; each goroutine writes to its

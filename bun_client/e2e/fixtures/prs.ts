@@ -27,6 +27,7 @@ export interface ReviewItem {
     review_ease: string;
     created_at: string;
     required_teams: unknown[];
+    merge_conflicts: boolean;
 }
 
 export interface CommentJSON {
@@ -86,6 +87,7 @@ function item(fields: Partial<ReviewItem> & Pick<ReviewItem, 'title' | 'repo' | 
         review_ease: '',
         created_at: created(1),
         required_teams: [],
+        merge_conflicts: false,
         ...fields,
     } satisfies ReviewItem;
 }
@@ -273,6 +275,8 @@ export function buildFixtures(): PRFixture[] {
                 section_priority: 2,
                 author: 'carol',
                 review_ease: 'hard',
+                // GitHub reports its branch conflicts with main.
+                merge_conflicts: true,
             }),
             body: 'Widens the gadget.',
             baseRef: 'main',

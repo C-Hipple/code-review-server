@@ -139,6 +139,11 @@ several modules; `crs-client.el` is the entry point that loads them all
 (crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
 ```
 
+In the reviews buffer, each PR's headline carries its tags: the repository,
+`draft` or `merged`, `conflict` when GitHub reports that the PR's branch conflicts
+with its base (drawn in `crs-list-conflict-face`), and the
+[review-ease](ai_features.md#review-ease) rating when that feature is on.
+
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
 
 Submitting (`C-c C-c`, `crs-submit-review`) runs in the background: the command

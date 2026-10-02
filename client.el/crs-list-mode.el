@@ -95,6 +95,14 @@
   "Face for the :hard: review-ease tag in the PR list."
   :group 'crs)
 
+(defface crs-list-conflict-face
+  '((t (:foreground "#fdf6e3" :background "#dc322f" :weight bold)))
+  "Face for the :conflict: tag in the PR list.
+The server tags a PR whose branch conflicts with its base, so it
+can't merge until the conflicts are resolved.  Drawn reversed, so
+it stands apart from the red :hard: review-ease tag."
+  :group 'crs)
+
 (defvar crs-list--heading-regexp "^\\(\\*+\\) "
   "Regexp matching org-style heading lines by leading stars.")
 
@@ -121,7 +129,9 @@
     ;; the generic tag face (tags share colons, e.g. :repo:easy:).
     (":\\(easy\\):" 1 'crs-list-ease-easy-face t)
     (":\\(medium\\):" 1 'crs-list-ease-medium-face t)
-    (":\\(hard\\):" 1 'crs-list-ease-hard-face t))
+    (":\\(hard\\):" 1 'crs-list-ease-hard-face t)
+    ;; Merge conflicts, refontified the same way.
+    (":\\(conflict\\):" 1 'crs-list-conflict-face t))
   "Font-lock keywords for `crs-list-mode'.")
 
 (defun crs-list--heading-level ()

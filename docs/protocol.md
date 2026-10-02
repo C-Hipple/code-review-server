@@ -56,6 +56,10 @@ Fetches all review sections from the local database, rendered as org-mode format
 | `content` | string       | Org-mode formatted string of all review sections  |
 | `items`   | []ReviewItem | Structured metadata for each PR in the list       |
 
+In `content`, a PR's headline carries its tags: the repository, `draft` or
+`merged`, `conflict` when `merge_conflicts` is true, and the review-ease rating
+when that feature has one — e.g. `** TODO Fix overflow    :gadgets:conflict:hard:`.
+
 #### ReviewItem Object
 
 | Field              | Type   | Description                                                       |
@@ -75,6 +79,7 @@ Fetches all review sections from the local database, rendered as org-mode format
 | `created_at`       | Time   | PR creation timestamp                                             |
 | `required_teams`   | []TeamReviewStatus | Teams asked to review the PR, with each one's standing. Empty until a workflow cycle has resolved them |
 | `comment_count`    | int    | Conversation plus review comments on the PR, the number GitHub's pull request list shows, less the authors the review view hides. Counted from the server's comment cache, never from GitHub, so it is `0` until a workflow cycle has fetched the PR's comments |
+| `merge_conflicts`  | bool   | GitHub reports that the PR's branch conflicts with its base, so it can't merge until they are resolved. Only ever true for an open or draft PR. Read from the server's cache, which each workflow cycle refreshes for the PRs it lists, so it is `false` until GitHub has answered for the PR's current head |
 
 #### TeamReviewStatus Object
 

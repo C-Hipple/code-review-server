@@ -185,6 +185,16 @@ func (db *DB) initSchema() error {
 		UNIQUE(pr_number, repo)
 	);
 
+	-- Whether each PR merges cleanly, as GitHub last answered for head_sha (see
+	-- RecordPRMergeability). Additive, like AIResults.
+	CREATE TABLE IF NOT EXISTS PRMergeability (
+		pr_number INTEGER NOT NULL,
+		repo TEXT NOT NULL,
+		head_sha TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT '',
+		UNIQUE(pr_number, repo)
+	);
+
 	CREATE TABLE IF NOT EXISTS CIStatus (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -1817,6 +1827,48 @@ func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
 		prNumber, repo,
 	)
 	return err
+}
+
+// Whether a PR merges into its base without conflicts is GitHub's answer for
+// one particular head commit, and GitHub works it out afresh — answering
+// "unknown" in the meantime — after every push to the PR and every move of its
+// base branch.
+
+// RecordPRMergeability stores what GitHub just said about whether a PR merges
+// cleanly — one of git_tools' Mergeability* states — for headSHA.
+//
+// "unknown" for the head already on record keeps the answer recorded for it:
+// GitHub is only rechecking after the base branch moved, and its last answer
+// for this code is still the best there is, so the review list doesn't lose a
+// conflict every time someone merges elsewhere. "unknown" for a new head
+// replaces it, because the old answer was about other code.
+func (db *DB) RecordPRMergeability(prNumber int, repo, headSHA, state string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO PRMergeability (pr_number, repo, head_sha, state)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+			state = CASE
+				WHEN excluded.state = 'unknown' AND excluded.head_sha = PRMergeability.head_sha
+				THEN PRMergeability.state
+				ELSE excluded.state
+			END,
+			head_sha = excluded.head_sha`,
+		prNumber, repo, headSHA, state,
+	)
+	return err
+}
+
+// GetPRMergeability returns the mergeability recorded for a PR and the head SHA
+// it was recorded for, or two empty strings when none has been.
+func (db *DB) GetPRMergeability(prNumber int, repo string) (state, headSHA string, err error) {
+	err = db.conn.QueryRow(
+		"SELECT state, head_sha FROM PRMergeability WHERE pr_number = ? AND repo = ?",
+		prNumber, repo,
+	).Scan(&state, &headSHA)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	return state, headSHA, err
 }
 
 func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {

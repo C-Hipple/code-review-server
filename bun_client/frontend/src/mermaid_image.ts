@@ -9,8 +9,9 @@
  * diagram, the legend below it.
  *
  * Drawing, encoding and copying an image all cost by the pixel, so a large
- * diagram is drawn at a smaller scale, and each step has a time limit, so a
- * browser that stalls on one fails with a reason rather than never finishing.
+ * diagram is drawn at a smaller scale, on a canvas kept in memory rather than
+ * on the GPU, and each step has a time limit, so a browser that stalls on one
+ * fails with a reason rather than never finishing.
  */
 
 import { renderMermaid, svgSize, type Size } from './mermaid_utils';
@@ -168,7 +169,10 @@ async function drawPng(diagram: DrawnDiagram, legend: readonly LegendItem[]): Pr
 
 async function rasterize(svg: string, size: Size, legend: readonly LegendItem[]): Promise<Blob> {
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    // Kept in memory rather than on the GPU, since it's only drawn to be read
+    // back: on the GPU, Chrome spends seconds painting the SVG and reading the
+    // pixels back, even for a small diagram.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('the browser has no canvas to draw it on');
     const theme = getComputedStyle(document.documentElement);
     const font = `${LEGEND_FONT_SIZE}px ${getComputedStyle(document.body).fontFamily || 'sans-serif'}`;

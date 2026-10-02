@@ -334,6 +334,29 @@ test.describe('Change diagram image', () => {
         expect(await drawnSvgs()).toEqual([true]);
     });
 
+    test('draws the image on a canvas kept in memory, not on the GPU', async ({
+        page,
+        backend,
+    }) => {
+        // Notes, for each canvas read back, whether it was made to be read.
+        await page.addInitScript(() => {
+            const readBack: (boolean | undefined)[] = [];
+            Object.assign(window, { readBack });
+            const toBlob = HTMLCanvasElement.prototype.toBlob;
+            HTMLCanvasElement.prototype.toBlob = function (this: HTMLCanvasElement, ...args) {
+                readBack.push(this.getContext('2d')?.getContextAttributes().willReadFrequently);
+                return toBlob.apply(this, args);
+            };
+        });
+        await backend.setDiagram(true);
+        const dialog = await openDiagram(page);
+
+        await downloadImage(page, dialog);
+        expect(
+            await page.evaluate(() => (window as unknown as { readBack: boolean[] }).readBack)
+        ).toEqual([true]);
+    });
+
     test("draws the labels as SVG text where the browser won't read back HTML ones", async ({
         page,
         backend,

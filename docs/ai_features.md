@@ -589,8 +589,10 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   the diff's order and the list's review-ease pill and filter. The change diagram's button
   opens a modal that takes most of the screen, drawing the diagram with the
   mermaid library (loaded the first time a diagram is drawn): it opens fitted
-  to the window, zooms with **−** / **+** / **1:1**, pans by dragging, and
-  shows the raw source on **Source**; the AI page draws it inline.
+  to the window, zooms with **−** / **+** / **1:1**, pans by dragging, shows
+  the raw source on **Source**, and copies or downloads it as a PNG (with its
+  legend) to share on **Copy image** / **Download image**; the AI page draws it
+  inline.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
   an enabled feature in its own buffer, which polls while a run is pending. In
   that buffer, `r` refreshes, `R` re-runs and `q` quits. The applied features

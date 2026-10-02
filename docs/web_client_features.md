@@ -602,7 +602,13 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   **1:1** draws it at its natural size, dragging pans it, and a legend explains the
   added / changed / removed colors. **Source** shows the raw Mermaid, **Copy source**
   copies it, and a diagram mermaid can't parse shows the parse error above its
-  source. The AI view draws the diagram inline in its card.
+  source. **Copy image** puts the drawn diagram on the clipboard as a PNG and
+  **Download image** saves it as one, named for the PR
+  (`acme-widgets-42-change-diagram.png`): twice its natural size (less for a diagram
+  too large for a canvas), on the theme's background with a margin, and with the
+  legend below it (`mermaid_image.ts`). Safari won't read back a canvas an SVG with
+  HTML labels was drawn on, so there the diagram is drawn again with SVG-text labels
+  for the image. The AI view draws the diagram inline in its card.
 - **Any other feature** renders its markdown `body` with `PluginBodyView`.
 
 ## 4. Protocol methods used — and not used

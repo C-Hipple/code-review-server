@@ -235,6 +235,20 @@ export function changeDiagram(
     return { mermaid: report.mermaid, diagram_type: report.diagram_type ?? '' };
 }
 
+/**
+ * The name an image of a PR's report (the change diagram's) is saved as,
+ * without the extension: acme-widgets-42-change-diagram. Anything but
+ * letters, digits, `.`, `_` and `-` becomes a `-`.
+ */
+export function reportImageName(
+    owner: string,
+    repo: string,
+    number: number,
+    feature: string
+): string {
+    return `${owner}-${repo}-${number}-${feature}`.replace(/[^\w.-]+/g, '-');
+}
+
 export function isPending(output: AIFeatureOutput | null | undefined): boolean {
     return output?.status === 'pending';
 }

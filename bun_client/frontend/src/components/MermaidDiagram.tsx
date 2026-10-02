@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Button } from '../design';
+import { copyPng, diagramPng, downloadBlob, type LegendItem } from '../mermaid_image';
 import {
     appThemeIsDark,
     fitScale,
@@ -16,6 +17,8 @@ interface MermaidDiagramProps {
     legend?: boolean;
     /** Grow to fill the parent, a flex column, rather than taking a fixed height. */
     fill?: boolean;
+    /** The name Download image saves the diagram as, without the extension. */
+    imageName?: string;
 }
 
 /** A drawing of `source`: its SVG, or why mermaid couldn't draw it. */
@@ -28,7 +31,7 @@ const CANVAS_PADDING = 16;
 
 // Mirrors the classes the server defines for a change diagram
 // (changeClasses in ai/change_diagram.go).
-const LEGEND = [
+const LEGEND: LegendItem[] = [
     { label: 'Added', fill: '#dcfce7', stroke: '#16a34a', dashed: false },
     { label: 'Changed', fill: '#fef3c7', stroke: '#d97706', dashed: false },
     { label: 'Removed', fill: '#fee2e2', stroke: '#dc2626', dashed: true },
@@ -36,21 +39,41 @@ const LEGEND = [
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+const alertStyle: CSSProperties = {
+    padding: '10px 12px',
+    borderRadius: '6px',
+    fontSize: '13px',
+    background: 'var(--bg-warning-dim)',
+    border: '1px solid var(--border-warning-dim)',
+    whiteSpace: 'pre-wrap',
+};
+
 /**
  * A Mermaid diagram, drawn with the mermaid library (see mermaid_utils).
  *
  * It opens fitted to its canvas; the zoom buttons scale it from there, and
  * dragging pans it once it outgrows the canvas. The raw source is one click
- * away, and shown outright when mermaid can't parse it.
+ * away, and shown outright when mermaid can't parse it. Once drawn, the
+ * diagram can be copied or downloaded as a PNG to share (see mermaid_image).
  */
-export default function MermaidDiagram({ source, legend, fill }: MermaidDiagramProps) {
+export default function MermaidDiagram({
+    source,
+    legend,
+    fill,
+    imageName = 'diagram',
+}: MermaidDiagramProps) {
     const dark = useAppThemeIsDark();
     const [drawing, setDrawing] = useState<Drawing | null>(null);
     // Null fits the diagram to the canvas.
     const [zoom, setZoom] = useState<number | null>(null);
     const [showSource, setShowSource] = useState(false);
     const [box, setBox] = useState<Size | null>(null);
-    const [copied, setCopied] = useState(false);
+    // What was just copied, which its button says for a moment.
+    const [copied, setCopied] = useState<'source' | 'image' | null>(null);
+    const [copyingImage, setCopyingImage] = useState(false);
+    const [savingImage, setSavingImage] = useState(false);
+    // Why the last image couldn't be made, for the source it was made of.
+    const [imageError, setImageError] = useState<{ source: string; message: string } | null>(null);
     const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
     useEffect(() => {
@@ -88,11 +111,42 @@ export default function MermaidDiagram({ source, legend, fill }: MermaidDiagramP
     const error = current?.error;
     const scale = zoom ?? (svg?.size && box ? fitScale(svg.size, box) : 1);
 
+    const flashCopied = (what: 'source' | 'image') => {
+        setCopied(what);
+        setTimeout(() => setCopied(c => (c === what ? null : c)), 2000);
+    };
+
     const copy = () => {
-        navigator.clipboard?.writeText(source).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        });
+        navigator.clipboard?.writeText(source).then(() => flashCopied('source'));
+    };
+
+    // Makes a PNG of the diagram as drawn; null until it's drawn at a known size.
+    const size = svg?.size;
+    const makePng =
+        svg && size
+            ? () =>
+                  diagramPng({ source: svg.source, svg: svg.svg, size, dark }, legend ? LEGEND : [])
+            : null;
+    const failedImage = (message: string) => setImageError({ source, message });
+
+    const copyImage = () => {
+        if (!makePng) return;
+        setImageError(null);
+        setCopyingImage(true);
+        copyPng(makePng)
+            .then(() => flashCopied('image'))
+            .catch(e => failedImage(`Could not copy the image: ${errorText(e)}`))
+            .finally(() => setCopyingImage(false));
+    };
+
+    const downloadImage = () => {
+        if (!makePng) return;
+        setImageError(null);
+        setSavingImage(true);
+        makePng()
+            .then(blob => downloadBlob(blob, `${imageName}.png`))
+            .catch(e => failedImage(`Could not save the image: ${errorText(e)}`))
+            .finally(() => setSavingImage(false));
     };
 
     const canvasStyle: CSSProperties = {
@@ -253,21 +307,38 @@ export default function MermaidDiagram({ source, legend, fill }: MermaidDiagramP
                     </Button>
                 )}
                 <Button size="sm" variant="secondary" onClick={copy}>
-                    {copied ? '✓ Copied' : 'Copy source'}
+                    {copied === 'source' ? '✓ Copied' : 'Copy source'}
                 </Button>
+                {makePng && (
+                    <>
+                        <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={copyImage}
+                            loading={copyingImage}
+                            title="Copy the diagram to the clipboard as a PNG image"
+                        >
+                            {copied === 'image' ? '✓ Copied' : 'Copy image'}
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={downloadImage}
+                            loading={savingImage}
+                            title={`Save the diagram as ${imageName}.png`}
+                        >
+                            Download image
+                        </Button>
+                    </>
+                )}
             </div>
+            {imageError?.source === source && (
+                <div role="alert" style={alertStyle}>
+                    {imageError.message}
+                </div>
+            )}
             {error && (
-                <div
-                    role="alert"
-                    style={{
-                        padding: '10px 12px',
-                        borderRadius: '6px',
-                        fontSize: '13px',
-                        background: 'var(--bg-warning-dim)',
-                        border: '1px solid var(--border-warning-dim)',
-                        whiteSpace: 'pre-wrap',
-                    }}
-                >
+                <div role="alert" style={alertStyle}>
                     Mermaid could not draw this diagram, so here is its source. {error}
                 </div>
             )}

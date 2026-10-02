@@ -30,6 +30,8 @@ interface AIReportViewProps {
     onJumpToItem?: (item: ReportItem) => void;
     /** Grow to fill the parent, a flex column, as the change diagram does in its modal. */
     fill?: boolean;
+    /** The name the change diagram's Download image saves it as, without the extension. */
+    imageName?: string;
 }
 
 /**
@@ -47,6 +49,7 @@ export default function AIReportView({
     gaveUp,
     onJumpToItem,
     fill,
+    imageName,
 }: AIReportViewProps) {
     const pending = isPending(output);
     const report = commentsReport(output);
@@ -99,6 +102,7 @@ export default function AIReportView({
                             diagram.diagram_type === 'flowchart' || diagram.diagram_type === 'graph'
                         }
                         fill={fill}
+                        imageName={imageName}
                     />
                 ) : (
                     hasResult &&

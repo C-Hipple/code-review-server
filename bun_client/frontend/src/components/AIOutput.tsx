@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { listAIFeatures } from '../api';
-import { reportFeatures, type AIFeatureInfo, type AIFeatureOutput } from '../ai_utils';
+import {
+    reportFeatures,
+    reportImageName,
+    type AIFeatureInfo,
+    type AIFeatureOutput,
+} from '../ai_utils';
 import { Button, Card } from '../design';
 import { useAIReport } from '../hooks/useAIReport';
 import AIReportView, { AIRerunButton } from './AIReportView';
@@ -221,6 +226,7 @@ export function AIFeatureCard({
                     error={report.error}
                     notice={report.notice}
                     gaveUp={report.gaveUp}
+                    imageName={reportImageName(owner, repo, number, feature.id)}
                 />
             </div>
         </Card>

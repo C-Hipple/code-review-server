@@ -226,6 +226,12 @@ type ReviewItem struct {
 	// Read from the PRComments cache the workflow layer fills, so it is 0 until
 	// a cycle has fetched the PR's comments.
 	CommentCount int `json:"comment_count"`
+	// MergeConflicts is true when GitHub last reported that this open or draft
+	// PR's head conflicts with its base branch, so it can't merge until they
+	// are resolved. Read from the PRMergeability cache the workflow layer
+	// fills; false until GitHub has answered for the PR's current head, and
+	// always for a closed or merged PR.
+	MergeConflicts bool `json:"merge_conflicts"`
 }
 
 // GetAllReviewItems returns structured review items from all sections
@@ -303,6 +309,7 @@ func (r *OrgRenderer) parseItemToReviewItem(item *database.Item, sectionName str
 	if reviewItem.Repo != "" && reviewItem.Number > 0 {
 		reviewItem.RequiredTeams = r.requiredTeams(reviewItem.Number, reviewItem.Repo)
 		reviewItem.CommentCount = r.commentCount(reviewItem.Number, reviewItem.Repo)
+		reviewItem.MergeConflicts = r.mergeConflicts(item.Status, reviewItem.Number, reviewItem.Repo)
 	}
 
 	return reviewItem
@@ -345,6 +352,23 @@ func (r *OrgRenderer) commentCount(number int, repo string) int {
 		}
 	}
 	return total
+}
+
+// mergeConflicts reports whether GitHub last said a PR's head conflicts with
+// its base, for its row on the review list. Only an open PR (TODO) or a draft
+// (WAITING) can still be fixed, so a closed or merged one never reports
+// conflicts, whatever was recorded before it closed. Like requiredTeams it
+// never fails a render: an unreadable row just shows no conflict.
+func (r *OrgRenderer) mergeConflicts(status string, number int, repo string) bool {
+	if status != "TODO" && status != "WAITING" {
+		return false
+	}
+	state, _, err := r.db.GetPRMergeability(number, repo)
+	if err != nil {
+		slog.Warn("Error loading mergeability for review item", "pr", number, "repo", repo, "error", err)
+		return false
+	}
+	return state == git_tools.MergeabilityConflicting
 }
 
 func (r *OrgRenderer) RenderFile(filename, orgFileDir string) error {
@@ -414,6 +438,12 @@ func (r *OrgRenderer) buildItemLines(item *database.Item, indentLevel int, opts 
 	if err != nil {
 		slog.Error("Error getting item tags", "error", err, "item_id", item.ID)
 		tags = []string{}
+	}
+
+	// A PR whose head conflicts with its base says so on its headline, which is
+	// all of an item the list shows until it is expanded.
+	if _, repo, number := itemPRRef(item); repo != "" && number > 0 && r.mergeConflicts(item.Status, number, repo) {
+		tags = append(tags, mergeConflictOrgTag)
 	}
 
 	// Append the review-ease rating as a headline tag when enabled
@@ -489,6 +519,10 @@ func itemPRRef(item *database.Item) (owner, repo string, number int) {
 	}
 	return owner, repo, number
 }
+
+// mergeConflictOrgTag is the headline tag of a PR whose head conflicts with its
+// base branch.
+const mergeConflictOrgTag = "conflict"
 
 // reviewEaseOrgTag converts a stored review-ease rating into an org headline
 // tag. It centralizes the rating -> tag mapping so a future change to the
@@ -1114,6 +1148,16 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 			}
 			if pr.Base != nil && pr.Base.SHA != nil {
 				baseSHA = *pr.Base.SHA
+			}
+
+			// This endpoint is the one place REST reports whether a PR merges
+			// cleanly, so the review list's answer is kept as fresh as this
+			// fetch. A null (GitHub still computing) records as unknown, which
+			// keeps the answer already recorded for this head.
+			if pr.GetState() == "open" {
+				if err := config.C().DB.RecordPRMergeability(number, repo, headSHA, git_tools.RESTMergeability(pr)); err != nil {
+					slog.Error("Error caching PR mergeability", "pr", number, "repo", repo, "error", err)
+				}
 			}
 
 			// Fetch Reviewers (Requested)

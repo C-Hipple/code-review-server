@@ -182,6 +182,33 @@ const COMMENT_ICON = (
     </Icon>
 );
 
+const CONFLICT_ICON = (
+    <Icon size={11}>
+        <path d="M7.1 2.6a1 1 0 0 1 1.8 0l5.2 9.6a1 1 0 0 1-.9 1.5H2.8a1 1 0 0 1-.9-1.5z" />
+        <path d="M8 6.2v3" />
+        <path d="M8 11.4v.1" />
+    </Icon>
+);
+
+/**
+ * Beside the title of a PR that conflicts with its base branch: it can't merge
+ * until someone resolves them. A warning glyph and mixed case keep it apart
+ * from the review-ease pills, which can be red too.
+ */
+function ConflictPill() {
+    const tone = getStatusTone('danger');
+    return (
+        <span
+            className="crs-conflict-pill"
+            style={{ color: tone.fg, background: tone.bg, borderColor: tone.border }}
+            title="Merge conflicts: this branch conflicts with its base and can't merge until they are resolved"
+        >
+            {CONFLICT_ICON}
+            Conflicts
+        </span>
+    );
+}
+
 /** A review-ease rating as the pill a row carries; the ease filter shows the same. */
 function EasePill({ ease }: { ease: ReviewEaseDisplay }) {
     const tone = getStatusTone(ease.variant);
@@ -830,6 +857,7 @@ function PRRow({
                 <span className="crs-row-body">
                     <span className="crs-row-title-line">
                         <span className="crs-row-title">{item.title}</span>
+                        {isPR && item.merge_conflicts && <ConflictPill />}
                         {ease && <EasePill ease={ease} />}
                     </span>
                     <span className="crs-row-meta">

@@ -158,9 +158,15 @@ Laid out as a fixed sidebar of filters beside a dense, full-width list of rows.
   "Other", in the order the server sent them. Each section is a collapsible header
   with its own count, plus a global collapse/expand toggle in the toolbar.
 - **Per-item row** — lifecycle pill (open / draft / merged / closed, in a fixed-width
-  column so titles align), title, `review_ease` pill once the review-ease AI feature has rated the PR,
+  column so titles align), title, a conflicts pill when the PR has merge conflicts,
+  `review_ease` pill once the review-ease AI feature has rated the PR,
   and a meta line of repo, `#number`, author login, a relative timestamp from
   `created_at` (full timestamp on hover), and the required-team chips.
+- **Merge conflicts** — a red ⚠ Conflicts pill beside the title when
+  `merge_conflicts` is set: GitHub reports the PR's branch conflicts with its base,
+  so it can't merge until they are resolved. The warning glyph and mixed case keep
+  it apart from the red HARD review-ease pill. The server checks every listed open
+  or draft PR each workflow cycle, so a PR it hasn't heard back about yet shows none.
 - **Comment count** — a speech bubble with `comment_count` at the row's right edge,
   so the counts line up in a column as on GitHub's pull request list. Like GitHub's,
   it counts conversation and review comments together and is left off at zero, which

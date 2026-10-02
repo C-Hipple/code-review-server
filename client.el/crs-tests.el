@@ -421,6 +421,33 @@ parser reads file names from.")
      "Legacy" '((result . "plain text output") (status . "success")))
     (should (string-match-p "plain text output" (buffer-string)))))
 
+;;; --- PR list (crs-list-mode.el) ---
+
+(defun crs-test--face-at (text)
+  "Return the face on the first character of TEXT in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward text)
+    (get-text-property (match-beginning 0) 'face)))
+
+(ert-deftest crs-test-list-fontifies-conflict-tag ()
+  "The :conflict: tag the server puts on a conflicting PR has its own face.
+It stays apart from the review-ease tag beside it, and only the
+tagged PR's headline carries it."
+  (with-temp-buffer
+    (insert "* TODO Needs Review [0/2]\n"
+            "** TODO Fix gadget overflow\t\t:gadgets:conflict:hard:\n"
+            "** TODO Add greeting helper\t\t:widgets:easy:\n")
+    (crs-list-mode)
+    ;; Batch Emacs never turns `font-lock-mode' on, so fontify by hand.
+    (font-lock-ensure)
+    (should (eq (crs-test--face-at "conflict") 'crs-list-conflict-face))
+    (should (eq (crs-test--face-at "hard") 'crs-list-ease-hard-face))
+    (goto-char (point-min))
+    (search-forward "Add greeting helper")
+    (should-not (text-property-any (line-beginning-position) (line-end-position)
+                                   'face 'crs-list-conflict-face))))
+
 ;;; --- JSON-RPC transport ---
 
 (defun crs-tests--filter-lines (chunks)

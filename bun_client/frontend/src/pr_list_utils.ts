@@ -37,6 +37,11 @@ export interface ReviewItem {
      * 0 until a workflow cycle has cached the PR's comments.
      */
     comment_count?: number;
+    /**
+     * True when GitHub last reported that this open or draft PR conflicts with
+     * its base branch. False until GitHub has answered for the current head.
+     */
+    merge_conflicts?: boolean;
 }
 
 /** The lifecycle states the sidebar buckets PRs into. */

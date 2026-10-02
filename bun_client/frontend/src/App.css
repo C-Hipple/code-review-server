@@ -402,14 +402,24 @@ details[open] > summary.crs-sidebar-label::after {
     color: var(--accent);
 }
 
-/* Review-ease rating: beside a row's title, and on the ease filter's options. */
-.crs-ease-pill {
+/* Review-ease rating: beside a row's title, and on the ease filter's options.
+   The merge-conflict flag beside a title shares its shape. */
+.crs-ease-pill,
+.crs-conflict-pill {
     padding: 1px 6px;
     border: 1px solid transparent;
     border-radius: 999px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.04em;
+}
+
+.crs-conflict-pill {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
 }
 
 .crs-row-meta {

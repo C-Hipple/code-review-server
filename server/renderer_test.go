@@ -8,6 +8,7 @@ import (
 	"crs/utils"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1294,6 +1295,92 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"comment_count":3`) {
 		t.Errorf("review item JSON %s is missing comment_count", encoded)
+	}
+}
+
+// Merge conflicts reach both forms of the review list: the merge_conflicts
+// field the web client reads, and a :conflict: headline tag for the Emacs one.
+// Only an open or draft PR reports them; one that closed while conflicting has
+// nothing left to resolve.
+func TestReviewItemsCarryMergeConflicts(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	section, err := db.GetOrCreateSection("Test Section", 0)
+	if err != nil {
+		t.Fatalf("failed to create section: %v", err)
+	}
+	prs := []struct {
+		number int
+		status string
+		// recorded is the mergeability on record, "" for none.
+		recorded string
+		want     bool
+	}{
+		{84, "TODO", git_tools.MergeabilityConflicting, true},
+		{85, "WAITING", git_tools.MergeabilityConflicting, true},
+		{86, "DONE", git_tools.MergeabilityConflicting, false},
+		{87, "TODO", git_tools.MergeabilityMergeable, false},
+		{88, "TODO", git_tools.MergeabilityUnknown, false},
+		{89, "TODO", "", false},
+	}
+	for _, pr := range prs {
+		number := strconv.Itoa(pr.number)
+		details := []string{
+			number,
+			"Repo: C-Hipple/code-review-server",
+			"https://github.com/C-Hipple/code-review-server/pull/" + number,
+		}
+		if _, err := db.UpsertItem(section.ID, number, pr.status, "PR "+number, details, []string{"code-review-server"}, 0); err != nil {
+			t.Fatalf("failed to create item %d: %v", pr.number, err)
+		}
+		if pr.recorded == "" {
+			continue
+		}
+		if err := db.RecordPRMergeability(pr.number, "code-review-server", "sha", pr.recorded); err != nil {
+			t.Fatalf("failed to record mergeability for %d: %v", pr.number, err)
+		}
+	}
+
+	content, items, err := NewOrgRenderer(db).RenderAndGetItems(RenderOptions{})
+	if err != nil {
+		t.Fatalf("RenderAndGetItems: %v", err)
+	}
+	byNumber := map[int]ReviewItem{}
+	for _, item := range items {
+		byNumber[item.Number] = item
+	}
+	for _, pr := range prs {
+		item, ok := byNumber[pr.number]
+		if !ok {
+			t.Fatalf("no review item for PR %d", pr.number)
+		}
+		if item.MergeConflicts != pr.want {
+			t.Errorf("PR %d (%s, %q recorded): merge_conflicts = %v, want %v",
+				pr.number, pr.status, pr.recorded, item.MergeConflicts, pr.want)
+		}
+
+		headline := ""
+		for _, line := range strings.Split(content, "\n") {
+			if strings.Contains(line, " PR "+strconv.Itoa(pr.number)+"\t") {
+				headline = line
+			}
+		}
+		if headline == "" {
+			t.Fatalf("no headline for PR %d in:\n%s", pr.number, content)
+		}
+		if got := strings.HasSuffix(headline, ":code-review-server:conflict:"); got != pr.want {
+			t.Errorf("PR %d headline %q: conflict tag %v, want %v", pr.number, headline, got, pr.want)
+		}
+	}
+
+	encoded, err := json.Marshal(byNumber[84])
+	if err != nil {
+		t.Fatalf("marshal review item: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"merge_conflicts":true`) {
+		t.Errorf("review item JSON %s is missing merge_conflicts", encoded)
 	}
 }
 

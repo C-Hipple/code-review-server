@@ -157,6 +157,19 @@ test.describe('PR list', () => {
         await expect(quiet.getByRole('img', { name: /comment/ })).toHaveCount(0);
     });
 
+    test('flags PRs that conflict with their base branch', async ({ page }) => {
+        await page.goto('/');
+
+        const conflicted = page.locator('.crs-row').filter({ hasText: 'Fix gadget overflow' });
+        await expect(conflicted.locator('.crs-conflict-pill')).toHaveText('Conflicts');
+        // Beside its review-ease pill, not in place of it.
+        await expect(conflicted.locator('.crs-ease-pill')).toHaveText('HARD');
+
+        const clean = page.locator('.crs-row').filter({ hasText: 'Add greeting helper' });
+        await expect(clean).toBeVisible();
+        await expect(clean.locator('.crs-conflict-pill')).toHaveCount(0);
+    });
+
     test('collapses and expands sections', async ({ page }) => {
         await page.goto('/');
         const section = page.getByRole('button', { name: /Needs Review/ });

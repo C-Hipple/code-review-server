@@ -316,37 +316,31 @@ test.describe('Change diagram image', () => {
         await expect(dialog.getByRole('alert')).toHaveCount(0);
     });
 
+    test('makes the image in the background, once for both buttons', async ({
+        page,
+        backend,
+        context,
+    }) => {
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        const drawnSvgs = await watchSvgImages(page);
+        await backend.setDiagram(true);
+        const dialog = await openDiagram(page);
+        // Drawn once the page is idle, before anyone asks for it.
+        await expect.poll(drawnSvgs).toEqual([true]);
+
+        await downloadImage(page, dialog);
+        await dialog.getByRole('button', { name: 'Copy image' }).click();
+        await expect(dialog.getByRole('button', { name: '✓ Copied' })).toBeVisible();
+        expect(await drawnSvgs()).toEqual([true]);
+    });
+
     test("draws the labels as SVG text where the browser won't read back HTML ones", async ({
         page,
         backend,
     }) => {
-        // Safari won't let a canvas be read back once an SVG with a
-        // <foreignObject> (mermaid's HTML labels) has been drawn on it.
-        // Chromium won't either when the SVG comes from a blob: URL, so this
-        // routes the image's data: URLs through blob: URLs, noting whether
-        // each SVG had a <foreignObject>.
-        await page.addInitScript(() => {
-            const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
-            const prefix = 'data:image/svg+xml;charset=utf-8,';
-            const drawn: boolean[] = [];
-            Object.assign(window, { drawnSvgs: drawn });
-            Object.defineProperty(HTMLImageElement.prototype, 'src', {
-                ...src,
-                set(this: HTMLImageElement, url: string) {
-                    if (url.startsWith(prefix)) {
-                        const svg = decodeURIComponent(url.slice(prefix.length));
-                        drawn.push(svg.includes('<foreignObject'));
-                        url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-                    }
-                    src.set!.call(this, url);
-                },
-            });
-        });
+        const drawnSvgs = await watchSvgImages(page, { viaBlob: true });
         await backend.setDiagram(true);
         const dialog = await openDiagram(page);
-        const drawnSvgs = () =>
-            page.evaluate(() => (window as unknown as { drawnSvgs: boolean[] }).drawnSvgs);
-        expect(await drawnSvgs()).toEqual([]);
 
         const download = await downloadImage(page, dialog);
         const saved = await readPng(page, readFileSync(await download.path()), [ADDED]);
@@ -372,6 +366,37 @@ test.describe('Change diagram image', () => {
         await expect(dialog.getByRole('alert')).toHaveCount(0);
     });
 });
+
+/**
+ * Notes, in order, whether each SVG the page loads as an image (as the
+ * diagram's PNG is drawn) has a <foreignObject>, and returns what reads the
+ * notes. With `viaBlob`, it loads each from a blob: URL instead of its data:
+ * one: Safari won't let a canvas be read back once an SVG with a
+ * <foreignObject> (mermaid's HTML labels) has been drawn on it, and Chromium
+ * won't either when the SVG comes from a blob: URL.
+ */
+async function watchSvgImages(page: Page, { viaBlob = false } = {}) {
+    await page.addInitScript(viaBlob => {
+        const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
+        const prefix = 'data:image/svg+xml;charset=utf-8,';
+        const drawn: boolean[] = [];
+        Object.assign(window, { drawnSvgs: drawn });
+        Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            ...src,
+            set(this: HTMLImageElement, url: string) {
+                if (url.startsWith(prefix)) {
+                    const svg = decodeURIComponent(url.slice(prefix.length));
+                    drawn.push(svg.includes('<foreignObject'));
+                    if (viaBlob) {
+                        url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+                    }
+                }
+                src.set!.call(this, url);
+            },
+        });
+    }, viaBlob);
+    return () => page.evaluate(() => (window as unknown as { drawnSvgs: boolean[] }).drawnSvgs);
+}
 
 /**
  * A PNG's size, its top left pixel's color, and how many of its pixels are

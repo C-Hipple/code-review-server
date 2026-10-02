@@ -2,12 +2,14 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
     copyPng,
     IMAGE_MARGIN,
+    IMAGE_PIXELS,
     IMAGE_SCALE,
     imageLayout,
     imageScale,
     legendWidth,
     MAX_IMAGE_AREA,
     MAX_IMAGE_SIDE,
+    withTimeout,
     type LegendItem,
 } from './mermaid_image';
 
@@ -19,6 +21,18 @@ const legend: LegendItem[] = [
 describe('imageScale', () => {
     test('draws a diagram at twice its size', () => {
         expect(imageScale({ width: 812, height: 430 })).toBe(IMAGE_SCALE);
+    });
+
+    test('draws a larger one at the scale that keeps it to IMAGE_PIXELS', () => {
+        // A ~30-node change diagram: twice its size would be 10 million pixels.
+        const scale = imageScale({ width: 600, height: 4200 });
+        expect(scale).toBeGreaterThan(1);
+        expect(scale).toBeLessThan(IMAGE_SCALE);
+        expect(600 * scale * 4200 * scale).toBeCloseTo(IMAGE_PIXELS);
+    });
+
+    test('draws one larger than IMAGE_PIXELS at its natural size', () => {
+        expect(imageScale({ width: 800, height: 13_000 })).toBe(1);
     });
 
     test('draws one too long for a canvas at the scale that fits it', () => {
@@ -76,7 +90,7 @@ describe('imageLayout', () => {
 describe('copyPng', () => {
     // The browser's ClipboardItem and clipboard, which bun has neither of.
     class FakeClipboardItem {
-        constructor(readonly items: Record<string, Promise<Blob>>) {}
+        constructor(readonly items: Record<string, Blob | Promise<Blob>>) {}
     }
     const writes: FakeClipboardItem[][] = [];
 
@@ -126,7 +140,7 @@ describe('copyPng', () => {
 
     test('reports why the drawing failed rather than the write it failed', async () => {
         fakeClipboard(async ([item]) => {
-            await item.items['image/png'].catch(() => {
+            await Promise.resolve(item.items['image/png']).catch(() => {
                 throw new DOMException('Failed to write to the clipboard.', 'NotAllowedError');
             });
         });
@@ -140,6 +154,35 @@ describe('copyPng', () => {
         });
         await expect(copyPng(() => Promise.resolve(new Blob()))).rejects.toThrow(
             'Document is not focused.'
+        );
+    });
+
+    test('hands the clipboard an image already made as it is', async () => {
+        fakeClipboard(async () => {});
+        const made = new Blob(['png'], { type: 'image/png' });
+        await copyPng(() => made);
+        expect(writes[0][0].items['image/png']).toBe(made);
+    });
+
+    test("gives up on a copy the browser doesn't finish", async () => {
+        fakeClipboard(() => new Promise(() => {}));
+        await expect(copyPng(() => new Blob(), 20)).rejects.toThrow(
+            "the browser hadn't copied it after 0.02 seconds"
+        );
+    });
+});
+
+describe('withTimeout', () => {
+    test('passes on what settles in time', async () => {
+        expect(await withTimeout(Promise.resolve('png'), 1000, 'too slow')).toBe('png');
+        await expect(
+            withTimeout(Promise.reject(new Error('broken')), 1000, 'too slow')
+        ).rejects.toThrow('broken');
+    });
+
+    test("fails with the reason when it doesn't", async () => {
+        await expect(withTimeout(new Promise(() => {}), 20, 'too slow')).rejects.toThrow(
+            'too slow'
         );
     });
 });

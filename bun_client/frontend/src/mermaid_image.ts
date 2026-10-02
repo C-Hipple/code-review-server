@@ -3,10 +3,14 @@
  *
  * A drawn diagram's Copy image and Download image make a PNG of it, to paste
  * into a chat, an issue or a doc. The SVG mermaid drew is loaded as an image
- * and painted onto a canvas: at twice its natural size, so it stays sharp on
- * a high-density screen; on the background the app draws it on, which
- * mermaid themed its colors for; with a margin and, for a change diagram,
- * the legend below it.
+ * and painted onto a canvas: at up to twice its natural size, so it stays
+ * sharp on a high-density screen; on the background the app draws it on,
+ * which mermaid themed its colors for; with a margin and, for a change
+ * diagram, the legend below it.
+ *
+ * Drawing, encoding and copying an image all cost by the pixel, so a large
+ * diagram is drawn at a smaller scale, and each step has a time limit, so a
+ * browser that stalls on one fails with a reason rather than never finishing.
  */
 
 import { renderMermaid, svgSize, type Size } from './mermaid_utils';
@@ -27,16 +31,30 @@ export interface DrawnDiagram {
     dark: boolean;
 }
 
-/** Image pixels per diagram unit (a CSS pixel at 1:1). */
+/** The most image pixels per diagram unit (a CSS pixel at 1:1). */
 export const IMAGE_SCALE = 2;
 
 /**
- * The most pixels an image has on a side and in all, well within the largest
- * canvas each browser will draw. A diagram too large for them at
- * IMAGE_SCALE is drawn at a smaller scale.
+ * The pixels an image may have before it's drawn at less than IMAGE_SCALE,
+ * down to the diagram's natural size: a ~30-node change diagram at twice its
+ * size is about 10 million, which takes seconds to draw, encode and copy.
+ */
+export const IMAGE_PIXELS = 4_000_000;
+
+/**
+ * The most pixels an image has on a side and in all, within the largest
+ * canvas each browser will draw. Only a diagram larger than these at its
+ * natural size is drawn smaller than that.
  */
 export const MAX_IMAGE_SIDE = 16_384;
-export const MAX_IMAGE_AREA = 50_000_000;
+export const MAX_IMAGE_AREA = 16_000_000;
+
+/**
+ * How long drawing an image may take, and copying one from the click (a
+ * drawing still under way included), before giving up with a reason.
+ */
+export const DRAW_TIMEOUT_MS = 20_000;
+export const COPY_TIMEOUT_MS = 30_000;
 
 /** The margin around the diagram, in diagram units. */
 export const IMAGE_MARGIN = 16;
@@ -55,10 +73,12 @@ const LEGEND_FONT_SIZE = 12;
 
 /** The pixels per diagram unit an image `size` large (in diagram units) is drawn at. */
 export function imageScale(size: Size): number {
+    const area = size.width * size.height;
+    const scale = Math.min(IMAGE_SCALE, Math.max(1, Math.sqrt(IMAGE_PIXELS / area)));
     return Math.min(
-        IMAGE_SCALE,
+        scale,
         MAX_IMAGE_SIDE / Math.max(size.width, size.height),
-        Math.sqrt(MAX_IMAGE_AREA / (size.width * size.height))
+        Math.sqrt(MAX_IMAGE_AREA / area)
     );
 }
 
@@ -113,7 +133,8 @@ export function imageLayout(diagram: Size, legend: number | null): ImageLayout {
 }
 
 /**
- * A PNG of a drawn diagram, with `legend` below it when there is one.
+ * A PNG of a drawn diagram, with `legend` below it when there is one. It
+ * fails if drawing it takes over `timeoutMs`.
  *
  * Safari won't let a canvas be read back once an SVG with HTML in it (here,
  * mermaid's labels, in <foreignObject>s) has been drawn on it. When the
@@ -121,10 +142,19 @@ export function imageLayout(diagram: Size, legend: number | null): ImageLayout {
  * SVG text, and the image is made of that. Its labels wrap mid-word, so it's
  * only the fallback.
  */
-export async function diagramPng(
+export function diagramPng(
     diagram: DrawnDiagram,
-    legend: readonly LegendItem[] = []
+    legend: readonly LegendItem[] = [],
+    timeoutMs = DRAW_TIMEOUT_MS
 ): Promise<Blob> {
+    return withTimeout(
+        drawPng(diagram, legend),
+        timeoutMs,
+        `drawing it took over ${timeoutMs / 1000} seconds`
+    );
+}
+
+async function drawPng(diagram: DrawnDiagram, legend: readonly LegendItem[]): Promise<Blob> {
     try {
         return await rasterize(diagram.svg, diagram.size, legend);
     } catch (e) {
@@ -256,22 +286,39 @@ function canvasPng(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 /**
- * Puts the PNG `png` makes on the clipboard. It's handed over while still
- * being drawn, so the write starts within the click that asked for it:
- * Safari refuses a clipboard write that starts after an await.
+ * Puts the PNG `png` gives on the clipboard: the image itself once it's
+ * made, or until then the promise of it, which the clipboard waits for.
+ * Either way the write starts within the click that asked for it, as Safari
+ * requires (it refuses one that starts after an await). It fails if the copy
+ * hasn't finished after `timeoutMs`.
  */
-export async function copyPng(png: () => Promise<Blob>): Promise<void> {
+export async function copyPng(
+    png: () => Blob | Promise<Blob>,
+    timeoutMs = COPY_TIMEOUT_MS
+): Promise<void> {
     if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
         throw new Error("this browser can't copy an image here; use Download image instead");
     }
     const image = png();
     try {
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
+        await withTimeout(
+            navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]),
+            timeoutMs,
+            `the browser hadn't copied it after ${timeoutMs / 1000} seconds`
+        );
     } catch (e) {
         // A failed drawing explains more than the write it failed.
         await image;
         throw e;
     }
+}
+
+/** `promise`, or a failure with `reason` once it has taken over `ms`. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, reason: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(reason)), ms);
+        promise.finally(() => clearTimeout(timer)).then(resolve, reject);
+    });
 }
 
 /** Saves `blob` as a file named `name`, as a link to it would. */

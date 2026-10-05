@@ -70,17 +70,15 @@ export default function FileIndex({ parsed, onSelectFile }: FileIndexProps) {
                 if (!p.file) return null;
                 const info = getFileStatusInfo(p.fileStatus);
                 const c = counts.get(p.file) || { add: 0, del: 0 };
-                const shortName = p.file.length > 40 ? '…' + p.file.slice(-39) : p.file;
                 return (
                     <button
                         key={p.file}
                         type="button"
                         onClick={() => onSelectFile(p.file!)}
                         className="file-index-item"
-                        title={p.file}
                     >
                         <span style={{ color: info.color, fontWeight: 600 }}>{info.icon}</span>
-                        <span>{shortName}</span>
+                        <span className="file-index-name">{p.file}</span>
                         {c.add > 0 && <span className="delta-add">+{c.add}</span>}
                         {c.del > 0 && <span className="delta-del">−{c.del}</span>}
                     </button>

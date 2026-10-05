@@ -1075,6 +1075,7 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    max-width: 100%;
     padding: 4px 10px;
     background: var(--bg-primary);
     border: 1px solid var(--border);
@@ -1093,6 +1094,13 @@ body {
     color: var(--text-primary);
     border-color: var(--accent);
     background: var(--bg-tertiary);
+}
+
+/* The full path is shown; one longer than the strip breaks inside its bubble. */
+.file-index-item .file-index-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: left;
 }
 
 .file-index-item .delta-add {

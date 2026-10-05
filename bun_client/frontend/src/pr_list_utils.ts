@@ -223,6 +223,24 @@ export function reviewEaseFacets(items: ReviewItem[]): Facet[] {
     }));
 }
 
+/**
+ * Where each repo lives, keyed by its short name like the repo facets. Read off
+ * a PR's own URL so a GitHub Enterprise host is kept, falling back to
+ * github.com from the owner. The facets fold same-named repos of different
+ * owners into one row, so the first item that names a place wins.
+ */
+export function repoUrls(items: ReviewItem[]): Map<string, string> {
+    const urls = new Map<string, string>();
+    for (const item of items) {
+        const repo = (item.repo || '').trim();
+        if (!repo || urls.has(repo)) continue;
+        const fromPR = (item.url || '').match(/^(https?:\/\/[^/]+\/[^/]+\/[^/]+)\/pull\/\d+/);
+        if (fromPR) urls.set(repo, fromPR[1]);
+        else if (item.owner) urls.set(repo, `https://github.com/${item.owner}/${repo}`);
+    }
+    return urls;
+}
+
 /** Unique, case-insensitively sorted values of a field across items. */
 export function uniqueValues(items: ReviewItem[], field: keyof ReviewItem): string[] {
     const values = new Set<string>();

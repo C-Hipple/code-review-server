@@ -80,6 +80,27 @@ test.describe('PR list', () => {
         await expect(page.getByText('1 of 4')).toBeVisible();
     });
 
+    test('links each repo in the sidebar to its GitHub page', async ({ page, context }) => {
+        // Stand in for GitHub, so following the link never leaves the machine.
+        await context.route('https://github.com/**', route =>
+            route.fulfill({ contentType: 'text/html', body: '<title>GitHub</title>' })
+        );
+        await page.goto('/');
+
+        const widgets = page.getByRole('link', { name: 'Open widgets on GitHub' });
+        await expect(widgets).toHaveAttribute('href', 'https://github.com/acme/widgets');
+        await expect(page.getByRole('link', { name: 'Open gadgets on GitHub' })).toHaveAttribute(
+            'href',
+            'https://github.com/acme/gadgets'
+        );
+
+        // A new tab, and the repo filter beside it is left alone.
+        const [tab] = await Promise.all([page.waitForEvent('popup'), widgets.click()]);
+        await expect(tab).toHaveURL('https://github.com/acme/widgets');
+        await expect(page.getByRole('checkbox', { name: /^widgets/ })).not.toBeChecked();
+        await expect(page.getByText('2 of 4')).toBeVisible();
+    });
+
     test('narrows by review ease', async ({ page }) => {
         await page.goto('/');
         const nav = page.getByRole('navigation', { name: 'Filter by state' });

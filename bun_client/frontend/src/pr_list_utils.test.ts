@@ -13,6 +13,7 @@ import {
     prState,
     reviewEaseFacets,
     reviewEaseLevel,
+    repoUrls,
     uniqueValues,
 } from './pr_list_utils';
 import type { ReviewItem } from './pr_list_utils';
@@ -290,6 +291,33 @@ describe('reviewEaseFacets', () => {
 
     test('is every level at zero for no items', () => {
         expect(reviewEaseFacets([]).map(f => f.openCount)).toEqual([0, 0, 0]);
+    });
+});
+
+describe('repoUrls', () => {
+    test("reads each repo's page off its PR URL", () => {
+        const urls = repoUrls([
+            item({ repo: 'diff-lsp', url: 'https://github.com/C-Hipple/diff-lsp/pull/12' }),
+            item({ repo: 'tools', owner: 'corp', url: 'https://ghe.corp.com/corp/tools/pull/3' }),
+        ]);
+        expect(urls.get('diff-lsp')).toBe('https://github.com/C-Hipple/diff-lsp');
+        // An enterprise host is kept, not swapped for github.com.
+        expect(urls.get('tools')).toBe('https://ghe.corp.com/corp/tools');
+    });
+
+    test('falls back to github.com from the owner when the URL is no PR', () => {
+        const urls = repoUrls([item({ repo: 'gtdbot', owner: 'C-Hipple', url: '' })]);
+        expect(urls.get('gtdbot')).toBe('https://github.com/C-Hipple/gtdbot');
+    });
+
+    test('keeps the first place for a short name and skips what names none', () => {
+        const urls = repoUrls([
+            item({ repo: 'tools', url: 'https://github.com/first/tools/pull/1' }),
+            item({ repo: 'tools', url: 'https://github.com/second/tools/pull/2' }),
+            item({ repo: 'orphan', owner: '', url: '' }),
+            item({ repo: '', url: '' }),
+        ]);
+        expect(Array.from(urls)).toEqual([['tools', 'https://github.com/first/tools']]);
     });
 });
 

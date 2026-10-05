@@ -42,6 +42,9 @@ const CommentsAddressedID = "comments-addressed"
 //   - A reviewer whose latest review still requests changes keeps the verdict
 //     at outstanding even when every thread is resolved.
 //
+// Code-owners notices — a plugin's comment naming who must approve — are
+// dropped before any of this: they are neither judged nor sent to the model.
+//
 // Every item records its source — "github" or "model" — so a reader can see
 // which statuses are GitHub's and which are the model's judgment.
 type CommentsAddressed struct{}
@@ -195,6 +198,7 @@ type workItem struct {
 }
 
 func (c CommentsAddressed) Run(ctx context.Context, req Request) (Result, error) {
+	req.Discussion = withoutCodeOwnerNotices(req.Discussion)
 	d := req.Discussion
 	report := CommentsReport{
 		Items:          []ReportItem{},
@@ -238,6 +242,50 @@ func (c CommentsAddressed) Run(ctx context.Context, req Request) (Result, error)
 	}
 
 	return finishReport(req, items, report, insufficient, runLog), nil
+}
+
+var (
+	// codeOwnersMention is a mention of code owners: "CODEOWNERS", "code
+	// owner", "code-owners", "codeowner".
+	codeOwnersMention = regexp.MustCompile(`(?i)\bcode[ _-]?owners?\b`)
+	// codeOwnersNoticeCue is what makes such a mention a notice of who must
+	// approve — an approval or review asked for, owners @-mentioned — rather
+	// than a reviewer asking for a change to the CODEOWNERS file.
+	codeOwnersNoticeCue = regexp.MustCompile(`(?i)\b(approv\w*|review\w*|sign[ -]?offs?)\b|@[\w-]+`)
+)
+
+// isCodeOwnersNotice reports whether a comment is a code-owners plugin's
+// notice: who owns the changed files and whose approval the PR needs. The raw
+// body is read, so a hidden marker such as <!-- codeowners --> counts.
+func isCodeOwnersNotice(cm Comment) bool {
+	return codeOwnersMention.MatchString(cm.Body) && codeOwnersNoticeCue.MatchString(cm.Body)
+}
+
+// withoutCodeOwnerNotices drops the code-owners notices from a discussion:
+// they ask for an approval, not a change, so there is nothing in them for the
+// author to address, and as context they only spend the prompt. A thread a
+// notice opened goes with it. The discussion passed in is left as it was.
+func withoutCodeOwnerNotices(d Discussion) Discussion {
+	keep := func(comments []Comment) []Comment {
+		var kept []Comment
+		for _, cm := range comments {
+			if !isCodeOwnersNotice(cm) {
+				kept = append(kept, cm)
+			}
+		}
+		return kept
+	}
+	d.Conversation = keep(d.Conversation)
+	var threads []Thread
+	for _, t := range d.Threads {
+		if len(t.Comments) > 0 && isCodeOwnersNotice(t.Comments[0]) {
+			continue
+		}
+		t.Comments = keep(t.Comments)
+		threads = append(threads, t)
+	}
+	d.Threads = threads
+	return d
 }
 
 // classify applies the deterministic rules to every thread and conversation

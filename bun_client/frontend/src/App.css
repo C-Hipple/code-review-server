@@ -192,21 +192,32 @@ details[open] > summary.crs-sidebar-label::after {
     overscroll-behavior: contain;
 }
 
+.crs-facet-row {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: var(--facet-row-height);
+    border-radius: 4px;
+}
+
+.crs-facet-row:hover {
+    background: var(--bg-tertiary);
+}
+
 .crs-facet-item {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex: 0 0 auto;
-    height: var(--facet-row-height);
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
     padding: 0 6px;
-    border-radius: 4px;
     color: var(--text-secondary);
     font-size: 13px;
     cursor: pointer;
 }
 
 .crs-facet-item:hover {
-    background: var(--bg-tertiary);
     color: var(--text-primary);
 }
 
@@ -243,6 +254,23 @@ details[open] > summary.crs-sidebar-label::after {
     color: var(--text-tertiary);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+}
+
+/* A repo's GitHub page, after its count. */
+.crs-facet-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 24px;
+    height: 100%;
+    border-radius: 4px;
+    color: var(--text-tertiary);
+}
+
+.crs-facet-link:hover,
+.crs-facet-link:focus-visible {
+    color: var(--accent);
 }
 
 .crs-link-btn {
@@ -587,6 +615,10 @@ details[open] > summary.crs-sidebar-label::after {
     .crs-facet-item input {
         width: 16px;
         height: 16px;
+    }
+
+    .crs-facet-link {
+        width: var(--facet-row-height);
     }
 
     .crs-toolbar {

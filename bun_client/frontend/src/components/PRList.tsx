@@ -28,6 +28,7 @@ import {
     prState,
     reviewEaseFacets,
     reviewEaseLevel,
+    repoUrls,
     uniqueValues,
 } from '../pr_list_utils';
 import type { Facet, PRState, ReviewItem } from '../pr_list_utils';
@@ -182,6 +183,13 @@ const COMMENT_ICON = (
     </Icon>
 );
 
+const LINK_ICON = (
+    <Icon size={14}>
+        <path d="M6.7 8.7a3.3 3.3 0 0 0 5 .4l2-2a3.3 3.3 0 0 0-4.7-4.7l-1.1 1.1" />
+        <path d="M9.3 7.3a3.3 3.3 0 0 0-5-.4l-2 2a3.3 3.3 0 0 0 4.7 4.7l1.1-1.1" />
+    </Icon>
+);
+
 const CONFLICT_ICON = (
     <Icon size={11}>
         <path d="M7.1 2.6a1 1 0 0 1 1.8 0l5.2 9.6a1 1 0 0 1-.9 1.5H2.8a1 1 0 0 1-.9-1.5z" />
@@ -321,6 +329,7 @@ export default function PRList({
         [items]
     );
     const repoFacets = useMemo(() => facetsByOpenCount(items, i => i.repo), [items]);
+    const repoLinks = useMemo(() => repoUrls(items), [items]);
     const authorFacets = useMemo(
         () => facetsByOpenCount(items, i => authorLogin(i.author)),
         [items]
@@ -537,6 +546,7 @@ export default function PRList({
                     onToggle={value => toggleFacet(setRepoFilters, value)}
                     onClear={() => setRepoFilters(new Set())}
                     collapsible={isMobile}
+                    hrefFor={value => repoLinks.get(value)}
                 />
                 <FacetList
                     label="Authors"
@@ -719,6 +729,8 @@ interface FacetListProps {
     collapsible: boolean;
     /** Draws a value in place of its plain text. */
     renderValue?: (value: string) => ReactNode;
+    /** A value's page on GitHub, offered as a link icon at the end of its row. */
+    hrefFor?: (value: string) => string | undefined;
 }
 
 /**
@@ -733,6 +745,7 @@ function FacetList({
     onClear,
     collapsible,
     renderValue,
+    hrefFor,
 }: FacetListProps) {
     if (facets.length === 0) return null;
 
@@ -753,28 +766,47 @@ function FacetList({
 
     const list = (
         <div className="crs-facet">
-            {facets.map(facet => (
-                <label className="crs-facet-item" key={facet.value}>
-                    <input
-                        type="checkbox"
-                        checked={selected.has(facet.value)}
-                        onChange={() => onToggle(facet.value)}
-                    />
-                    {renderValue ? (
-                        renderValue(facet.value)
-                    ) : (
-                        <span className="crs-facet-name" title={facet.value}>
-                            {facet.value}
-                        </span>
-                    )}
-                    <span
-                        className="crs-facet-count"
-                        title={`${facet.openCount} open ${facet.openCount === 1 ? 'PR' : 'PRs'}`}
-                    >
-                        {facet.openCount}
-                    </span>
-                </label>
-            ))}
+            {facets.map(facet => {
+                const href = hrefFor?.(facet.value);
+                return (
+                    // The link sits beside the label, not in it: inside, its
+                    // name would join the checkbox's.
+                    <div className="crs-facet-row" key={facet.value}>
+                        <label className="crs-facet-item">
+                            <input
+                                type="checkbox"
+                                checked={selected.has(facet.value)}
+                                onChange={() => onToggle(facet.value)}
+                            />
+                            {renderValue ? (
+                                renderValue(facet.value)
+                            ) : (
+                                <span className="crs-facet-name" title={facet.value}>
+                                    {facet.value}
+                                </span>
+                            )}
+                            <span
+                                className="crs-facet-count"
+                                title={`${facet.openCount} open ${facet.openCount === 1 ? 'PR' : 'PRs'}`}
+                            >
+                                {facet.openCount}
+                            </span>
+                        </label>
+                        {href && (
+                            <a
+                                className="crs-facet-link"
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`Open ${facet.value} on GitHub`}
+                                aria-label={`Open ${facet.value} on GitHub`}
+                            >
+                                {LINK_ICON}
+                            </a>
+                        )}
+                    </div>
+                );
+            })}
         </div>
     );
 

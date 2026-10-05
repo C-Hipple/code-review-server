@@ -510,6 +510,49 @@ func TestConversationFromTheAuthorAndBotsIsContextOnly(t *testing.T) {
 	}
 }
 
+func TestCodeOwnersNoticesAreIgnored(t *testing.T) {
+	ownersThread := thread(false, cmt("7001", "owners-plugin", "This file is owned by @acme/payments. Code owner approval required.", at(0)))
+	ownersThread.Path = "src/main.ts"
+	d := discussion(
+		ownersThread,
+		thread(false,
+			cmt("7101", "carol", "Rename this to punctuationMark.", at(0)),
+			cmt("7102", "owners-plugin", "<!-- codeowners -->Waiting on review from @acme/greeters.", at(3)),
+		),
+	)
+	d.Conversation = []Comment{
+		cmt("9001", "owners-plugin", "## Code owners\nThis PR needs approval from @acme/payments and @acme/greeters.", at(0)),
+		cmt("9002", "carol", "Please add src/greet.ts to CODEOWNERS.", at(1)),
+	}
+	model := &scriptedProvider{t: t, answers: []string{verdictJSON(
+		entry("7101", "outstanding", "The field is still named punctuation."),
+		entry("9002", "outstanding", "CODEOWNERS is not in the diff."),
+	)}}
+	_, report := run(t, request(d, model))
+
+	if len(report.Items) != 2 {
+		t.Fatalf("only carol's thread and comment are something to address, got %+v", report.Items)
+	}
+	// The notice replied after the latest commit; were it counted, the thread
+	// would be outstanding on GitHub's say-so instead of going to the model.
+	if it := itemByRoot(t, report, "7101"); it.Source != SourceModel || it.Replies != 0 || it.LastAuthor != "carol" {
+		t.Errorf("the code-owners reply should not count as activity on the thread: %+v", it)
+	}
+	itemByRoot(t, report, "9002")
+	prompt := model.prompts[0]
+	for _, notice := range []string{"@acme/payments", "@acme/greeters"} {
+		if strings.Contains(prompt, notice) {
+			t.Errorf("code-owners notices should be left out of the prompt, found %q", notice)
+		}
+	}
+	if !strings.Contains(prompt, "Please add src/greet.ts to CODEOWNERS.") {
+		t.Error("a reviewer asking for a CODEOWNERS change is review feedback, not a notice")
+	}
+	if len(d.Threads[1].Comments) != 2 || len(d.Conversation) != 2 {
+		t.Error("the caller's discussion should be left as it was")
+	}
+}
+
 func TestAnnotationsOnlyForAnchoredOpenThreads(t *testing.T) {
 	outdated := thread(false, cmt("7001", "bob", "Old line.", at(3)))
 	outdated.Outdated = true

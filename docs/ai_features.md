@@ -274,6 +274,15 @@ The model sees the unclear items, the whole human conversation, and the diff.
 It answers `addressed`, `outstanding` or `unclear` per item, with a one-line
 rationale.
 
+Code-owners notices are ignored throughout: a comment that mentions code owners
+(`CODEOWNERS`, "code owner", ...) together with an approval or review, a
+sign-off or an @-mention is a plugin saying whose approval the PR needs, not
+something for the author to change. Such a comment is neither judged nor sent
+to the model as context; a thread one opens is dropped with it, and one
+replying in a thread doesn't count as activity on it. A reviewer asking for a
+change to the CODEOWNERS file ("please add src/ to CODEOWNERS") is still
+review feedback.
+
 The design goal is never to report a confidently wrong "all addressed":
 
 - **A resolved thread always stays addressed.** The model is never asked about

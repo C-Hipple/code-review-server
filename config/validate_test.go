@@ -25,6 +25,18 @@ func TestValidateAcceptsAWorkingConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsEveryGitHubAPI(t *testing.T) {
+	cfg := validConfig()
+	cfg.GitHubAPI = GitHubAPISettings{
+		ReviewRequestHistory: GitHubAPIREST,
+		Reactions:            GitHubAPIGraphQL,
+		Mergeability:         GitHubAPIGraphQL,
+	}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -81,6 +93,14 @@ func TestValidate(t *testing.T) {
 			},
 			wantField:   "Name",
 			wantMessage: "duplicates",
+		},
+		{
+			// The capitalized spelling is the likely mistake: it is how the
+			// API is written everywhere but here.
+			name:        "unknown GitHub API",
+			mutate:      func(c *Config) { c.GitHubAPI.Reactions = "GraphQL" },
+			wantField:   "GitHubAPI.Reactions",
+			wantMessage: `"rest" or "graphql"`,
 		},
 	}
 

@@ -290,10 +290,15 @@ comment's position mapping, and it also decides whether a comment lands in
 
 Reactions are carried by comments (`comments`, `outdated_comments`) and by
 reviews, and they answer a question a reply count cannot: whether anyone
-acknowledged a comment at all. REST reports only per-emoji totals, and who
-reacted is a separate REST call *per comment*, so the server reads them from
-GraphQL's `reactionGroups` in one call per PR — again, **clients never call
-GitHub directly**.
+acknowledged a comment at all. GitHub's REST comment lists report only
+per-emoji totals, so by default the server asks REST who reacted to each comment
+whose totals aren't zero — and, because it revalidates what it fetched before,
+asking again costs nothing until something changes. REST has no endpoint for
+reactions on a review's own body, so on that default **`reviews[].reactions` is
+always empty**; a server configured with `Reactions = "graphql"` (see
+[GitHub API](configuration.md#github-api)) reads everything, review bodies
+included, from GraphQL's `reactionGroups` instead. Either way, **clients never
+call GitHub directly**.
 
 They are cached in SQLite (the `PRReactions` table) separately from the comment
 and review caches, because a reaction lands without changing either. The

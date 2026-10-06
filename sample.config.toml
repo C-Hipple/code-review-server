@@ -71,6 +71,14 @@ SectionTitle = "Needs My Team's Review"
 # Enabled = true
 # Automatic = true
 
+# Which GitHub API answers the lookups both can (see docs/configuration.md).
+# REST is the default: a reply that hasn't changed comes back 304, which GitHub
+# doesn't charge for. GraphQL fits more into a request but is charged every time.
+# [GitHubAPI]
+# ReviewRequestHistory = "rest"
+# Reactions = "graphql"     # REST can't see reactions on a review's own body
+# Mergeability = "graphql"  # fifty PRs a request instead of one each
+
 # Plugins allow extending the server with custom checks
 [[Plugins]]
 Name = "Security Check"

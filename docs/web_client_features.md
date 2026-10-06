@@ -679,10 +679,11 @@ basics:
   for free and **must not** call GitHub itself. All three are zero when the server
   could not fetch them, which means "unknown", not "unresolved".
 - [`comments[].reactions` / `reviews[].reactions`](protocol.md#reactions) — the emoji
-  on a comment *and the logins behind each one*. REST reports only totals, and who
-  reacted is one REST call per comment, so the server reads it from GraphQL in a
-  single call per PR and folds it into the payload. Null or empty means "nobody
-  reacted, or the fetch didn't happen" — there is no separate "unknown".
+  on a comment *and the logins behind each one*, which the server fetches and folds
+  into the payload. `reviews[].reactions` is filled only when the server routes
+  reactions to GraphQL: REST, the default, can't see reactions on a review's own
+  body. Null or empty means "nobody reacted, or the fetch didn't happen" — there is
+  no separate "unknown".
 
 ---
 

@@ -10,12 +10,15 @@ import (
 	"strings"
 )
 
-// Shared plumbing for the handful of GitHub GraphQL calls this package makes.
-// Everything else goes through go-github's REST client; GraphQL is reserved for
-// the questions REST cannot answer — review-thread resolution state
-// (review_threads.go), the full review-request history (team_reviews.go) — or
-// can only answer one item at a time: who reacted to each comment
-// (reactions.go) and whether each PR merges cleanly (mergeability.go).
+// Shared plumbing for the GitHub GraphQL calls this package makes. Most of
+// what it asks goes through go-github's REST client, whose replies can be
+// revalidated for free (http_cache.go); GraphQL can't be, so it answers only
+// what REST can't — review-thread resolution (review_threads.go) — and the
+// lookups the config routes to it (routing.go): the review-request history
+// (team_reviews.go), who reacted to each comment (reactions.go) and whether
+// each PR merges cleanly (mergeability.go). Each of those has a REST
+// implementation alongside, and is answered by REST unless the config says
+// otherwise.
 
 // GraphQLEndpoint is the GitHub GraphQL URL. Overridable in tests.
 var GraphQLEndpoint = "https://api.github.com/graphql"
@@ -51,9 +54,7 @@ func runGraphQL(ctx context.Context, query string, variables map[string]any, out
 // postGraphQL posts one query and returns the body of GitHub's 200 response,
 // errors array and all, for the caller to decode.
 func postGraphQL(ctx context.Context, query string, variables map[string]any) ([]byte, error) {
-	// trackBudget=false: GraphQL is metered separately from REST, so its
-	// X-RateLimit-* headers must not overwrite the REST budget reading.
-	httpClient, err := newAuthedHTTPClient(false)
+	httpClient, err := newAuthedHTTPClient(GraphQL)
 	if err != nil {
 		return nil, err
 	}

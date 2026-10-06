@@ -14,9 +14,10 @@ import (
 // a member of a requested team submits a review, GitHub drops that team from
 // the PR's requested_teams. REST alone therefore only ever answers "which teams
 // are still waiting", which would make an approving team disappear from the
-// review list rather than turn green. The timeline's REVIEW_REQUESTED_EVENTs
-// keep the full history, so this file pairs that history with the PR's reviews
-// to say where each required team actually stands.
+// review list rather than turn green. The PR's review_requested events keep the
+// full history — REST lists them among the issue events, GraphQL in the
+// timeline — so this file pairs that history with the PR's reviews to say
+// where each required team actually stands.
 
 const (
 	// teamMembersTTL caches a team's member list. Membership changes on the
@@ -134,16 +135,68 @@ type reviewRequestHistoryResponse struct {
 }
 
 // GetReviewRequestHistory returns every team and user ever asked to review the
-// PR, deduplicated and in the order they were first requested. Errors are
-// returned rather than swallowed; callers fall back to the teams still listed
-// on the PR object, which is a subset of this.
+// PR, deduplicated and in the order they were first requested, from whichever
+// API RouteFor picks. Errors are returned rather than swallowed; callers fall
+// back to the teams still listed on the PR object, which is a subset of this.
 func GetReviewRequestHistory(owner, repo string, number int) (ReviewRequestHistory, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	history := ReviewRequestHistory{}
-	seenTeams := map[string]bool{}
-	seenUsers := map[string]bool{}
+	if RouteFor(LookupReviewRequestHistory) == GraphQL {
+		return reviewRequestHistoryGraphQL(ctx, owner, repo, number)
+	}
+	client, err := newRESTClient()
+	if err != nil {
+		return ReviewRequestHistory{}, err
+	}
+	return reviewRequestHistoryREST(ctx, client, owner, repo, number)
+}
+
+// reviewRequestHistoryREST reads the history from the PR's issue events, which
+// record each review request as a review_requested event naming the user or
+// team asked. Events list oldest first, so each reviewer is met in the order
+// they were first requested.
+func reviewRequestHistoryREST(ctx context.Context, client *github.Client, owner, repo string, number int) (ReviewRequestHistory, error) {
+	events, err := ListAllPages("issues/events", func(opts *github.ListOptions) ([]*github.IssueEvent, *github.Response, error) {
+		return client.Issues.ListIssueEvents(ctx, owner, repo, number, opts)
+	})
+	if err != nil {
+		return ReviewRequestHistory{}, err
+	}
+
+	history := newReviewRequestCollector(owner)
+	for _, event := range events {
+		if event.GetEvent() != "review_requested" {
+			continue
+		}
+		if user := event.RequestedReviewer; user != nil {
+			history.addUser(user.GetLogin())
+		}
+		if team := event.RequestedTeam; team != nil {
+			history.addTeam(TeamRef{Name: team.GetName(), Slug: team.GetSlug(), Org: teamOrg(team)})
+		}
+	}
+	return history.history, nil
+}
+
+// teamOrg is the login of the organization that owns team. The team an issue
+// event names leaves its organization out, but its html_url —
+// https://github.com/orgs/<org>/teams/<slug> — carries it.
+func teamOrg(team *github.Team) string {
+	if org := team.GetOrganization().GetLogin(); org != "" {
+		return org
+	}
+	_, path, ok := strings.Cut(team.GetHTMLURL(), "/orgs/")
+	if !ok {
+		return ""
+	}
+	org, _, _ := strings.Cut(path, "/")
+	return org
+}
+
+// reviewRequestHistoryGraphQL pages the PR timeline's review-request events.
+func reviewRequestHistoryGraphQL(ctx context.Context, owner, repo string, number int) (ReviewRequestHistory, error) {
+	history := newReviewRequestCollector(owner)
 
 	var after *string
 	// Bound the paging so a malformed cursor response can't spin forever.
@@ -164,46 +217,68 @@ func GetReviewRequestHistory(owner, repo string, number int) (ReviewRequestHisto
 			reviewer := node.RequestedReviewer
 			switch reviewer.TypeName {
 			case "User":
-				login := strings.ToLower(reviewer.Login)
-				if login == "" || seenUsers[login] {
-					continue
-				}
-				seenUsers[login] = true
-				history.Users = append(history.Users, reviewer.Login)
+				history.addUser(reviewer.Login)
 			case "Team":
-				if reviewer.Slug == "" {
-					continue
-				}
-				team := TeamRef{
+				history.addTeam(TeamRef{
 					Name: reviewer.Name,
 					Slug: reviewer.Slug,
 					Org:  reviewer.Organization.Login,
-				}
-				if team.Org == "" {
-					// The org is only missing on malformed responses; fall back
-					// to the repo's owner, which owns the team in practice.
-					team.Org = owner
-				}
-				if team.Name == "" {
-					team.Name = team.Slug
-				}
-				if seenTeams[team.Key()] {
-					continue
-				}
-				seenTeams[team.Key()] = true
-				history.Teams = append(history.Teams, team)
+				})
 			}
 		}
 
 		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			return history, nil
+			return history.history, nil
 		}
 		cursor := conn.PageInfo.EndCursor
 		after = &cursor
 	}
 
 	slog.Warn("Stopped paging review request history at the page cap", "owner", owner, "repo", repo, "pr", number)
-	return history, nil
+	return history.history, nil
+}
+
+// reviewRequestCollector builds a ReviewRequestHistory from review requests
+// taken in the order they were made, keeping each reviewer once. Both APIs'
+// implementations feed it, so they agree on what counts as the same reviewer.
+type reviewRequestCollector struct {
+	owner     string
+	history   ReviewRequestHistory
+	seenTeams map[string]bool
+	seenUsers map[string]bool
+}
+
+func newReviewRequestCollector(owner string) *reviewRequestCollector {
+	return &reviewRequestCollector{owner: owner, seenTeams: map[string]bool{}, seenUsers: map[string]bool{}}
+}
+
+func (c *reviewRequestCollector) addUser(login string) {
+	key := strings.ToLower(login)
+	if key == "" || c.seenUsers[key] {
+		return
+	}
+	c.seenUsers[key] = true
+	c.history.Users = append(c.history.Users, login)
+}
+
+func (c *reviewRequestCollector) addTeam(team TeamRef) {
+	if team.Slug == "" {
+		return
+	}
+	if team.Org == "" {
+		// A reply that doesn't name the team's org is malformed, or a REST
+		// one without the usual html_url; the repo's owner owns the team in
+		// practice.
+		team.Org = c.owner
+	}
+	if team.Name == "" {
+		team.Name = team.Slug
+	}
+	if c.seenTeams[team.Key()] {
+		return
+	}
+	c.seenTeams[team.Key()] = true
+	c.history.Teams = append(c.history.Teams, team)
 }
 
 // GetTeamMembers returns the logins of everyone on org/slug, cached (see

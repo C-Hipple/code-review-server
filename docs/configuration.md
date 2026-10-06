@@ -79,6 +79,7 @@ Root level:
 - `SleepDuration` is not a positive number of minutes, or is greater than 1440 (24 hours).
 - A `Repos` entry is not in `owner/repo` form.
 - A `SectionSorting` value is not `newest_first` or `oldest_first`.
+- A `[GitHubAPI]` key names something other than `rest` or `graphql` (see [GitHub API](#github-api)).
 
 Per workflow:
 
@@ -354,6 +355,28 @@ the flag always ran — or on the one `ExperimentalLLMProvider` names (`gemini` 
 `[AI]` defaults don't apply to them, and an `[[AIFeatures]]` entry for the same
 feature wins over its flag. With either flag on, `ExperimentalLLMProvider =
 "openrouter"` without a model is logged at startup and rejected by `UpdateConfig`.
+
+## GitHub API
+
+The server talks to GitHub through two APIs, each metered against its own hourly budget — a personal token gets 5,000 REST requests and 5,000 GraphQL points. REST is the default. Each REST request goes out carrying the ETag of the reply the server last got for it; when nothing has changed, GitHub answers `304 Not Modified`, which doesn't count against the rate limit, and the server reuses its copy. A GraphQL query has no such shortcut: it is charged every time, changed or not.
+
+Three lookups can go to either API, and the optional `[GitHubAPI]` table picks one per lookup:
+
+| Key | `"rest"` (default) | `"graphql"` |
+| --- | --- | --- |
+| `ReviewRequestHistory` | The PR's issue events, a request per hundred. Asked once per PR, the first time a cycle sees it, for the required-team chips. | The PR's timeline, filtered to review requests. |
+| `Reactions` | A request per comment somebody reacted to. **Reactions on a review's own body are not available** — REST has no endpoint for them — so review bodies show none. | One query per PR, review bodies included. |
+| `Mergeability` | A request per PR on the review list, each cycle, for PRs a workflow listed (a PR fetched on its own already carries the answer). | A query per fifty PRs. |
+
+```toml
+[GitHubAPI]
+Reactions = "graphql"     # show reactions on review bodies too
+Mergeability = "graphql"  # long review lists in busy repos: fifty PRs a request
+```
+
+Review-thread resolution (the *Resolved* badges) always uses GraphQL, since REST doesn't report it.
+
+The REST replies are kept in memory (up to 64 MB), so the cache starts empty when the server does. After every cycle the `GitHub rate limit post-cycle` log line reports `not_modified_this_cycle` — how many requests GitHub answered 304 — and the GraphQL budget left (`graphql_remaining`) next to the REST one.
 
 ## Example Config
 

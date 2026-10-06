@@ -18,9 +18,13 @@ import (
 // draw their PRs from leaves it out, so REST asks once per PR on the review
 // list, every cycle — the answer changes whenever the base branch moves, with
 // nothing on the PR itself changing. Each of those asks is revalidated
-// (http_cache.go), so a PR whose reply hasn't changed costs nothing. GraphQL's
-// `mergeable` is the same answer, and one request asks about a whole batch of
-// PRs, but is charged every time. RouteFor picks (routing.go).
+// (http_cache.go), but a PR's reply embeds its repository, whose pushed_at
+// moves with a push to any branch of it: in an active repository nearly every
+// ask comes back changed, and is charged. GraphQL's `mergeable` is the same
+// answer, and one request asks about a whole batch of PRs, charged every time
+// but once per batch — which makes this the lookup most worth routing to
+// GraphQL for a long review list in a busy repository. RouteFor picks
+// (routing.go).
 //
 // GitHub computes the answer lazily. Asking about a PR whose head or base has
 // moved since it last checked starts the computation and comes back unknown;

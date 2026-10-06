@@ -366,7 +366,7 @@ Three lookups can go to either API, and the optional `[GitHubAPI]` table picks o
 | --- | --- | --- |
 | `ReviewRequestHistory` | The PR's issue events, a request per hundred. Asked once per PR, the first time a cycle sees it, for the required-team chips. | The PR's timeline, filtered to review requests. |
 | `Reactions` | A request per comment somebody reacted to. **Reactions on a review's own body are not available** — REST has no endpoint for them — so review bodies show none. | One query per PR, review bodies included. |
-| `Mergeability` | A request per PR on the review list, each cycle, for PRs a workflow listed (a PR fetched on its own already carries the answer). | A query per fifty PRs. |
+| `Mergeability` | A request per PR on the review list, each cycle, for PRs a workflow listed (a PR fetched on its own already carries the answer). A PR's reply includes its repository's last push time, so in an active repository nearly every one comes back changed and is charged. | A query per fifty PRs. |
 
 ```toml
 [GitHubAPI]

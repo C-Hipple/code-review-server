@@ -8,25 +8,37 @@ import { expect, modal, openReview, test } from './harness/test';
 
 const button = /Comments addressed\?/;
 
+/**
+ * Opens the report of a feature that never ran for the PR. Its toolbar
+ * button generates it in the background, and opens it once it has landed.
+ */
+async function generateAndOpen(page: Page, name: string) {
+    const toolbarButton = page.getByRole('button', { name: `✦ ${name}` });
+    await toolbarButton.click();
+    await expect(page.getByRole('status')).toHaveText(`✦ ${name} is ready`);
+    await toolbarButton.click();
+    return modal(page, name);
+}
+
 test.describe('AI report', () => {
-    test('runs comments-addressed on open, polls, and jumps to the thread', async ({
+    test('generates a report that never ran in the background, then opens it', async ({
         page,
         backend,
     }) => {
         await openReview(page);
+        const toolbarButton = page.getByRole('button', { name: button });
+        await expect(toolbarButton).toBeEnabled();
+        const loads = (await backend.calls('GetAIOutput')).length;
 
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Comments addressed?');
-        await expect(dialog.getByText('1 outstanding of 1 item(s); 0 addressed.')).toBeVisible();
-        await expect(dialog.getByText('Needs attention (1)')).toBeVisible();
-        await expect(dialog.getByText('Should punctuation have a default?')).toBeVisible();
-        await expect(
-            dialog.getByText(
-                'Unresolved on GitHub, and alice (the author) replied after the latest commit.'
-            )
-        ).toBeVisible();
+        // Held, the first poll keeps the run in flight until it's released.
+        await backend.holdNext('GetAIOutput');
+        await toolbarButton.click();
 
-        // Never run for this PR, so opening it asked for a run, then polled.
+        // Never run for this PR: the click asks for a run, and the button
+        // spins until it lands rather than opening an empty report.
+        await expect.poll(async () => (await backend.calls('GetAIOutput')).length).toBe(loads + 1);
+        await expect(toolbarButton).toBeDisabled();
+        await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
         const runs = await backend.calls('RunAIFeature');
         expect(runs.map(c => c.params)).toEqual([
             {
@@ -37,12 +49,26 @@ test.describe('AI report', () => {
                 Force: false,
             },
         ]);
-        expect((await backend.calls('GetAIOutput')).length).toBeGreaterThanOrEqual(3);
 
-        // The toolbar counts what needs attention.
+        // Once it lands, the toolbar says so and counts what needs attention.
+        await backend.release('GetAIOutput');
+        await expect(page.getByRole('status')).toHaveText('✦ Comments addressed? is ready');
+        const counted = page.getByRole('button', { name: /Comments addressed\? \(1\)/ });
+        await expect(counted).toBeEnabled();
+        await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
+
+        // Now there is a current report to open, which doesn't run it again.
+        await counted.click();
+        const dialog = modal(page, 'Comments addressed?');
+        await expect(dialog.getByText('1 outstanding of 1 item(s); 0 addressed.')).toBeVisible();
+        await expect(dialog.getByText('Needs attention (1)')).toBeVisible();
+        await expect(dialog.getByText('Should punctuation have a default?')).toBeVisible();
         await expect(
-            page.getByRole('button', { name: /Comments addressed\? \(1\)/ })
+            dialog.getByText(
+                'Unresolved on GitHub, and alice (the author) replied after the latest commit.'
+            )
         ).toBeVisible();
+        expect(await backend.calls('RunAIFeature')).toHaveLength(1);
 
         // Jumping closes the report and reveals the thread in the diff.
         await dialog.getByRole('button', { name: 'src/greet.ts:3' }).click();
@@ -52,10 +78,22 @@ test.describe('AI report', () => {
         ).toBeVisible();
     });
 
+    test('says so when the run cannot start', async ({ page, backend }) => {
+        await openReview(page);
+        const toolbarButton = page.getByRole('button', { name: button });
+        await backend.failNext('RunAIFeature', 'no API key');
+        await toolbarButton.click();
+
+        await expect(page.getByRole('status')).toHaveText(
+            'Could not start Comments addressed?: no API key'
+        );
+        await expect(toolbarButton).toBeEnabled();
+        await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
+    });
+
     test('re-run forces a fresh run', async ({ page, backend }) => {
         await openReview(page);
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Comments addressed?');
+        const dialog = await generateAndOpen(page, 'Comments addressed?');
         await expect(dialog.getByText('Needs attention (1)')).toBeVisible();
 
         await dialog.getByRole('button', { name: '↻ Re-run' }).click();
@@ -67,8 +105,7 @@ test.describe('AI report', () => {
 
     test('reopening a current report does not run it again', async ({ page, backend }) => {
         await openReview(page);
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Comments addressed?');
+        const dialog = await generateAndOpen(page, 'Comments addressed?');
         await expect(dialog.getByText('Needs attention (1)')).toBeVisible();
         await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -175,8 +212,6 @@ test.describe('AI view', () => {
 
 // change-diagram: the report is raw Mermaid, drawn by the mermaid library.
 test.describe('Change diagram', () => {
-    const button = /Change diagram/;
-
     test('draws the diagram in a modal that takes most of the screen', async ({
         page,
         backend,
@@ -184,15 +219,14 @@ test.describe('Change diagram', () => {
         await backend.setDiagram(true);
         await openReview(page);
 
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Change diagram');
+        const dialog = await generateAndOpen(page, 'Change diagram');
         const svg = dialog.locator('.mermaid-canvas svg');
         await expect(svg).toBeVisible();
         await expect(svg).toContainText('src/greet.ts: greet');
         await expect(svg).toContainText('src/main.ts: main');
         await expect(dialog.getByText('Added', { exact: true })).toBeVisible();
 
-        // Never run for this PR, so opening it asked for a run.
+        // Never run for this PR, so its button asked for a run.
         const runs = await backend.calls('RunAIFeature');
         expect(runs.map(c => c.params)).toEqual([
             { Owner: 'acme', Repo: 'widgets', Number: 42, Feature: 'change-diagram', Force: false },
@@ -228,8 +262,7 @@ test.describe('Change diagram', () => {
         await backend.setDiagram(true, 'flowchart TD\n    a[unclosed --> b');
         await openReview(page);
 
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Change diagram');
+        const dialog = await generateAndOpen(page, 'Change diagram');
         await expect(dialog.getByRole('alert')).toContainText(
             'Mermaid could not draw this diagram'
         );
@@ -253,7 +286,6 @@ test.describe('Change diagram', () => {
 
 // Copy image and Download image: a PNG of the diagram as drawn.
 test.describe('Change diagram image', () => {
-    const button = /Change diagram/;
     // The fills of the fixture's added and changed nodes, and of the legend's
     // swatches for them, which are far smaller.
     const ADDED = '#dcfce7';
@@ -268,8 +300,7 @@ test.describe('Change diagram image', () => {
 
     async function openDiagram(page: Page) {
         await openReview(page);
-        await page.getByRole('button', { name: button }).click();
-        const dialog = modal(page, 'Change diagram');
+        const dialog = await generateAndOpen(page, 'Change diagram');
         await expect(dialog.locator('.mermaid-canvas svg')).toBeVisible();
         return dialog;
     }

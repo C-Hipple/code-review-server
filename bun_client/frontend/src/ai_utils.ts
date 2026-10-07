@@ -254,6 +254,14 @@ export function isPending(output: AIFeatureOutput | null | undefined): boolean {
 }
 
 /**
+ * Whether a run has ever finished for the PR, so there is a report to show —
+ * even one that has since gone stale, or that a run in flight will replace.
+ */
+export function hasResult(output: AIFeatureOutput | null | undefined): boolean {
+    return !!output && output.status !== 'not-run' && output.updated_at !== '';
+}
+
+/**
  * Whether opening a feature should start a run: it has never run for this
  * PR, or its result no longer describes it. The server answers a run for
  * unchanged inputs from its cache, so this never costs a needless model call.

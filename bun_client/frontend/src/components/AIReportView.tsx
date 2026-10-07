@@ -4,6 +4,7 @@ import {
     canJumpTo,
     changeDiagram,
     commentsReport,
+    hasResult,
     isPending,
     itemLocation,
     itemVariant,
@@ -54,7 +55,7 @@ export default function AIReportView({
     const pending = isPending(output);
     const report = commentsReport(output);
     const diagram = changeDiagram(output);
-    const hasResult = !!output && output.status !== 'not-run' && output.updated_at !== '';
+    const stored = hasResult(output);
     const grow: React.CSSProperties = fill ? { flex: 1, minHeight: 0 } : {};
 
     return (
@@ -77,7 +78,7 @@ export default function AIReportView({
                 </Callout>
             )}
 
-            {pending && !hasResult && (
+            {pending && !stored && (
                 <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>
                     Working it out… this can take a little while when the model is consulted.
                 </div>
@@ -85,7 +86,7 @@ export default function AIReportView({
 
             <div
                 style={{
-                    opacity: pending && hasResult ? 0.55 : 1,
+                    opacity: pending && stored ? 0.55 : 1,
                     ...(fill && { display: 'flex', flexDirection: 'column', ...grow }),
                 }}
             >
@@ -105,7 +106,7 @@ export default function AIReportView({
                         imageName={imageName}
                     />
                 ) : (
-                    hasResult &&
+                    stored &&
                     output && (
                         <div className="markdown-content">
                             <PluginBodyView body={output.body} emptyLabel="No output." />

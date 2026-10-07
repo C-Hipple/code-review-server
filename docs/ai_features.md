@@ -217,7 +217,9 @@ change-diagram, file-ordering and review-ease run `oneshot` only.
 - **On demand.** A client asks with `RunAIFeature`; the run happens in the
   background and the client polls `GetAIOutput` while it reads `pending`.
   Opening a report in either client asks for a run when the feature has never
-  run for the PR or its report is [stale](#caching-and-staleness).
+  run for the PR or its report is [stale](#caching-and-staleness). The web
+  review toolbar asks without opening anything when there is no report yet:
+  the button spins until the run lands.
 - **Automatically**, for features with `Automatic = true`: after a workflow
   cycle adds a PR or sees a new push, and when a client opens a PR — the same
   post-update hook that runs plugins.
@@ -618,8 +620,12 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
 
 - **Web.** The review toolbar shows a button per enabled feature, with the
   number of items needing attention once a report exists — for feature-flags,
-  the changes that run without a flag or are unclear — or ✓ when none do. It
-  opens the report (feature-flags renders its markdown body):
+  the changes that run without a flag or are unclear — or ✓ when none do. A
+  feature with no result for the PR yet has no report to open, so its button
+  runs it in the background instead, spinning until the result lands (as it
+  does while a run the server started automatically is in flight) and then
+  saying so in a toast. Once there is a result, the button opens the report
+  (feature-flags renders its markdown body):
   verdict, what needs attention with who decided each item, change requests,
   and the addressed items collapsed. An item's location jumps to its thread in
   the diff (or the outdated-comments panel); **↻ Re-run** forces a fresh run.

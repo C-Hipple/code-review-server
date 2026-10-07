@@ -5,6 +5,7 @@ import {
     canJumpTo,
     changeDiagram,
     commentsReport,
+    hasResult,
     isPending,
     itemLocation,
     pollDelayMs,
@@ -180,6 +181,19 @@ describe('shouldRunOnOpen', () => {
         expect(isPending(output({ status: 'pending' }))).toBe(true);
         expect(isPending(output())).toBe(false);
         expect(isPending(null)).toBe(false);
+    });
+
+    test('hasResult: a run has finished, even if it is stale or being replaced', () => {
+        expect(hasResult(output())).toBe(true);
+        expect(hasResult(output({ status: 'error' }))).toBe(true);
+        expect(hasResult(output({ stale: true }))).toBe(true);
+        expect(hasResult(output({ status: 'pending' }))).toBe(true);
+    });
+
+    test('hasResult: nothing to show before the first run lands', () => {
+        expect(hasResult(output({ status: 'not-run', updated_at: '' }))).toBe(false);
+        expect(hasResult(output({ status: 'pending', updated_at: '' }))).toBe(false);
+        expect(hasResult(undefined)).toBe(false);
     });
 });
 

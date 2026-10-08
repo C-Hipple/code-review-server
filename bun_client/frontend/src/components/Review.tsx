@@ -9,12 +9,14 @@ import {
 } from '../api';
 import {
     attentionCount,
+    hasResult,
     reportFeatures,
     type AIFeatureInfo,
     type AIFeatureOutput,
     type ReportItem,
 } from '../ai_utils';
 import { Button, Theme, StatusVariant } from '../design';
+import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
@@ -340,6 +342,19 @@ export default function Review({
             console.error('Failed to load AI outputs:', e);
         }
     };
+
+    // Runs the toolbar follows without a report open: a feature that never
+    // ran is generated from its button, which spins until the result lands.
+    const aiRuns = useAIBackgroundRuns({
+        owner,
+        repo,
+        number,
+        features: aiFeatures,
+        outputs: aiOutputs,
+        onOutputs: outputs => setAIOutputs(prev => ({ ...prev, ...outputs })),
+        openFeature: openAIFeature,
+        onToast: showToast,
+    });
 
     const executePlugin = async (pluginName: string) => {
         setExecutingPlugins((prev: Set<string>) => new Set(prev).add(pluginName));
@@ -1142,13 +1157,22 @@ export default function Review({
                         : ''}
                 </Button>
                 {aiFeatures.map(feature => {
-                    const count = attentionCount(aiOutputs[feature.id]);
+                    const output = aiOutputs[feature.id];
+                    const count = attentionCount(output);
+                    const generating = aiRuns.generating(feature.id);
                     return (
                         <Button
                             key={feature.id}
-                            onClick={() => setOpenAIFeature(feature.id)}
+                            // Without a result there is nothing to open yet:
+                            // generate one in the background instead.
+                            onClick={() =>
+                                hasResult(output)
+                                    ? setOpenAIFeature(feature.id)
+                                    : aiRuns.generate(feature)
+                            }
                             variant={openAIFeature === feature.id ? 'primary' : 'secondary'}
-                            title={feature.description}
+                            loading={generating}
+                            title={generating ? `Generating ${feature.name}…` : feature.description}
                         >
                             ✦ {feature.name}
                             {count !== null && (count > 0 ? ` (${count})` : ' ✓')}

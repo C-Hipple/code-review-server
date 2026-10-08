@@ -596,7 +596,7 @@ type CommentJSON struct {
 	ResolvedBy string `json:"resolved_by"`
 	// Reactions are the emoji left on this comment and the logins behind each
 	// one, so a client can show that someone acknowledged the comment rather
-	// than only that nobody replied to it. Also GraphQL-only (see
+	// than only that nobody replied to it. A fetch of their own (see
 	// git_tools.GetReactions); empty when that fetch was skipped or failed.
 	Reactions []git_tools.Reaction `json:"reactions"`
 }
@@ -1396,9 +1396,9 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// REST comments above and merged in during the split.
 	reviewThreads := GetPRReviewThreads(owner, repo, number, skipCache)
 
-	// Who reacted is GraphQL-only as well, and is merged in after the split so
-	// the comment and review caches stay free of it — a reaction lands without
-	// changing either.
+	// Who reacted is a fetch of its own too — the comments above carry only
+	// per-emoji totals — and is merged in after the split so the comment and
+	// review caches stay free of it: a reaction lands without changing either.
 	reactions := GetPRReactions(owner, repo, number, skipCache)
 
 	commentJSONs, outdatedCommentJSONs := splitComments(comments, reviewThreads)
@@ -2633,7 +2633,7 @@ func GetPRReviewThreads(owner, repo string, number int, skipCache bool) []git_to
 }
 
 // GetPRReactions returns every reaction on the PR's comments and reviews,
-// reading the DB cache first. A GraphQL failure is logged and reported as nil
+// reading the DB cache first. A failed fetch is logged and reported as nil
 // rather than an error so the PR still renders, just without reaction chips.
 func GetPRReactions(owner, repo string, number int, skipCache bool) *git_tools.PRReactions {
 	if !skipCache {

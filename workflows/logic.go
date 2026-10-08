@@ -44,8 +44,8 @@ type AuxDataRequirement struct {
 	// the PR's reviews, so asking for it implies Reviews.
 	Teams bool
 	// Reactions is who reacted to each comment and review. Like ReviewThreads
-	// it is GraphQL-only and read only by the review view; asking for Comments
-	// implies it, since a reaction is metadata about a comment.
+	// it is a fetch of its own, read only by the review view; asking for
+	// Comments implies it, since a reaction is metadata about a comment.
 	Reactions bool
 }
 

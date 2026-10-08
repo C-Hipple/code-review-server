@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v74/github"
@@ -14,16 +15,23 @@ import (
 // Whether a pull request can merge without conflicts is something GitHub works
 // out itself, by test-merging the head into the base. Over REST only the
 // single-PR endpoint reports it (`mergeable`); the list endpoint most workflows
-// draw their PRs from leaves it out, so REST would cost a call per PR on the
-// review list, every cycle — the answer changes whenever the base branch moves,
-// with nothing on the PR itself changing. GraphQL's `mergeable` is the same
-// answer, and one request asks about a whole batch of PRs.
+// draw their PRs from leaves it out, so REST asks once per PR on the review
+// list, every cycle — the answer changes whenever the base branch moves, with
+// nothing on the PR itself changing. Each of those asks is revalidated
+// (http_cache.go), but a PR's reply embeds its repository, whose pushed_at
+// moves with a push to any branch of it: in an active repository nearly every
+// ask comes back changed, and is charged. GraphQL's `mergeable` is the same
+// answer, and one request asks about a whole batch of PRs, charged every time
+// but once per batch — which makes this the lookup most worth routing to
+// GraphQL for a long review list in a busy repository. RouteFor picks
+// (routing.go).
 //
 // GitHub computes the answer lazily. Asking about a PR whose head or base has
 // moved since it last checked starts the computation and comes back unknown;
 // the answer is there a few seconds later.
 
-// A PR's mergeability, as GraphQL's MergeableState reports it.
+// A PR's mergeability: REST's mergeable true/false/null, or GraphQL's
+// MergeableState.
 const (
 	// MergeabilityMergeable means the head merges into the base cleanly.
 	MergeabilityMergeable = "mergeable"
@@ -61,17 +69,76 @@ func RESTMergeability(pr *github.PullRequest) string {
 // review list's request well inside GitHub's per-request time limit.
 const mergeabilityBatchSize = 50
 
-// GetMergeability asks GitHub whether each PR merges cleanly, in batches of
-// mergeabilityBatchSize.
+// GetMergeability asks GitHub whether each PR merges cleanly, through whichever
+// API RouteFor picks.
 //
 // The result has an entry for every PR GitHub answered. One it could not
 // resolve — deleted, transferred, or in a repository the token can no longer
-// read — is simply absent: GitHub fails that lookup on its own and answers the
-// rest, so one dead row on a review list can't keep the others from being
-// checked. The error is for a request that answered nothing, such as a
-// rate-limited one; the result then still holds the batches answered before it.
+// read — is simply absent, so one dead row on a review list can't keep the
+// others from being checked. The error is for a request that failed outright,
+// such as a rate-limited one; the result then still holds every answer
+// gathered before it, and nothing more is asked.
 func GetMergeability(refs []PRRef) (map[PRRef]Mergeability, error) {
 	refs = DedupeRefs(refs)
+	if RouteFor(LookupMergeability) == GraphQL {
+		return mergeabilityGraphQL(refs)
+	}
+	client, err := newRESTClient()
+	if err != nil {
+		return map[PRRef]Mergeability{}, err
+	}
+	return mergeabilityREST(client, refs)
+}
+
+// mergeabilityREST asks the single-PR endpoint about each PR, a few at a time.
+func mergeabilityREST(client *github.Client, refs []PRRef) (map[PRRef]Mergeability, error) {
+	answers := make(map[PRRef]Mergeability, len(refs))
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, prFetchConcurrency)
+	for _, ref := range refs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Once a request has failed outright the rest would most likely
+			// fail the same way — a spent budget — so they aren't sent.
+			mu.Lock()
+			failed := firstErr != nil
+			mu.Unlock()
+			if failed {
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			pr, _, err := client.PullRequests.Get(ctx, ref.Owner, ref.Repo, ref.Number)
+
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case isNotFound(err):
+				// Absent, like a PR GraphQL can't resolve.
+			case err != nil:
+				if firstErr == nil {
+					firstErr = err
+				}
+			default:
+				answers[ref] = Mergeability{State: RESTMergeability(pr), HeadSHA: pr.GetHead().GetSHA()}
+			}
+		}()
+	}
+	wg.Wait()
+	return answers, firstErr
+}
+
+// mergeabilityGraphQL asks in batches of mergeabilityBatchSize.
+func mergeabilityGraphQL(refs []PRRef) (map[PRRef]Mergeability, error) {
 	answers := make(map[PRRef]Mergeability, len(refs))
 	for start := 0; start < len(refs); start += mergeabilityBatchSize {
 		end := min(start+mergeabilityBatchSize, len(refs))

@@ -251,3 +251,20 @@ Command = "echo 2"
 		})
 	}
 }
+func TestParseConfigReadsGitHubAPIRoutes(t *testing.T) {
+	got, err := parseConfig([]byte(`
+[GitHubAPI]
+Reactions = "graphql"
+Mergeability = "rest"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	want := GitHubAPISettings{Reactions: GitHubAPIGraphQL, Mergeability: GitHubAPIREST}
+	if got.GitHubAPI != want {
+		t.Errorf("GitHubAPI = %+v, want %+v", got.GitHubAPI, want)
+	}
+	if routes := got.GitHubAPI.Routes(); routes["ReviewRequestHistory"] != "" {
+		t.Errorf("ReviewRequestHistory = %q, want unset", routes["ReviewRequestHistory"])
+	}
+}

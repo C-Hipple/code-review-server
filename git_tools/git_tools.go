@@ -227,7 +227,23 @@ func MakeTeamFilters(teams []string) func([]*github.PullRequest) []*github.PullR
 // to avoid hitting GitHub's secondary rate limits.
 var githubSemaphore = make(chan struct{}, 50)
 
-// RateLimitStatus provides visibility into current rate limit state
+// GitHub meters requests against several budgets, each with its own size and
+// reset clock: REST ("core") and GraphQL get 5,000 an hour apiece, search 30 a
+// minute. A reply reports the budget it was charged to under the same
+// X-RateLimit-* header names whichever budget that is, and names which in
+// X-RateLimit-Resource. These are the names this package tracks them by.
+const (
+	RateResourceCore    = "core"
+	RateResourceGraphQL = "graphql"
+	RateResourceSearch  = "search"
+)
+
+// defaultRateLimit is the hourly budget GitHub gives a token for REST and for
+// GraphQL alike, and the budget size RateLimitManager's thresholds are set for.
+const defaultRateLimit = 5000
+
+// RateLimitStatus provides visibility into one budget's current state. The
+// request counters span every budget.
 type RateLimitStatus struct {
 	Remaining        int
 	Limit            int
@@ -237,20 +253,31 @@ type RateLimitStatus struct {
 	RateLimitedCount int64
 }
 
-// RateLimitManager tracks GitHub API rate limits and implements throttling/retry logic
-type RateLimitManager struct {
-	mu sync.RWMutex
-
-	// Rate limit state from GitHub response headers
+// rateBudget is one budget as the latest reply charged to it reported it.
+type rateBudget struct {
 	remaining int
 	limit     int
 	resetAt   time.Time
+}
+
+// RateLimitManager tracks GitHub API rate limits and implements throttling/retry
+// logic, keeping each budget (see RateResourceCore) apart. A request waits only
+// on the budget it spends, and a reply only updates the budget it was charged
+// to: a fresh GraphQL budget can't make a nearly spent REST one look healthy,
+// and search's 30 a minute can't make REST look nearly spent.
+type RateLimitManager struct {
+	mu sync.RWMutex
+
+	// budgets is the latest reading of each budget, by resource name. A
+	// budget nothing has reported on yet is taken to be full.
+	budgets map[string]rateBudget
 
 	// Backoff state for handling rate limit errors
 	consecutiveFailures int
 	lastFailureTime     time.Time
 
-	// Configuration
+	// Configuration. The two thresholds are for a budget of defaultRateLimit
+	// and scale with each budget's size; see thresholds.
 	minRemaining  int // Start throttling when remaining drops below this
 	reserveBuffer int // Block requests when remaining <= this
 	maxRetries    int // Max retries on 429/403 rate limit errors
@@ -264,28 +291,44 @@ type RateLimitManager struct {
 // NewRateLimitManager creates a new rate limit manager with sensible defaults
 func NewRateLimitManager() *RateLimitManager {
 	return &RateLimitManager{
+		budgets:       map[string]rateBudget{},
 		minRemaining:  100, // Start throttling at 100 remaining requests
 		reserveBuffer: 10,  // Block at 10 remaining (emergency reserve)
 		maxRetries:    3,   // Retry up to 3 times on rate limit errors
-		limit:         5000,
-		remaining:     5000,
 	}
 }
 
-// WaitIfNeeded blocks if we're at/near the rate limit
-func (m *RateLimitManager) WaitIfNeeded(ctx context.Context) error {
-	m.mu.RLock()
-	remaining := m.remaining
-	resetAt := m.resetAt
-	m.mu.RUnlock()
+// thresholds scales minRemaining and reserveBuffer to a budget of limit: 100
+// and 10 of REST's or GraphQL's 5,000. Search's 30 a minute scales both to
+// zero, so a search waits only once its budget is spent, rather than living
+// permanently under a throttle line drawn for a budget 150 times its size.
+func (m *RateLimitManager) thresholds(limit int) (throttleAt, reserve int) {
+	if limit <= 0 {
+		limit = defaultRateLimit
+	}
+	return m.minRemaining * limit / defaultRateLimit, m.reserveBuffer * limit / defaultRateLimit
+}
 
+// WaitIfNeeded blocks a request that would spend resource's budget while that
+// budget is at or near empty.
+func (m *RateLimitManager) WaitIfNeeded(ctx context.Context, resource string) error {
+	m.mu.RLock()
+	budget, known := m.budgets[resource]
+	m.mu.RUnlock()
+	if !known {
+		return nil
+	}
+
+	remaining := budget.remaining
+	resetAt := budget.resetAt
+	throttleAt, reserve := m.thresholds(budget.limit)
 	now := time.Now()
 
 	// If we're at/past limit, block until reset
-	if remaining <= m.reserveBuffer {
+	if remaining <= reserve {
 		if now.Before(resetAt) {
 			wait := resetAt.Sub(now) + time.Second
-			slog.Warn("Rate limit exhausted, waiting for reset", "remaining", remaining, "wait", wait)
+			slog.Warn("Rate limit exhausted, waiting for reset", "resource", resource, "remaining", remaining, "wait", wait)
 			select {
 			case <-time.After(wait):
 				return nil
@@ -296,14 +339,14 @@ func (m *RateLimitManager) WaitIfNeeded(ctx context.Context) error {
 	}
 
 	// If we're below threshold, implement adaptive throttling
-	if remaining <= m.minRemaining && remaining > m.reserveBuffer {
+	if remaining <= throttleAt && remaining > reserve {
 		m.throttledCount.Add(1)
 		// Distribute remaining requests evenly until reset
 		timeUntilReset := resetAt.Sub(now)
 		if timeUntilReset > 0 {
-			delay := timeUntilReset / time.Duration(remaining-m.reserveBuffer)
+			delay := timeUntilReset / time.Duration(remaining-reserve)
 			if delay > 0 && delay < 10*time.Second { // Cap max delay
-				slog.Debug("Throttling request", "remaining", remaining, "delay", delay)
+				slog.Debug("Throttling request", "resource", resource, "remaining", remaining, "delay", delay)
 				select {
 				case <-time.After(delay):
 					return nil
@@ -317,8 +360,10 @@ func (m *RateLimitManager) WaitIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-// UpdateFromHeaders updates rate limit state from GitHub response headers
-func (m *RateLimitManager) UpdateFromHeaders(headers http.Header) {
+// UpdateFromHeaders records the budget a reply reports: the one its
+// X-RateLimit-Resource header names, or fallback when it names none (GitHub's
+// replies always do; a test server's may not).
+func (m *RateLimitManager) UpdateFromHeaders(fallback string, headers http.Header) {
 	remaining, err := strconv.Atoi(headers.Get("X-RateLimit-Remaining"))
 	if err != nil {
 		return // Header not present or invalid
@@ -326,17 +371,34 @@ func (m *RateLimitManager) UpdateFromHeaders(headers http.Header) {
 
 	limit, _ := strconv.Atoi(headers.Get("X-RateLimit-Limit"))
 	reset, _ := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64)
+	resource := headers.Get("X-RateLimit-Resource")
+	if resource == "" {
+		resource = fallback
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	budget := m.budgets[resource]
 	if limit > 0 {
-		m.limit = limit
+		budget.limit = limit
 	}
-	m.remaining = remaining
+	budget.remaining = remaining
 	if reset > 0 {
-		m.resetAt = time.Unix(reset, 0)
+		budget.resetAt = time.Unix(reset, 0)
 	}
+	m.budgets[resource] = budget
+}
+
+// recordRate stores a budget as GitHub's /rate_limit endpoint reports it. A nil
+// rate, for a budget the response left out, changes nothing.
+func (m *RateLimitManager) recordRate(resource string, rate *github.Rate) {
+	if rate == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.budgets[resource] = rateBudget{remaining: rate.Remaining, limit: rate.Limit, resetAt: rate.Reset.Time}
 }
 
 // RecordRateLimit records a rate limit error occurrence
@@ -369,15 +431,26 @@ func (m *RateLimitManager) CalculateBackoff(attempt int) time.Duration {
 	return backoff
 }
 
-// GetStatus returns current rate limit status for monitoring
+// GetStatus returns the REST budget's current status, for monitoring.
 func (m *RateLimitManager) GetStatus() RateLimitStatus {
+	return m.GetStatusFor(RateResourceCore)
+}
+
+// GetStatusFor returns one budget's current status. A budget nothing has
+// reported on yet reads as a full defaultRateLimit, which is how WaitIfNeeded
+// treats it too.
+func (m *RateLimitManager) GetStatusFor(resource string) RateLimitStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	budget, known := m.budgets[resource]
+	if !known {
+		budget = rateBudget{remaining: defaultRateLimit, limit: defaultRateLimit}
+	}
 	return RateLimitStatus{
-		Remaining:        m.remaining,
-		Limit:            m.limit,
-		ResetAt:          m.resetAt,
+		Remaining:        budget.remaining,
+		Limit:            budget.limit,
+		ResetAt:          budget.resetAt,
 		TotalRequests:    m.totalRequests.Load(),
 		ThrottledCount:   m.throttledCount.Load(),
 		RateLimitedCount: m.rateLimitedCount.Load(),
@@ -390,21 +463,32 @@ var globalRateLimitManager = NewRateLimitManager()
 type rateLimitedRoundTripper struct {
 	next    http.RoundTripper
 	manager *RateLimitManager
-	// trackBudget controls whether this transport's responses update the
-	// manager's remaining/limit/reset view. GitHub meters GraphQL against a
-	// budget entirely separate from REST but reports it under the same
-	// X-RateLimit-* header names, so letting GraphQL replies write into the
-	// shared manager would overwrite the REST reading with an unrelated number —
-	// and a nearly-exhausted REST quota would look healthy. GraphQL still waits
-	// on the semaphore and the REST throttle, which only makes it more cautious.
-	trackBudget bool
+	// resourceFor names the budget a request spends, which is the one it
+	// waits on and the one a reply that doesn't say is recorded against.
+	resourceFor func(*http.Request) string
+}
+
+// restRateResource names the budget a REST request spends. Search is metered
+// on its own; everything else this package asks for is core.
+func restRateResource(req *http.Request) string {
+	if strings.HasPrefix(req.URL.Path, "/search/") {
+		return RateResourceSearch
+	}
+	return RateResourceCore
+}
+
+// graphQLRateResource names the budget every GraphQL request spends. It can't
+// be told from the path, which a test server's endpoint doesn't share.
+func graphQLRateResource(*http.Request) string {
+	return RateResourceGraphQL
 }
 
 func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.manager.totalRequests.Add(1)
+	resource := r.resourceFor(req)
 
 	// 1. Pre-flight check: block/throttle if needed
-	if err := r.manager.WaitIfNeeded(req.Context()); err != nil {
+	if err := r.manager.WaitIfNeeded(req.Context(), resource); err != nil {
 		return nil, err
 	}
 
@@ -429,9 +513,7 @@ func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 		}
 
 		// 5. Update rate limit state from response headers
-		if r.trackBudget {
-			r.manager.UpdateFromHeaders(resp.Header)
-		}
+		r.manager.UpdateFromHeaders(resource, resp.Header)
 
 		// 6. Handle rate limit errors (429 or 403 with rate limit message)
 		if resp.StatusCode == 429 || (resp.StatusCode == 403 && isRateLimitError(resp)) {
@@ -499,14 +581,14 @@ func parseRetryAfter(headers http.Header) time.Duration {
 }
 
 // newAuthedHTTPClient builds the token-authenticated, rate-limited HTTP client
-// that both the REST client and the GraphQL client (see review_threads.go) use,
-// so GraphQL calls share the same throttling and API-call logging as REST ones.
-//
-// trackBudget must be false for GraphQL — see rateLimitedRoundTripper.
+// for one of GitHub's APIs, so GraphQL calls share the same burst control and
+// API-call logging as REST ones while waiting on, and recording, a budget of
+// their own. A REST client also revalidates what it has fetched before (see
+// http_cache.go); GraphQL replies can't be revalidated, so its client doesn't.
 //
 // Returns an error rather than exiting when no token is configured; callers that
 // cannot proceed without one (GetGithubClient) still exit.
-func newAuthedHTTPClient(trackBudget bool) (*http.Client, error) {
+func newAuthedHTTPClient(api API) (*http.Client, error) {
 	token := os.Getenv("CRS_GITHUB_TOKEN")
 	if token == "" {
 		return nil, fmt.Errorf("CRS_GITHUB_TOKEN is not set")
@@ -520,16 +602,27 @@ func newAuthedHTTPClient(trackBudget bool) (*http.Client, error) {
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	tc.Transport = &rateLimitedRoundTripper{
-		next:        next,
-		manager:     globalRateLimitManager,
-		trackBudget: trackBudget,
+	if api == GraphQL {
+		tc.Transport = &rateLimitedRoundTripper{
+			next:        next,
+			manager:     globalRateLimitManager,
+			resourceFor: graphQLRateResource,
+		}
+		return tc, nil
+	}
+	tc.Transport = &revalidatingRoundTripper{
+		next: &rateLimitedRoundTripper{
+			next:        next,
+			manager:     globalRateLimitManager,
+			resourceFor: restRateResource,
+		},
+		cache: globalResponseCache,
 	}
 	return tc, nil
 }
 
 func GetGithubClient() *github.Client {
-	tc, err := newAuthedHTTPClient(true)
+	tc, err := newAuthedHTTPClient(REST)
 	if err != nil {
 		slog.Error("Error! No Github Token!")
 		os.Exit(1)
@@ -537,18 +630,31 @@ func GetGithubClient() *github.Client {
 	return github.NewClient(tc)
 }
 
-// GetRateLimitStatus returns current rate limit status for monitoring
+// GetRateLimitStatus returns the REST budget's current status, for monitoring.
 func GetRateLimitStatus() RateLimitStatus {
 	return globalRateLimitManager.GetStatus()
 }
 
+// GetRateLimitStatusFor returns the current status of one budget, named by a
+// RateResource* constant.
+func GetRateLimitStatusFor(resource string) RateLimitStatus {
+	return globalRateLimitManager.GetStatusFor(resource)
+}
+
 // GetRateLimitFromAPI fetches the authoritative rate limit status from GitHub's
 // /rate_limit endpoint. Returns limit, remaining, and reset time for the core API.
+// Every budget the endpoint reports is recorded too, so GetRateLimitStatusFor
+// knows the GraphQL budget even when nothing has spent from it lately.
 func GetRateLimitFromAPI(client *github.Client) (limit, remaining int, resetAt time.Time, err error) {
 	ctx := context.Background()
 	rateLimits, _, apiErr := client.RateLimits(ctx)
 	if apiErr != nil {
 		return 0, 0, time.Time{}, apiErr
+	}
+	if rateLimits != nil {
+		globalRateLimitManager.recordRate(RateResourceCore, rateLimits.Core)
+		globalRateLimitManager.recordRate(RateResourceGraphQL, rateLimits.GraphQL)
+		globalRateLimitManager.recordRate(RateResourceSearch, rateLimits.Search)
 	}
 	if rateLimits != nil && rateLimits.Core != nil {
 		limit = rateLimits.Core.Limit

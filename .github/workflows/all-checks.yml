@@ -39,6 +39,8 @@ jobs:
               - '.github/workflows/all-checks.yml'
             chrome_extension:
               - 'chrome_extension/**'
+              - 'go.mod'
+              - 'go.sum'
               - '.github/workflows/all-checks.yml'
             rust:
               - 'tui_client/**'
@@ -167,6 +169,32 @@ jobs:
       # Also verifies that every file manifest.json and panel.html name is in dist/.
       - name: Build
         run: bun run build
+
+      - name: Type check e2e
+        run: bun run type-check:e2e
+
+      # The e2e suite builds the real native host (crs_native_host) with Go.
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.5'
+
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      # Reuses the extension built above; `bun run test:e2e` would rebuild it.
+      - name: Run e2e tests
+        run: bunx playwright test --config e2e/playwright.config.ts
+
+      - name: Upload e2e report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension-playwright-report
+          path: |
+            chrome_extension/e2e/playwright-report
+            chrome_extension/e2e/test-results
+          retention-days: 7
 
   rust:
     needs: changes

@@ -5,7 +5,13 @@ import tseslint from 'typescript-eslint';
 
 export default defineConfig([
     // crs_native_host is Go plus a shell script; nothing for ESLint there.
-    globalIgnores(['dist', 'node_modules', 'crs_native_host']),
+    globalIgnores([
+        'dist',
+        'node_modules',
+        'crs_native_host',
+        'e2e/test-results',
+        'e2e/playwright-report',
+    ]),
     {
         files: ['**/*.{ts,tsx}'],
         extends: [js.configs.recommended, tseslint.configs.recommended],

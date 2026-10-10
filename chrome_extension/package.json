@@ -9,7 +9,9 @@
         "lint": "eslint .",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "type-check": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
+        "type-check": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+        "test:e2e": "bun run build && playwright test --config e2e/playwright.config.ts",
+        "type-check:e2e": "tsc -p e2e"
     },
     "dependencies": {
         "mermaid": "^12.0.0",

@@ -197,8 +197,8 @@ cards.
 **Plugins.** A card for each configured plugin, with its status: not run yet,
 on demand (an `OnlyOnDemand` plugin nobody has asked for), running, success or
 failed. **Run** or **Re-run** reruns that plugin alone; **Re-run all** reruns
-every plugin that runs automatically and sets the on-demand ones back to on
-demand, as `RerunPlugins` with no names does.
+every plugin that runs automatically, naming them so an on-demand plugin keeps
+the result someone asked for (`RerunPlugins` with no names would clear it).
 
 Bodies render by their declared type. Markdown is rendered with raw HTML
 dropped and the rest sanitized. HTML goes in a sandboxed frame that runs no

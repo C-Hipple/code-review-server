@@ -1,5 +1,7 @@
 node_modules
 dist
+e2e/test-results
+e2e/playwright-report
 bun.lock
 # Go and shell: gofmt owns this directory.
 crs_native_host

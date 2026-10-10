@@ -169,7 +169,9 @@ export function bodyPreview(markdown: string, max = 160): string {
         const text = line
             .replace(/^([-*+]|\d+\.)\s+/, '')
             .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-            .replace(/[*_`~]/g, '')
+            .replace(/[*`~]/g, '')
+            // `_` marks emphasis only at a word's edge: snake_case keeps its own.
+            .replace(/(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g, '')
             .trim();
         if (!text) continue;
         return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;

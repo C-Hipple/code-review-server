@@ -1,7 +1,7 @@
 // The panel's reading of ListPlugins / GetPluginOutput replies: a plugin
 // card's status, its button, the body to render, and annotation order.
 
-import type { PluginAnnotation, PluginBody, PluginOutput } from '../types';
+import type { PluginAnnotation, PluginBody, PluginConfig, PluginOutput } from '../types';
 import type { Tone } from './list_utils';
 
 /** A plugin's status for the PR; `none` when it has no entry (never ran). */
@@ -54,6 +54,16 @@ export function pluginRunAction(output: PluginOutput | null | undefined): Plugin
     if (status === 'pending') return { label: 'Running…', disabled: true };
     if (status === 'none' || status === 'deferred') return { label: 'Run', disabled: false };
     return { label: 'Re-run', disabled: false };
+}
+
+/**
+ * The plugins Re-run all reruns: the ones that run automatically. They are
+ * named rather than left to RerunPlugins' default, which also clears the
+ * on-demand plugins' results, so an expensive on-demand run someone asked for
+ * keeps its result.
+ */
+export function automaticPluginNames(plugins: readonly PluginConfig[]): string[] {
+    return plugins.filter(p => !p.OnlyOnDemand).map(p => p.Name);
 }
 
 export function isPluginPending(output: PluginOutput | null | undefined): boolean {

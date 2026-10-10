@@ -213,6 +213,12 @@ describe('bodyPreview', () => {
         expect(bodyPreview('')).toBe('');
     });
 
+    test('keeps the underscores inside identifiers', () => {
+        expect(bodyPreview('Run 1 of `security_check`: _no_ new __rate_limit_v2__ findings.')).toBe(
+            'Run 1 of security_check: no new rate_limit_v2 findings.'
+        );
+    });
+
     test('cut to length', () => {
         const preview = bodyPreview('word '.repeat(100), 20);
         expect(preview.length).toBeLessThanOrEqual(20);

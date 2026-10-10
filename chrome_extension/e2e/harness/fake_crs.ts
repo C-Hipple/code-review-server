@@ -141,7 +141,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
         const pr = prArgs(args);
         const names = Array.isArray(args.Plugins)
             ? args.Plugins.map(String)
-            : PLUGINS.map(p => p.Name);
+            : PLUGINS.filter(p => !p.OnlyOnDemand).map(p => p.Name);
         const outputs = pluginsFor(pr);
         for (const name of names) {
             nextRun(pr, name);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import type { PluginOutput } from '../types';
+import type { PluginConfig, PluginOutput } from '../types';
 import {
+    automaticPluginNames,
     pluginRunAction,
     pluginStatus,
     pluginStatusLabel,
@@ -88,5 +89,33 @@ describe('annotations', () => {
         ['nit', 'neutral'],
     ])('severity %s', (severity, tone) => {
         expect(severityTone(severity)).toBe(tone as ReturnType<typeof severityTone>);
+    });
+});
+
+describe('automaticPluginNames', () => {
+    const plugin = (Name: string, OnlyOnDemand: boolean): PluginConfig => ({
+        Name,
+        Command: Name,
+        IncludeDiff: true,
+        IncludeHeaders: false,
+        IncludeComments: false,
+        IncludeBranch: false,
+        OnlyOnDemand,
+        Provider: '',
+        Model: '',
+    });
+
+    test('leaves out the on-demand plugins, in config order', () => {
+        expect(
+            automaticPluginNames([
+                plugin('summarize', false),
+                plugin('style', true),
+                plugin('security', false),
+            ])
+        ).toEqual(['summarize', 'security']);
+    });
+
+    test('is empty when every plugin runs on demand', () => {
+        expect(automaticPluginNames([plugin('style', true)])).toEqual([]);
     });
 });

@@ -5,6 +5,7 @@ import { Button } from './Button';
 import { ErrorCard } from './ErrorCard';
 import { PlugIcon, RefreshIcon } from './icons';
 import { PluginCard } from './PluginCard';
+import { automaticPluginNames } from './plugin_utils';
 import type { Resource } from './resource';
 import { SkeletonCards } from './Skeleton';
 import { CardNotice } from './ToolCard';
@@ -47,7 +48,7 @@ export function PluginsSection({
                 </h2>
                 {list && <span className="counter">{list.length}</span>}
                 <span className="spacer" />
-                {list && list.length > 0 && (
+                {list && automaticPluginNames(list).length > 0 && (
                     <Button
                         size="sm"
                         icon={<RefreshIcon />}

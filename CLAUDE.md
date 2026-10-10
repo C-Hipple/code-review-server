@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `go test ./chrome_extension/crs_native_host/` — the native host, including an end-to-end bridge test against a fake server
 - `chrome_extension/crs_native_host/install.sh` — builds the host into `~/.crs/bin/` and registers it with the installed browsers (`--help`)
 
-**CI runs** `go build && go test` for Go changes (which covers `crs_native_host`), lint/format/type-check/test plus the e2e suite for `bun_client/` changes, and lint/format/type-check/test/build for `chrome_extension/` changes.
+**CI runs** `go build && go test` for Go changes (which covers `crs_native_host`), lint/format/type-check/test plus the e2e suite for `bun_client/` changes, and lint/format/type-check/test/build plus its e2e suite (which builds the native host) for `chrome_extension/` changes.
 
 ## Workflow
 

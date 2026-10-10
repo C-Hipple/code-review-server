@@ -36,6 +36,7 @@ import {
     type ActionState,
 } from './actions';
 import { runOutcomeNote } from './ai_utils';
+import { automaticPluginNames } from './plugin_utils';
 import { REQUEST_GRACE_MS, shouldPoll } from './poll_utils';
 import { PRToolsView, type PRToolsHandlers } from './PRToolsView';
 import { failed, isFatal, loaded, loading, settled, toRpcError, type Resource } from './resource';
@@ -184,20 +185,18 @@ export function PRTools({ pr, listItem, extensionId, onActivity }: PRToolsProps)
     );
 
     const runPlugins = useCallback(
-        async (names: string[] | null) => {
-            const key = names ? pluginKey(names[0]) : ALL_PLUGINS;
+        async (names: string[], key: string) => {
             setActions(a => begin(a, key));
             try {
-                const reply = await rerunPlugins(pr, names ?? undefined);
+                const reply = await rerunPlugins(pr, names);
                 if (!alive.current) return;
                 if (!reply.okay) {
                     setActions(a => fail(a, key, new RpcError('rpc', reply.message)));
                     return;
                 }
                 // The server clears the results and runs them in the background.
-                const targets = names ?? (plugins.value ?? []).map(p => p.Name);
                 setPluginOutputs(prev =>
-                    withEntries(prev, Object.fromEntries(targets.map(n => [n, PENDING_PLUGIN])))
+                    withEntries(prev, Object.fromEntries(names.map(n => [n, PENDING_PLUGIN])))
                 );
                 setActions(a => finish(a, key));
                 markRequested();
@@ -205,7 +204,7 @@ export function PRTools({ pr, listItem, extensionId, onActivity }: PRToolsProps)
                 if (alive.current) setActions(a => fail(a, key, toRpcError(e)));
             }
         },
-        [pr, plugins.value, markRequested]
+        [pr, markRequested]
     );
 
     const sync = useCallback(async () => {
@@ -260,8 +259,8 @@ export function PRTools({ pr, listItem, extensionId, onActivity }: PRToolsProps)
         },
         onSync: () => void sync(),
         onRunFeature: (feature, force) => void runFeature(feature, force),
-        onRunPlugin: name => void runPlugins([name]),
-        onRerunAll: () => void runPlugins(null),
+        onRunPlugin: name => void runPlugins([name], pluginKey(name)),
+        onRerunAll: () => void runPlugins(automaticPluginNames(plugins.value ?? []), ALL_PLUGINS),
     };
 
     return (

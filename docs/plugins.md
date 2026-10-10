@@ -245,7 +245,7 @@ The [Chrome extension](clients.md#chrome-extension) shows a card per configured 
 
 Annotations are listed beneath the body, sorted by file and line. The extension doesn't render the diff, so each one links to its line in GitHub's own Files changed tab instead (`https://github.com/<owner>/<repo>/pull/<n>/files#diff-<sha256 of the path>R<line>`, the anchor GitHub gives a line on the head side).
 
-**Run**, on a plugin that hasn't run or is deferred, and **Re-run**, on one that has, both call `RerunPlugins` naming that plugin alone, so a deferred plugin runs too. **Re-run all** calls it with no names: the plugins that run automatically rerun, and deferred ones are reset to on demand. The view polls `GetPluginOutput` until nothing reads `pending`.
+**Run**, on a plugin that hasn't run or is deferred, and **Re-run**, on one that has, both call `RerunPlugins` naming that plugin alone, so a deferred plugin runs too. **Re-run all** calls it naming every plugin that runs automatically, rather than with no names, which would also clear the deferred plugins' results: an on-demand result someone asked for is kept. The view polls `GetPluginOutput` until nothing reads `pending`.
 
 ## On-Demand Plugins
 

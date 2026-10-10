@@ -152,7 +152,7 @@ export function prPayload(pr: PR): PRPayload {
         });
     } else if (prKey(pr) === prKey(BIG_PR)) {
         diff = bigDiff();
-        meta = metadata(pr, { title: BIG_PR_TITLE, changed_files: 1, additions: 30_000 });
+        meta = metadata(pr, { title: BIG_PR_TITLE, changed_files: 1, additions: 70_000 });
     }
     return {
         okay: true,
@@ -186,8 +186,8 @@ export function bigDiff(): string {
         'line separator',
         '<tag> & ampersand',
     ];
-    const lines = ['diff --git a/fonts/README.md b/fonts/README.md', '@@ -0,0 +1,30000 @@'];
-    for (let i = 0; i < 30_000; i++) {
+    const lines = ['diff --git a/fonts/README.md b/fonts/README.md', '@@ -0,0 +1,70000 @@'];
+    for (let i = 0; i < 70_000; i++) {
         lines.push(`+${i}: ${pieces[i % pieces.length]} ${pieces[(i * 7) % pieces.length]}`);
     }
     return lines.join('\n') + '\n';
@@ -339,7 +339,10 @@ export function pr42AIOutputs(): Record<string, AIFeatureOutput> {
                 report: { mermaid: DIAGRAM, diagram_type: 'flowchart' },
             })
         ),
-        'file-ordering': aiOutput(feature('file-ordering'), done({ report: { files: FILE_ORDER } })),
+        'file-ordering': aiOutput(
+            feature('file-ordering'),
+            done({ report: { files: FILE_ORDER } })
+        ),
         'review-ease': aiOutput(feature('review-ease'), done({ report: { rating: 'hard' } })),
     };
 }

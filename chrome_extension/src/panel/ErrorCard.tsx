@@ -83,18 +83,18 @@ function ErrorDetails({ error, extensionId }: { error: RpcError; extensionId?: s
             return (
                 <>
                     <p>
-                        The extension reaches the server through a small native host program,
-                        which isn't installed for this browser yet.
+                        The extension reaches the server through a small native host program, which
+                        isn't installed for this browser yet.
                     </p>
                     <ol className="steps">
                         <li>
-                            In your code-review-server checkout, run <code>{INSTALL_SCRIPT}</code>
-                            . Add <code>--capture-env</code> to hand the server your shell&apos;s{' '}
+                            In your code-review-server checkout, run <code>{INSTALL_SCRIPT}</code>.
+                            Add <code>--capture-env</code> to hand the server your shell&apos;s{' '}
                             <code>PATH</code> and tokens (<code>CRS_GITHUB_TOKEN</code>, …).
                         </li>
                         <li>
-                            Reload the extension on <code>chrome://extensions</code> (or restart
-                            the browser), then press Retry.
+                            Reload the extension on <code>chrome://extensions</code> (or restart the
+                            browser), then press Retry.
                         </li>
                     </ol>
                     {extensionId && <ExtensionId id={extensionId} />}
@@ -127,13 +127,12 @@ function ErrorDetails({ error, extensionId }: { error: RpcError; extensionId?: s
                     <p className="error-message">{error.message}</p>
                     {error.logPath && (
                         <p className="muted">
-                            The native host&apos;s log has the details:{' '}
-                            <code>{error.logPath}</code>
+                            The native host&apos;s log has the details: <code>{error.logPath}</code>
                         </p>
                     )}
                     <p className="muted">
-                        The host starts <code>codereviewserver --server</code> with the variables
-                        in <code>~/.crs/native_host.env</code> — check that it is on the host&apos;s{' '}
+                        The host starts <code>codereviewserver --server</code> with the variables in{' '}
+                        <code>~/.crs/native_host.env</code> — check that it is on the host&apos;s{' '}
                         <code>PATH</code> and that <code>CRS_GITHUB_TOKEN</code> is set.
                     </p>
                 </>

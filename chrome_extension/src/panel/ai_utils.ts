@@ -90,6 +90,18 @@ export function aiRunAction(output: AIFeatureOutput | null | undefined): RunActi
     return { label: 'Re-run', force: true, disabled: false };
 }
 
+/** What to tell the user about a RunAIFeature outcome; empty when the chip says it. */
+export function runOutcomeNote(outcome: string): string {
+    switch (outcome) {
+        case 'up-to-date':
+            return 'Already up to date: nothing the feature reads has changed since its last run.';
+        case 'already-running':
+            return 'A run is already in progress.';
+        default:
+            return '';
+    }
+}
+
 /** change-diagram's Mermaid source, or null when the output carries none. */
 export function changeDiagramSource(output: AIFeatureOutput | null | undefined): string | null {
     if (!output || output.feature !== CHANGE_DIAGRAM) return null;
@@ -163,4 +175,23 @@ export function bodyPreview(markdown: string, max = 160): string {
         return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
     }
     return '';
+}
+
+export interface Size {
+    width: number;
+    height: number;
+}
+
+/** The size a rendered diagram's SVG is drawn at, from its root viewBox; null when unreadable. */
+export function svgSize(svg: string): Size | null {
+    const root = svg.match(/<svg\b[^>]*>/);
+    const viewBox = root?.[0].match(/viewBox\s*=\s*"([^"]*)"/);
+    if (!viewBox) return null;
+    const parts = viewBox[1]
+        .trim()
+        .split(/[\s,]+/)
+        .map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isFinite(n))) return null;
+    const [, , width, height] = parts;
+    return width > 0 && height > 0 ? { width, height } : null;
 }

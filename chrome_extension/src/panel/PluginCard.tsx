@@ -43,7 +43,9 @@ export function PluginCard({
     const body = resolvePluginBody(output);
     const annotationCount = output?.annotations?.length ?? 0;
     const hasOutput =
-        status !== 'none' && status !== 'deferred' && (!!body.body_content.trim() || annotationCount > 0);
+        status !== 'none' &&
+        status !== 'deferred' &&
+        (!!body.body_content.trim() || annotationCount > 0);
 
     let summary = '';
     if (status === 'deferred') summary = 'Runs on demand: press Run to run it for this PR.';
@@ -67,7 +69,8 @@ export function PluginCard({
                         />
                         {annotationCount > 0 && (
                             <Pill>
-                                {annotationCount} {annotationCount === 1 ? 'annotation' : 'annotations'}
+                                {annotationCount}{' '}
+                                {annotationCount === 1 ? 'annotation' : 'annotations'}
                             </Pill>
                         )}
                     </>

@@ -117,7 +117,10 @@ export function ToolCard({
 /** A note under a card's header: why its action failed, or what it did. */
 export function CardNotice({ tone, children }: { tone: 'danger' | 'muted'; children: ReactNode }) {
     return (
-        <p className={`card-notice card-notice-${tone}`} role={tone === 'danger' ? 'alert' : 'status'}>
+        <p
+            className={`card-notice card-notice-${tone}`}
+            role={tone === 'danger' ? 'alert' : 'status'}
+        >
             {children}
         </p>
     );

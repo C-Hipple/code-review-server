@@ -84,20 +84,28 @@ export function PRSummary({
                     <PullStateIcon state={state} />
                     {STATE_LABEL[state]}
                 </span>
-                <span className="summary-ref">{prLabel(pr)}</span>
+                <span className="summary-repo">
+                    {pr.owner}/{pr.repo}
+                </span>
                 <span className="spacer" />
                 <div className="summary-actions">
                     <Button size="sm" icon={<RefreshIcon />} busy={syncing} onClick={onSync}>
                         Sync
                     </Button>
-                    <a className="btn btn-default btn-sm" href={url} target={target} rel="noreferrer">
+                    <a
+                        className="btn btn-default btn-sm"
+                        href={url}
+                        target={target}
+                        rel="noreferrer"
+                    >
                         <ExternalIcon />
                         GitHub
                     </a>
                 </div>
             </div>
             <h1 className="summary-title" tabIndex={-1}>
-                {meta.title || listItem?.title || prLabel(pr)}
+                {meta.title || listItem?.title || prLabel(pr)}{' '}
+                <span className="summary-number">#{pr.number}</span>
             </h1>
             <p className="summary-meta">
                 {meta.author && <strong>{meta.author}</strong>}

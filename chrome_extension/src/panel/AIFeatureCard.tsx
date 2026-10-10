@@ -119,7 +119,9 @@ export function AIFeatureCard({
             summary={summary}
             notice={
                 error ? (
-                    <CardNotice tone="danger">Couldn&apos;t start the run: {error.message}</CardNotice>
+                    <CardNotice tone="danger">
+                        Couldn&apos;t start the run: {error.message}
+                    </CardNotice>
                 ) : note ? (
                     <CardNotice tone="muted">{note}</CardNotice>
                 ) : null
@@ -133,11 +135,7 @@ export function AIFeatureCard({
                 </p>
             )}
             {output &&
-                (diagram ? (
-                    <MermaidDiagram source={diagram} />
-                ) : (
-                    <OutputBody body={output.body} />
-                ))}
+                (diagram ? <MermaidDiagram source={diagram} /> : <OutputBody body={output.body} />)}
             {output && <Annotations pr={pr} annotations={output.annotations} />}
         </ToolCard>
     );

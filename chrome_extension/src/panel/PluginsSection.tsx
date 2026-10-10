@@ -60,7 +60,9 @@ export function PluginsSection({
                 )}
             </div>
             {allError && (
-                <CardNotice tone="danger">Couldn&apos;t re-run the plugins: {allError.message}</CardNotice>
+                <CardNotice tone="danger">
+                    Couldn&apos;t re-run the plugins: {allError.message}
+                </CardNotice>
             )}
 
             {!list && plugins.loading && <SkeletonCards count={2} />}
@@ -68,13 +70,18 @@ export function PluginsSection({
                 <ErrorCard error={plugins.error} what="the plugins" onRetry={onRetryPlugins} />
             )}
             {outputs.error && (
-                <ErrorCard error={outputs.error} what="the plugin output" onRetry={onRetryOutputs} />
+                <ErrorCard
+                    error={outputs.error}
+                    what="the plugin output"
+                    onRetry={onRetryOutputs}
+                />
             )}
 
             {list && list.length === 0 && (
                 <p className="empty-state">
                     No plugins configured. Add <code>[[Plugins]]</code> entries to the server config
-                    (<code>~/.config/codereviewserver.toml</code>) to run your own checks on each PR.
+                    (<code>~/.config/codereviewserver.toml</code>) to run your own checks on each
+                    PR.
                 </p>
             )}
             {list && list.length > 0 && (

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { changeClassesUsed } from './ai_utils';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { changeClassesUsed, svgSize } from './ai_utils';
 import { Button } from './Button';
 import { usePrefersDark } from './color_scheme';
 import { CheckIcon, CopyIcon } from './icons';
@@ -30,6 +30,8 @@ export function MermaidDiagram({ source }: { source: string }) {
     const dark = usePrefersDark();
     const [drawing, setDrawing] = useState<Drawing | null>(null);
     const [showSource, setShowSource] = useState(false);
+    // Fit to the card's width (never below a readable scale), or natural size.
+    const [actualSize, setActualSize] = useState(false);
     const [copied, setCopied] = useState<'copied' | 'failed' | null>(null);
 
     useEffect(() => {
@@ -47,6 +49,7 @@ export function MermaidDiagram({ source }: { source: string }) {
     const current = drawing?.source === source ? drawing : null;
     const error = current?.error;
     const legend = changeClassesUsed(source);
+    const size = current?.svg ? svgSize(current.svg) : null;
 
     const copy = () => {
         const done = (result: 'copied' | 'failed') => {
@@ -77,9 +80,12 @@ export function MermaidDiagram({ source }: { source: string }) {
         // mermaid's strict mode sanitizes the SVG it returns.
         content = (
             <div
-                className="diagram-canvas"
+                className={`diagram-canvas${actualSize ? ' diagram-actual' : ''}`}
                 role="img"
                 aria-label="Change diagram"
+                style={
+                    size ? ({ '--diagram-width': `${size.width}px` } as CSSProperties) : undefined
+                }
                 dangerouslySetInnerHTML={{ __html: current.svg }}
             />
         );
@@ -112,6 +118,19 @@ export function MermaidDiagram({ source }: { source: string }) {
                     </ul>
                 )}
                 <span className="spacer" />
+                {size && !error && !showSource && (
+                    <Button
+                        size="sm"
+                        onClick={() => setActualSize(a => !a)}
+                        aria-label={
+                            actualSize
+                                ? 'Fit the diagram to the width'
+                                : 'Show the diagram at full size'
+                        }
+                    >
+                        {actualSize ? 'Fit' : '100%'}
+                    </Button>
+                )}
                 {!error && (
                     <Button
                         size="sm"

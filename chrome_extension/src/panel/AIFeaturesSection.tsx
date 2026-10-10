@@ -58,7 +58,11 @@ export function AIFeaturesSection({
 
             {!list && features.loading && <SkeletonCards count={2} />}
             {features.error && (
-                <ErrorCard error={features.error} what="the AI features" onRetry={onRetryFeatures} />
+                <ErrorCard
+                    error={features.error}
+                    what="the AI features"
+                    onRetry={onRetryFeatures}
+                />
             )}
             {outputs.error && (
                 <ErrorCard error={outputs.error} what="the AI results" onRetry={onRetryOutputs} />

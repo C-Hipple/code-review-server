@@ -24,13 +24,8 @@ export function failed<T>(error: unknown, previous?: Resource<T>): Resource<T> {
 }
 
 /** The resource after a Promise.allSettled entry for it. */
-export function settled<T>(
-    result: PromiseSettledResult<T>,
-    previous?: Resource<T>
-): Resource<T> {
-    return result.status === 'fulfilled'
-        ? loaded(result.value)
-        : failed(result.reason, previous);
+export function settled<T>(result: PromiseSettledResult<T>, previous?: Resource<T>): Resource<T> {
+    return result.status === 'fulfilled' ? loaded(result.value) : failed(result.reason, previous);
 }
 
 export function toRpcError(e: unknown): RpcError {

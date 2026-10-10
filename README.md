@@ -4,7 +4,7 @@ code-review-server is a service which runs highly configurable workflows to load
 
 It also supports doing local code reviews via your preferred client, allowing you to customize your experience such as doing them in your editor, using plugins, defining hotkeys, whatever you'd like.
 
-It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react) and an emacs client.
+It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react), an emacs client, a TUI client (rust), and a Chrome extension that brings the AI features and plugins to the GitHub pull request you are on.
 
 web client review list
 ![Bun Client](docs/img/bun-client-list.png)
@@ -83,7 +83,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
 4.  **Run a Client**
 
-    See [Clients](docs/clients.md) for detailed instructions on running the Web or Emacs clients.
+    See [Clients](docs/clients.md) for detailed instructions on running the Web, TUI or Emacs clients, or the Chrome extension ([chrome_extension/README.md](chrome_extension/README.md)).
 
     **Web Client (Brief):**
     ```bash
@@ -94,3 +94,11 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
     **Emacs Client (Brief):**
     Evaluate `client.el/crs-client.el` and run `(crs-start-server)`.
+
+    **Chrome Extension (Brief):**
+    ```bash
+    cd chrome_extension
+    bun install && bun run build
+    ./crs_native_host/install.sh --capture-env  # in a shell with CRS_GITHUB_TOKEN set
+    ```
+    Then load `chrome_extension/dist` with **Load unpacked** on `chrome://extensions` (Developer mode on).

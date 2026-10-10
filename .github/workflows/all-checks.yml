@@ -16,6 +16,7 @@ jobs:
     outputs:
       go: ${{ steps.filter.outputs.go }}
       bun: ${{ steps.filter.outputs.bun }}
+      chrome_extension: ${{ steps.filter.outputs.chrome_extension }}
       rust: ${{ steps.filter.outputs.rust }}
       elisp: ${{ steps.filter.outputs.elisp }}
       docker: ${{ steps.filter.outputs.docker }}
@@ -35,6 +36,11 @@ jobs:
             bun:
               - 'bun_client/**'
               - '.github/workflows/bun-client.yml'
+              - '.github/workflows/all-checks.yml'
+            chrome_extension:
+              - 'chrome_extension/**'
+              - 'go.mod'
+              - 'go.sum'
               - '.github/workflows/all-checks.yml'
             rust:
               - 'tui_client/**'
@@ -128,6 +134,66 @@ jobs:
           path: |
             bun_client/e2e/playwright-report
             bun_client/e2e/test-results
+          retention-days: 7
+
+  chrome-extension:
+    needs: changes
+    if: needs.changes.outputs.chrome_extension == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chrome_extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run ESLint
+        run: bun run lint
+
+      - name: Check formatting
+        run: bun run format:check
+
+      - name: Type check
+        run: bun run type-check
+
+      - name: Run tests
+        run: bun run test
+
+      # Also verifies that every file manifest.json and panel.html name is in dist/.
+      - name: Build
+        run: bun run build
+
+      - name: Type check e2e
+        run: bun run type-check:e2e
+
+      # The e2e suite builds the real native host (crs_native_host) with Go.
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.5'
+
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      # Reuses the extension built above; `bun run test:e2e` would rebuild it.
+      - name: Run e2e tests
+        run: bunx playwright test --config e2e/playwright.config.ts
+
+      - name: Upload e2e report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension-playwright-report
+          path: |
+            chrome_extension/e2e/playwright-report
+            chrome_extension/e2e/test-results
           retention-days: 7
 
   rust:
@@ -244,22 +310,24 @@ jobs:
   # It succeeds when all language checks either passed or were skipped (no relevant changes).
   # It fails if any language check that ran returned a failure or was cancelled.
   all-checks-passed:
-    needs: [go, bun-client, rust, elisp, docker]
+    needs: [go, bun-client, chrome-extension, rust, elisp, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check all language checks passed
         run: |
           echo "Job results:"
-          echo "  go:         ${{ needs.go.result }}"
-          echo "  bun-client: ${{ needs.bun-client.result }}"
-          echo "  rust:       ${{ needs.rust.result }}"
-          echo "  elisp:      ${{ needs.elisp.result }}"
-          echo "  docker:     ${{ needs.docker.result }}"
+          echo "  go:               ${{ needs.go.result }}"
+          echo "  bun-client:       ${{ needs.bun-client.result }}"
+          echo "  chrome-extension: ${{ needs.chrome-extension.result }}"
+          echo "  rust:             ${{ needs.rust.result }}"
+          echo "  elisp:            ${{ needs.elisp.result }}"
+          echo "  docker:           ${{ needs.docker.result }}"
 
           for result in \
             "${{ needs.go.result }}" \
             "${{ needs.bun-client.result }}" \
+            "${{ needs.chrome-extension.result }}" \
             "${{ needs.rust.result }}" \
             "${{ needs.elisp.result }}" \
             "${{ needs.docker.result }}"; do

@@ -1,6 +1,6 @@
 # Clients
 
-Code Review Server ships with a web client, an Emacs client, and a TUI client, but you can build your own using the [Protocol](protocol.md).
+Code Review Server ships with a web client, an Emacs client, a TUI client, and a Chrome extension, but you can build your own using the [Protocol](protocol.md).
 
 ## Web Client (bun)
 
@@ -197,3 +197,31 @@ When set to a non-nil value, a `*** Comments` sub-tree is included under each PR
 This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The server always returns comment data from its local DB cache — no extra GitHub API calls are involved — but the additional org structure adds rendering overhead proportional to the total number of comments across all listed PRs. Setting this to `nil` strips the comments before handing the content to org-mode.
 
 Enable it if you want a quick overview of comment activity without opening each PR individually.
+
+## Chrome Extension
+
+The Chrome extension (`chrome_extension/`) brings the server's [AI features](ai_features.md) and [plugins](plugins.md) to the GitHub pull request you are reading. It is not a review UI: it shows the reports and plugin output for the PR the tab is on, with Run and Re-run, and the review list for getting to a PR. It works for any PR, including ones in no review list — opening one makes the server fetch and cache it, as in any client.
+
+An extension can't start processes, so the extension starts the server through a native messaging host, `crs_native_host`: Chrome launches the host, and the host runs `codereviewserver --server` and bridges Chrome's message framing to the server's stdio. The full guide — the env file, troubleshooting, the architecture and the bridge's protocol — is the extension's [README](https://github.com/C-Hipple/code-review-server/blob/main/chrome_extension/README.md).
+
+### Installation
+
+**Prerequisites:** `codereviewserver` installed (`go install ./...`), Go and Bun, and Chrome 116 or later (or Chromium, Brave or Edge) on Linux or macOS.
+
+1. `cd chrome_extension && bun install && bun run build`
+2. `./crs_native_host/install.sh --capture-env`, in a shell where `CRS_GITHUB_TOKEN` and any API keys are set. It builds the host into `~/.crs/bin/`, registers it with every supported browser it finds, and writes `~/.crs/native_host.env`.
+3. On `chrome://extensions`, turn on Developer mode, **Load unpacked**, and pick `chrome_extension/dist`. The extension's ID is pinned to `acmghogknbbihjoejbkejhhikiapmiib` by the `key` in its manifest, which is the ID the host's manifest allows.
+
+`--capture-env` matters because browsers start native hosts with the desktop session's environment rather than your shell's, so `CRS_GITHUB_TOKEN`, API keys and `PATH` additions from your shell rc files never reach the server otherwise. The host merges `~/.crs/native_host.env` into its environment before starting the server, and a variable there overrides the inherited one. It reads the file when it starts, so reload the extension after changing it. The host logs to `~/.crs/native_host.log`.
+
+### Usage
+
+Press the toolbar button or `Alt+Shift+R`:
+
+- **On a pull request**, a modal opens over the page on that PR's tools: a summary with the review-ease rating and **Sync**, a card per enabled AI feature with a report (the [change diagram](ai_features.md#change-diagram) drawn inline), a card for [file-ordering](ai_features.md#file-ordering) listing the suggested order, and a card per plugin with **Re-run all**. Results are polled while anything runs. Annotations link to their line in GitHub's Files changed tab.
+- **Anywhere else on github.com**, the modal opens on the review list, grouped by section, with a filter. Clicking a PR takes the tab to it on GitHub; its **Tools** button opens the PR's tools in the modal instead, and **Back** returns to the list.
+- **Off GitHub**, the same panel opens in a popup window, where PR links open in a new tab.
+
+The panel follows the system's light or dark setting. It can call only a fixed list of read-and-run methods (`GetAllReviews`, `GetPR`, `SyncPR`, the plugin and AI feature RPCs, `Hello`), so it can't submit reviews, merge, comment or change the config.
+
+The extension doesn't reorder GitHub's Files changed tab by file-ordering yet; that is the next step on its roadmap.

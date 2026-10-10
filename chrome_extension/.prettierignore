@@ -1,0 +1,5 @@
+node_modules
+dist
+bun.lock
+# Go and shell: gofmt owns this directory.
+crs_native_host

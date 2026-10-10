@@ -1,0 +1,9 @@
+{
+    // Tests and scripts/build.ts run under Bun, so they also get Bun's types.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "types": ["chrome", "bun"]
+    },
+    "include": ["src", "scripts"],
+    "exclude": ["node_modules", "dist", "crs_native_host"]
+}

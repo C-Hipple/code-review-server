@@ -1,0 +1,50 @@
+{
+    "manifest_version": 3,
+    "name": "Code Review Server",
+    "version": "0.1.0",
+    "description": "AI feature reports and plugin output from code-review-server for the GitHub pull request you are on.",
+    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAm2A6k4ertdCCQctJJWig0jBmXEJjcUDgqr4Y0pfeESnKSejV9W0HunlVfUbmk+F17ym6po7khc8aS+YjkHEV9n4XGMW9lOYCHbDw48MyOU+kG4vvUNwXMRscDIYwqCDSAUUbqIvKc4cLe+SeYLIxuP1+RLyZt69sIrxkntC3K1wKlARAsbfJi5zKxqeGWIfhp2Fkh0xURUAitEEcWiRxU1lDqFvXuohhyn8J88THrRjPwsK8eOsNMfXVw0GE5cGVlUQj3v404/piGCtG647yOf0zOn7qy/isIgU3dvumzAchMJerbO0Tm0An+5UH+H3vMOdVGD0nf8CdZDwzwh2JswIDAQAB",
+    "minimum_chrome_version": "116",
+    "permissions": ["nativeMessaging", "scripting", "storage"],
+    "host_permissions": ["https://github.com/*"],
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": ["https://github.com/*"],
+            "js": ["content.js"],
+            "run_at": "document_idle"
+        }
+    ],
+    "action": {
+        "default_title": "Code Review Server",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "32": "icons/icon32.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "icons": {
+        "16": "icons/icon16.png",
+        "32": "icons/icon32.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
+    "commands": {
+        "_execute_action": {
+            "suggested_key": {
+                "default": "Alt+Shift+R",
+                "mac": "Alt+Shift+R"
+            }
+        }
+    },
+    "web_accessible_resources": [
+        {
+            "resources": ["panel.html", "panel/*"],
+            "matches": ["https://github.com/*"]
+        }
+    ]
+}

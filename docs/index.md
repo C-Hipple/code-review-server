@@ -8,7 +8,7 @@ code-review-server is a service which runs highly configurable workflows to load
 
 ## Documentation Sections
 
-- [Clients](clients.md): Information on using the bundled Web, TUI, and Emacs clients.
+- [Clients](clients.md): Information on using the bundled Web, TUI, and Emacs clients and the Chrome extension.
 - [Command-Line Interface](cli.md): Query the database directly without starting the RPC server using CLI flags.
 - [Configuration](configuration.md): Detailed guide on `codereviewserver.toml` configuration, including workflows and general settings.
 - [Filters](filters.md): Learn how to filter PRs in your workflows with powerful query options.

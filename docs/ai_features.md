@@ -216,8 +216,9 @@ change-diagram, file-ordering and review-ease run `oneshot` only.
 
 - **On demand.** A client asks with `RunAIFeature`; the run happens in the
   background and the client polls `GetAIOutput` while it reads `pending`.
-  Opening a report in either client asks for a run when the feature has never
-  run for the PR or its report is [stale](#caching-and-staleness). The web
+  Opening a report in the web or Emacs client asks for a run when the feature
+  has never run for the PR or its report is [stale](#caching-and-staleness);
+  the Chrome extension leaves that to its **Run** button. The web
   review toolbar asks without opening anything when there is no report yet:
   the button spins until the run lands.
 - **Automatically**, for features with `Automatic = true`: after a workflow
@@ -519,7 +520,8 @@ Automatic = true    # optional: draw each PR's diagram as it arrives
 
 The server serves the **raw Mermaid source**; each client renders it. The web
 client draws it with the mermaid library in a modal that takes most of the
-screen, and Emacs shows the source in a
+screen, the Chrome extension draws it the same way inside the feature's card,
+and Emacs shows the source in a
 [`mermaid-mode`](https://github.com/abrochard/mermaid-mode) buffer.
 
 The model is sent the PR title, the list of changed files and the diff, cut at
@@ -539,16 +541,17 @@ What the model answers is checked and cleaned before it is stored:
 - **Interactions and directives are removed.** The diagram is model output
   steered by a PR's diff, so `click` statements (and `link` / `callback` in a
   class diagram), which make a node a link or run a function, and `%%{init}%%`
-  directives, which reconfigure the renderer, are dropped. The web client also
-  renders at mermaid's `strict` security level, which encodes HTML in labels
-  and disables clicks whatever the source says.
+  directives, which reconfigure the renderer, are dropped. The web client and
+  the Chrome extension also render at mermaid's `strict` security level, which
+  encodes HTML in labels and disables clicks whatever the source says.
 - **A flowchart gets the change classes.** The server defines `added` (green),
   `changed` (amber) and `removed` (red, dashed) at the end, replacing any
   definition the model gave, so every diagram colors them alike and the web
-  client's legend holds.
+  client's and the extension's legends hold.
 - **It must be renderable.** A diagram over 50,000 bytes — mermaid's own limit —
   fails at stage `parse`. Whether it parses is left to the renderer: the web
-  client shows mermaid's error beside the source when it doesn't.
+  client and the extension show mermaid's error beside the source when it
+  doesn't.
 
 The result's `report` is:
 
@@ -649,8 +652,24 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   a buffer of its own, in `mermaid-mode` when that is installed — so its
   `C-c C-b` renders the diagram with `mmdc` — with the status in the header
   line. The same `r`, `R` and `q` apply.
+- **Chrome extension.** On a GitHub pull request, the extension's PR view has a
+  card per enabled feature with a report, showing its status, **Stale** and
+  **Truncated** badges and when it last ran, and expanding to the report's body
+  and annotations, each annotation linking to its line in GitHub's Files changed
+  tab. **Run** — offered when the feature never ran, its report is stale or the
+  last run failed — asks without forcing, so a stored result that still covers
+  the PR answers without a model call; **Re-run** beside a current report
+  forces one. The change diagram is drawn inline with the mermaid library at
+  its `strict` security level, fitted to the card, with its legend, a
+  **Source** toggle and **Copy source**. Of the applied features, review-ease
+  is a pill at the top of the view, and file-ordering gets a card listing the
+  stored order, each file linking to its diff; the extension doesn't yet reorder
+  GitHub's own Files changed tab to match. Opening the view calls `GetPR`, which
+  requests the applied features and runs the `Automatic` ones as any client
+  does, and the view polls `GetAIOutput` while anything is pending.
 
-Both run the feature on open when it never ran or went stale.
+The web and Emacs clients run a feature on open when it never ran or went
+stale; the extension runs one only when asked.
 
 ## Monitoring
 

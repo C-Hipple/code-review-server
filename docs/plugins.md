@@ -239,6 +239,14 @@ Automated comment by <plugin name>
 
 A line carrying several annotations prompts for which one to file. Annotations that collapsed onto a file's hunk header are refused: the line they name is not in the diff, so there is no position for a comment to anchor to. The comment is an ordinary local comment from there on — editable with `c`, deletable with `d`, and posted by `crs-submit-review` like any other.
 
+### Rendering in the Chrome Extension
+
+The [Chrome extension](clients.md#chrome-extension) shows a card per configured plugin in its PR view, with the plugin's status — not run yet, on demand (a deferred plugin nobody has asked for), running, success or failed — and a count of its annotations. Expanding a card shows the parsed body: `markdown` is rendered with raw HTML dropped and the rest sanitized, and `html` goes in a sandboxed frame without `allow-scripts`, styled to follow the panel's light or dark theme, whose links open in a new tab. A plugin whose output has no recognised `body_type` has its raw stdout rendered as markdown.
+
+Annotations are listed beneath the body, sorted by file and line. The extension doesn't render the diff, so each one links to its line in GitHub's own Files changed tab instead (`https://github.com/<owner>/<repo>/pull/<n>/files#diff-<sha256 of the path>R<line>`, the anchor GitHub gives a line on the head side).
+
+**Run**, on a plugin that hasn't run or is deferred, and **Re-run**, on one that has, both call `RerunPlugins` naming that plugin alone, so a deferred plugin runs too. **Re-run all** calls it with no names: the plugins that run automatically rerun, and deferred ones are reset to on demand. The view polls `GetPluginOutput` until nothing reads `pending`.
+
 ## On-Demand Plugins
 
 By default, all configured plugins automatically run when a PR is fetched or when its commit changes (once per SHA). However, some plugins can be expensive to run (e.g., those making API calls to third-party services like Gemini, OpenRouter or Claude).

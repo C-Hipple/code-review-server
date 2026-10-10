@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 **Go backend:**
-- `go build -v ./...` — build all packages (binary: `codereviewserver`)
-- `go install ./...` — install server + plugin binaries to `$GOPATH/bin`
+- `go build -v ./...` — build all packages (binary: `codereviewserver`). `go.mod`'s `ignore ./chrome_extension/node_modules` keeps the Go files some npm packages ship out of `./...`
+- `go install ./...` — install server + plugin binaries, and the Chrome extension's `crs_native_host`, to `$GOPATH/bin`
 - `go test -v ./...` — run all tests
 - `go test -v ./server/` — run tests for a single package
 - `go test -v -run TestName ./package/` — run a single test
@@ -20,7 +20,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `bun run format:check` — Prettier check
 - `bun run type-check` — TypeScript type checking
 
-**CI runs** `go build && go test` for Go changes, and lint/format/type-check/test plus the e2e suite for `bun_client/` changes.
+**Chrome extension (`chrome_extension/`):**
+- `bun install` / `bun run build` — build the unpacked extension into `dist/` (`bun scripts/build.ts --dev` for unminified with source maps); the build fails if a file `manifest.json` or `panel.html` names is missing from `dist/`
+- `bun run test` / `bun run lint` / `bun run format:check` / `bun run type-check` — as for `bun_client/`
+- `bun run test:e2e` — the e2e suite, see `chrome_extension/e2e/README.md`
+- `go test ./chrome_extension/crs_native_host/` — the native host, including an end-to-end bridge test against a fake server
+- `chrome_extension/crs_native_host/install.sh` — builds the host into `~/.crs/bin/` and registers it with the installed browsers (`--help`)
+
+**CI runs** `go build && go test` for Go changes (which covers `crs_native_host`), lint/format/type-check/test plus the e2e suite for `bun_client/` changes, and lint/format/type-check/test/build for `chrome_extension/` changes.
 
 ## Workflow
 
@@ -61,6 +68,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 ### Clients
 - `bun_client/` — Bun + React web UI. `server.ts` bridges HTTP/WebSocket to the Go backend's stdio, and `lsp_pool.ts` keeps language servers (`diff-lsp`, `gopls`, ...) running across LSP WebSockets so reopening a review doesn't re-index the workspace. The change diagram is drawn with the `mermaid` library (`MermaidDiagram.tsx`), imported lazily in `mermaid_utils.ts` so it stays out of the main bundle; its Copy image / Download image buttons rasterize the drawn SVG to a PNG on a canvas (`mermaid_image.ts`), made in the background once the diagram is drawn and kept for both, within a pixel budget and time limits
 - `client.el/` — Emacs client, split into modules with `crs-client.el` as the entry point (`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`, `crs-ai`, `crs-diagram`). `crs-diagram` shows the change diagram in a `mermaid-mode` buffer (an optional dependency) through `crs-ai`'s fetch/poll machinery (`crs--ai-insert-function`). A new module must also be added to the byte-compile list in `.github/workflows/all-checks.yml`
+- `chrome_extension/` — MV3 Chrome extension that shows the AI features and plugins for the GitHub PR a tab is on (any PR, listed or not), and the review list elsewhere; not a review UI (README.md). The service worker (`background.ts`, `native_client.ts`) owns the one native port, opened on the first RPC; one port is one `crs_native_host` and one `codereviewserver --server`, kept alive with the browser. `crs_native_host/` (Go, stdlib only, imports nothing from the module) bridges Chrome's length-prefixed frames to the server's newline-delimited JSON-RPC, chunks responses over Chrome's 1 MB host→extension limit into `crs_chunk` streams (`native_protocol.ts` reassembles them), reports `crs_host` ready/error/server_exited events, and merges `~/.crs/native_host.env` first because Chrome launches hosts without the shell's environment; `install.sh` registers it for the extension ID the manifest `key` pins. `content.ts` (IIFE, small, no RPC) toggles a modal over github.com holding the panel (`src/panel/`, React) in an iframe, passing `?owner=&repo=&number=` on a PR page; off GitHub the panel opens as a `?standalone=1` popup window. The service worker answers only extension pages and forwards only `RPC_METHODS` (`types.ts`): read-and-run RPCs, no review/merge/config mutations. Applying file-ordering to GitHub's Files changed DOM is a follow-up (`TODO(file-ordering)` in `content.ts`); for now its card lists the stored order
 
 ## Key Data Flow
 

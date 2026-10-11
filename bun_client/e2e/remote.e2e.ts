@@ -7,7 +7,15 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { REMOTE_LOGIN, REMOTE_USER_REGISTRATION } from './fixtures/remote_user';
 import { REGISTRATION_KEY, REMOTE_PORT, remoteHomeFor, urlFor } from './harness/config';
-import { type AuthCall, expect, modal, openReview, test } from './harness/test';
+import {
+    type AuthCall,
+    expect,
+    modal,
+    openReview,
+    PR42,
+    SCREENSHOT_URL,
+    test,
+} from './harness/test';
 
 test.use({ baseURL: urlFor(REMOTE_PORT) });
 
@@ -148,11 +156,57 @@ test.describe('remote mode', () => {
             'Needs a test.'
         );
         const [refused] = await backend.calls('SubmitReview');
-        expect(refused.refused).toMatch(/^refused: /);
+        expect(refused.refused).toBe(
+            "refused: this server posts to GitHub as its own account, so it does not submit reviews or merge on users' behalf; an administrator can enable AllowServerIdentityActions"
+        );
+        // This server cannot link accounts, so there is nothing to offer.
+        await expect(modal(page, 'Link your GitHub account')).toHaveCount(0);
 
         // A server that lets users act under its account takes the same draft.
         await backend.rpc('E2E.SetIdentityActions', { allowed: true });
         await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
         await expect(page.getByRole('status')).toHaveText('Requested changes on acme/widgets#42');
+    });
+
+    test('the submit preview names the login the bridge signed in as', async ({
+        page,
+        backend,
+    }) => {
+        await openReview(page);
+        await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
+        const dialog = modal(page, 'Submit Review');
+        await dialog.getByRole('button', { name: 'Approve' }).click();
+        await expect(dialog.getByText(`Approved by ${REMOTE_LOGIN}`)).toBeVisible();
+        // Not from the server's configuration, which is its administrators'.
+        expect(await backend.calls('GetConfig')).toEqual([]);
+    });
+
+    test('an embedded screenshot is served from the bytes the server sends', async ({
+        page,
+        request,
+        backend,
+    }) => {
+        await backend.setPRBody(PR42, `Before: <img src="${SCREENSHOT_URL}" alt="e2e screenshot">`);
+        await openReview(page);
+
+        const image = page.getByRole('img', { name: 'e2e screenshot' });
+        await expect(image).toHaveAttribute(
+            'src',
+            `/api/github-image?url=${encodeURIComponent(SCREENSHOT_URL)}`
+        );
+        await expect
+            .poll(() => image.evaluate(img => (img as HTMLImageElement).naturalWidth))
+            .toBe(2);
+
+        // The path the server names is on its own machine: the bridge asked for
+        // the bytes instead.
+        const [asked] = await backend.calls('GetImage');
+        expect(asked.params).toEqual({ URL: SCREENSHOT_URL, IncludeData: true });
+        const res = await request.get(
+            `/api/github-image?url=${encodeURIComponent(SCREENSHOT_URL)}`
+        );
+        expect(res.status()).toBe(200);
+        expect(res.headers()['content-type']).toBe('image/png');
+        expect((await res.body()).subarray(1, 4).toString()).toBe('PNG');
     });
 });

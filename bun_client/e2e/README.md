@@ -15,10 +15,21 @@ declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 
 Started with `--listen host:port`, `fake_crs.ts` stands in for a hosted
 `crs --listen` instead: the same methods over TCP, each connection a session
-that must `Authenticate` or `RegisterUser` first, with the server's method
-policy — `not authenticated:` before that, `permission denied:` for the
-admin-only methods (`GetConfig`, `UpdateConfig`, `RerunPlugins`, ...), and
-`refused:` for `SubmitReview` / `MergePR` while the identity gate is shut.
+that must `Authenticate` or `RegisterUser` first, answered with the Go
+server's own error strings and reply fields — its method policy
+(`not authenticated:` before a session, `permission denied:` for the
+administrator's methods and for `SkipCache`), and its write resolver for
+`SubmitReview` / `MergePR`: a user who linked their GitHub account writes as
+themselves, the open identity gate lends the server's account, and otherwise
+the write is refused with `refused: link-github:` where the server can link
+accounts and `refused:` where it cannot. `StartGitHubLink`, `GetGitHubLink`
+and `UnlinkGitHub` keep a device flow per user, which a spec ends the way
+GitHub would.
+
+Its `GetImage` serves one screenshot (`SCREENSHOT_URL` in `harness/test.ts`;
+embed it with `backend.setPRBody`): from a real file to a local bridge, and
+from a path that only exists on "the server's host" to a remote one, which
+has to ask for the bytes.
 
 ## Running
 
@@ -36,7 +47,7 @@ for the fakes, so nothing installed on the machine leaks in. Two bridges run:
 
 - `:5190` — fake `crs`, fake `diff-lsp`, fake TypeScript server
 - `:5191` — fake `crs` and no language servers (the "LSP not active" paths)
-- `:5193` — remote mode (`remote.e2e.ts`): no `crs` on PATH at all; the
+- `:5193` — remote mode (`remote.e2e.ts`, `remote_link.e2e.ts`): no `crs` on PATH at all; the
   bridge connects with `CRS_REMOTE` to a fake `crs --listen` on `:5194` and
   registers with `CRS_REGISTRATION_KEY`. Its `HOME`, `XDG_CONFIG_HOME` and
   `CRS_HOME` are under its state directory, holding the TOML from
@@ -55,10 +66,21 @@ and `lsp.received()` (see `harness/test.ts`).
 
 The remote fake keeps its registered users and its log of `Authenticate` /
 `RegisterUser` calls across `E2E.Reset` — the bridge registers once, as it
-starts. Specs read that log with `backend.authLog()`, and a call the policy
-turned down carries the error in `refused`. `E2E.ForgetUser` drops a user the
+starts — but not their GitHub links: every test starts unlinked, on a server
+that cannot link until the spec says otherwise. Specs read that log with
+`backend.authLog()`, and a call the server refused — by its policy or in the
+handler — carries the error in `refused`. `E2E.ForgetUser` drops a user the
 way the server's retention sweep does (with `Disconnect: true` it also hangs
 up, as a restart would), and `E2E.SetIdentityActions` opens the identity gate.
+
+For GitHub linking (`remote_link.e2e.ts`), `backend.setGitHubLinkAvailable`
+lets the server link accounts (its codes poll every second, not GitHub's
+five), `backend.gitHubLink` reads a user's flow — with the code the dialog
+should show — and stored link, `backend.endGitHubLink` ends a pending flow as
+GitHub would (`linked`, `denied`, `expired`, `mismatch` or `error`),
+`backend.linkGitHub` links without a flow, and `backend.breakGitHubLink`
+revokes a link on "GitHub" (the next write is refused with
+`refused: link-github:` and clears it) or makes it unreadable to the server.
 
 ## Real language servers (opt-in)
 

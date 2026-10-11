@@ -286,12 +286,14 @@ func TestDraftsAndFeedbackBelongToTheirAuthor(t *testing.T) {
 
 // fakeGitHub answers the GitHub API from memory for the rest of the test, so a
 // handler that reaches GitHub — SubmitReview always does — can run. It
-// records the reviews and replies posted, and answers every read with an empty
-// but well-formed PR. GraphQL fails, which the readers of it tolerate.
+// records the reviews, replies and merges posted, and answers every read with
+// an empty but well-formed PR. GraphQL fails, which the readers of it
+// tolerate.
 type fakeGitHub struct {
 	mu      sync.Mutex
 	reviews []map[string]any
 	replies []map[string]any
+	merges  int
 }
 
 func useFakeGitHub(t *testing.T) *fakeGitHub {
@@ -318,6 +320,11 @@ func (f *fakeGitHub) RoundTrip(req *http.Request) (*http.Response, error) {
 		return respond(http.StatusNotFound, `{"message": "not the GitHub API"}`)
 	case strings.HasSuffix(path, "/graphql"):
 		return respond(http.StatusBadGateway, `{"message": "no GraphQL here"}`)
+	case req.Method == http.MethodPut && strings.HasSuffix(path, "/merge"):
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.merges++
+		return respond(http.StatusOK, `{"merged": true, "sha": "merge-sha", "message": "Pull Request successfully merged"}`)
 	case req.Method == http.MethodPost:
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -334,8 +341,15 @@ func (f *fakeGitHub) RoundTrip(req *http.Request) (*http.Response, error) {
 	case strings.Contains(req.Header.Get("Accept"), "diff"):
 		return respond(http.StatusOK, aiTestDiff)
 	case strings.HasSuffix(path, fmt.Sprintf("/pulls/%d", aiNumber)):
-		return respond(http.StatusOK, fmt.Sprintf(`{"number": %d, "state": "open", "title": "Add greeting helper",
-			"user": {"login": "author"}, "head": {"sha": "sha-1", "ref": "feature"}, "base": {"sha": "base-1", "ref": "main"}}`, aiNumber))
+		// Draft, the head's label and both repos are always in GitHub's
+		// answer, and the workflow layer reads them unchecked when a submit
+		// reprocesses the PR for a user whose workflow lists it.
+		repo := fmt.Sprintf(`{"name": %q, "full_name": "%s/%s", "owner": {"login": %q}}`, aiRepo, aiOwner, aiRepo, aiOwner)
+		return respond(http.StatusOK, fmt.Sprintf(`{"number": %d, "state": "open", "draft": false, "title": "Add greeting helper",
+			"html_url": "https://github.com/%s/%s/pull/%d", "user": {"login": "author"},
+			"head": {"sha": "sha-1", "ref": "feature", "label": "author:feature", "repo": %s},
+			"base": {"sha": "base-1", "ref": "main", "label": "%s:main", "repo": %s}}`,
+			aiNumber, aiOwner, aiRepo, aiNumber, repo, aiOwner, repo))
 	case strings.HasSuffix(path, "/requested_reviewers"):
 		return respond(http.StatusOK, `{"users": [], "teams": []}`)
 	case strings.HasSuffix(path, "/status"):
@@ -351,6 +365,7 @@ func (f *fakeGitHub) RoundTrip(req *http.Request) (*http.Response, error) {
 // stay where they were.
 func TestSubmitReviewSendsOnlyTheViewersDrafts(t *testing.T) {
 	db := aiTestSetup(t, nil)
+	allowServerIdentityActions(t)
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 	alice, bob := handlerFor("alice", false), handlerFor("bob", false)
 	addDraft(t, alice, "alice's draft")
@@ -380,6 +395,15 @@ func TestSubmitReviewSendsOnlyTheViewersDrafts(t *testing.T) {
 	if len(drafts) != 1 || *drafts[0].Body != "bob's draft" {
 		t.Errorf("bob's drafts after alice's submit = %v, want his one draft untouched", drafts)
 	}
+}
+
+// allowServerIdentityActions lets remote connections write to GitHub under
+// the server's token for the rest of the test.
+func allowServerIdentityActions(t *testing.T) {
+	t.Helper()
+	cfg := config.C()
+	cfg.AllowServerIdentityActions = true
+	config.SetC(cfg)
 }
 
 func TestDescribeWorkflowKeys(t *testing.T) {

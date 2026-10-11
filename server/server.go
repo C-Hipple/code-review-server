@@ -229,7 +229,16 @@ type GetPRReply struct {
 	PRPayload
 }
 
+// errSkipCacheNeedsAdmin refuses SkipCache to a user. Skipping the cache
+// refetches every part of the PR from GitHub on the server's shared token, and
+// a client that set it on every open would spend that budget for everyone.
+// SyncPR, the deliberate "refresh this PR" action, stays open to users.
+var errSkipCacheNeedsAdmin = errors.New("permission denied: SkipCache requires an administrator")
+
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
+	if args.SkipCache && !h.isAdmin() {
+		return errSkipCacheNeedsAdmin
+	}
 	viewer := h.viewer()
 	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, args.SkipCache)
 	if err != nil {
@@ -370,6 +379,9 @@ type GetAdjacentPRReply struct {
 }
 
 func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
+	if args.SkipCache && !h.isAdmin() {
+		return errSkipCacheNeedsAdmin
+	}
 	// Next and previous walk the viewer's own review list.
 	viewer := h.viewer()
 	renderer := NewOrgRenderer(config.C().DB, viewer)
@@ -624,9 +636,17 @@ func resolveReplyAnchor(c database.LocalComment, pending map[int64]database.Loca
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
+	// 0. Settle whose GitHub account the review and its replies go out as —
+	// or that this connection may not submit at all — before any draft is
+	// touched: a refused submit leaves every one of them in place.
+	viewer := h.viewer()
+	client, err := h.writeClientFor(viewer, writeSubmitReview)
+	if err != nil {
+		return err
+	}
+
 	// 1. Fetch Local Comments: the viewer's own drafts, which are all this
 	// review is made of.
-	viewer := h.viewer()
 	comments, err := config.C().DB.GetLocalCommentsForPR(viewer, args.Owner, args.Repo, args.Number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
@@ -643,7 +663,6 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// takes a path and a position per comment and has no notion of answering an
 	// existing one, so each reply is posted on its own against the comment it
 	// answers. Everything else goes out as part of the review below.
-	client := git_tools.GetGithubClient()
 	var reviewComments []*github.DraftReviewComment
 	// Local rows riding along with the review, deleted once GitHub has it.
 	var reviewCommentIDs []int64
@@ -777,12 +796,15 @@ type MergePRReply struct {
 // not specify one. We deliberately do not second-guess merge state here:
 // clients should rely on `merged` and `message` from the response.
 func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
+	client, err := h.writeClientFor(h.viewer(), writeMerge)
+	if err != nil {
+		return err
+	}
 	method := args.MergeMethod
 	if method == "" {
 		method = "squash"
 	}
 
-	client := git_tools.GetGithubClient()
 	result, err := git_tools.MergePR(client, args.Owner, args.Repo, args.Number, method)
 	if err != nil {
 		slog.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
@@ -1679,6 +1701,11 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	if args.AnchorLine < 1 {
 		return fmt.Errorf("AnchorLine must be >= 1, got %d", args.AnchorLine)
 	}
+	// Repo names a directory under RepoLocation (getFileContentLocal), and a
+	// remote client's must not name one anywhere else on the server.
+	if !h.isLocal() && !plainRepoName(args.Repo) {
+		return fmt.Errorf("Repo must be a repository name, got %q", args.Repo)
+	}
 	count := args.Count
 	if count <= 0 {
 		count = 20
@@ -1786,6 +1813,12 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	reply.RangeHeader = fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix)
 
 	return nil
+}
+
+// plainRepoName reports whether repo is a bare repository name rather than a
+// path.
+func plainRepoName(repo string) bool {
+	return repo != "" && repo != "." && repo != ".." && !strings.ContainsAny(repo, `/\`)
 }
 
 type GetPluginOutputArgs struct {

@@ -70,12 +70,18 @@ type HelloReply struct {
 func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 	// The viewer's own sections: the count says how much of a dashboard there
 	// is to show, and other users' are none of this connection's business.
-	sections, err := config.C().DB.GetSectionsForUser(h.viewer())
-	if err != nil {
-		slog.Error("Error counting sections", "error", err)
-		return err
+	// Hello answers before a remote connection authenticates, when the viewer
+	// still reads as the server's own identity; it has no dashboard to count
+	// then.
+	count := 0
+	if h.authenticated() {
+		sections, err := config.C().DB.GetSectionsForUser(h.viewer())
+		if err != nil {
+			slog.Error("Error counting sections", "error", err)
+			return err
+		}
+		count = len(sections)
 	}
-	count := len(sections)
 	CurrentCount += count
 	reply.Content = fmt.Sprintf("hello %d", CurrentCount)
 	reply.Count = count

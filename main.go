@@ -33,6 +33,7 @@ func main() {
 	listSections := flag.Bool("list-sections", false, "List all sections from the database, every user's included")
 	getPRFlag := flag.String("pr", "", "Get cached details for a specific PR (format: owner/repo/number)")
 	printDefaultConfig := flag.Bool("print-default-config", false, "Print the built-in default configuration and exit")
+	listenAddr := flag.String("listen", "", "Run the workflows and serve remote clients over TCP on host:port, instead of one client over stdio")
 	flag.Parse()
 
 	// Printing the defaults is what someone does before they have a config, a
@@ -40,6 +41,10 @@ func main() {
 	if *printDefaultConfig {
 		fmt.Print(config.DefaultConfigTOML)
 		return
+	}
+	if *listenAddr != "" && (*serverFlag || *oneOff) {
+		fmt.Fprintln(os.Stderr, "error: -listen cannot be combined with -server or -oneoff")
+		os.Exit(1)
 	}
 
 	// Lets a config that never names a GithubUsername still know who "me" is.
@@ -105,12 +110,12 @@ func main() {
 	)
 	ms.Initialize()
 
-	if *serverFlag {
+	if *serverFlag || *listenAddr != "" {
 		// Compute plugin results and the automatic AI features off the back of
 		// the workflow cycle that added or refreshed a PR, so opening a review
-		// finds them already cached. Only registered in server mode: a
-		// workflow-only process exits when its cycle ends and would kill the
-		// hooks mid-run.
+		// finds them already cached. Only registered when serving clients
+		// (-server or -listen): a workflow-only process exits when its cycle
+		// ends and would kill the hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
 
 		go func() {
@@ -120,9 +125,30 @@ func main() {
 			}
 		}()
 		go ms.Run()
+		if *listenAddr != "" {
+			logListenSecrets()
+			if err := server.Listen(*listenAddr); err != nil {
+				slog.Error("Error serving remote clients", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 		server.RunServer()
 	} else {
 		ms.Run()
+	}
+}
+
+// logListenSecrets says at startup which of the hosted server's two secrets
+// are set, since each one missing quietly switches something off: without
+// CRS_REGISTRATION_KEY nobody can register, and without CRS_ADMIN_TOKEN nobody
+// can authenticate as the server's own identity. Never the values.
+func logListenSecrets() {
+	if os.Getenv("CRS_REGISTRATION_KEY") == "" {
+		slog.Warn("CRS_REGISTRATION_KEY is not set: registration is disabled, so only users already registered can connect")
+	}
+	if os.Getenv("CRS_ADMIN_TOKEN") == "" {
+		slog.Info("CRS_ADMIN_TOKEN is not set: no connection can authenticate as the server's administrator, only users registered as one")
 	}
 }
 

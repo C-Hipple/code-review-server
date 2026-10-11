@@ -33,6 +33,75 @@ costs one concatenation when it completes rather than one per chunk.")
 Each value is the server process the submit was sent to.  A PR takes one
 submit at a time, since a second would post its pending comments again.")
 
+;; Remote mode: a shared server started with `crs --listen' (crs-rpc.el).
+(defcustom crs-remote-address nil
+  "Address (\"HOST:PORT\") of a shared crs server, or nil to run crs locally.
+Nil, `crs-start-server' runs its own `crs -server' as it always has.
+Set, it connects to a server started with `crs --listen' instead and
+authenticates as you with the token in `crs-remote-token-file',
+registering with `crs-remote-registration-key' the first time (and
+again if the server has dropped you after a stretch of inactivity).
+Anything that reads a path on the server's host, such as visiting a
+file from a review or the images the server caches, works only where
+the same path exists on this machine."
+  :type '(choice (const :tag "Run crs locally" nil)
+                 (string :tag "host:port"))
+  :group 'crs)
+
+(defcustom crs-remote-tls nil
+  "When non-nil, speak TLS to `crs-remote-address'.
+A shared server listens in plain TCP; turn this on when a proxy in
+front of it terminates TLS."
+  :type 'boolean
+  :group 'crs)
+
+(defcustom crs-remote-token-file
+  (expand-file-name "remote_token" (or (getenv "CRS_HOME") "~/.crs"))
+  "File holding the token a shared server issued you.
+It is written, readable by you only, when the server registers you.
+The environment variable CRS_REMOTE_TOKEN wins over it when set.  The
+web client's bridge keeps its token in the same file by default, so
+both clients connect as the same user."
+  :type 'file
+  :group 'crs)
+
+(defcustom crs-remote-login nil
+  "The GitHub login a shared server registers you under.
+Nil means the environment variable CRS_LOGIN, else the root
+GithubUsername of your codereviewserver.toml."
+  :type '(choice (const :tag "CRS_LOGIN, or GithubUsername in the config file" nil)
+                 string)
+  :group 'crs)
+
+(defcustom crs-remote-registration-key nil
+  "A shared server's registration key, needed only to register.
+Nil means the environment variable CRS_REGISTRATION_KEY."
+  :type '(choice (const :tag "CRS_REGISTRATION_KEY" nil)
+                 string)
+  :group 'crs)
+
+(defcustom crs-remote-user-config-command '("crs" "-print-user-config")
+  "Command printing what registering with a shared server sends.
+It reads your local codereviewserver.toml and prints its Workflows,
+Repos, SectionPriority and SectionSorting as one JSON object, so this
+client needs no TOML parser.  Any command printing that object works."
+  :type '(repeat string)
+  :group 'crs)
+
+(defvar crs--remote-ready nil
+  "Non-nil once the connection to `crs-remote-address' is authenticated.")
+
+(defvar crs--remote-queue nil
+  "Requests waiting for the remote connect flow, newest first.
+Each entry is a list (METHOD PARAMS CALLBACK).")
+
+(defvar crs--remote-last-error nil
+  "Why the last remote connect flow failed, or nil.")
+
+(defvar crs--remote-issued-token nil
+  "A token the shared server issued while CRS_REMOTE_TOKEN named another.
+It wins over CRS_REMOTE_TOKEN for the rest of the session.")
+
 (defcustom crs-debug nil
   "When non-nil, log JSON-RPC responses to the *Messages* buffer.
 Off by default: a reply can run to megabytes (a GetPR reply carries the

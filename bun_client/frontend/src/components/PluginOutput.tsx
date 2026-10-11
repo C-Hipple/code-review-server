@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { rpcCall } from '../api';
-import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
+import { Button, Badge, Card, mapStatusToVariant, Theme, type StatusVariant } from '../design';
 import { usePluginCollapse } from '../hooks/usePluginCollapse';
 import {
     canRerunPlugin,
     pluginOutputLineCount,
+    pluginRerunFailedMessage,
     resolvePluginBody,
     sortedAnnotations,
     type PluginResult,
@@ -20,6 +21,7 @@ interface PluginOutputProps {
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
     onClose?: () => void;
+    onToast: (message: string, variant?: StatusVariant) => void;
 }
 
 interface GetPluginOutputResponse {
@@ -33,6 +35,7 @@ export default function PluginOutput({
     theme: _theme,
     onThemeChange: _onThemeChange,
     onClose,
+    onToast,
 }: PluginOutputProps) {
     const [loading, setLoading] = useState(false);
     const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
@@ -87,6 +90,7 @@ export default function PluginOutput({
             await loadPluginOutput();
         } catch (e) {
             console.error('Failed to execute plugin:', e);
+            onToast(pluginRerunFailedMessage(pluginName, e), 'danger');
         } finally {
             setExecutingPlugins((prev: Set<string>) => {
                 const next = new Set(prev);

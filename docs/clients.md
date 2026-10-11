@@ -2,6 +2,8 @@
 
 Code Review Server ships with a web client, an Emacs client, and a TUI client, but you can build your own using the [Protocol](protocol.md).
 
+Each client runs its own server by default. The web and Emacs clients can instead connect to a server a team shares — see [Connecting to a shared server](#connecting-to-a-shared-server).
+
 ## Web Client (bun)
 
 The web client is packaged with bun, and has a bun backend with a react frontend. If you build and run the bun backend, you'll get a working webserver on `localhost:3000` which lists all of your PRs.
@@ -197,3 +199,68 @@ When set to a non-nil value, a `*** Comments` sub-tree is included under each PR
 This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The server always returns comment data from its local DB cache — no extra GitHub API calls are involved — but the additional org structure adds rendering overhead proportional to the total number of comments across all listed PRs. Setting this to `nil` strips the comments before handing the content to org-mode.
 
 Enable it if you want a quick overview of comment activity without opening each PR individually.
+
+## Connecting to a shared server
+
+By default a client runs its own `crs` (`crs --server`, over stdio) with your GitHub token. A team can instead run one server, `crs --listen host:port` (see [Hosted Server](hosted_server.md)), that the web and Emacs clients connect to over TCP. Each user gets a dashboard of their own, built from the workflows in their own `codereviewserver.toml`; the GitHub token, the caches and the plugin and AI runs are the server's.
+
+### How a client connects
+
+A connection starts unauthenticated, so the client opens each one with the connect flow (the methods are in the [Protocol](protocol.md)):
+
+1. `RPCHandler.Authenticate {Token}` with your stored token, if there is one.
+2. If the server doesn't know the token — you never registered there, or it removed you after a stretch of inactivity — or there is none, `RPCHandler.RegisterUser` with the server's registration key, your GitHub login, and the `Workflows`, `Repos`, `SectionPriority` and `SectionSorting` of your local `codereviewserver.toml`. Your stored token goes along, so a returning user gets the same one back. The token in the reply is saved, readable by you only.
+
+Requests made meanwhile wait for it. One the server refuses as `not authenticated:` runs the flow again and is retried once, and a dropped connection fails the requests in flight before the client reconnects.
+
+Your workflows are sent when the server registers you — the first time, and again whenever it has forgotten you. In between, the server runs the copy it has: editing your local file doesn't change it (`RPCHandler.UpdateMyWorkflows` does).
+
+Both clients keep the token in `$CRS_HOME/remote_token` (`~/.crs/remote_token`) by default, so they connect as the same user. To use a token from another machine, copy it there (or set `CRS_REMOTE_TOKEN`): registering a login the server already knows needs the token it was registered with.
+
+### What is different on a shared server
+
+- **Admin-only actions.** Only the server's administrators can view or change its configuration, rerun plugins or merge. The web client's Server Configuration tab says so instead of showing the editor, and a refused rerun says so in a toast. An administrator connects with the server's admin token as their token and sees the server's own dashboard.
+- **Actions under the server's GitHub account.** Submitting a review (with its replies) goes out as the account whose token the server holds, so a shared server refuses it unless its administrator allows it (`AllowServerIdentityActions`). The client says so and keeps your draft; submit the review on GitHub instead.
+- **Paths on the server's host.** Anything that reads a file by its path works only where the same path exists on your machine: the language-server features of the web client (diff-lsp, and go-to-definition in the code viewer), the code viewer's file list, opening a file from an Emacs review, and the screenshots the server caches. Hunk expansion and everything else served over RPC work as usual.
+- **Team chips.** Which required-review teams the list marks as yours is worked out for the account whose token the server holds, not for you.
+
+### Web client
+
+Set these before `bun start` (or the compiled `crs-gui`):
+
+| Variable | Meaning |
+|----------|---------|
+| `CRS_REMOTE` | `host:port` of the shared server. Unset, the bridge spawns `crs --server` as always. |
+| `CRS_REMOTE_TLS` | `1` to speak TLS, to the proxy terminating it in front of the server. A private CA can be trusted with `NODE_EXTRA_CA_CERTS`. |
+| `CRS_REGISTRATION_KEY` | The server's registration key, from its administrator. Needed only to register. |
+| `CRS_LOGIN` | Your GitHub login. Defaults to the root `GithubUsername` of your `codereviewserver.toml`. |
+| `CRS_REMOTE_TOKEN` | Your token, used instead of the token file. |
+| `CRS_HOME` | Where the token file lives (`$CRS_HOME/remote_token`, default `~/.crs`). |
+| `XDG_CONFIG_HOME` | Where `codereviewserver.toml` is read from (default `~/.config`). |
+
+```bash
+export CRS_REMOTE=crs.internal.example.com:443 CRS_REMOTE_TLS=1
+export CRS_REGISTRATION_KEY=...   # the first time only
+cd bun_client && bun start
+```
+
+The bridge logs the connect flow under `[Remote]`, including what to set when something it needs is missing. While the server is unreachable it retries with a growing delay (up to 30 seconds), and requests made between attempts fail at once with the reason rather than hang.
+
+### Emacs client
+
+```elisp
+(setq crs-remote-address "crs.internal.example.com:443"
+      crs-remote-tls t
+      crs-remote-registration-key "...")  ; the first time only
+```
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `crs-remote-address` | `nil` | `"host:port"` of the shared server; `nil` runs `crs -server` locally as always. |
+| `crs-remote-tls` | `nil` | Speak TLS (`open-network-stream` with `:type 'tls`). |
+| `crs-remote-token-file` | `$CRS_HOME/remote_token` | Where the token is kept. `CRS_REMOTE_TOKEN` wins when set. |
+| `crs-remote-login` | `nil` | Your GitHub login; `nil` means `CRS_LOGIN`, else the root `GithubUsername` of your `codereviewserver.toml`. |
+| `crs-remote-registration-key` | `nil` | The registration key; `nil` means `CRS_REGISTRATION_KEY`. |
+| `crs-remote-user-config-command` | `("crs" "-print-user-config")` | Prints what registering sends, read from your `codereviewserver.toml`, as JSON. Point it at any command printing the same object if `crs` isn't installed here. |
+
+`crs-start-server` connects instead of spawning, and the commands that start the server do the same. When the connection drops, the requests it owed get an error and the next command reconnects. A connect flow that fails says what to set in the `*Warnings*` buffer.

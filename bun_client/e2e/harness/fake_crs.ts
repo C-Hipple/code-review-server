@@ -7,9 +7,20 @@
 // reset by the `E2E.Reset` method, which tests reach through the bridge's
 // generic `/api/rpc` endpoint. `E2E.Calls` returns every RPC received since
 // the last reset so tests can assert on exactly what the UI sent.
+//
+// With `--listen host:port` it stands in for a hosted `crs --listen` instead:
+// the same methods over TCP, each connection a session that starts
+// unauthenticated, with Authenticate / RegisterUser per the contract in
+// docs/protocol.md and the server's method policy — `not authenticated:`
+// before a session, `permission denied:` for the admin-only methods, and
+// `refused:` for SubmitReview / MergePR while the identity gate is shut (see
+// the remote-mode hooks at the end of `handlers`). Registered users outlive
+// `E2E.Reset`, as they outlive a sync cycle on the real server.
 
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Socket } from 'bun';
 import {
     buildFixtures,
     comment,
@@ -38,7 +49,8 @@ interface State {
     prs: PRFixture[];
     localComments: Map<string, CommentJSON[]>;
     feedback: Map<string, string>;
-    calls: { method: string; params: unknown }[];
+    // `refused` is the policy error a listen-mode call was answered with.
+    calls: { method: string; params: unknown; refused?: string }[];
     failNext: Map<string, string>;
     // Methods whose next call is recorded but left unanswered, and the calls
     // held that way, each answered by `E2E.Release`.
@@ -61,6 +73,9 @@ interface State {
     // What the Server Configuration tab edits: UpdateConfig merges each field
     // it is sent into this, the way the server merges an update into the file.
     config: Record<string, unknown>;
+    // Listen mode: whether the server lets remote users act under its GitHub
+    // identity (AllowServerIdentityActions).
+    identityActions: boolean;
 }
 
 const CONFIG_PATH = '/tmp/crs-e2e/codereviewserver.toml';
@@ -114,6 +129,7 @@ function freshState(): State {
         aiRuns: new Map(),
         aiDone: new Set(),
         config: freshConfig(),
+        identityActions: false,
     };
 }
 
@@ -379,13 +395,168 @@ function fileLines(pr: PRFixture, filename: string): string[] {
     }
 }
 
+// --- Sessions (listen mode) ---------------------------------------------------
+
+/** Who a connection is. Stdio's is the local user, an administrator. */
+interface Session {
+    /** Null until Authenticate or RegisterUser succeeds; '' is the server's own identity. */
+    login: string | null;
+    admin: boolean;
+    /** The stdio session, which the method policy never applies to. */
+    local: boolean;
+}
+
+/** One client: its session, and where its replies go. */
+interface Peer {
+    session: Session;
+    send(line: string): void;
+    /** Hang up on it, as a server restart would. */
+    close(): void;
+}
+
+interface RemoteUser {
+    login: string;
+    token: string;
+    admin: boolean;
+}
+
+// Registered users by lowercased login (logins are case-insensitive), and every
+// Authenticate / RegisterUser with its reply, oldest first. E2E.Reset clears
+// neither: a bridge registers once, when it connects.
+const users = new Map<string, RemoteUser>();
+const authLog: { method: string; params: unknown; reply: unknown }[] = [];
+const peers = new Set<Peer>();
+
+// Secrets come from the environment, as on the real server.
+const REGISTRATION_KEY = process.env.CRS_REGISTRATION_KEY ?? '';
+const ADMIN_TOKEN = process.env.CRS_ADMIN_TOKEN ?? '';
+const TOKEN_PATTERN = /^crs_[0-9a-f]{64}$/;
+const LOGIN_PATTERN = /^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$/;
+const MAX_WORKFLOWS = 50;
+
+const PUBLIC_METHODS = new Set([
+    'RPCHandler.Hello',
+    'RPCHandler.Authenticate',
+    'RPCHandler.RegisterUser',
+]);
+const ADMIN_METHODS = new Set([
+    'RPCHandler.GetConfig',
+    'RPCHandler.UpdateConfig',
+    'RPCHandler.RerunPlugins',
+    'RPCHandler.MergePR',
+    'RPCHandler.ListUsers',
+    'RPCHandler.DeleteUser',
+]);
+// Actions that go out under the server's GitHub identity.
+const IDENTITY_METHODS = new Set(['RPCHandler.SubmitReview', 'RPCHandler.MergePR']);
+
+/** The error the server's method policy answers `method` with, if it turns it down. */
+function refusal(method: string, session: Session): string | null {
+    if (session.local || method.startsWith('E2E.') || PUBLIC_METHODS.has(method)) return null;
+    if (session.login === null) {
+        return `not authenticated: ${method} needs a session; call RPCHandler.Authenticate or RPCHandler.RegisterUser first`;
+    }
+    if (ADMIN_METHODS.has(method) && !session.admin) {
+        return `permission denied: ${method} requires an administrator`;
+    }
+    if (IDENTITY_METHODS.has(method) && !state.identityActions) {
+        return `refused: ${method} would act as the server's GitHub account, which this server does not allow (AllowServerIdentityActions is off)`;
+    }
+    return null;
+}
+
+function authenticate(args: Record<string, any>, peer: Peer) {
+    const token = String(args.Token ?? '');
+    if (ADMIN_TOKEN && token === ADMIN_TOKEN) {
+        peer.session = { login: '', admin: true, local: false };
+        return { okay: true, known: true, login: '', is_admin: true, message: '' };
+    }
+    const user = [...users.values()].find(u => u.token === token);
+    if (!user) {
+        return { okay: false, known: false, login: '', is_admin: false, message: 'unknown token' };
+    }
+    peer.session = { login: user.login, admin: user.admin, local: false };
+    return { okay: true, known: true, login: user.login, is_admin: user.admin, message: '' };
+}
+
+function registerUser(args: Record<string, any>, peer: Peer) {
+    const refuse = (message: string, errors: unknown[] = []) => ({
+        okay: false,
+        created: false,
+        login: '',
+        token: '',
+        is_admin: false,
+        message,
+        errors,
+    });
+    if (!REGISTRATION_KEY) return refuse('registration is disabled on this server');
+    if (args.RegistrationKey !== REGISTRATION_KEY) return refuse('wrong registration key');
+    const login = String(args.Login ?? '').trim();
+    if (!LOGIN_PATTERN.test(login)) return refuse(`"${login}" is not a valid GitHub login`);
+
+    const workflows: unknown = args.Workflows ?? [];
+    const errors: { workflow: number; field: string; message: string }[] = [];
+    if (!Array.isArray(workflows)) {
+        errors.push({ workflow: -1, field: 'Workflows', message: 'must be a list' });
+    } else {
+        if (workflows.length > MAX_WORKFLOWS) {
+            errors.push({ workflow: -1, field: 'Workflows', message: `at most ${MAX_WORKFLOWS}` });
+        }
+        const seen = new Set<string>();
+        workflows.forEach((w, i) => {
+            const name = String(w?.Name ?? '');
+            if (!name) errors.push({ workflow: i, field: 'Name', message: 'is required' });
+            else if (seen.has(name)) {
+                errors.push({ workflow: i, field: 'Name', message: `duplicate name "${name}"` });
+            }
+            seen.add(name);
+        });
+    }
+    if (errors.length > 0) return refuse('the workflows are not valid', errors);
+
+    const token = String(args.Token ?? '');
+    const known = users.get(login.toLowerCase());
+    if (known && known.token !== token) return refuse('login already registered');
+    const user: RemoteUser = known ?? {
+        login,
+        token: TOKEN_PATTERN.test(token) ? token : `crs_${randomBytes(32).toString('hex')}`,
+        admin: false,
+    };
+    if (ADMIN_TOKEN && args.AdminToken === ADMIN_TOKEN) user.admin = true;
+    users.set(login.toLowerCase(), user);
+    peer.session = { login: user.login, admin: user.admin, local: false };
+    return {
+        okay: true,
+        created: !known,
+        login: user.login,
+        token: user.token,
+        is_admin: user.admin,
+        message: '',
+        errors: [],
+    };
+}
+
 const REVIEW_STATE: Record<string, string> = {
     APPROVE: 'APPROVED',
     REQUEST_CHANGES: 'CHANGES_REQUESTED',
     COMMENT: 'COMMENTED',
 };
 
-const handlers: Record<string, (args: any) => unknown> = {
+const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
+    'RPCHandler.Hello': () => ({ okay: true }),
+
+    'RPCHandler.Authenticate': (args, peer) => {
+        const reply = authenticate(args, peer);
+        authLog.push({ method: 'RPCHandler.Authenticate', params: args, reply });
+        return reply;
+    },
+
+    'RPCHandler.RegisterUser': (args, peer) => {
+        const reply = registerUser(args, peer);
+        authLog.push({ method: 'RPCHandler.RegisterUser', params: args, reply });
+        return reply;
+    },
+
     'RPCHandler.GetAllReviews': () => ({
         okay: true,
         content: '',
@@ -650,53 +821,166 @@ const handlers: Record<string, (args: any) => unknown> = {
         if (typeof args.mermaid === 'string') state.diagramSource = args.mermaid;
         return { okay: true };
     },
+
+    // --- Remote mode (--listen) ------------------------------------------------
+
+    // Every Authenticate / RegisterUser since the fake started, with its reply.
+    'E2E.AuthLog': () => ({ calls: authLog }),
+
+    // Forget a registered user, as the server's retention sweep does. With
+    // `Disconnect` their connections are closed too, as by a server restart,
+    // and the bridge reconnects; without, they stay open but lose their
+    // session, so the next call is refused as not authenticated.
+    'E2E.ForgetUser': args => {
+        const login = String(args.Login ?? '').toLowerCase();
+        const forgotten = users.delete(login);
+        let sessions = 0;
+        for (const peer of peers) {
+            if (peer.session.login?.toLowerCase() !== login) continue;
+            sessions++;
+            if (args.Disconnect) {
+                // Once this reply has gone out on what may be the same connection.
+                setTimeout(() => peer.close(), 20);
+            } else {
+                peer.session = { login: null, admin: false, local: false };
+            }
+        }
+        return { okay: forgotten, sessions };
+    },
+
+    // Open or shut the identity gate (AllowServerIdentityActions); shut by default.
+    'E2E.SetIdentityActions': args => {
+        state.identityActions = !!args.allowed;
+        return { okay: true };
+    },
 };
 
-function respond(id: Request['id'], result: unknown, error: string | null) {
-    process.stdout.write(`${JSON.stringify({ id, result: error ? null : result, error })}\n`);
+function respond(peer: Peer, id: Request['id'], result: unknown, error: string | null) {
+    peer.send(`${JSON.stringify({ id, result: error ? null : result, error })}\n`);
 }
 
-function handle(req: Request) {
+function handle(req: Request, peer: Peer) {
     const args = req.params?.[0] ?? {};
+    const refused = refusal(req.method, peer.session);
     if (!req.method.startsWith('E2E.')) {
-        state.calls.push({ method: req.method, params: args });
+        state.calls.push({ method: req.method, params: args, ...(refused ? { refused } : {}) });
     }
-    if (state.holdNext.delete(req.method)) {
-        state.held.set(req.method, () => answer(req, args));
+    if (refused) {
+        respond(peer, req.id, null, refused);
         return;
     }
-    answer(req, args);
+    if (state.holdNext.delete(req.method)) {
+        state.held.set(req.method, () => answer(req, args, peer));
+        return;
+    }
+    answer(req, args, peer);
 }
 
-function answer(req: Request, args: Record<string, any>) {
+function answer(req: Request, args: Record<string, any>, peer: Peer) {
     const injected = state.failNext.get(req.method);
     if (injected !== undefined) {
         state.failNext.delete(req.method);
-        respond(req.id, null, injected);
+        respond(peer, req.id, null, injected);
         return;
     }
     const handler = handlers[req.method];
     if (!handler) {
-        respond(req.id, null, `rpc: can't find method ${req.method}`);
+        respond(peer, req.id, null, `rpc: can't find method ${req.method}`);
         return;
     }
     try {
-        respond(req.id, handler(args), null);
+        respond(peer, req.id, handler(args, peer), null);
     } catch (e) {
-        respond(req.id, null, e instanceof Error ? e.message : String(e));
+        respond(peer, req.id, null, e instanceof Error ? e.message : String(e));
     }
 }
 
-let buffer = '';
-process.stdin.setEncoding('utf-8');
-process.stdin.on('data', (chunk: string) => {
-    buffer += chunk;
-    let nl = buffer.indexOf('\n');
-    while (nl !== -1) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (line) handle(JSON.parse(line));
-        nl = buffer.indexOf('\n');
+/** Calls `onLine` with each complete line of the chunks pushed into it. */
+function lineReader(onLine: (line: string) => void) {
+    let buffer = '';
+    return (chunk: string) => {
+        buffer += chunk;
+        let nl = buffer.indexOf('\n');
+        while (nl !== -1) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (line) onLine(line);
+            nl = buffer.indexOf('\n');
+        }
+    };
+}
+
+function serveStdio() {
+    const peer: Peer = {
+        session: { login: '', admin: true, local: true },
+        send: line => process.stdout.write(line),
+        close: () => process.exit(0),
+    };
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on(
+        'data',
+        lineReader(line => handle(JSON.parse(line), peer))
+    );
+    process.stdin.on('end', () => process.exit(0));
+}
+
+interface Connection {
+    peer: Peer;
+    push: (chunk: string) => void;
+    decoder: TextDecoder;
+    // Bytes the socket didn't take yet, written on `drain`.
+    unsent: Buffer | null;
+}
+
+function write(socket: Socket<Connection>, bytes: Buffer) {
+    const conn = socket.data;
+    if (conn.unsent) {
+        conn.unsent = Buffer.concat([conn.unsent, bytes]);
+        return;
     }
-});
-process.stdin.on('end', () => process.exit(0));
+    const written = Math.max(socket.write(bytes), 0);
+    if (written < bytes.length) conn.unsent = bytes.subarray(written);
+}
+
+function listen(address: string) {
+    const at = address.lastIndexOf(':');
+    Bun.listen<Connection>({
+        hostname: address.slice(0, at),
+        port: parseInt(address.slice(at + 1), 10),
+        socket: {
+            open(socket) {
+                const peer: Peer = {
+                    session: { login: null, admin: false, local: false },
+                    send: line => write(socket, Buffer.from(line)),
+                    close: () => socket.end(),
+                };
+                socket.data = {
+                    peer,
+                    push: lineReader(line => handle(JSON.parse(line), peer)),
+                    decoder: new TextDecoder(),
+                    unsent: null,
+                };
+                peers.add(peer);
+            },
+            data(socket, chunk) {
+                socket.data.push(socket.data.decoder.decode(chunk, { stream: true }));
+            },
+            drain(socket) {
+                const pending = socket.data.unsent;
+                socket.data.unsent = null;
+                if (pending) write(socket, pending);
+            },
+            close(socket) {
+                peers.delete(socket.data.peer);
+            },
+        },
+    });
+    console.error(`[fake crs] listening on ${address}`);
+}
+
+const listenAt = process.argv.indexOf('--listen');
+if (listenAt === -1) {
+    serveStdio();
+} else {
+    listen(process.argv[listenAt + 1] ?? '');
+}

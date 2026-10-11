@@ -1,3 +1,4 @@
+import { rpcErrorMessage, rpcRefusal } from './api';
 import type { ParsedLine } from './diff_utils';
 import { groupIntoThreads } from './discussion_utils';
 import type { Comment } from './components/review/types';
@@ -179,4 +180,16 @@ export function reviewSubmittedMessage(event: string, pr: string, failedReplies 
             ? '1 reply could not be posted and is'
             : `${failedReplies} replies could not be posted and are`;
     return `${done}, but ${replies} still pending — see console for details`;
+}
+
+/**
+ * The toast a failed submit shows. A shared server that won't post under its
+ * own GitHub account refuses the submit outright, and would refuse a retry
+ * just the same, so that case says where the review can go instead.
+ */
+export function reviewNotSubmittedMessage(pr: string, error: unknown): string {
+    if (rpcRefusal(error)?.kind === 'refused') {
+        return `Review on ${pr} was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead.`;
+    }
+    return `Review on ${pr} was not submitted: ${rpcErrorMessage(error)}`;
 }

@@ -1092,5 +1092,199 @@ The buffer is bound to `buffer' and killed afterwards."
       (should (equal (car events) '(message . "Approved acme/widgets #42")))
       (should-not (assq 'render events)))))
 
+;;; --- Remote mode ---
+;;
+;; The connect flow against a shared server, with the wire stubbed out:
+;; `sent' collects each request written (METHOD PARAMS CALLBACK), newest
+;; first, and a test answers one by calling its CALLBACK.
+
+(defconst crs-test--remote-config
+  '((Workflows . [((WorkflowType . "SyncReviewRequestsWorkflow") (Name . "Reviews")
+                   (IncludeDiff . :json-false))])
+    (Repos . ["acme/widgets"])
+    (SectionPriority . ((Reviews . 1)))
+    (SectionSorting . nil))
+  "What `crs-remote-user-config-command' printed, parsed.")
+
+(defconst crs-test--token (concat "crs_" (make-string 64 ?a)))
+
+(defmacro crs-test--with-remote (&rest body)
+  "Run BODY connected to a stubbed shared server, in a scratch home.
+Binds `sent', `warnings' and `dir' (holding the token file and config)."
+  (declare (indent 0))
+  `(let* ((dir (make-temp-file "crs-remote-test" t))
+          (process-environment
+           (append (list (concat "XDG_CONFIG_HOME=" dir))
+                   (seq-remove (lambda (v)
+                                 (string-match-p
+                                  "\\`\\(CRS_REMOTE_TOKEN\\|CRS_LOGIN\\|CRS_REGISTRATION_KEY\\|XDG_CONFIG_HOME\\)="
+                                  v))
+                               process-environment)))
+          (crs-remote-address "crs.test:7700")
+          (crs-remote-token-file (expand-file-name "crs/remote_token" dir))
+          (crs-remote-registration-key "sesame")
+          (crs-remote-login "octocat")
+          (crs--remote-ready nil)
+          (crs--remote-queue nil)
+          (crs--remote-issued-token nil)
+          (crs--remote-last-error nil)
+          (crs--pending-requests (make-hash-table :test 'equal))
+          (crs--process (make-pipe-process :name "crs-test-remote" :noquery t))
+          (sent nil)
+          (warnings nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'crs--send-request-now)
+                    (lambda (method params callback)
+                      (push (list method params callback) sent)))
+                   ((symbol-function 'crs--remote-user-config)
+                    (lambda () crs-test--remote-config))
+                   ((symbol-function 'display-warning)
+                    (lambda (_type message &rest _) (push message warnings)))
+                   ((symbol-function 'message) #'ignore))
+           ,@body)
+       (when (process-live-p crs--process) (delete-process crs--process))
+       (delete-directory dir t))))
+
+(defun crs-test--answer (request reply)
+  "Answer REQUEST, an entry of `sent', with REPLY."
+  (funcall (nth 2 request) reply))
+
+(ert-deftest crs-test-remote-parse-address ()
+  "`crs-remote-address' is host:port, the host maybe a bracketed IPv6 address."
+  (should (equal (crs--remote-parse-address "crs.internal:7700") '("crs.internal" . 7700)))
+  (should (equal (crs--remote-parse-address "[::1]:443") '("::1" . 443)))
+  (should-error (crs--remote-parse-address "crs.internal") :type 'user-error)
+  (should-error (crs--remote-parse-address "crs.internal:0") :type 'user-error)
+  (should-error (crs--remote-parse-address "::1:443") :type 'user-error))
+
+(ert-deftest crs-test-remote-toml-login ()
+  "The login falls back to the root GithubUsername of the config file."
+  (crs-test--with-remote
+    (let ((crs-remote-login nil)
+          (file (expand-file-name "codereviewserver.toml" dir)))
+      (should-not (crs--remote-login))
+      (with-temp-file file
+        (insert "Repos = [\"acme/widgets\"]\nGithubUsername = \"hubot\"\n\n"
+                "[[Workflows]]\nGithubUsername = \"someone-else\"\n"))
+      (should (equal (crs--remote-login) "hubot"))
+      ;; A workflow's GithubUsername is not the root one.
+      (with-temp-file file
+        (insert "[[Workflows]]\nGithubUsername = \"someone-else\"\n"))
+      (should-not (crs--remote-login))
+      (let ((process-environment (cons "CRS_LOGIN=from-env" process-environment)))
+        (should (equal (crs--remote-login) "from-env"))))))
+
+(ert-deftest crs-test-remote-registers-without-a-token ()
+  "With no token yet, the flow registers with the local workflows and saves the token."
+  (crs-test--with-remote
+    (crs--send-request "RPCHandler.GetAllReviews" (vector) #'ignore)
+    (should (equal crs--remote-queue
+                   `(("RPCHandler.GetAllReviews" [] ,(nth 2 (car crs--remote-queue))))))
+    (crs--remote-authenticate)
+    (should (= (length sent) 1))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (json-encode (nth 1 (car sent)))
+                   (concat "[{\"RegistrationKey\":\"sesame\",\"Login\":\"octocat\",\"Token\":\"\","
+                           "\"Workflows\":[{\"WorkflowType\":\"SyncReviewRequestsWorkflow\","
+                           "\"Name\":\"Reviews\",\"IncludeDiff\":false}],"
+                           "\"Repos\":[\"acme/widgets\"],\"SectionPriority\":{\"Reviews\":1},"
+                           "\"SectionSorting\":{}}]")))
+    (crs-test--answer (car sent) `((okay . t) (created . t) (login . "octocat")
+                                   (token . ,crs-test--token) (is_admin . :json-false)))
+    (should crs--remote-ready)
+    (should (equal (with-temp-buffer
+                     (insert-file-contents crs-remote-token-file)
+                     (buffer-string))
+                   (concat crs-test--token "\n")))
+    (should (= (file-modes crs-remote-token-file) #o600))
+    ;; The request that waited goes out now.
+    (should (equal (nth 0 (car sent)) "RPCHandler.GetAllReviews"))
+    (should-not crs--remote-queue)))
+
+(ert-deftest crs-test-remote-authenticates-a-known-token ()
+  "A stored token the server knows authenticates without registering."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (should (equal (nth 0 (car sent)) "RPCHandler.Authenticate"))
+    (should (equal (json-encode (nth 1 (car sent)))
+                   (format "[{\"Token\":\"%s\"}]" crs-test--token)))
+    (crs-test--answer (car sent) '((okay . t) (known . t) (login . "octocat")))
+    (should crs--remote-ready)
+    (should (= (length sent) 1))))
+
+(ert-deftest crs-test-remote-reregisters-a-forgotten-token ()
+  "A token the server has forgotten is registered again, the same token."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent) '((okay . :json-false) (known . :json-false)))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (cdr (assq 'Token (aref (nth 1 (car sent)) 0))) crs-test--token))
+    (crs-test--answer (car sent) `((okay . t) (created . t) (login . "octocat")
+                                   (token . ,crs-test--token)))
+    (should crs--remote-ready)))
+
+(ert-deftest crs-test-remote-retries-a-not-authenticated-request-once ()
+  "A request refused as not authenticated reconnects and goes again, once."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (setq crs--remote-ready t)
+    (let (replies)
+      (crs--send-request "RPCHandler.GetPR" (vector) (lambda (r) (push r replies)))
+      (crs-test--answer (car sent) '((error . "not authenticated: no session")))
+      ;; The flow runs again before the request is sent anew.
+      (should (equal (nth 0 (car sent)) "RPCHandler.Authenticate"))
+      (should-not crs--remote-ready)
+      (crs-test--answer (car sent) '((okay . t) (known . t) (login . "octocat")))
+      (should (equal (nth 0 (car sent)) "RPCHandler.GetPR"))
+      ;; Refused again: that is the request's answer.
+      (crs-test--answer (car sent) '((error . "not authenticated: still no")))
+      (should (equal replies '(((error . "not authenticated: still no")))))
+      (should (= (length sent) 3)))))
+
+(ert-deftest crs-test-remote-without-a-key-says-how-to-register ()
+  "With no token and no registration key, the waiting requests fail with what to set."
+  (crs-test--with-remote
+    (let ((crs-remote-registration-key nil)
+          replies)
+      (push (list "RPCHandler.GetAllReviews" (vector) (lambda (r) (push r replies)))
+            crs--remote-queue)
+      (crs--remote-authenticate)
+      (should-not sent)
+      (should (string-match-p "set `crs-remote-registration-key'" (car warnings)))
+      (should (equal replies `(((error . ,(car warnings))))))
+      ;; The connection is dropped, so the next request reconnects.
+      (should-not crs--process))))
+
+(ert-deftest crs-test-remote-refused-registration-gives-the-reasons ()
+  "A registration the server refuses says why, worded like the server's errors."
+  (crs-test--with-remote
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent)
+                      '((okay . :json-false) (message . "invalid workflows")
+                        (errors . [((workflow . 0) (field . "WorkflowType")
+                                    (message . "unknown type"))])))
+    (should (equal (car warnings)
+                   (concat "crs at crs.test:7700 refused to register octocat: invalid workflows"
+                           " (Workflows[0].WorkflowType: unknown type)")))))
+
+(ert-deftest crs-test-remote-lost-connection-fails-what-it-owed ()
+  "A dropped connection answers its outstanding requests with an error."
+  (crs-test--with-remote
+    (setq crs--remote-ready t)
+    (let ((process crs--process)
+          replies)
+      (crs--send-request "RPCHandler.GetPR" (vector) (lambda (r) (push r replies)))
+      ;; What the real `crs--send-request-now' would have recorded.
+      (puthash 1 (nth 2 (car sent)) crs--pending-requests)
+      (crs--remote-connection-lost process "connection broken by remote peer\n")
+      (should (equal replies
+                     '(((error . "The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))))
+      (should-not crs--process)
+      (should-not crs--remote-ready)
+      (should (= (hash-table-count crs--pending-requests) 0))
+      (delete-process process))))
+
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

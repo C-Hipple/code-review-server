@@ -21,6 +21,15 @@ import { stateDirFor } from './config';
 export interface RpcCall {
     method: string;
     params: Record<string, any>;
+    /** Remote bridge only: the policy error the fake answered the call with. */
+    refused?: string;
+}
+
+/** An Authenticate or RegisterUser the remote bridge's fake crs answered. */
+export interface AuthCall {
+    method: 'RPCHandler.Authenticate' | 'RPCHandler.RegisterUser';
+    params: Record<string, any>;
+    reply: Record<string, any>;
 }
 
 class Backend {
@@ -78,6 +87,15 @@ class Backend {
     /** Turn change-diagram on or off, optionally serving `mermaid` as its diagram. */
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });
+    }
+
+    /**
+     * Remote bridge: every Authenticate / RegisterUser the fake answered since
+     * it started, oldest first. E2E.Reset doesn't clear it.
+     */
+    async authLog(): Promise<AuthCall[]> {
+        const { calls } = await this.rpc<{ calls: AuthCall[] }>('E2E.AuthLog');
+        return calls;
     }
 }
 

@@ -212,7 +212,7 @@ func TestHandleWorktreeChangeKeepsWorktreeWhileClaimedElsewhere(t *testing.T) {
 	if err := db.RemoveWorkflowFromItem(needsReview.ID, identifier, "needs_review"); err != nil {
 		t.Fatal(err)
 	}
-	waiting, _ := db.GetSection("Waiting on Author")
+	waiting, _ := db.GetSection("", "Waiting on Author")
 	if err := db.RemoveWorkflowFromItem(waiting.ID, identifier, "waiting_on_author"); err != nil {
 		t.Fatal(err)
 	}

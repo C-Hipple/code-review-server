@@ -19,7 +19,7 @@ func retiredTestDB(t *testing.T, workflows ...config.RawWorkflow) *database.DB {
 
 func seedOwnedItem(t *testing.T, db *database.DB, sectionName, identifier string, ttl int64, owners ...string) *database.Section {
 	t.Helper()
-	section, err := db.GetOrCreateSection(sectionName, 0)
+	section, err := db.GetOrCreateSection("", sectionName, 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection(%q): %v", sectionName, err)
 	}
@@ -40,7 +40,7 @@ func itemExists(t *testing.T, db *database.DB, sectionID int64, identifier strin
 
 func sectionExists(t *testing.T, db *database.DB, name string) bool {
 	t.Helper()
-	section, err := db.GetSection(name)
+	section, err := db.GetSection("", name)
 	return err == nil && section != nil
 }
 
@@ -163,10 +163,10 @@ func TestEmptyConfiguredSectionIsKept(t *testing.T) {
 	live := config.RawWorkflow{Name: "live_workflow", SectionTitle: "Live Section"}
 	db := retiredTestDB(t, live)
 
-	if _, err := db.GetOrCreateSection(live.SectionTitle, 0); err != nil {
+	if _, err := db.GetOrCreateSection("", live.SectionTitle, 0); err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}
-	if _, err := db.GetOrCreateSection("Retired Section", 0); err != nil {
+	if _, err := db.GetOrCreateSection("", "Retired Section", 0); err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}
 

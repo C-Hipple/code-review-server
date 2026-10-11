@@ -105,7 +105,7 @@ func (w SyncReviewRequestsWorkflow) Run(prs []*github.PullRequest, c chan FileCh
 		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
 	}
 	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := db.GetOrCreateSection("", w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		slog.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")
@@ -178,7 +178,7 @@ func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
 func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := db.GetOrCreateSection("", w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		return RunResult{}, errors.New("Section Not Found")
 	}

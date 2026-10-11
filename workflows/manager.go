@@ -796,11 +796,14 @@ func (ms *ManagerService) Run() {
 // WorkflowType, bad filter name) is skipped by MatchWorkflows, and treating that
 // as a removal would evict its items over a typo. Only a workflow actually
 // deleted from the config should lose its claims.
-func configuredWorkflowSections() map[string]string {
+//
+// The config file's workflows are the server's own, so their sections are on
+// the server's dashboard, user "".
+func configuredWorkflowSections() map[string]database.SectionRef {
 	raw := config.C().RawWorkflows
-	sections := make(map[string]string, len(raw))
+	sections := make(map[string]database.SectionRef, len(raw))
 	for _, wf := range raw {
-		sections[wf.Name] = wf.SectionTitle
+		sections[wf.Name] = database.SectionRef{User: "", Name: wf.SectionTitle}
 	}
 	return sections
 }
@@ -835,7 +838,7 @@ func pruneRetiredSections() {
 	if len(ownedSections) == 0 {
 		return
 	}
-	keep := make([]string, 0, len(ownedSections))
+	keep := make([]database.SectionRef, 0, len(ownedSections))
 	for _, section := range ownedSections {
 		keep = append(keep, section)
 	}
@@ -889,7 +892,7 @@ func (ms *ManagerService) Initialize() {
 	// Does this sync since GetSection has creation side effect
 	db := config.C().DB
 	for _, wf := range ms.Workflows {
-		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
+		db.GetOrCreateSection("", wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
 	}
 }
 

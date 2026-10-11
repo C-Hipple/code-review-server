@@ -177,7 +177,7 @@ func TestProcessPRsDBRecordsMergeability(t *testing.T) {
 	seedReprocessAuxData(t, "acme", "widgets", 7)
 	fakeMergeabilityLookup(t, answerAll(git_tools.MergeabilityConflicting))
 
-	section, err := db.GetOrCreateSection("Needs Review", 0)
+	section, err := db.GetOrCreateSection("", "Needs Review", 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}

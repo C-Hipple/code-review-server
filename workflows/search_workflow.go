@@ -111,7 +111,7 @@ func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_ch
 	}
 
 	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := db.GetOrCreateSection("", w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
 		slog.Error("Error getting section", "error", err, "section", w.SectionTitle)
 		return RunResult{}, errors.New("Section Not Found")

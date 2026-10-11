@@ -197,7 +197,7 @@ func (p *PRPayload) populate(details *PRDetails, content string, owner, repo str
 		p.Commits = []CommitJSON{}
 	}
 
-	feedback, err := config.C().DB.GetFeedback(owner, repo, number)
+	feedback, err := config.C().DB.GetFeedback("", owner, repo, number)
 	if err != nil {
 		slog.Warn("Error loading feedback for PR reply", "repo", repo, "pr", number, "error", err)
 	}
@@ -422,7 +422,7 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	comment, err := config.C().DB.InsertLocalComment(args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
+	comment, err := config.C().DB.InsertLocalComment("", args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	if err != nil {
 		slog.Error("Error inserting local comment", "error", err)
 		return err
@@ -450,7 +450,7 @@ type EditCommentReply struct {
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
-	err := config.C().DB.UpdateLocalComment(args.ID, args.Body)
+	err := config.C().DB.UpdateLocalComment("", args.ID, args.Body)
 	if err != nil {
 		slog.Error("Error updating local comment", "error", err)
 		return err
@@ -476,7 +476,7 @@ type DeleteCommentReply struct {
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
-	err := config.C().DB.DeleteLocalComment(args.ID)
+	err := config.C().DB.DeleteLocalComment("", args.ID)
 	if err != nil {
 		slog.Error("Error deleting local comment", "error", err)
 		return err
@@ -503,7 +503,7 @@ type SetFeedbackReply struct {
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
-	err := config.C().DB.InsertFeedback(args.Owner, args.Repo, args.Number, &args.Body)
+	err := config.C().DB.InsertFeedback("", args.Owner, args.Repo, args.Number, &args.Body)
 	if err != nil {
 		slog.Error("Error inserting feedback", "error", err)
 		return err
@@ -528,7 +528,7 @@ type RemovePRCommentsReply struct {
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
-	err := config.C().DB.DeleteLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	err := config.C().DB.DeleteLocalCommentsForPR("", args.Owner, args.Repo, args.Number)
 	if err != nil {
 		slog.Error("Error removing local comments", "error", err)
 		return err
@@ -593,7 +593,7 @@ func resolveReplyAnchor(c database.LocalComment, pending map[int64]database.Loca
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
 	// 1. Fetch Local Comments
-	comments, err := config.C().DB.GetLocalCommentsForPR(args.Owner, args.Repo, args.Number)
+	comments, err := config.C().DB.GetLocalCommentsForPR("", args.Owner, args.Repo, args.Number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		return err
@@ -617,7 +617,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		if c.Body == nil {
 			// Nothing to submit, and nothing worth keeping: an empty row would
 			// sit in the pending list forever.
-			if err := config.C().DB.DeleteLocalComment(c.ID); err != nil {
+			if err := config.C().DB.DeleteLocalComment("", c.ID); err != nil {
 				slog.Error("Error deleting empty local comment", "id", c.ID, "error", err)
 			}
 			continue
@@ -634,7 +634,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			// Already on GitHub, so drop it now rather than after the review
 			// call below: if that call fails and the reviewer submits again,
 			// this reply must not be posted a second time.
-			if err := config.C().DB.DeleteLocalComment(c.ID); err != nil {
+			if err := config.C().DB.DeleteLocalComment("", c.ID); err != nil {
 				slog.Error("Error deleting submitted reply", "id", c.ID, "error", err)
 			}
 			continue
@@ -693,7 +693,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 
 		// 4. Clean up the Local Comments GitHub now has
 		for _, id := range reviewCommentIDs {
-			if err := config.C().DB.DeleteLocalComment(id); err != nil {
+			if err := config.C().DB.DeleteLocalComment("", id); err != nil {
 				slog.Error("Error deleting local comment after submission", "id", id, "error", err)
 			}
 		}

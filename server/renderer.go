@@ -1000,7 +1000,7 @@ func writeCacheMissLog(state cacheMissState) {
 	db := config.C().DB
 
 	// Gather local comment count
-	localComments, _ := db.GetLocalCommentsForPR(state.owner, state.repo, state.number)
+	localComments, _ := db.GetLocalCommentsForPR("", state.owner, state.repo, state.number)
 	localCommentCount := len(localComments)
 
 	// Gather workflow info: when was this PR first added by the workflow?
@@ -1386,7 +1386,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	comments := convertToPRComments(githubComments)
 	comments = filterComments(comments)
 
-	localComments, err := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
+	localComments, err := config.C().DB.GetLocalCommentsForPR("", owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "pr", number, "repo", repo, "error", err)
 	}
@@ -1953,7 +1953,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	}
 
 	// Fetch LocalComments from database for this specific PR and add them to the comments list
-	localComments, err := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
+	localComments, err := config.C().DB.GetLocalCommentsForPR("", owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		// Continue without local comments

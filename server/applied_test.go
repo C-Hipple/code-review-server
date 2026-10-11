@@ -320,7 +320,7 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	db := aiTestSetup(t, []config.AIFeature{{ID: ai.ReviewEaseID, Enabled: true}})
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 	forgetHookDispatches()
-	section, err := db.GetOrCreateSection("Review Requested", 0)
+	section, err := db.GetOrCreateSection("", "Review Requested", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

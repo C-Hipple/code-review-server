@@ -139,7 +139,7 @@ func applyReprocessedPR(db *database.DB, wfs []Workflow, pr *github.PullRequest)
 		}
 
 		sectionName := wf.GetOrgSectionName()
-		section, err := db.GetOrCreateSection(sectionName, config.C().SectionPriority[sectionName])
+		section, err := db.GetOrCreateSection("", sectionName, config.C().SectionPriority[sectionName])
 		if err != nil {
 			slog.Error("Error getting section during reprocess",
 				"section", sectionName, "workflow", wf.GetName(), "error", err)

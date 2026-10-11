@@ -1039,7 +1039,7 @@ func TestBuildItemLinesRenderOptions(t *testing.T) {
 	config.SetC(config.Config{DB: db})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
-	section, err := db.GetOrCreateSection("Test Section", 0)
+	section, err := db.GetOrCreateSection("", "Test Section", 0)
 	if err != nil {
 		t.Fatalf("failed to create section: %v", err)
 	}
@@ -1124,7 +1124,7 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	config.SetC(config.Config{DB: db, AIFeatures: enabled})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
-	section, err := db.GetOrCreateSection("Test Section", 0)
+	section, err := db.GetOrCreateSection("", "Test Section", 0)
 	if err != nil {
 		t.Fatalf("failed to create section: %v", err)
 	}
@@ -1162,7 +1162,7 @@ func TestReviewItemsCarryRequiredTeams(t *testing.T) {
 	config.SetC(config.Config{DB: db})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
-	section, err := db.GetOrCreateSection("Test Section", 0)
+	section, err := db.GetOrCreateSection("", "Test Section", 0)
 	if err != nil {
 		t.Fatalf("failed to create section: %v", err)
 	}
@@ -1215,7 +1215,7 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 	config.SetC(config.Config{DB: db})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
-	section, err := db.GetOrCreateSection("Test Section", 0)
+	section, err := db.GetOrCreateSection("", "Test Section", 0)
 	if err != nil {
 		t.Fatalf("failed to create section: %v", err)
 	}
@@ -1307,7 +1307,7 @@ func TestReviewItemsCarryMergeConflicts(t *testing.T) {
 	config.SetC(config.Config{DB: db})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
-	section, err := db.GetOrCreateSection("Test Section", 0)
+	section, err := db.GetOrCreateSection("", "Test Section", 0)
 	if err != nil {
 		t.Fatalf("failed to create section: %v", err)
 	}

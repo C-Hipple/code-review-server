@@ -405,7 +405,7 @@ func TestCommentsAddressedEndToEnd(t *testing.T) {
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 	// A local draft is the reviewer's own business: it must not be judged.
 	draft := "Draft reply I haven't sent"
-	if _, err := db.InsertLocalComment(aiOwner, aiRepo, aiNumber, "src/main.ts", 2, &draft, nil); err != nil {
+	if _, err := db.InsertLocalComment("", aiOwner, aiRepo, aiNumber, "src/main.ts", 2, &draft, nil); err != nil {
 		t.Fatal(err)
 	}
 

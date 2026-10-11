@@ -379,3 +379,85 @@ func TestUserWorkflows(t *testing.T) {
 		t.Errorf("GetAllUserWorkflows after clearing bob's = %+v, want only alice's", all)
 	}
 }
+
+// Registering writes the user and their workflows together: a list the
+// database refuses leaves no user behind, so the same registration can simply
+// be tried again.
+func TestCreateUserWithWorkflows(t *testing.T) {
+	db := newTestDB(t)
+
+	err := db.CreateUserWithWorkflows(User{Login: "alice", TokenHash: "a"}, []UserWorkflow{
+		{Position: 0, Name: "dup", JSON: `{}`},
+		{Position: 1, Name: "dup", JSON: `{}`},
+	})
+	if err == nil {
+		t.Fatal("two workflows of the same name were accepted")
+	}
+	if _, err := db.GetUser("alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a failed registration left the user behind: err = %v", err)
+	}
+
+	if err := db.CreateUserWithWorkflows(User{Login: "Alice", TokenHash: "a", Repos: []string{"o/r"}}, []UserWorkflow{
+		{Position: 0, Name: "review", JSON: `{"Name":"review"}`},
+	}); err != nil {
+		t.Fatalf("CreateUserWithWorkflows: %v", err)
+	}
+	u, err := db.GetUser("alice")
+	if err != nil || u.Login != "Alice" || !reflect.DeepEqual(u.Repos, []string{"o/r"}) {
+		t.Fatalf("GetUser after registering = %+v (err %v)", u, err)
+	}
+	if got, _ := db.GetUserWorkflows("alice"); len(got) != 1 || got[0].Name != "review" {
+		t.Errorf("workflows after registering = %+v", got)
+	}
+	if all, _ := db.GetAllUserWorkflows(); len(all["Alice"]) != 1 {
+		t.Errorf("workflows are not keyed by the registered login: %+v", all)
+	}
+
+	// The login is taken, in any case.
+	if err := db.CreateUserWithWorkflows(User{Login: "ALICE", TokenHash: "other"}, nil); err == nil {
+		t.Error("a second registration of the same login was accepted")
+	}
+}
+
+// An update replaces settings and workflows together, or neither.
+func TestUpdateUserWithWorkflows(t *testing.T) {
+	db := newTestDB(t)
+	createTestUser(t, db, User{Login: "Alice", TokenHash: "a", Repos: []string{"o/old"}})
+	if err := db.ReplaceUserWorkflows("Alice", []UserWorkflow{{Position: 0, Name: "old", JSON: `{"Name":"old"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := db.UpdateUserWithWorkflows(User{Login: "alice", Repos: []string{"o/new"}}, []UserWorkflow{
+		{Position: 0, Name: "dup", JSON: `{}`},
+		{Position: 1, Name: "dup", JSON: `{}`},
+	})
+	if err == nil {
+		t.Fatal("two workflows of the same name were accepted")
+	}
+	u, _ := db.GetUser("alice")
+	if !reflect.DeepEqual(u.Repos, []string{"o/old"}) {
+		t.Errorf("a failed update changed the settings: repos %v", u.Repos)
+	}
+	if got, _ := db.GetUserWorkflows("alice"); len(got) != 1 || got[0].Name != "old" {
+		t.Errorf("a failed update changed the workflows: %+v", got)
+	}
+
+	if err := db.UpdateUserWithWorkflows(User{Login: "alice", Repos: []string{"o/new"}, IsAdmin: true,
+		SectionSorting: map[string]string{"S": "oldest_first"}}, []UserWorkflow{
+		{Position: 0, Name: "new", JSON: `{"Name":"new"}`},
+	}); err != nil {
+		t.Fatalf("UpdateUserWithWorkflows: %v", err)
+	}
+	u, _ = db.GetUser("alice")
+	if !reflect.DeepEqual(u.Repos, []string{"o/new"}) || !u.IsAdmin || u.SectionSorting["S"] != "oldest_first" || u.TokenHash != "a" {
+		t.Errorf("after the update: %+v", u)
+	}
+	// Stored under the login as registered, whatever case the update used.
+	if all, _ := db.GetAllUserWorkflows(); len(all["Alice"]) != 1 || all["Alice"][0].Name != "new" {
+		t.Errorf("workflows after the update: %+v", all)
+	}
+
+	if err := db.UpdateUserWithWorkflows(User{Login: "nobody"}, nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("updating an unknown login: err = %v, want ErrNotFound", err)
+	}
+}

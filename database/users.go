@@ -40,6 +40,31 @@ const userColumns = "login, token_hash, section_priority, section_sorting, repos
 // that is already registered, in any case, fails on the primary key, as does a
 // token hash another user holds.
 func (db *DB) CreateUser(u User) error {
+	return db.CreateUserWithWorkflows(u, nil)
+}
+
+// CreateUserWithWorkflows stores a new user together with their workflows, in
+// one transaction: registering is creating both, and a failure partway — a
+// login registered meanwhile, two workflows of one name — must not leave a user
+// behind who exists but has no dashboard, or whose token then fails to match a
+// second attempt. It fails as CreateUser does.
+func (db *DB) CreateUserWithWorkflows(u User, workflows []UserWorkflow) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := insertUserTx(tx, u); err != nil {
+		return err
+	}
+	if err := insertUserWorkflowsTx(tx, u.Login, workflows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertUserTx(tx *sql.Tx, u User) error {
 	priority, sorting, repos, err := encodeUserSettings(u)
 	if err != nil {
 		return err
@@ -51,7 +76,7 @@ func (db *DB) CreateUser(u User) error {
 	if u.LastSeen.IsZero() {
 		u.LastSeen = now
 	}
-	_, err = db.conn.Exec(
+	_, err = tx.Exec(
 		`INSERT INTO users (`+userColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.Login, u.TokenHash, priority, sorting, repos, u.IsAdmin,
 		formatSQLiteTime(u.CreatedAt), formatSQLiteTime(u.LastSeen),
@@ -73,6 +98,42 @@ func (db *DB) UpdateUserSettings(u User) error {
 		priority, sorting, repos, u.IsAdmin, u.Login,
 	)
 	return requireOneRow(res, err)
+}
+
+// UpdateUserWithWorkflows does what UpdateUserSettings and ReplaceUserWorkflows
+// do, in one transaction, so a user's settings and the workflows validated
+// against them — a workflow naming no Repos falls back to the user's — are
+// never stored half from one update and half from another. Returns ErrNotFound
+// when no user has u.Login.
+func (db *DB) UpdateUserWithWorkflows(u User, workflows []UserWorkflow) error {
+	priority, sorting, repos, err := encodeUserSettings(u)
+	if err != nil {
+		return err
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	canonical, err := canonicalLoginTx(tx, u.Login)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE users SET section_priority = ?, section_sorting = ?, repos = ?, is_admin = ?
+		 WHERE login = ?`,
+		priority, sorting, repos, u.IsAdmin, canonical,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM user_workflows WHERE user_login = ?", canonical); err != nil {
+		return err
+	}
+	if err := insertUserWorkflowsTx(tx, canonical, workflows); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetUser returns the user with that login, matched case-insensitively like a
@@ -128,11 +189,7 @@ func (db *DB) DeleteUser(login string) error {
 	}
 	defer tx.Rollback()
 
-	var canonical string
-	err = tx.QueryRow("SELECT login FROM users WHERE login = ?", login).Scan(&canonical)
-	if err == sql.ErrNoRows {
-		return ErrNotFound
-	}
+	canonical, err := canonicalLoginTx(tx, login)
 	if err != nil {
 		return err
 	}
@@ -212,29 +269,43 @@ func (db *DB) ReplaceUserWorkflows(login string, workflows []UserWorkflow) error
 	}
 	defer tx.Rollback()
 
-	// Rows are stored under the login as the user registered it, whatever
-	// case the caller used, so GetAllUserWorkflows keys them consistently.
-	var canonical string
-	err = tx.QueryRow("SELECT login FROM users WHERE login = ?", login).Scan(&canonical)
-	if err == sql.ErrNoRows {
-		return ErrNotFound
-	}
+	canonical, err := canonicalLoginTx(tx, login)
 	if err != nil {
 		return err
 	}
-
 	if _, err := tx.Exec("DELETE FROM user_workflows WHERE user_login = ?", canonical); err != nil {
 		return err
 	}
+	if err := insertUserWorkflowsTx(tx, canonical, workflows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// canonicalLoginTx returns login as the user registered it, or ErrNotFound.
+// Rows are stored under that case, whatever case the caller used, so
+// GetAllUserWorkflows keys them consistently.
+func canonicalLoginTx(tx *sql.Tx, login string) (string, error) {
+	var canonical string
+	err := tx.QueryRow("SELECT login FROM users WHERE login = ?", login).Scan(&canonical)
+	if err == sql.ErrNoRows {
+		return "", ErrNotFound
+	}
+	return canonical, err
+}
+
+// insertUserWorkflowsTx adds workflows to login's list; login is the case the
+// user registered with.
+func insertUserWorkflowsTx(tx *sql.Tx, login string, workflows []UserWorkflow) error {
 	for _, wf := range workflows {
 		if _, err := tx.Exec(
 			"INSERT INTO user_workflows (user_login, position, name, workflow_json) VALUES (?, ?, ?, ?)",
-			canonical, wf.Position, wf.Name, wf.JSON,
+			login, wf.Position, wf.Name, wf.JSON,
 		); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetUserWorkflows returns a user's workflows in their order. A user with no

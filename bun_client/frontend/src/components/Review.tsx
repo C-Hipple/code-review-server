@@ -18,6 +18,7 @@ import {
 import { Button, Theme, StatusVariant } from '../design';
 import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
+import { useBridgeSession } from '../hooks/useBridgeSession';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
@@ -27,6 +28,7 @@ import {
     reviewNotSubmittedMessage,
     reviewSubmittedMessage,
 } from '../review_preview_utils';
+import { bridgeSession } from '../session';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
@@ -40,6 +42,7 @@ import {
 import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
 import AIReportModal from './AIReportModal';
 import CodeViewerModal from './CodeViewerModal';
+import LinkGitHubDialog from './LinkGitHubDialog';
 import AddCommentModal from './review/AddCommentModal';
 import DiffView from './review/DiffView';
 import FileIndex from './review/FileIndex';
@@ -213,8 +216,16 @@ export default function Review({
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
-    // The login the review posts as, for the submit preview's verdict line.
+    // The login the review posts as, for the submit preview's verdict line:
+    // the configured GithubUsername locally, the session's login on a shared
+    // server, whose configuration only its administrators may read.
     const [githubUsername, setGithubUsername] = useState('');
+    const session = useBridgeSession();
+    const previewUsername = session?.remote ? session.login || '' : githubUsername;
+    // A submit the shared server refused until the reviewer's GitHub account
+    // is linked — which PR, and the server's reason — while the link dialog
+    // offers to link it.
+    const [linkRefusal, setLinkRefusal] = useState<{ pr: string; detail: string } | null>(null);
 
     // Where the PR's files are on disk for the code viewer: its worktree when
     // the server made one, else the main checkout, which may be on another
@@ -250,6 +261,7 @@ export default function Review({
         loadPluginOutputs();
         prKey.current = prRef;
         setOpenAIFeature(null);
+        setLinkRefusal(null);
         setAIOutputs({});
         loadAIFeatures();
         return () => {
@@ -266,8 +278,9 @@ export default function Review({
     // The submit preview attributes the review to the configured login. Fetched
     // the first time the modal opens rather than on mount: the review view has
     // no other use for the server config, and the preview reads fine without it.
+    // A shared server's session already says who the review goes out as.
     useEffect(() => {
-        if (!submitting || githubUsername) return;
+        if (!submitting || githubUsername || !session || session.remote) return;
         let cancelled = false;
         getConfig()
             .then(reply => {
@@ -281,7 +294,7 @@ export default function Review({
         return () => {
             cancelled = true;
         };
-    }, [submitting, githubUsername]);
+    }, [submitting, githubUsername, session]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -727,10 +740,25 @@ export default function Review({
             );
         } catch (e) {
             console.error(e);
+            const refusal = rpcRefusal(e);
+            if (refusal?.kind === 'link-github') {
+                // The server needs the reviewer's own GitHub account, which
+                // isn't linked or stopped working: offer to link it, keeping
+                // the draft to submit again once it is.
+                void bridgeSession.refresh();
+                if (prKey.current === key) {
+                    setReviewEvent(event);
+                    setReviewBody(body);
+                    setLinkRefusal({ pr: key, detail: refusal.detail });
+                } else {
+                    showToast(reviewNotSubmittedMessage(key, e), 'warning', REFUSAL_TOAST_MS);
+                }
+                return;
+            }
             showToast(
                 reviewNotSubmittedMessage(key, e),
                 'danger',
-                rpcRefusal(e)?.kind === 'refused' ? REFUSAL_TOAST_MS : undefined
+                refusal?.kind === 'refused' ? REFUSAL_TOAST_MS : undefined
             );
             // Nothing went out, so hand the draft back for a retry, as it
             // was when Submit was clicked — unless the reviewer has moved on
@@ -1729,12 +1757,30 @@ export default function Review({
                 onSubmit={handleAddComment}
             />
 
+            <LinkGitHubDialog
+                isOpen={linkRefusal?.pr === prRef}
+                reason={
+                    linkRefusal
+                        ? `Your review on ${linkRefusal.pr} was not submitted: ${linkRefusal.detail}. Your draft is kept.`
+                        : undefined
+                }
+                retryLabel="Submit again"
+                onRetry={() => {
+                    setLinkRefusal(null);
+                    handleSubmitReview();
+                }}
+                // Back to the draft, to submit it or keep editing.
+                onClose={() => {
+                    setLinkRefusal(null);
+                    setSubmitting(true);
+                }}
+            />
             <ReviewSubmitModal
                 isOpen={submitting}
                 reviewEvent={reviewEvent}
                 reviewBody={reviewBody}
                 pendingPreviews={pendingPreviews}
-                username={githubUsername}
+                username={previewUsername}
                 diffTheme={customDiffTheme}
                 onChangeReviewEvent={setReviewEvent}
                 onChangeReviewBody={setReviewBody}

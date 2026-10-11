@@ -238,10 +238,25 @@ describe('reviewNotSubmittedMessage', () => {
         expect(
             reviewNotSubmittedMessage(
                 'acme/widgets#42',
-                goError('refused: SubmitReview would act as the server')
+                goError(
+                    "refused: this server posts to GitHub as its own account, so it does not submit reviews or merge on users' behalf; an administrator can enable AllowServerIdentityActions"
+                )
             )
         ).toBe(
             "Review on acme/widgets#42 was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead."
+        );
+    });
+
+    test('says to link the GitHub account when that is what the server needs', () => {
+        expect(
+            reviewNotSubmittedMessage(
+                'acme/widgets#42',
+                goError(
+                    'refused: link-github: your GitHub authorization has expired or was revoked; link your account again'
+                )
+            )
+        ).toBe(
+            'Review on acme/widgets#42 was not submitted: your GitHub authorization has expired or was revoked; link your account again. Your draft is kept — link your account from the account button at the top right, then submit it again.'
         );
     });
 });

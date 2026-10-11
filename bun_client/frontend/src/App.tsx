@@ -5,7 +5,9 @@ import PluginOutput from './components/PluginOutput';
 import AIOutput from './components/AIOutput';
 import ConfigManager from './components/ConfigManager';
 import RateLimitHistory from './components/RateLimitHistory';
+import AccountPanel, { AccountChip } from './components/AccountPanel';
 import { rpcCall } from './api';
+import { useBridgeSession } from './hooks/useBridgeSession';
 import { useIsMobile } from './hooks/useMediaQuery';
 import {
     Modal,
@@ -54,9 +56,15 @@ function App() {
     const [view, setView] = useState<View>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
-    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
+    const [prefsTab, setPrefsTab] = useState<'account' | 'appearance' | 'server' | 'ratelimit'>(
+        'appearance'
+    );
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
+    // Who the bridge is connected as: on a shared server, the header shows the
+    // login and GitHub link state, and Preferences gains an Account tab.
+    const session = useBridgeSession();
+    const remote = !!session?.remote;
     // Transient toast notification; keyed by id so a new message restarts the
     // timer. Held here rather than in the view that raised it so work that
     // finishes in the background — a review submit — can still report after
@@ -317,6 +325,16 @@ function App() {
                             {isMobile ? '☰ List' : '← Back to List'}
                         </button>
                     )}
+                    {session?.remote && (
+                        <AccountChip
+                            session={session}
+                            compact={isMobile}
+                            onOpen={() => {
+                                setPrefsTab('account');
+                                setShowPrefs(true);
+                            }}
+                        />
+                    )}
                     <button
                         onClick={() => setShowPrefs(true)}
                         style={{
@@ -402,6 +420,7 @@ function App() {
                 >
                     {(
                         [
+                            ...(remote ? [['account', 'Account'] as const] : []),
                             ['appearance', 'Appearance'],
                             ['server', 'Server Configuration'],
                             ['ratelimit', 'Rate Limit'],
@@ -430,6 +449,8 @@ function App() {
                         </button>
                     ))}
                 </div>
+
+                {prefsTab === 'account' && remote && <AccountPanel />}
 
                 {prefsTab === 'server' && <ConfigManager />}
 

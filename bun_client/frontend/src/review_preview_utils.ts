@@ -185,10 +185,17 @@ export function reviewSubmittedMessage(event: string, pr: string, failedReplies 
 /**
  * The toast a failed submit shows. A shared server that won't post under its
  * own GitHub account refuses the submit outright, and would refuse a retry
- * just the same, so that case says where the review can go instead.
+ * just the same, so that case says where the review can go instead. One that
+ * needs the reviewer's own GitHub account linked first says so: the review
+ * view offers the link itself, so this is for a submit that lands after the
+ * reviewer has moved on.
  */
 export function reviewNotSubmittedMessage(pr: string, error: unknown): string {
-    if (rpcRefusal(error)?.kind === 'refused') {
+    const refusal = rpcRefusal(error);
+    if (refusal?.kind === 'link-github') {
+        return `Review on ${pr} was not submitted: ${refusal.detail}. Your draft is kept — link your account from the account button at the top right, then submit it again.`;
+    }
+    if (refusal?.kind === 'refused') {
         return `Review on ${pr} was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead.`;
     }
     return `Review on ${pr} was not submitted: ${rpcErrorMessage(error)}`;

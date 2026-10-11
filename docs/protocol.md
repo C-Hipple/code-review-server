@@ -431,7 +431,7 @@ with its own token instead, so every client renders the same images from disk.
 | Field          | Type   | Description                                                                 |
 |----------------|--------|-----------------------------------------------------------------------------|
 | `url`          | string | The image URL as it appears in the body — match on this to rewrite the tag  |
-| `path`         | string | Absolute path of the downloaded file, or `""` when it isn't cached yet      |
+| `path`         | string | Absolute path of the downloaded file on the server's machine, or `""` when it isn't cached yet. A client of a hosted server cannot open it, and asks [`GetImage`](#rpchandlergetimage) with `IncludeData` for the bytes instead |
 | `content_type` | string | MIME type of the cached file; empty alongside an empty `path`               |
 | `size`         | int64  | Size of the cached file in bytes                                            |
 | `cached`       | bool   | `true` when `path` points at a file that exists                             |
@@ -776,20 +776,29 @@ downloads them whenever it loads a PR's discussion — so this normally costs a
 and this call blocks for it, unlike the rest of the read path.
 
 **Args** (`GetImageArgs`):
-| Field | Type   | Required | Description                                        |
-|-------|--------|----------|----------------------------------------------------|
-| `URL` | string | Yes      | The image URL exactly as it appears in the body    |
+| Field         | Type   | Required | Description                                        |
+|---------------|--------|----------|----------------------------------------------------|
+| `URL`         | string | Yes      | The image URL exactly as it appears in the body    |
+| `IncludeData` | bool   | No       | Also send the image's bytes, as `data`. For a client of a [hosted server](#remote-connections), which cannot read the server's disk |
 
 **Reply** (`GetImageReply`):
 | Field          | Type   | Description                                                        |
 |----------------|--------|--------------------------------------------------------------------|
-| `okay`         | bool   | `true` when the image is on disk                                   |
+| `okay`         | bool   | `true` when the image is on disk — and, with `IncludeData`, its bytes are in `data` |
 | `url`          | string | The URL that was resolved                                          |
-| `path`         | string | Absolute path of the cached file                                   |
+| `path`         | string | Absolute path of the cached file, on the server's machine          |
 | `content_type` | string | MIME type of the cached file                                       |
 | `size`         | int64  | Size of the cached file in bytes                                   |
 | `cached`       | bool   | `false` when this call had to download the image                   |
 | `error`        | string | Why it could not be served, when `okay` is `false`                 |
+| `data`         | string | With `IncludeData`: the file's bytes, base64-encoded. Absent otherwise |
+
+`path` is only useful to a client on the server's machine — the local stdio
+client. A client of a hosted server sets `IncludeData` and renders `data`
+instead, with `content_type`. The bytes are sent for images up to 10 MiB (the
+whole reply is one JSON line); a bigger one, or one whose cached file vanished
+before it was read, comes back `okay: false` with the reason in `error` and the
+other fields filled in.
 
 A URL that isn't on `github.com` or `*.githubusercontent.com` comes back with
 `okay: false` rather than as an RPC error — the client should load it directly,
@@ -821,6 +830,29 @@ are safe to delete — they are re-downloaded on demand.
   "size": 26186,
   "cached": true,
   "error": ""
+}
+```
+
+**Example Request** (a remote client, asking for the bytes):
+```json
+{
+  "method": "RPCHandler.GetImage",
+  "params": [{ "URL": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af", "IncludeData": true }],
+  "id": 12
+}
+```
+
+**Example Reply**:
+```json
+{
+  "okay": true,
+  "url": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af",
+  "path": "/srv/crs/.crs/images/c33e7f4874...458b.png",
+  "content_type": "image/png",
+  "size": 26186,
+  "cached": true,
+  "error": "",
+  "data": "iVBORw0KGgoAAAANSUhEUgAAB3EAAASp..."
 }
 ```
 

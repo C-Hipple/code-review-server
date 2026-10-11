@@ -261,8 +261,10 @@ These are known, and accepted for a server on an internal network:
   as large as it likes. Keep the port off the open internet.
 - **Drafts live only on the server** and are deleted with their user by
   retention.
-- **Local paths are the server's.** A PR's `repo_path` and `worktree_path`,
-  and an image's `path`, are paths on the server's machine, so a remote
-  client's language-server and file features do not work against them.
+- **Local paths are the server's.** A PR's `repo_path` and `worktree_path`
+  are paths on the server's machine, so a remote client's language-server and
+  file features do not work against them. Images are the exception: a remote
+  client asks `GetImage` for an image's bytes (`IncludeData`) rather than
+  reading its `path`.
 - **"Mine" is the token's account** (see above), so team chips highlight the
   server's login rather than the viewer's.

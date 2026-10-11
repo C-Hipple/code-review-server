@@ -9,7 +9,8 @@ the [Protocol](protocol.md); read that document alongside this one. The general 
 for spawning and talking to the server live in [Building Clients](building_clients.md).
 
 One thing worth knowing before you start: the Go server speaks **JSON-RPC 1.0 over
-stdio only**. There is no HTTP server in the Go binary. Any web client needs a
+stdio** (or over plain TCP with `crs --listen`, for a shared server). There is no
+HTTP server in the Go binary. Any web client needs a
 process that owns the child process and bridges it to the browser — that is what
 `bun_client/server.ts` is.
 
@@ -27,6 +28,11 @@ bun_client/server.ts           ← the bridge; owns the child process
     ▼
 codereviewserver --server      (spawned as `crs --server`)
 ```
+
+With `CRS_REMOTE=host:port` set, the bridge connects to a shared `crs --listen`
+over TCP instead of spawning one, and authenticates each connection before
+forwarding anything (`remote_rpc.ts`; see
+[Connecting to a shared server](clients.md#connecting-to-a-shared-server)).
 
 **`server.ts`** — a Bun HTTP + WebSocket server (default port `5172`, override with
 `CRS_PORT`). Responsibilities:

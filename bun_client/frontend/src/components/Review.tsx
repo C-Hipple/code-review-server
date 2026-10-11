@@ -5,7 +5,7 @@ import {
     getHunkContext,
     listAIFeatures,
     rpcCall,
-    rpcErrorMessage,
+    rpcRefusal,
 } from '../api';
 import {
     attentionCount,
@@ -21,7 +21,12 @@ import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
-import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
+import { pluginRerunFailedMessage } from '../plugin_utils';
+import {
+    buildPendingPreviews,
+    reviewNotSubmittedMessage,
+    reviewSubmittedMessage,
+} from '../review_preview_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
@@ -63,8 +68,12 @@ interface ReviewProps {
     // Raises a transient notification. It outlives this view, so a review
     // submit that lands after the reviewer has gone back to the list still
     // reports how it went.
-    onToast: (message: string, variant?: StatusVariant) => void;
+    onToast: (message: string, variant?: StatusVariant, duration?: number) => void;
 }
+
+// A refused submit's toast explains where to go instead, which takes longer
+// to read than the default four seconds allow.
+const REFUSAL_TOAST_MS = 10_000;
 
 export default function Review({
     owner,
@@ -370,6 +379,7 @@ export default function Review({
             await loadPluginOutputs();
         } catch (e) {
             console.error('Failed to execute plugin:', e);
+            showToast(pluginRerunFailedMessage(pluginName, e), 'danger');
         } finally {
             setExecutingPlugins((prev: Set<string>) => {
                 const next = new Set(prev);
@@ -717,10 +727,15 @@ export default function Review({
             );
         } catch (e) {
             console.error(e);
-            showToast(`Review on ${key} was not submitted: ${rpcErrorMessage(e)}`, 'danger');
+            showToast(
+                reviewNotSubmittedMessage(key, e),
+                'danger',
+                rpcRefusal(e)?.kind === 'refused' ? REFUSAL_TOAST_MS : undefined
+            );
             // Nothing went out, so hand the draft back for a retry, as it
             // was when Submit was clicked — unless the reviewer has moved on
-            // to another PR.
+            // to another PR. A server that refused to post it still leaves
+            // the body there to take to GitHub.
             if (prKey.current === key) {
                 setReviewEvent(event);
                 setReviewBody(body);

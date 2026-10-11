@@ -4,6 +4,7 @@ import {
     buildPendingPreviews,
     contextForPosition,
     pendingComments,
+    reviewNotSubmittedMessage,
     reviewSubmittedMessage,
     reviewVerdictLabel,
 } from './review_preview_utils';
@@ -219,6 +220,28 @@ describe('reviewSubmittedMessage', () => {
         );
         expect(reviewSubmittedMessage('COMMENT', 'acme/widgets#42', 3)).toBe(
             'Review submitted on acme/widgets#42, but 3 replies could not be posted and are still pending — see console for details'
+        );
+    });
+});
+
+describe('reviewNotSubmittedMessage', () => {
+    // What rpcCall throws: the Go error string, JSON-encoded.
+    const goError = (message: string) => new Error(JSON.stringify(message));
+
+    test('passes the error on', () => {
+        expect(reviewNotSubmittedMessage('acme/widgets#42', goError('GitHub is down'))).toBe(
+            'Review on acme/widgets#42 was not submitted: GitHub is down'
+        );
+    });
+
+    test('says where to submit when the server refuses to post as itself', () => {
+        expect(
+            reviewNotSubmittedMessage(
+                'acme/widgets#42',
+                goError('refused: SubmitReview would act as the server')
+            )
+        ).toBe(
+            "Review on acme/widgets#42 was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead."
         );
     });
 });

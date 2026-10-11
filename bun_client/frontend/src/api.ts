@@ -195,6 +195,43 @@ export function rpcErrorMessage(e: unknown): string {
     return raw;
 }
 
+/** How a shared server (`crs --listen`) turned a call down. */
+export interface RpcRefusal {
+    /**
+     * `permission-denied`: the method is for the server's administrators.
+     * `refused`: the server won't act under its own GitHub account for a
+     * user connected to it — submitting a review, merging.
+     */
+    kind: 'permission-denied' | 'refused';
+    /** The server's explanation, after the prefix. */
+    detail: string;
+}
+
+const REFUSAL_PREFIXES = [
+    ['permission denied:', 'permission-denied'],
+    ['refused:', 'refused'],
+] as const;
+
+/**
+ * Reads a shared server's refusal off an error rpcCall threw, by the prefix
+ * the server puts on it (docs/protocol.md). Null for any other error —
+ * including every error a server run locally gives, since it refuses nothing.
+ */
+export function rpcRefusal(e: unknown): RpcRefusal | null {
+    const message = rpcErrorMessage(e);
+    for (const [prefix, kind] of REFUSAL_PREFIXES) {
+        if (message.startsWith(prefix)) {
+            return { kind, detail: message.slice(prefix.length).trim() };
+        }
+    }
+    return null;
+}
+
+/** What to say when a `permission-denied` refusal stops `action` ("rerun plugins"). */
+export function adminOnlyMessage(action: string): string {
+    return `Only an administrator of this server can ${action}.`;
+}
+
 /**
  * Read file contents from a repository
  */

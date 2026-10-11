@@ -65,10 +65,11 @@ function App() {
         id: number;
         message: string;
         variant: StatusVariant;
+        duration?: number;
     } | null>(null);
     const showToast = useCallback(
-        (message: string, variant: StatusVariant = 'info') =>
-            setToast({ id: Date.now(), message, variant }),
+        (message: string, variant: StatusVariant = 'info', duration?: number) =>
+            setToast({ id: Date.now(), message, variant, duration }),
         []
     );
     const [theme, setTheme] = useState<Theme>(() => {
@@ -371,6 +372,7 @@ function App() {
                         theme={theme}
                         onThemeChange={setTheme}
                         onClose={handleBack}
+                        onToast={showToast}
                     />
                 )}
                 {view === 'AI_OUTPUT' && currentPR && (
@@ -556,6 +558,7 @@ function App() {
                     key={toast.id}
                     message={toast.message}
                     variant={toast.variant}
+                    duration={toast.duration}
                     // Clear the review view's mobile action bar.
                     bottomOffset={isMobile && view === 'REVIEW' ? 84 : 24}
                     onDismiss={() => setToast(null)}

@@ -127,3 +127,79 @@ func TestRawWorkflowUserIsNeverSerialized(t *testing.T) {
 		t.Errorf("User was read from JSON: %q", decoded.User)
 	}
 }
+
+// GitHub account linking is off until a client ID is configured, and an OAuth
+// App asks for repo unless told otherwise.
+func TestParseConfigReadsTheGitHubOAuthKeys(t *testing.T) {
+	cfg, err := parseConfig([]byte(`SleepDuration = 5`))
+	if err != nil {
+		t.Fatalf("parseConfig() error = %v", err)
+	}
+	if cfg.GitHubOAuthClientID != "" || cfg.GitHubOAuthScopes != DefaultGitHubOAuthScopes {
+		t.Errorf("defaults: GitHubOAuthClientID=%q GitHubOAuthScopes=%q, want \"\" and %q",
+			cfg.GitHubOAuthClientID, cfg.GitHubOAuthScopes, DefaultGitHubOAuthScopes)
+	}
+
+	cfg, err = parseConfig([]byte("GitHubOAuthClientID = \" Iv1.abc123 \"\nGitHubOAuthScopes = \"repo read:org\"\n"))
+	if err != nil {
+		t.Fatalf("parseConfig() error = %v", err)
+	}
+	if cfg.GitHubOAuthClientID != "Iv1.abc123" || cfg.GitHubOAuthScopes != "repo read:org" {
+		t.Errorf("got GitHubOAuthClientID=%q GitHubOAuthScopes=%q", cfg.GitHubOAuthClientID, cfg.GitHubOAuthScopes)
+	}
+
+	// An empty scope list is the default, not a token that can write nothing.
+	cfg, err = parseConfig([]byte("GitHubOAuthScopes = \"\"\n"))
+	if err != nil {
+		t.Fatalf("parseConfig() error = %v", err)
+	}
+	if cfg.GitHubOAuthScopes != DefaultGitHubOAuthScopes {
+		t.Errorf("an empty GitHubOAuthScopes = %q, want %q", cfg.GitHubOAuthScopes, DefaultGitHubOAuthScopes)
+	}
+}
+
+func TestValidateGitHubOAuthKeys(t *testing.T) {
+	for _, tc := range []struct {
+		clientID, scopes string
+		want             []string
+	}{
+		{"Iv1.abc123", "repo", nil},
+		{"Ov23liABC", "repo, read:org public_repo", nil},
+		{"Iv1 abc", "repo", []string{"GitHubOAuthClientID"}},
+		{"Iv1.abc\n", "repo", []string{"GitHubOAuthClientID"}},
+		{"", "Repo", []string{"GitHubOAuthScopes"}},
+		{"", "repo;admin", []string{"GitHubOAuthScopes"}},
+	} {
+		cfg := validConfig()
+		cfg.GitHubOAuthClientID, cfg.GitHubOAuthScopes = tc.clientID, tc.scopes
+		var got []string
+		for _, p := range Validate(cfg) {
+			got = append(got, p.Field)
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("client ID %q, scopes %q: problems with %v, want %v", tc.clientID, tc.scopes, got, tc.want)
+		}
+	}
+}
+
+func TestUpdateRenderWritesTheGitHubOAuthKeys(t *testing.T) {
+	useTempConfig(t, sampleConfig)
+
+	clientID, scopes := "Iv1.abc123", "repo read:org"
+	update := Update{GitHubOAuthClientID: &clientID, GitHubOAuthScopes: &scopes}
+	if update.IsEmpty() {
+		t.Fatal("setting GitHubOAuthClientID is a change")
+	}
+	data, cfg, err := update.Render()
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if cfg.GitHubOAuthClientID != clientID || cfg.GitHubOAuthScopes != scopes {
+		t.Errorf("rendered config has GitHubOAuthClientID=%q GitHubOAuthScopes=%q", cfg.GitHubOAuthClientID, cfg.GitHubOAuthScopes)
+	}
+	for _, line := range []string{"GitHubOAuthClientID = 'Iv1.abc123'", "GitHubOAuthScopes = 'repo read:org'"} {
+		if !strings.Contains(string(data), line) {
+			t.Errorf("expected %q in the rendered file, got:\n%s", line, data)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"crs/subprocess"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -74,6 +75,8 @@ func Validate(cfg *Config) []ValidationError {
 			"must be 0 (never delete idle users) or a positive number of days"))
 	}
 
+	problems = append(problems, validateGitHubOAuth(cfg)...)
+
 	problems = append(problems, validateSectionSorting(cfg.SectionSorting)...)
 	problems = append(problems, validateWorkflowEntries(cfg.RawWorkflows)...)
 
@@ -125,6 +128,28 @@ func validateSectionSorting(sorting map[string]string) []ValidationError {
 		if !validSectionSorting[method] {
 			problems = append(problems, rootError("SectionSorting",
 				"section %q has unknown sorting %q (expected \"newest_first\" or \"oldest_first\")", section, method))
+		}
+	}
+	return problems
+}
+
+// githubOAuthScope is one GitHub OAuth scope: "repo", "read:org",
+// "public_repo" and the like.
+var githubOAuthScope = regexp.MustCompile(`^[a-z0-9_:]+$`)
+
+// validateGitHubOAuth checks the keys GitHub account linking reads. Both are
+// sent to GitHub as they are, so a typo would surface only as GitHub refusing
+// every user's link.
+func validateGitHubOAuth(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	if strings.IndexFunc(cfg.GitHubOAuthClientID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		problems = append(problems, rootError("GitHubOAuthClientID",
+			"must be the app's client ID as GitHub shows it, without spaces"))
+	}
+	for _, scope := range strings.FieldsFunc(cfg.GitHubOAuthScopes, func(r rune) bool { return r == ' ' || r == ',' }) {
+		if !githubOAuthScope.MatchString(scope) {
+			problems = append(problems, rootError("GitHubOAuthScopes",
+				"%q is not a GitHub OAuth scope; list scopes such as \"repo\" separated by spaces", scope))
 		}
 	}
 	return problems

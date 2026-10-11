@@ -546,3 +546,40 @@ func TestUpdateConfigRoundTripsTheUserKeys(t *testing.T) {
 		t.Errorf("a rejected update must leave the file alone, got:\n%s", after)
 	}
 }
+
+// GitHub account linking's keys are shown with their defaults, saved trimmed,
+// and refused when GitHub could not read them.
+func TestUpdateConfigRoundTripsTheGitHubOAuthKeys(t *testing.T) {
+	useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	before := &GetConfigReply{}
+	if err := h.GetConfig(&GetConfigArgs{}, before); err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if before.Config.GitHubOAuthClientID != "" || before.Config.GitHubOAuthScopes != config.DefaultGitHubOAuthScopes {
+		t.Errorf("expected linking off with the default scopes, got %q and %q",
+			before.Config.GitHubOAuthClientID, before.Config.GitHubOAuthScopes)
+	}
+
+	clientID, scopes := " Iv1.abc123 ", "repo read:org"
+	reply := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{GitHubOAuthClientID: &clientID, GitHubOAuthScopes: &scopes}, reply); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+	if !reply.Okay || reply.Config.GitHubOAuthClientID != "Iv1.abc123" || reply.Config.GitHubOAuthScopes != scopes {
+		t.Errorf("update = okay %v, %q, %q, %v", reply.Okay, reply.Config.GitHubOAuthClientID, reply.Config.GitHubOAuthScopes, reply.Errors)
+	}
+	if cfg := config.C(); cfg.GitHubOAuthClientID != "Iv1.abc123" {
+		t.Errorf("running config not reloaded: GitHubOAuthClientID=%q", cfg.GitHubOAuthClientID)
+	}
+
+	bad := "repo; admin"
+	rejected := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{GitHubOAuthScopes: &bad}, rejected); err != nil {
+		t.Fatalf("a rejected update should not be an RPC error, got %v", err)
+	}
+	if rejected.Okay || len(rejected.Errors) != 1 || rejected.Errors[0].Field != "GitHubOAuthScopes" {
+		t.Errorf("expected one GitHubOAuthScopes problem, got okay=%v errors=%v", rejected.Okay, rejected.Errors)
+	}
+}

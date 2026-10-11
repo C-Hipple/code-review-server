@@ -338,6 +338,18 @@ type Config struct {
 	// PRs, which GitHub records as the server token's user. Off by default:
 	// only an organization whose server token is a bot account should allow it.
 	AllowServerIdentityActions bool
+	// GitHubOAuthClientID and GitHubOAuthScopes let a hosted server's users
+	// link their own GitHub accounts through the OAuth device flow, so their
+	// reviews and merges go out as themselves rather than as the server
+	// token's user. GitHubOAuthClientID is the client ID of an OAuth App or a
+	// GitHub App with device flow enabled; empty, linking is unavailable. Its
+	// secrets — CRS_SECRET_KEY, which seals the stored tokens, and the
+	// optional client secret — come from the environment, never this file.
+	GitHubOAuthClientID string
+	// GitHubOAuthScopes is what an OAuth App asks GitHub for, separated by
+	// spaces or commas: DefaultGitHubOAuthScopes when the file leaves it out
+	// or empty. A GitHub App ignores it and is granted its own permissions.
+	GitHubOAuthScopes string
 	// UsingDefaults is true when no config file exists and the server is
 	// running DefaultConfigTOML. Nothing behaves differently because of it; it
 	// exists so clients can say so.
@@ -352,6 +364,10 @@ const (
 	DefaultUserActiveHours   = 24
 	DefaultUserRetentionDays = 7
 )
+
+// DefaultGitHubOAuthScopes is the scope an OAuth App needs to review, reply
+// to and merge pull requests in private repositories as well as public ones.
+const DefaultGitHubOAuthScopes = "repo"
 
 // LoginResolver looks up the GitHub login the configured API token belongs to,
 // so a config that never names a user still has an identity for the filters
@@ -450,6 +466,8 @@ func parseConfig(data []byte) (*Config, error) {
 		UserActiveHours            *int
 		UserRetentionDays          *int
 		AllowServerIdentityActions bool
+		GitHubOAuthClientID        string
+		GitHubOAuthScopes          string
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -516,6 +534,11 @@ func parseConfig(data []byte) (*Config, error) {
 		userRetentionDays = *intermediate_config.UserRetentionDays
 	}
 
+	githubOAuthScopes := strings.TrimSpace(intermediate_config.GitHubOAuthScopes)
+	if githubOAuthScopes == "" {
+		githubOAuthScopes = DefaultGitHubOAuthScopes
+	}
+
 	return &Config{
 		Repos:                      intermediate_config.Repos,
 		RawWorkflows:               intermediate_config.Workflows,
@@ -534,6 +557,8 @@ func parseConfig(data []byte) (*Config, error) {
 		UserActiveHours:            userActiveHours,
 		UserRetentionDays:          userRetentionDays,
 		AllowServerIdentityActions: intermediate_config.AllowServerIdentityActions,
+		GitHubOAuthClientID:        strings.TrimSpace(intermediate_config.GitHubOAuthClientID),
+		GitHubOAuthScopes:          githubOAuthScopes,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

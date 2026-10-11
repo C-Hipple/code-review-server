@@ -1186,6 +1186,10 @@ type ConfigView struct {
 	UserActiveHours            int  `json:"UserActiveHours"`
 	UserRetentionDays          int  `json:"UserRetentionDays"`
 	AllowServerIdentityActions bool `json:"AllowServerIdentityActions"`
+	// GitHub account linking's keys. The secrets it also needs are
+	// environment variables, which are never shown.
+	GitHubOAuthClientID string `json:"GitHubOAuthClientID"`
+	GitHubOAuthScopes   string `json:"GitHubOAuthScopes"`
 }
 
 // newConfigView builds the view from a loaded config, normalizing nil maps and
@@ -1209,6 +1213,8 @@ func newConfigView(cfg config.Config) ConfigView {
 		UserActiveHours:            cfg.UserActiveHours,
 		UserRetentionDays:          cfg.UserRetentionDays,
 		AllowServerIdentityActions: cfg.AllowServerIdentityActions,
+		GitHubOAuthClientID:        cfg.GitHubOAuthClientID,
+		GitHubOAuthScopes:          cfg.GitHubOAuthScopes,
 	}
 	if view.Repos == nil {
 		view.Repos = []string{}
@@ -1304,9 +1310,11 @@ type UpdateConfigArgs struct {
 	AI                   *config.AISettings    `json:"AI"`
 	AIFeatures           *[]config.AIFeature   `json:"AIFeatures"`
 
-	UserActiveHours            *int  `json:"UserActiveHours"`
-	UserRetentionDays          *int  `json:"UserRetentionDays"`
-	AllowServerIdentityActions *bool `json:"AllowServerIdentityActions"`
+	UserActiveHours            *int    `json:"UserActiveHours"`
+	UserRetentionDays          *int    `json:"UserRetentionDays"`
+	AllowServerIdentityActions *bool   `json:"AllowServerIdentityActions"`
+	GitHubOAuthClientID        *string `json:"GitHubOAuthClientID"`
+	GitHubOAuthScopes          *string `json:"GitHubOAuthScopes"`
 }
 
 // UpdateConfigReply carries the same body as GetConfig plus any validation
@@ -1350,6 +1358,8 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 		UserActiveHours:            args.UserActiveHours,
 		UserRetentionDays:          args.UserRetentionDays,
 		AllowServerIdentityActions: args.AllowServerIdentityActions,
+		GitHubOAuthClientID:        trimString(args.GitHubOAuthClientID),
+		GitHubOAuthScopes:          trimString(args.GitHubOAuthScopes),
 	}
 
 	if update.IsEmpty() {
@@ -1475,6 +1485,15 @@ func normalizeAIFeatures(features *[]config.AIFeature) *[]config.AIFeature {
 		cleaned = append(cleaned, f)
 	}
 	return &cleaned
+}
+
+// trimString trims an optional string setting, keeping nil as nil.
+func trimString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*s)
+	return &trimmed
 }
 
 // trimList trims every entry of a string list and drops the ones left empty.

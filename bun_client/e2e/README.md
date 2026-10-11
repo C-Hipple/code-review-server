@@ -13,6 +13,13 @@ no GitHub token, network, or SQLite database:
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 
+Started with `--listen host:port`, `fake_crs.ts` stands in for a hosted
+`crs --listen` instead: the same methods over TCP, each connection a session
+that must `Authenticate` or `RegisterUser` first, with the server's method
+policy — `not authenticated:` before that, `permission denied:` for the
+admin-only methods (`GetConfig`, `UpdateConfig`, `RerunPlugins`, ...), and
+`refused:` for `SubmitReview` / `MergePR` while the identity gate is shut.
+
 ## Running
 
 ```bash
@@ -29,6 +36,13 @@ for the fakes, so nothing installed on the machine leaks in. Two bridges run:
 
 - `:5190` — fake `crs`, fake `diff-lsp`, fake TypeScript server
 - `:5191` — fake `crs` and no language servers (the "LSP not active" paths)
+- `:5193` — remote mode (`remote.e2e.ts`): no `crs` on PATH at all; the
+  bridge connects with `CRS_REMOTE` to a fake `crs --listen` on `:5194` and
+  registers with `CRS_REGISTRATION_KEY`. Its `HOME`, `XDG_CONFIG_HOME` and
+  `CRS_HOME` are under its state directory, holding the TOML from
+  `fixtures/remote_user.ts` and the token it is issued, so nothing of the
+  machine's leaks in (the launcher also strips any `CRS_REMOTE*` /
+  `CRS_LOGIN` / `CRS_REGISTRATION_KEY` from every bridge's environment).
 
 The bridge pools language servers per workspace (`lsp_pool.ts`), so a fake
 server started by one test can still be answering in the next: the fake
@@ -38,6 +52,13 @@ that need a fresh server pass a unique `worktree` when preparing the tempfile.
 Set `CRS_E2E_PORT` to move them. Each test resets the fake backend
 (`E2E.Reset`), and specs assert on what the UI sent through `backend.calls()`
 and `lsp.received()` (see `harness/test.ts`).
+
+The remote fake keeps its registered users and its log of `Authenticate` /
+`RegisterUser` calls across `E2E.Reset` — the bridge registers once, as it
+starts. Specs read that log with `backend.authLog()`, and a call the policy
+turned down carries the error in `refused`. `E2E.ForgetUser` drops a user the
+way the server's retention sweep does (with `Disconnect: true` it also hangs
+up, as a restart would), and `E2E.SetIdentityActions` opens the identity gate.
 
 ## Real language servers (opt-in)
 

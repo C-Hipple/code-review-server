@@ -289,11 +289,35 @@ func TestDraftsAndFeedbackBelongToTheirAuthor(t *testing.T) {
 // records the reviews, replies and merges posted, and answers every read with
 // an empty but well-formed PR. GraphQL fails, which the readers of it
 // tolerate.
+//
+// It also records the Authorization header each write and read was sent
+// with, and answers 401 to any token in rejected, as GitHub does a revoked
+// one.
 type fakeGitHub struct {
-	mu      sync.Mutex
-	reviews []map[string]any
-	replies []map[string]any
-	merges  int
+	mu        sync.Mutex
+	reviews   []map[string]any
+	replies   []map[string]any
+	merges    int
+	writeAuth []string
+	readAuth  []string
+	rejected  map[string]bool
+}
+
+// reject makes the fake answer 401 to requests carrying token.
+func (f *fakeGitHub) reject(token string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rejected == nil {
+		f.rejected = map[string]bool{}
+	}
+	f.rejected[token] = true
+}
+
+// auths returns the Authorization headers of the writes and the reads so far.
+func (f *fakeGitHub) auths() (writes, reads []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.writeAuth...), append([]string(nil), f.readAuth...)
 }
 
 func useFakeGitHub(t *testing.T) *fakeGitHub {
@@ -315,6 +339,21 @@ func (f *fakeGitHub) RoundTrip(req *http.Request) (*http.Response, error) {
 		}, nil
 	}
 	path := req.URL.Path
+	if req.URL.Host == "api.github.com" {
+		auth := req.Header.Get("Authorization")
+		f.mu.Lock()
+		// GraphQL is a POST, and a read.
+		if req.Method == http.MethodGet || strings.HasSuffix(path, "/graphql") {
+			f.readAuth = append(f.readAuth, auth)
+		} else {
+			f.writeAuth = append(f.writeAuth, auth)
+		}
+		rejected := f.rejected[strings.TrimPrefix(auth, "Bearer ")]
+		f.mu.Unlock()
+		if rejected {
+			return respond(http.StatusUnauthorized, `{"message": "Bad credentials"}`)
+		}
+	}
 	switch {
 	case req.URL.Host != "api.github.com":
 		return respond(http.StatusNotFound, `{"message": "not the GitHub API"}`)

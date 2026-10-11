@@ -64,6 +64,13 @@ var methodPolicy = map[string]access{
 	"SubmitReview": accessUser,
 	"MergePR":      accessUser,
 
+	// Linking the user's own GitHub account, which their writes then go out
+	// as. The administrator token's session, the server's own identity, has
+	// no account to link and is answered okay=false.
+	"StartGitHubLink": accessUser,
+	"GetGitHubLink":   accessUser,
+	"UnlinkGitHub":    accessUser,
+
 	// Reads of what the server computes or caches for every user alike.
 	// RunAIFeature's Force is the client's rerun button; what it spends is
 	// bounded by the runner's concurrency cap.

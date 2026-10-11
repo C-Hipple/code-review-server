@@ -330,6 +330,36 @@ func TestRetentionSweepClearsAUserOutInOneCycle(t *testing.T) {
 	checkDashboard(t, db, "alice", 7)
 }
 
+// The sweep hands the users it deleted, with the GitHub credentials they
+// held, to the registered hook, so the server can revoke them.
+func TestRetentionSweepHandsDeletedUsersToTheHook(t *testing.T) {
+	db := usersTestDB(t, config.Config{UserRetentionDays: 7})
+	now := time.Now()
+	registerUser(t, db, database.User{Login: "alice", LastSeen: now.Add(-8 * 24 * time.Hour)})
+	registerUser(t, db, database.User{Login: "bob", LastSeen: now.Add(-8 * 24 * time.Hour)})
+	registerUser(t, db, database.User{Login: "carol", LastSeen: now})
+	if err := db.SetUserGitHubCredential("alice", "hash-of-alice", "v1:sealed"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []database.DeletedUser
+	SetUsersDeletedHook(func(deleted []database.DeletedUser) { got = append(got, deleted...) })
+	t.Cleanup(func() { SetUsersDeletedHook(nil) })
+
+	sweepIdleUsers(config.C(), now)
+	want := []database.DeletedUser{{Login: "alice", GitHubCredential: "v1:sealed"}, {Login: "bob"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("the hook was handed %+v, want %+v", got, want)
+	}
+
+	// A sweep that deletes nobody does not call it.
+	got = nil
+	sweepIdleUsers(config.C(), now)
+	if got != nil {
+		t.Errorf("a sweep that deleted nobody handed the hook %+v", got)
+	}
+}
+
 func TestUserWorkflowsAreBuiltForTheirUser(t *testing.T) {
 	db := usersTestDB(t, config.Config{
 		Repos:                []string{"server/repo"},

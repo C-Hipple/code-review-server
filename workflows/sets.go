@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -222,6 +223,24 @@ func userActive(u database.User, activeHours int, now time.Time) bool {
 	return !u.LastSeen.Before(now.Add(-time.Duration(activeHours) * time.Hour))
 }
 
+// usersDeletedHook is handed the users each retention sweep deletes, with the
+// GitHub credentials they held, so the server can cancel their GitHub links
+// in progress and revoke their linked tokens: deleting a row only forgets a
+// token, and GitHub would go on honoring it. A registered callback for the
+// reason prUpdatedHook is one. Nil when nothing is registered.
+var usersDeletedHook atomic.Pointer[func([]database.DeletedUser)]
+
+// SetUsersDeletedHook registers the callback told about the users a
+// retention sweep deletes. Call it during startup, before the manager runs. A
+// nil fn clears any registered hook.
+func SetUsersDeletedHook(fn func([]database.DeletedUser)) {
+	if fn == nil {
+		usersDeletedHook.Store(nil)
+		return
+	}
+	usersDeletedHook.Store(&fn)
+}
+
 // sweepIdleUsers deletes the users idle for longer than UserRetentionDays,
 // along with their workflows, drafts and feedback. It runs ahead of the cycle's
 // release and prune, which then find the swept users gone from the owned set:
@@ -232,12 +251,20 @@ func sweepIdleUsers(cfg config.Config, now time.Time) {
 		return
 	}
 	cutoff := now.Add(-time.Duration(cfg.UserRetentionDays) * 24 * time.Hour)
-	swept, err := cfg.DB.DeleteUsersIdleSince(cutoff)
+	swept, err := cfg.DB.DeleteUsersIdleSinceWithCredentials(cutoff)
 	if err != nil {
 		slog.Error("Failed to delete idle users", "retention_days", cfg.UserRetentionDays, "error", err)
 		return
 	}
-	if len(swept) > 0 {
-		slog.Info("Deleted users idle past the retention window", "users", swept, "retention_days", cfg.UserRetentionDays)
+	if len(swept) == 0 {
+		return
+	}
+	logins := make([]string, 0, len(swept))
+	for _, d := range swept {
+		logins = append(logins, d.Login)
+	}
+	slog.Info("Deleted users idle past the retention window", "users", logins, "retention_days", cfg.UserRetentionDays)
+	if hook := usersDeletedHook.Load(); hook != nil {
+		(*hook)(swept)
 	}
 }

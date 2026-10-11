@@ -39,6 +39,7 @@ type Server struct {
 	script              []string
 	scopes              []string
 	polls               []time.Time
+	answers             []string
 	grantAs             string
 	expiring            bool
 	// Tokens: access token → login, and refresh token → login.
@@ -152,6 +153,14 @@ func (s *Server) Polls() []time.Time {
 	return append([]time.Time(nil), s.polls...)
 }
 
+// Answers returns what each device-flow poll was answered with, in the order
+// of Polls.
+func (s *Server) Answers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.answers...)
+}
+
 // Refreshes counts the refresh-token exchanges granted.
 func (s *Server) Refreshes() int {
 	s.mu.Lock()
@@ -220,6 +229,7 @@ func (s *Server) accessToken(w http.ResponseWriter, r *http.Request) {
 		if len(s.script) > 0 {
 			answer, s.script = s.script[0], s.script[1:]
 		}
+		s.answers = append(s.answers, answer)
 		switch {
 		case answer == "ok":
 			oauthJSON(w, r, s.grantLocked(s.grantAs, s.expiring))

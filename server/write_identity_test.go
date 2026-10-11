@@ -9,37 +9,52 @@ import (
 
 // Who may write to GitHub under the server's token: the local connection
 // always; a remote one only where the server allows it, and a merge then only
-// for an administrator.
+// for an administrator. A remote user the server could link is told to link;
+// the administrator token's session, which has no account to link, is not.
+// (Linked users' writes: github_link_test.go.)
 func TestWriteClientFor(t *testing.T) {
 	aiTestSetup(t, nil)
+	t.Setenv(secretKeyEnv, testSecretKey)
 	local, user, admin := &RPCHandler{}, handlerFor("alice", false), handlerFor("", true)
 
 	for _, tc := range []struct {
-		name   string
-		h      *RPCHandler
-		allow  bool
-		action writeAction
-		want   error
+		name     string
+		h        *RPCHandler
+		allow    bool
+		linkable bool
+		action   writeAction
+		want     error
 	}{
-		{"local submit", local, false, writeSubmitReview, nil},
-		{"local merge", local, false, writeMerge, nil},
-		{"user submit", user, false, writeSubmitReview, errServerIdentityRefused},
-		{"user merge", user, false, writeMerge, errServerIdentityRefused},
-		{"administrator merge", admin, false, writeMerge, errServerIdentityRefused},
-		{"user submit, allowed", user, true, writeSubmitReview, nil},
-		{"user merge, allowed", user, true, writeMerge, errMergeAsServerNeedsAdmin},
-		{"administrator merge, allowed", admin, true, writeMerge, nil},
+		{"local submit", local, false, false, writeSubmitReview, nil},
+		{"local merge", local, false, true, writeMerge, nil},
+		{"user submit", user, false, false, writeSubmitReview, errServerIdentityRefused},
+		{"user merge", user, false, false, writeMerge, errServerIdentityRefused},
+		{"administrator merge", admin, false, false, writeMerge, errServerIdentityRefused},
+		{"user submit, allowed", user, true, false, writeSubmitReview, nil},
+		{"user merge, allowed", user, true, false, writeMerge, errMergeAsServerNeedsAdmin},
+		{"administrator merge, allowed", admin, true, false, writeMerge, nil},
+		{"user submit, linkable", user, false, true, writeSubmitReview, errLinkRequired},
+		{"user merge, linkable", user, false, true, writeMerge, errLinkRequired},
+		{"administrator merge, linkable", admin, false, true, writeMerge, errServerIdentityRefused},
+		{"user submit, linkable and allowed", user, true, true, writeSubmitReview, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.C()
 			cfg.AllowServerIdentityActions = tc.allow
+			cfg.GitHubOAuthClientID = ""
+			if tc.linkable {
+				cfg.GitHubOAuthClientID = "Iv1.client"
+			}
 			config.SetC(cfg)
-			client, err := tc.h.writeClientFor(tc.h.viewer(), tc.action)
+			identity, err := tc.h.writeClientFor(tc.h.viewer(), tc.action)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
-			if (client != nil) != (tc.want == nil) {
-				t.Errorf("client = %v with err %v", client, err)
+			if (identity != nil) != (tc.want == nil) {
+				t.Errorf("identity = %v with err %v", identity, err)
+			}
+			if identity != nil && (identity.client == nil || identity.sealed != "") {
+				t.Errorf("an unlinked write's identity = %+v, want the server's client", identity)
 			}
 		})
 	}

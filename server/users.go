@@ -84,7 +84,10 @@ func isAdminToken(token string) bool {
 }
 
 // githubLinkFields are the reply fields that say whether the user's own GitHub
-// account is linked for writes. Linking does not exist yet; both stay false.
+// account is linked for writes (github_link.go): GitHubLinked when a link is
+// stored that the server can use, GitHubLinkAvailable when the server can
+// link one. Both are false for the server's own identity, which writes with
+// the server's token. githubLinkFieldsFor fills them.
 type githubLinkFields struct {
 	GitHubLinked        bool `json:"github_linked"`
 	GitHubLinkAvailable bool `json:"github_link_available"`
@@ -145,6 +148,7 @@ func (h *RPCHandler) Authenticate(args *AuthenticateArgs, reply *AuthenticateRep
 	h.session.signIn(u.Login, hash, u.IsAdmin, now)
 	reply.Okay, reply.Known = true, true
 	reply.Login, reply.IsAdmin = u.Login, u.IsAdmin
+	reply.githubLinkFields = githubLinkFieldsFor(u.Login)
 	reply.Message = fmt.Sprintf("Authenticated as %s", u.Login)
 	slog.Info("A remote connection authenticated", "login", u.Login, "admin", u.IsAdmin)
 	return nil
@@ -282,6 +286,7 @@ func (h *RPCHandler) RegisterUser(args *RegisterUserArgs, reply *RegisterUserRep
 	reply.Login = user.Login
 	reply.Token = token
 	reply.IsAdmin = user.IsAdmin
+	reply.githubLinkFields = githubLinkFieldsFor(user.Login)
 	verb := "Registered"
 	if !reply.Created {
 		verb = "Updated the registration of"
@@ -394,6 +399,7 @@ func (p *MyWorkflowsPayload) populate(login string) error {
 	p.Repos = u.Repos
 	p.SectionPriority = u.SectionPriority
 	p.SectionSorting = u.SectionSorting
+	p.githubLinkFields = githubLinkFieldsFor(u.Login)
 	return nil
 }
 
@@ -520,13 +526,16 @@ func (h *RPCHandler) UpdateMyWorkflows(args *UpdateMyWorkflowsArgs, reply *Updat
 type ListUsersArgs struct{}
 
 // UserInfo is one registered user as an administrator sees them. Never their
-// token, which the server does not have.
+// bearer token, which the server does not have, nor their GitHub token, which
+// it keeps sealed: only whether one is linked, and to which account.
 type UserInfo struct {
 	Login         string `json:"login"`
 	IsAdmin       bool   `json:"is_admin"`
 	CreatedAt     string `json:"created_at"` // RFC 3339
 	LastSeen      string `json:"last_seen"`  // RFC 3339
 	WorkflowCount int    `json:"workflow_count"`
+	GitHubLinked  bool   `json:"github_linked"`
+	GitHubLogin   string `json:"github_login"`
 }
 
 type ListUsersReply struct {
@@ -544,15 +553,22 @@ func (h *RPCHandler) ListUsers(args *ListUsersArgs, reply *ListUsersReply) error
 	if err != nil {
 		return err
 	}
+	setup := currentLinkSetup()
 	reply.Users = make([]UserInfo, 0, len(users))
 	for _, u := range users {
-		reply.Users = append(reply.Users, UserInfo{
+		info := UserInfo{
 			Login:         u.Login,
 			IsAdmin:       u.IsAdmin,
 			CreatedAt:     u.CreatedAt.Format(time.RFC3339),
 			LastSeen:      u.LastSeen.Format(time.RFC3339),
 			WorkflowCount: len(stored[u.Login]),
-		})
+		}
+		if link, err := loadLink(u.Login, setup); err != nil {
+			slog.Warn("Error reading a user's GitHub link", "login", u.Login, "error", err)
+		} else if link.cred != nil {
+			info.GitHubLinked, info.GitHubLogin = true, link.cred.GitHubLogin
+		}
+		reply.Users = append(reply.Users, info)
 	}
 	return nil
 }
@@ -567,17 +583,21 @@ type DeleteUserReply struct {
 }
 
 // DeleteUser deletes a user with their workflows, drafts and feedback, as the
-// retention sweep would. Their dashboard empties on the next workflow cycle,
-// and a connection still signed in as them is refused as not authenticated on
-// its next call, so its client registers again — unless the registration key
-// has changed meanwhile.
+// retention sweep would, cancels a GitHub link they have in progress, and
+// revokes the token of one they linked (best effort, with the client
+// secret). Their dashboard empties on the next workflow cycle, and a
+// connection still signed in as them is refused as not authenticated on its
+// next call, so its client registers again — unless the registration key has
+// changed meanwhile.
 func (h *RPCHandler) DeleteUser(args *DeleteUserArgs, reply *DeleteUserReply) error {
 	login := strings.TrimSpace(args.Login)
 	if login == "" {
 		reply.Message = "Login is required"
 		return nil
 	}
-	err := config.C().DB.DeleteUser(login)
+	// Waited for, so a link completing now cannot outlive the user unrevoked.
+	githubLinks.stop(login, true)
+	deleted, err := config.C().DB.DeleteUserWithCredential(login)
 	if errors.Is(err, database.ErrNotFound) {
 		reply.Message = fmt.Sprintf("No user named %q is registered", login)
 		return nil
@@ -587,7 +607,11 @@ func (h *RPCHandler) DeleteUser(args *DeleteUserArgs, reply *DeleteUserReply) er
 		return err
 	}
 	reply.Okay = true
-	reply.Message = fmt.Sprintf("Deleted %s with their workflows, drafts and feedback; their dashboard empties on the next workflow cycle", login)
-	slog.Info("Deleted a user", "login", login, "by", h.viewer())
+	reply.Message = fmt.Sprintf("Deleted %s with their workflows, drafts and feedback; their dashboard empties on the next workflow cycle", deleted.Login)
+	if deleted.GitHubCredential != "" {
+		revokeErr := revokeSealed(currentLinkSetup(), deleted.Login, deleted.GitHubCredential, "user deleted")
+		reply.Message += revokeOutcome(revokeErr, "their linked GitHub")
+	}
+	slog.Info("Deleted a user", "login", deleted.Login, "by", h.viewer())
 	return nil
 }

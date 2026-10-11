@@ -130,6 +130,8 @@ func main() {
 		// (-server or -listen): a workflow-only process exits when its cycle
 		// ends and would kill the hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
+		// Revoke the linked GitHub tokens of the users retention deletes.
+		workflows.SetUsersDeletedHook(server.ForgetDeletedUsers)
 
 		go func() {
 			slog.Info("Starting pprof server", "addr", "localhost:6061")
@@ -140,6 +142,7 @@ func main() {
 		go ms.Run()
 		if *listenAddr != "" {
 			logListenSecrets()
+			server.LogGitHubLinkSetup()
 			if err := server.Listen(*listenAddr); err != nil {
 				slog.Error("Error serving remote clients", "error", err)
 				os.Exit(1)

@@ -646,10 +646,11 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// or that this connection may not submit at all — before any draft is
 	// touched: a refused submit leaves every one of them in place.
 	viewer := h.viewer()
-	client, err := h.writeClientFor(viewer, writeSubmitReview)
+	identity, err := h.writeClientFor(viewer, writeSubmitReview)
 	if err != nil {
 		return err
 	}
+	client := identity.client
 
 	// 1. Fetch Local Comments: the viewer's own drafts, which are all this
 	// review is made of.
@@ -672,17 +673,24 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	var reviewComments []*github.DraftReviewComment
 	// Local rows riding along with the review, deleted once GitHub has it.
 	var reviewCommentIDs []int64
+	// Empty rows: nothing to submit, and nothing worth keeping — one would sit
+	// in the pending list forever. Deleted with the review's once the submit
+	// has gone through, so a submit GitHub refuses leaves the drafts exactly
+	// as they were.
+	var emptyIDs []int64
 	for _, c := range comments {
 		if c.Body == nil {
-			// Nothing to submit, and nothing worth keeping: an empty row would
-			// sit in the pending list forever.
-			if err := config.C().DB.DeleteLocalComment(viewer, c.ID); err != nil {
-				slog.Error("Error deleting empty local comment", "id", c.ID, "error", err)
-			}
+			emptyIDs = append(emptyIDs, c.ID)
 			continue
 		}
 		if anchor, ok := resolveReplyAnchor(c, pending); ok {
 			if err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, anchor); err != nil {
+				// A linked token GitHub no longer accepts fails every call
+				// after this one too: stop here, drafts kept, and have the
+				// user link again.
+				if refusal := identity.refused(err); refusal != nil {
+					return refusal
+				}
 				// Keep the local comment. Deleting it here is what used to make
 				// a failed reply vanish from both the PR and the dashboard,
 				// with only a server log to say it ever existed.
@@ -746,15 +754,18 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		if err := git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest); err != nil {
 			// The comments that would have ridden along are still in the
 			// database, so a retry sends exactly what did not make it.
+			if refusal := identity.refused(err); refusal != nil {
+				return refusal
+			}
 			slog.Error("Error submitting review to GitHub", "error", err)
 			return err
 		}
+	}
 
-		// 4. Clean up the Local Comments GitHub now has
-		for _, id := range reviewCommentIDs {
-			if err := config.C().DB.DeleteLocalComment(viewer, id); err != nil {
-				slog.Error("Error deleting local comment after submission", "id", id, "error", err)
-			}
+	// 4. Clean up the Local Comments GitHub now has, and the empty ones
+	for _, id := range append(reviewCommentIDs, emptyIDs...) {
+		if err := config.C().DB.DeleteLocalComment(viewer, id); err != nil {
+			slog.Error("Error deleting local comment after submission", "id", id, "error", err)
 		}
 	}
 
@@ -802,7 +813,7 @@ type MergePRReply struct {
 // not specify one. We deliberately do not second-guess merge state here:
 // clients should rely on `merged` and `message` from the response.
 func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
-	client, err := h.writeClientFor(h.viewer(), writeMerge)
+	identity, err := h.writeClientFor(h.viewer(), writeMerge)
 	if err != nil {
 		return err
 	}
@@ -811,8 +822,11 @@ func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
 		method = "squash"
 	}
 
-	result, err := git_tools.MergePR(client, args.Owner, args.Repo, args.Number, method)
+	result, err := git_tools.MergePR(identity.client, args.Owner, args.Repo, args.Number, method)
 	if err != nil {
+		if refusal := identity.refused(err); refusal != nil {
+			return refusal
+		}
 		slog.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
 		if result != nil {
 			reply.Merged = result.GetMerged()

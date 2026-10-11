@@ -10,6 +10,7 @@ import {
     LspSessionPool,
     startLspServer,
 } from './lsp_pool';
+import { RemoteRpcClient, type RemoteSettings, remoteSettingsFromEnv } from './remote_rpc';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -150,7 +151,22 @@ class RpcBridge {
     }
 }
 
-const bridge = new RpcBridge();
+// CRS_REMOTE=host:port connects to a hosted `crs --listen` instead of
+// spawning crs, authenticating as this user (remote_rpc.ts). Unset, the
+// bridge runs its own crs as it always has.
+let remote: RemoteSettings | null;
+try {
+    remote = remoteSettingsFromEnv();
+} catch (e) {
+    console.error(`[RpcBridge] ${e instanceof Error ? e.message : e}`);
+    process.exit(1);
+}
+if (remote) {
+    console.log(
+        `[RpcBridge] Remote mode: crs at ${remote.address}${remote.tls ? ' over TLS' : ''}`
+    );
+}
+const bridge: Pick<RpcBridge, 'call'> = remote ? new RemoteRpcClient(remote) : new RpcBridge();
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -420,7 +436,12 @@ Bun.serve<{
                 }
                 const file = Bun.file(image.path);
                 if (!(await file.exists())) {
-                    console.error(`[Image] cached file is gone: ${image.path}`);
+                    // A remote server caches on its own host, out of reach.
+                    console.error(
+                        remote
+                            ? `[Image] ${image.path} is on the crs host, which remote mode can't read`
+                            : `[Image] cached file is gone: ${image.path}`
+                    );
                     return new Response('Image unavailable', {
                         status: 502,
                         headers: CORS_HEADERS,

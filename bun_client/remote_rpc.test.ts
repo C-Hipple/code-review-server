@@ -223,7 +223,8 @@ describe('RemoteRpcClient connect flow', () => {
             Token: '',
             ...USER_PAYLOAD,
         });
-        const token = server.users.get('octocat')?.token;
+        const token = server.users.get('octocat')?.token ?? '';
+        expect(token).toStartWith('crs_');
         expect(readToken(settings)).toBe(token);
         expect(statSync(settings.tokenFile).mode & 0o777).toBe(0o600);
     });

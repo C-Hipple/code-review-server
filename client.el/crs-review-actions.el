@@ -65,9 +65,13 @@ refetched it once the review was in."
     (remhash ref crs--review-submits)
     (if err
         ;; Nothing went out: the feedback and the pending comments are left
-        ;; as they were, ready to submit again.
-        (message "Review on %s was not submitted: %s"
-                 ref (if (stringp err) err (cdr (assq 'message err))))
+        ;; as they were, ready to submit again.  A shared server that needs
+        ;; the reviewer's own GitHub account says so; linking it is the fix.
+        (let ((text (if (stringp err) err (cdr (assq 'message err)))))
+          (message "Review on %s was not submitted: %s%s" ref text
+                   (if (crs--link-github-refusal-p text)
+                       ".  Your feedback is kept: link your GitHub account with M-x crs-link-github, then submit again"
+                     "")))
       (message "%s" (crs--review-submitted-message
                      event ref (cdr (assq 'failed_replies result))))
       (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))

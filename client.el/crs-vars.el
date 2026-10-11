@@ -88,8 +88,28 @@ client needs no TOML parser.  Any command printing that object works."
   :type '(repeat string)
   :group 'crs)
 
+(defcustom crs-link-github-browse t
+  "When non-nil, `crs-link-github' opens GitHub's code page with `browse-url'.
+Turn it off where Emacs has no browser to hand; the page and the code
+are shown in a buffer either way."
+  :type 'boolean
+  :group 'crs)
+
 (defvar crs--remote-ready nil
   "Non-nil once the connection to `crs-remote-address' is authenticated.")
+
+(defvar crs--remote-session nil
+  "Who the last connect flow signed in as, from its Authenticate or
+RegisterUser reply: an alist with `login', `is_admin', `github_linked'
+and `github_link_available'.  Nil until a flow succeeds.")
+
+(defvar crs--link-poll-timer nil
+  "Timer polling GetGitHubLink while a GitHub link is pending, or nil.")
+
+(defvar crs--link-pending nil
+  "The GitHub link `crs-link-github' is waiting on, or nil.
+A plist with :code, :uri, :expires (an RFC 3339 string) and :interval
+\(seconds between polls), from the StartGitHubLink reply.")
 
 (defvar crs--remote-queue nil
   "Requests waiting for the remote connect flow, newest first.

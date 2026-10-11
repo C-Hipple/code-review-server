@@ -43,6 +43,7 @@
                 crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
                 crs-ai-list-features crs-quit-ai-output
                 crs-show-change-diagram
+                crs-link-github crs-unlink-github crs-github-link-status
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -1148,6 +1149,174 @@ Binds `sent', `warnings' and `dir' (holding the token file and config)."
 (defun crs-test--answer (request reply)
   "Answer REQUEST, an entry of `sent', with REPLY."
   (funcall (nth 2 request) reply))
+
+(ert-deftest crs-test-remote-ready-suggests-linking-github ()
+  "Connecting to a server that can link GitHub accounts, unlinked, says how to link."
+  (crs-test--with-remote
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (crs--remote-ready "octocat" '((okay . t) (github_linked . :json-false)
+                                       (github_link_available . t)))
+        (should (equal (car messages)
+                       (concat "Connected to crs at crs.test:7700 as octocat; link your GitHub"
+                               " account with M-x crs-link-github to submit reviews as yourself")))
+        (should (equal crs--remote-session
+                       '((login . "octocat") (is_admin . nil) (github_linked . nil)
+                         (github_link_available . t))))
+        ;; Linked already, or a server that cannot link: nothing to suggest.
+        (crs--remote-ready "octocat" '((github_linked . t) (github_link_available . t)))
+        (should (equal (car messages) "Connected to crs at crs.test:7700 as octocat"))
+        (crs--remote-ready "octocat" '((github_link_available . :json-false)))
+        (should (equal (car messages) "Connected to crs at crs.test:7700 as octocat"))))))
+
+;;; --- Linking a GitHub account ---
+
+(defconst crs-test--link-started
+  '((okay . t) (status . "pending") (user_code . "WDJB-MJHT")
+    (verification_uri . "https://github.com/login/device")
+    (expires_at . "2099-01-01T17:05:00Z") (interval . 5)
+    (message . "Enter WDJB-MJHT at https://github.com/login/device"))
+  "A StartGitHubLink reply with a code waiting to be entered.")
+
+(defmacro crs-test--with-link (&rest body)
+  "Run BODY on a stubbed shared server, linking a GitHub account.
+Binds `sent' and `events' as `crs-test--with-held-rpc' does, `browsed' to
+the URLs opened and `timers' to the (SECONDS . FUNCTION) scheduled, most
+recent first."
+  (declare (indent 0))
+  `(let ((crs-remote-address "crs.test:7700")
+         (crs-link-github-browse t)
+         (crs--remote-session '((login . "octocat")))
+         (crs--link-poll-timer nil)
+         (crs--link-pending nil)
+         (kill-ring nil)
+         (kill-ring-yank-pointer nil)
+         (browsed nil)
+         (timers nil))
+     (unwind-protect
+         (crs-test--with-held-rpc
+           (cl-letf (((symbol-function 'browse-url) (lambda (url &rest _) (push url browsed)))
+                     ((symbol-function 'display-buffer) #'ignore)
+                     ((symbol-function 'run-with-timer)
+                      (lambda (secs _repeat fn &rest _) (push (cons secs fn) timers) 'crs-test-timer)))
+             ,@body))
+       (when (get-buffer crs--link-buffer-name)
+         (kill-buffer crs--link-buffer-name)))))
+
+(ert-deftest crs-test-link-github-shows-the-code-and-polls-until-linked ()
+  "Linking shows and copies the code, opens GitHub, and polls until GitHub answers."
+  (crs-test--with-link
+    (crs-link-github)
+    (should (equal (mapcar #'car sent) '("RPCHandler.StartGitHubLink")))
+    (crs-test--answer (car sent) crs-test--link-started)
+    (should (equal (current-kill 0) "WDJB-MJHT"))
+    (should (equal browsed '("https://github.com/login/device")))
+    (should (equal (cdar events)
+                   "Enter WDJB-MJHT at https://github.com/login/device (copied to the kill ring); waiting for GitHub..."))
+    (with-current-buffer crs--link-buffer-name
+      (should (string-match-p "Enter the code   WDJB-MJHT" (buffer-string)))
+      (should (string-match-p "signed in to GitHub as octocat" (buffer-string)))
+      (should (string-match-p "Waiting for GitHub\\.\\.\\." (buffer-string))))
+    ;; Polls at the server's interval, while the link is pending.
+    (should (equal (mapcar #'car timers) '(5)))
+    (funcall (cdar timers))
+    (should (equal (caar sent) "RPCHandler.GetGitHubLink"))
+    (crs-test--answer (car sent) '((okay . t) (status . "pending")))
+    (should (= (length timers) 2))
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((okay . t) (status . "linked") (github_login . "octocat")))
+    (should (equal (cdar events) "Linked to GitHub as octocat: your reviews now go out as you"))
+    (with-current-buffer crs--link-buffer-name
+      (should (string-match-p "Linked to GitHub as octocat" (buffer-string))))
+    ;; Done: nothing more is scheduled.
+    (should (= (length timers) 2))
+    (should-not crs--link-pending)
+    (should (eq (alist-get 'github_linked crs--remote-session) t))))
+
+(ert-deftest crs-test-link-github-reports-a-declined-link ()
+  "A link that ends without linking says how, and how to try again."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent) crs-test--link-started)
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((okay . t) (status . "denied")
+                                   (message . "The authorization was declined on GitHub")))
+    (should (equal (cdar events)
+                   (concat "The authorization was declined on GitHub, so nothing was linked;"
+                           " M-x crs-link-github to try again")))
+    (should (= (length timers) 1))
+    (should-not crs--link-pending)))
+
+(ert-deftest crs-test-link-github-on-a-server-that-cannot-link ()
+  "A server that cannot link says so, with no code, no browser and no polling."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent)
+                      '((okay . :json-false) (status . "unavailable")
+                        (message . "This server has no GitHubOAuthClientID configured")))
+    (should (equal (cdar events)
+                   "This server can't link GitHub accounts: This server has no GitHubOAuthClientID configured"))
+    (should-not browsed)
+    (should-not timers)
+    (should-not kill-ring)))
+
+(ert-deftest crs-test-link-github-keeps-polling-through-a-dropped-connection ()
+  "A poll that fails is tried again at the next interval; the server keeps the link."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent) crs-test--link-started)
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((error . "The connection to crs at crs.test:7700 was lost")))
+    (should (= (length timers) 2))
+    (should crs--link-pending)))
+
+(ert-deftest crs-test-link-github-needs-a-shared-server ()
+  "Locally there is nothing to link: crs writes with your own token."
+  (let ((crs-remote-address nil))
+    (should-error (crs-link-github) :type 'user-error)
+    (should-error (crs-unlink-github) :type 'user-error)
+    (should-error (crs-github-link-status) :type 'user-error)))
+
+(ert-deftest crs-test-unlink-github ()
+  "Unlinking asks first, and reports the server's answer."
+  (crs-test--with-link
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+      (crs-unlink-github))
+    (should-not sent)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (crs-unlink-github))
+    (should (equal (caar sent) "RPCHandler.UnlinkGitHub"))
+    (crs-test--answer (car sent) '((okay . t) (message . "Unlinked your GitHub account")))
+    (should (equal (cdar events) "Unlinked your GitHub account"))))
+
+(ert-deftest crs-test-github-link-status ()
+  "The status command says where the link stands."
+  (should (equal (crs--link-status-text '((status . "linked") (github_login . "octocat")))
+                 "GitHub: linked as octocat; your reviews go out as you"))
+  (should (equal (crs--link-status-text '((status . "unlinked")))
+                 "GitHub: not linked; M-x crs-link-github links your account so your reviews go out as you"))
+  (should (equal (crs--link-status-text '((status . "pending") (user_code . "WDJB-MJHT")
+                                          (verification_uri . "https://github.com/login/device")))
+                 "GitHub: waiting for WDJB-MJHT to be entered at https://github.com/login/device"))
+  (should (equal (crs--link-status-text '((error . "not authenticated: no session")))
+                 "Could not read your GitHub link: not authenticated: no session")))
+
+(ert-deftest crs-test-submit-review-refused-until-github-is-linked ()
+  "A submit refused for want of a linked GitHub account says how to link it."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "APPROVE"))
+      (funcall (nth 2 (car sent))
+               '((error . "refused: link-github: link your GitHub account to submit reviews as yourself")))
+      (should (equal (car events)
+                     (cons 'message
+                           (concat "Review on acme/widgets #42 was not submitted: refused: link-github:"
+                                   " link your GitHub account to submit reviews as yourself.  Your"
+                                   " feedback is kept: link your GitHub account with M-x"
+                                   " crs-link-github, then submit again"))))
+      (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it")))))
 
 (ert-deftest crs-test-remote-parse-address ()
   "`crs-remote-address' is host:port, the host maybe a bracketed IPv6 address."

@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'json)
+(require 'parse-time)
 (require 'crs-vars)
 
 ;;;###autoload
@@ -366,7 +367,7 @@ what went wrong when it fails."
              (crs--remote-fail (format "%s answered Authenticate with an error: %s"
                                        (crs--remote-where) err)))
             ((eq (cdr (assq 'okay reply)) t)
-             (crs--remote-ready (cdr (assq 'login reply))))
+             (crs--remote-ready (cdr (assq 'login reply)) reply))
             ((eq (cdr (assq 'known reply)) t)
              (crs--remote-fail (format "%s refused the token from %s: %s"
                                        (crs--remote-where) source
@@ -463,14 +464,27 @@ what went wrong when it fails."
                (if (eq (cdr (assq 'created reply)) t) "Registered" "Re-registered")
                (crs--remote-where) (or (cdr (assq 'login reply)) login)
                crs-remote-token-file)
-      (crs--remote-ready (cdr (assq 'login reply)))))))
+      (crs--remote-ready (or (crs--non-empty (cdr (assq 'login reply))) login) reply)))))
 
-(defun crs--remote-ready (login)
-  "Mark the connection authenticated as LOGIN and send what waited for it."
+(defun crs--remote-ready (login &optional reply)
+  "Mark the connection authenticated as LOGIN and send what waited for it.
+REPLY is the Authenticate or RegisterUser reply that signed it in, whose
+GitHub link flags are kept in `crs--remote-session'."
   (setq crs--remote-ready t
-        crs--remote-last-error nil)
-  (message "Connected to %s%s" (crs--remote-where)
-           (if (crs--non-empty login) (format " as %s" login) ""))
+        crs--remote-last-error nil
+        crs--remote-session
+        (list (cons 'login (or login ""))
+              (cons 'is_admin (eq (cdr (assq 'is_admin reply)) t))
+              (cons 'github_linked (eq (cdr (assq 'github_linked reply)) t))
+              (cons 'github_link_available
+                    (eq (cdr (assq 'github_link_available reply)) t))))
+  (message "Connected to %s%s%s" (crs--remote-where)
+           (if (crs--non-empty login) (format " as %s" login) "")
+           ;; Reviews are refused until then, so say so up front.
+           (if (and (cdr (assq 'github_link_available crs--remote-session))
+                    (not (cdr (assq 'github_linked crs--remote-session))))
+               "; link your GitHub account with M-x crs-link-github to submit reviews as yourself"
+             ""))
   (let ((queued (reverse crs--remote-queue)))
     (setq crs--remote-queue nil)
     (dolist (request queued)
@@ -529,6 +543,221 @@ EVENT says how it closed.  The next request reconnects."
                           (crs--remote-where) (string-trim event))))
       (message "%s" reason)
       (crs--remote-drop reason))))
+
+;;; Linking a GitHub account
+;;
+;; On a shared server, a review goes to GitHub as the reviewer's own
+;; account once they link it, and is refused with "refused: link-github:"
+;; until then (docs/protocol.md).  Linking is GitHub's device flow:
+;; `crs-link-github' asks the server for a code, shows it, copies it to the
+;; kill ring and opens the page to enter it on, then polls GetGitHubLink at
+;; the interval the server gives until the link ends.  The server does the
+;; rest; nothing here holds a GitHub token.
+
+(defconst crs--link-buffer-name "*crs GitHub link*"
+  "Buffer `crs-link-github' shows the code in.")
+
+(defconst crs--link-github-refusal "refused: link-github:"
+  "Prefix of a refusal that linking a GitHub account answers.")
+
+(defun crs--link-github-refusal-p (err)
+  "Non-nil when ERR, an error message, is answered by linking a GitHub account."
+  (and (stringp err) (string-prefix-p crs--link-github-refusal err)))
+
+(defun crs--link-require-remote (what)
+  "Signal a `user-error' saying WHAT is for a shared server, unless this is one."
+  (unless crs-remote-address
+    (user-error "%s is for a shared server (`crs-remote-address'); run locally, crs writes to GitHub with your own token"
+                what)))
+
+(defun crs--link-stop-polling ()
+  "Stop waiting on a GitHub link."
+  (when (timerp crs--link-poll-timer)
+    (cancel-timer crs--link-poll-timer))
+  (setq crs--link-poll-timer nil
+        crs--link-pending nil))
+
+(defun crs--link-time (rfc3339)
+  "RFC3339 as a local time of day, \"17:05\", or nil when unreadable."
+  (when (crs--non-empty rfc3339)
+    (condition-case nil
+        (format-time-string "%H:%M" (parse-iso8601-time-string rfc3339))
+      (error nil))))
+
+(defun crs--link-render (status)
+  "Show the pending link's code in its buffer, with STATUS as the last line."
+  (let ((code (plist-get crs--link-pending :code))
+        (uri (plist-get crs--link-pending :uri))
+        (expires (crs--link-time (plist-get crs--link-pending :expires)))
+        (login (crs--non-empty (cdr (assq 'login crs--remote-session)))))
+    (with-current-buffer (get-buffer-create crs--link-buffer-name)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Link your GitHub account to %s\n\n" (crs--remote-where)))
+        (when code
+          (insert (format "  1. Open %s%s\n" uri
+                          (if crs-link-github-browse "  (opened in your browser)" "")))
+          (insert "  2. Enter the code   ")
+          (insert (propertize code 'face '(:weight bold :height 1.5)))
+          (insert "   (copied to the kill ring)\n")
+          (insert (format "  3. Authorize the app, signed in to GitHub%s.\n"
+                          (if login (format " as %s" login) "")))
+          (when expires
+            (insert (format "\nThe code expires at %s.\n" expires))))
+        (insert "\n" status "\n"))
+      (special-mode))))
+
+(defun crs--link-outcome (reply)
+  "How the GetGitHubLink or StartGitHubLink REPLY of an ended link reads."
+  (let ((status (cdr (assq 'status reply)))
+        (text (or (crs--non-empty (cdr (assq 'message reply))) "no reason given")))
+    (pcase status
+      ("linked"
+       (format "Linked to GitHub as %s: your reviews now go out as you"
+               (cdr (assq 'github_login reply))))
+      ("denied"
+       "The authorization was declined on GitHub, so nothing was linked; M-x crs-link-github to try again")
+      ("expired"
+       "The code expired before it was entered on GitHub; M-x crs-link-github for a new one")
+      ("unavailable" (format "This server can't link GitHub accounts: %s" text))
+      ("unlinked" "The link was cancelled; M-x crs-link-github to start again")
+      (_ (format "%s; M-x crs-link-github to try again" text)))))
+
+(defun crs--link-finish (reply)
+  "Report the ended link REPLY describes and stop waiting on it."
+  (let ((outcome (crs--link-outcome reply)))
+    (when (get-buffer crs--link-buffer-name)
+      (crs--link-render outcome))
+    (crs--link-stop-polling)
+    (when (equal (cdr (assq 'status reply)) "linked")
+      (setf (alist-get 'github_linked crs--remote-session) t))
+    (message "%s" outcome)))
+
+;;;###autoload
+(defun crs-link-github ()
+  "Link your GitHub account on the shared server, so reviews go out as you.
+A shared server submits reviews as the reviewer's own GitHub account, and
+refuses them until it is linked.  This asks the server for a code, shows
+it in a buffer, copies it to the kill ring and opens the page to enter it
+on (see `crs-link-github-browse'); enter it there, signed in to GitHub as
+the login you registered with, and authorize the app.  The outcome is
+reported in the echo area once GitHub has answered.
+
+Running it again while a code is waiting shows the same code."
+  (interactive)
+  (crs--link-require-remote "Linking a GitHub account")
+  (crs--link-stop-polling)
+  (message "Asking %s for a GitHub code..." (crs--remote-where))
+  (crs--send-request "RPCHandler.StartGitHubLink" (vector) #'crs--link-started))
+
+(defun crs--link-started (reply)
+  "Show the code in the StartGitHubLink REPLY and start polling for the link."
+  (let ((err (crs--remote-reply-error reply)))
+    (cond
+     (err (message "Could not start linking your GitHub account: %s" err))
+     ((not (equal (cdr (assq 'status reply)) "pending"))
+      (crs--link-finish reply))
+     (t
+      (let ((code (cdr (assq 'user_code reply)))
+            (uri (cdr (assq 'verification_uri reply))))
+        (setq crs--link-pending
+              (list :code code :uri uri
+                    :expires (cdr (assq 'expires_at reply))
+                    :interval (cdr (assq 'interval reply))))
+        (kill-new code)
+        (crs--link-render "Waiting for GitHub...")
+        (display-buffer crs--link-buffer-name)
+        (when crs-link-github-browse
+          (condition-case err
+              (browse-url uri)
+            (error (message "Could not open %s: %s" uri (error-message-string err)))))
+        (message "Enter %s at %s (copied to the kill ring); waiting for GitHub..." code uri)
+        (crs--link-schedule-poll))))))
+
+(defun crs--link-schedule-poll ()
+  "Poll for the pending link after the interval the server gave."
+  (let ((interval (plist-get crs--link-pending :interval)))
+    (setq crs--link-poll-timer
+          (run-with-timer (if (and (numberp interval) (> interval 0)) (max 1 interval) 5)
+                          nil #'crs--link-poll))))
+
+(defun crs--link-expired-p ()
+  "Non-nil once the pending link's code has expired."
+  (let ((expires (plist-get crs--link-pending :expires)))
+    (and (crs--non-empty expires)
+         (ignore-errors
+           (time-less-p (parse-iso8601-time-string expires) (current-time))))))
+
+(defun crs--link-poll ()
+  "Ask the server where the pending link stands."
+  (setq crs--link-poll-timer nil)
+  (when crs--link-pending
+    (condition-case err
+        (crs--send-request "RPCHandler.GetGitHubLink" (vector) #'crs--link-polled)
+      (error (crs--link-poll-failed (error-message-string err))))))
+
+(defun crs--link-polled (reply)
+  "Handle a GetGitHubLink REPLY while a link is pending."
+  (let ((err (crs--remote-reply-error reply)))
+    (cond
+     ((null crs--link-pending))         ; Stopped meanwhile.
+     (err (crs--link-poll-failed err))
+     ((equal (cdr (assq 'status reply)) "pending") (crs--link-schedule-poll))
+     (t (crs--link-finish reply)))))
+
+(defun crs--link-poll-failed (reason)
+  "Keep polling after a poll failed for REASON, until the code expires.
+The server carries on with the link meanwhile; a dropped connection is
+reopened by the next poll."
+  (if (crs--link-expired-p)
+      (progn
+        (crs--link-stop-polling)
+        (message "Stopped waiting for the GitHub link (%s); M-x crs-github-link-status shows where it stands"
+                 reason))
+    (crs--link-schedule-poll)))
+
+;;;###autoload
+(defun crs-unlink-github ()
+  "Unlink your GitHub account from the shared server.
+Your reviews stop going out as you: the server refuses them until you
+link again, or sends them as its own account where it is set up to."
+  (interactive)
+  (crs--link-require-remote "Unlinking a GitHub account")
+  (when (y-or-n-p (format "Unlink your GitHub account from %s? " (crs--remote-where)))
+    (crs--link-stop-polling)
+    (crs--send-request
+     "RPCHandler.UnlinkGitHub" (vector)
+     (lambda (reply)
+       (let ((err (crs--remote-reply-error reply)))
+         (if err
+             (message "Could not unlink your GitHub account: %s" err)
+           (setf (alist-get 'github_linked crs--remote-session) nil)
+           (message "%s" (cdr (assq 'message reply)))))))))
+
+(defun crs--link-status-text (reply)
+  "The GetGitHubLink REPLY, as `crs-github-link-status' reports it."
+  (let ((err (crs--remote-reply-error reply))
+        (status (cdr (assq 'status reply)))
+        (text (cdr (assq 'message reply))))
+    (cond
+     (err (format "Could not read your GitHub link: %s" err))
+     ((equal status "linked")
+      (format "GitHub: linked as %s; your reviews go out as you" (cdr (assq 'github_login reply))))
+     ((equal status "unlinked")
+      "GitHub: not linked; M-x crs-link-github links your account so your reviews go out as you")
+     ((equal status "pending")
+      (format "GitHub: waiting for %s to be entered at %s"
+              (cdr (assq 'user_code reply)) (cdr (assq 'verification_uri reply))))
+     ((equal status "unavailable") (format "GitHub: this server can't link accounts (%s)" text))
+     (t (format "GitHub: %s; M-x crs-link-github to try again" text)))))
+
+;;;###autoload
+(defun crs-github-link-status ()
+  "Say whether your GitHub account is linked on the shared server."
+  (interactive)
+  (crs--link-require-remote "A GitHub link")
+  (crs--send-request "RPCHandler.GetGitHubLink" (vector)
+                     (lambda (reply) (message "%s" (crs--link-status-text reply)))))
 
 (defun crs-list-plugins ()
   "Call the ListPlugins RPC method and store the result in `crs-plugins`."

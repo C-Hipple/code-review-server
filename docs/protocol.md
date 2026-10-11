@@ -67,7 +67,7 @@ Within the methods an authenticated connection may call:
 
 - `SkipCache: true` on `GetPR` / `GetAdjacentPR` needs an administrator; `SyncPR` is how a user refreshes a PR.
 - `SubmitReview` and `MergePR` go out as the user's own GitHub account once it is [linked](#linking-a-github-account). Without a link they are refused (`refused: link-github:` where the server can link accounts, `refused:` otherwise) unless the server sets `AllowServerIdentityActions`; with it set they go out as the server's account, and `MergePR` then needs an administrator (`permission denied:`).
-- `StartGitHubLink`, `GetGitHubLink` and `UnlinkGitHub` answer the administrator token's session with `okay: false`: it is the server's own identity and has no account to link.
+- `StartGitHubLink`, `GetGitHubLink` and `UnlinkGitHub` answer the administrator token's session with `okay: false`: it is the server's own identity and has no account to link. So does the local stdio connection, which writes with the server's token.
 - `GetHunkContext` takes only a bare repository name as `Repo`.
 
 `Hello` answers before authenticating, with `Count: 0`.
@@ -240,7 +240,7 @@ The server stores the token only once GitHub confirms it belongs to the register
 
 | Status | Meaning |
 |--------|---------|
-| `unavailable` | This server cannot link accounts (no `GitHubOAuthClientID`, or no valid `CRS_SECRET_KEY`), or the connection is the administrator token's |
+| `unavailable` | This server cannot link accounts (no `GitHubOAuthClientID`, or no valid `CRS_SECRET_KEY`), or the connection is the administrator token's or the local stdio one |
 | `unlinked` | No account is linked |
 | `pending` | A device flow is waiting for the user to enter `user_code` |
 | `linked` | An account is linked; `github_login` says which |
@@ -305,7 +305,7 @@ Deletes the connection's user's stored GitHub credential and cancels a link in p
 **Reply** (`UnlinkGitHubReply`):
 | Field     | Type   | Description |
 |-----------|--------|-------------|
-| `okay`    | bool   | `true` once nothing is linked (also when nothing was); `false` for the administrator token's connection |
+| `okay`    | bool   | `true` once nothing is linked (also when nothing was); `false` for the administrator token's connection and the local stdio one |
 | `message` | string | Human-readable outcome, including whether the token was revoked on GitHub |
 
 ---

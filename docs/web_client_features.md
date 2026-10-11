@@ -33,6 +33,8 @@ With `CRS_REMOTE=host:port` set, the bridge connects to a shared `crs --listen`
 over TCP instead of spawning one, and authenticates each connection before
 forwarding anything (`remote_rpc.ts`; see
 [Connecting to a shared server](clients.md#connecting-to-a-shared-server)).
+What the UI does differently there is in
+[3.18](#318-shared-server-account-linking-and-refusals-accountpaneltsx-linkgithubdialogtsx-sessionts).
 
 **`server.ts`** — a Bun HTTP + WebSocket server (default port `5172`, override with
 `CRS_PORT`). Responsibilities:
@@ -106,6 +108,9 @@ status 500).
 | `/api/get-hunk-context` | `RPCHandler.GetHunkContext` | |
 | `/api/get-config` | `RPCHandler.GetConfig` | `GET` or `POST` |
 | `/api/update-config` | `RPCHandler.UpdateConfig` | |
+| `/api/start-github-link` | `RPCHandler.StartGitHubLink` | No body; sends `{}` |
+| `/api/get-github-link` | `RPCHandler.GetGitHubLink` | `GET` or `POST`; sends `{}` |
+| `/api/unlink-github` | `RPCHandler.UnlinkGitHub` | No body; sends `{}` |
 | `/api/rpc` | *any* | Generic escape hatch: `{ method, params, id }` |
 
 The frontend's `api.ts` routes known methods to their specialized path and falls back
@@ -120,7 +125,8 @@ browser cannot. Reproduce them if you want the corresponding features.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/github-image?url=` | Serves a GitHub-hosted image embedded in a comment or review. The bridge does not fetch it: it calls `GetImage`, which downloads with the server's token and caches, and streams back the file that comes out. Only `github.com` and `*.githubusercontent.com` are accepted. |
+| `GET /api/github-image?url=` | Serves a GitHub-hosted image embedded in a comment or review. The bridge does not fetch it: it calls `GetImage`, which downloads with the server's token and caches, and streams back the file that comes out — or, in remote mode, where that file is on the server's machine, the bytes it asks for with `IncludeData` (`github_images.ts`). Only `github.com` and `*.githubusercontent.com` are accepted. |
+| `GET /api/session` | Who the bridge is connected as: `{remote: false}` locally; in remote mode the `address`, `login` (`""` for the admin token), `is_admin`, `github_linked` and `github_link_available`, re-read from `GetMyWorkflows` on each call, with an `error` when the server can't be reached. |
 | `POST /api/read-file` | Read a file from disk. Accepts an absolute `filePath`, or `repoPath` + relative `filePath` (rejects paths that escape `repoPath`). Powers the code viewer. |
 | `POST /api/list-files` | Recursive file listing under `repoPath`, skipping `node_modules`, `.git`, `.next`, `dist`. Powers the code viewer's file tree. |
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
@@ -398,7 +404,8 @@ markdown is not just markdown:
   cross-site image load — so a direct `<img src>` renders broken for everyone on
   the team. The Go server downloads them with its token and caches them under
   `$CRS_HOME/images`, which is also what lets the Emacs client render the same
-  screenshots; the bridge just serves the cached file. If that fails the page
+  screenshots; the bridge just serves the cached file — or, connected to a shared
+  server, the bytes `GetImage` sends with `IncludeData`. If that fails the page
   retries the original URL, which still works for public repositories.
 - **Sizing and clicks**: GitHub stamps the screenshot's natural size (often ~1900px)
   onto the tag, so images are clamped to the card width; clicking one opens the
@@ -413,6 +420,12 @@ markdown is not just markdown:
 - After `SubmitReview` succeeds, the client immediately runs a `SyncPR` to pick up the
   server-side state (local comments are gone, the review is on GitHub, section
   membership may have changed).
+- The preview's verdict line names the reviewer: the config's `GithubUsername`
+  locally, the session's login on a shared server, whose config only its
+  administrators may read.
+- A submit a shared server refuses keeps the draft: `refused: link-github:` opens the
+  link dialog, a plain `refused:` shows a toast (see
+  [3.18](#318-shared-server-account-linking-and-refusals-accountpaneltsx-linkgithubdialogtsx-sessionts)).
 
 ### 3.8 Sync
 
@@ -503,7 +516,9 @@ Optional, and degrades cleanly when the binaries or the local clone aren't there
 ### 3.13 Server configuration editor (`ConfigManager.tsx`, `config_utils.ts`)
 
 A full editor for `~/.config/codereviewserver.toml`, in the Preferences → Server
-Configuration tab. Built on `GetConfig` / `UpdateConfig`.
+Configuration tab. Built on `GetConfig` / `UpdateConfig`. On a shared server both are
+for administrators: a `permission denied:` reply shows a note saying so in place of
+the editor, with no Retry.
 
 - Global settings: repos, sync interval, GitHub username, repo location, Jira domain,
   auto-worktree, desktop notifications.
@@ -631,6 +646,37 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   diagram inline in its card.
 - **Any other feature** renders its markdown `body` with `PluginBodyView`.
 
+### 3.18 Shared server: account, linking and refusals (`AccountPanel.tsx`, `LinkGitHubDialog.tsx`, `session.ts`)
+
+Only in remote mode (`/api/session` says `remote: true`); locally none of this shows.
+User-facing behavior is in
+[Connecting to a shared server](clients.md#connecting-to-a-shared-server).
+
+- **Session** — `session.ts` holds the `/api/session` reply for every component
+  (`useBridgeSession`), and re-reads it after a link is made or removed, or a write is
+  refused because the link stopped working. Reads apply in the order they started.
+- **Account chip** — in the header: the login, with a dot green when the GitHub
+  account is linked, amber when it isn't yet, grey when the server can't link. It
+  opens Preferences on the **Account** tab, which only a remote bridge has: server
+  and login, an Administrator badge, and the link state from `GetGitHubLink` with
+  Link / Continue linking / Unlink (Unlink asks first).
+- **Link dialog** — `StartGitHubLink`, then the user code (large, with a Copy button
+  that falls back to "Select it to copy" outside a secure context), a link to the
+  `verification_uri`, the expiry time, and a poll of `GetGitHubLink` every `interval`
+  seconds (at least one) until the status leaves `pending`. A failed poll keeps
+  polling and says the server is unreachable. Closing the dialog stops polling only;
+  reopening it gets the same code back. Ended links read as `linkOutcome` maps them
+  (`github_link_utils.ts`): `linked` succeeds; `denied`, `expired`, `mismatch` and
+  `error` offer Try again, showing the server's `message` where it has one;
+  `unavailable` says to ask the administrator.
+- **Refusals** — `rpcRefusal` (`api.ts`) classifies an RPC error by prefix, most
+  specific first: `permission denied:` (the Server Configuration tab and plugin rerun
+  show an admin-only message), `refused: link-github:` (the review view opens the link
+  dialog with the reason, the draft kept, and **Submit again** once linked; a submit
+  that lands after the reviewer moved to another PR gets a toast pointing at the
+  account chip instead), and any other `refused:` (a long toast: submit on GitHub
+  instead; the draft is kept).
+
 ## 4. Protocol methods used — and not used
 
 Called by the current client:
@@ -638,7 +684,11 @@ Called by the current client:
 `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`,
 `DeleteComment`, `SetFeedback`, `SubmitReview`, `GetPluginOutput`, `RerunPlugins`,
 `GetHunkContext`, `GetConfig`, `UpdateConfig`, `ListAIFeatures`, `RunAIFeature`,
-`GetAIOutput`.
+`GetAIOutput`, `StartGitHubLink`, `GetGitHubLink`, `UnlinkGitHub`.
+
+Called by the bridge itself: `GetImage` (for `/api/github-image`), and in remote mode
+`Authenticate` / `RegisterUser` (the connect flow) and `GetMyWorkflows` (for
+`/api/session`'s link flags).
 
 Bridged in `server.ts` but not called by the UI: `RemovePRComments`, `ListPlugins`.
 

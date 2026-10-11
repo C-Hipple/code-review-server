@@ -219,10 +219,26 @@ Both clients keep the token in `$CRS_HOME/remote_token` (`~/.crs/remote_token`) 
 
 ### What is different on a shared server
 
-- **Admin-only actions.** Only the server's administrators can view or change its configuration, rerun plugins or merge. The web client's Server Configuration tab says so instead of showing the editor, and a refused rerun says so in a toast. An administrator connects with the server's admin token as their token and sees the server's own dashboard.
-- **Actions under the server's GitHub account.** Submitting a review (with its replies) goes out as the account whose token the server holds, so a shared server refuses it unless its administrator allows it (`AllowServerIdentityActions`). The client says so and keeps your draft; submit the review on GitHub instead.
-- **Paths on the server's host.** Anything that reads a file by its path works only where the same path exists on your machine: the language-server features of the web client (diff-lsp, and go-to-definition in the code viewer), the code viewer's file list, opening a file from an Emacs review, and the screenshots the server caches. Hunk expansion and everything else served over RPC work as usual.
+- **Admin-only actions.** Only the server's administrators can view or change its configuration or rerun plugins. The web client's Server Configuration tab says so instead of showing the editor, and a refused rerun says so in a toast. An administrator connects with the server's admin token as their token and sees the server's own dashboard.
+- **Writes go out as you, once you link your GitHub account.** Everything the server reads from GitHub — the dashboard, diffs, comments, CI — goes through its own token. A review you submit, with its replies (and a merge, from a client that merges), goes out as your own GitHub account once you have [linked it](#linking-your-github-account). Until then it goes out as the server's account if its administrator allows that (`AllowServerIdentityActions`; merging that way also takes an administrator), and is otherwise refused: with `refused: link-github:` where the server can link accounts, which the client answers by offering to link, or with a plain `refused:` where it can't, which is final — submit the review on GitHub instead. Either way your draft and pending comments are kept.
+- **Paths on the server's host.** Anything that reads a file by its path works only where the same path exists on your machine: the language-server features of the web client (diff-lsp, and go-to-definition in the code viewer), the code viewer's file list, and opening a file from an Emacs review. Hunk expansion and everything else served over RPC work as usual.
+- **Screenshots.** The web client asks the server for the bytes of each image it cached (`GetImage` with `IncludeData`), so screenshots render as they do locally, private repositories included. The Emacs client still opens the server's cached file by its path, so on another machine it leaves the image to `shr`, which can fetch a public repository's attachments but not a private one's.
 - **Team chips.** Which required-review teams the list marks as yours is worked out for the account whose token the server holds, not for you.
+
+### Linking your GitHub account
+
+Where the server's administrator has set linking up ([Hosted Server](hosted_server.md#linking-your-github-account)), you link your account once, through GitHub's device flow: the client shows a one-time code such as `WDJB-MJHT`, you enter it at <https://github.com/login/device> signed in to GitHub as the login you registered with, and authorize the app. Linking is optional — you can browse and draft without it — and the server keeps the link, so every client connected with your token posts as you. A link ends in one of:
+
+| Outcome | Meaning |
+|---------|---------|
+| linked | Your reviews now go to GitHub as you. |
+| denied | You declined the authorization on GitHub; nothing was linked. Try again. |
+| expired | The code (good for about fifteen minutes) wasn't entered in time. Try again for a new one. |
+| mismatch | GitHub authorized a different account than the login you registered with, so nothing was stored. Sign in to GitHub as that login and try again. |
+| error | Something else went wrong — GitHub refused the app, or the server could not store the link; the client shows the server's reason. Try again. |
+| unavailable | This server can't link accounts (no OAuth app or secret key configured), or you are connected with the admin token, which is the server's own identity. Ask its administrator. |
+
+Unlinking deletes the stored token (and revokes it on GitHub, where the server is set up to); your reviews are refused again until you link, or go out as the server's account where it allows that. If GitHub stops accepting your token — you revoked it, or it expired — the next submit is refused with `refused: link-github:` and you link again.
 
 ### Web client
 
@@ -246,6 +262,10 @@ cd bun_client && bun start
 
 The bridge logs the connect flow under `[Remote]`, including what to set when something it needs is missing. While the server is unreachable it retries with a growing delay (up to 30 seconds), and requests made between attempts fail at once with the reason rather than hang.
 
+Connected to a shared server, the header shows who you are signed in as, with a dot for your GitHub link — green linked, amber not linked yet, grey when the server can't link accounts. It opens the **Account** tab of Preferences, which says which server and login you are on (and whether you are an administrator), and where your GitHub link stands, with **Link GitHub account** or **Unlink** (which asks first). Linking opens a dialog with GitHub's code, a Copy button and a link to the page to enter it on; it waits for GitHub and says how the link ended. Closing it stops the waiting but not the link, and opening it again shows the same code.
+
+A submit refused with `refused: link-github:` opens the same dialog, saying why the review wasn't submitted, with your draft kept; once linked, **Submit again** sends it. A plain `refused:` says so in a toast and leaves the draft in place to take to GitHub. The submit dialog's preview names the login you are signed in as, since the server's configuration, where a local client reads `GithubUsername`, is for its administrators.
+
 ### Emacs client
 
 ```elisp
@@ -264,3 +284,13 @@ The bridge logs the connect flow under `[Remote]`, including what to set when so
 | `crs-remote-user-config-command` | `("crs" "-print-user-config")` | Prints what registering sends, read from your `codereviewserver.toml`, as JSON. Point it at any command printing the same object if `crs` isn't installed here. |
 
 `crs-start-server` connects instead of spawning, and the commands that start the server do the same. When the connection drops, the requests it owed get an error and the next command reconnects. A connect flow that fails says what to set in the `*Warnings*` buffer.
+
+Connecting says who you are signed in as, and reminds you to link your GitHub account while it isn't. Three commands handle the link:
+
+| Command | What it does |
+|---------|--------------|
+| `crs-link-github` | Asks the server for a code and shows it in a `*crs GitHub link*` buffer, copies it to the kill ring, and opens GitHub's code page with `browse-url` (unless `crs-link-github-browse` is `nil`). It then polls until GitHub answers and reports the outcome in the echo area. Run again while a code is waiting, it shows the same code. |
+| `crs-unlink-github` | Unlinks your account, after asking. |
+| `crs-github-link-status` | Says whether you are linked, and as which GitHub account. |
+
+A submit refused with `refused: link-github:` says to run `crs-link-github`; your feedback and pending comments are kept, so submit again once linked.

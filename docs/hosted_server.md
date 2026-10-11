@@ -149,7 +149,8 @@ own, and is never refused.
 
 ### Linking your GitHub account
 
-A user links their GitHub account once, from their client, through GitHub's
+A user links their GitHub account once, from their client
+([web or Emacs](clients.md#linking-your-github-account)), through GitHub's
 [device flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow):
 the client shows a code such as `WDJB-MJHT`, the user enters it at
 <https://github.com/login/device> while signed in to GitHub, and authorizes
@@ -263,8 +264,10 @@ These are known, and accepted for a server on an internal network:
   retention.
 - **Local paths are the server's.** A PR's `repo_path` and `worktree_path`
   are paths on the server's machine, so a remote client's language-server and
-  file features do not work against them. Images are the exception: a remote
-  client asks `GetImage` for an image's bytes (`IncludeData`) rather than
-  reading its `path`.
+  file features do not work against them. Images are the exception for the
+  web client, which asks `GetImage` for an image's bytes (`IncludeData`)
+  rather than reading its `path`; the Emacs client still reads the `path`, so
+  on another machine it shows only the images `shr` can fetch itself — a
+  public repository's, not a private one's.
 - **"Mine" is the token's account** (see above), so team chips highlight the
   server's login rather than the viewer's.

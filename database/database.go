@@ -158,7 +158,8 @@ func (db *DB) initSchema() error {
 	-- case-insensitive, like a GitHub login; the token itself is never stored,
 	-- only its hash. The JSON columns are the user's own SectionPriority,
 	-- SectionSorting and fallback Repos, the per-user counterparts of the
-	-- config file's keys.
+	-- config file's keys. github_token is the user's own GitHub credential,
+	-- sealed by the server (github_credentials.go); NULL until they link one.
 	CREATE TABLE IF NOT EXISTS users (
 		login TEXT PRIMARY KEY COLLATE NOCASE,
 		token_hash TEXT NOT NULL UNIQUE,

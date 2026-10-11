@@ -177,32 +177,64 @@ func (db *DB) TouchUser(login string, now time.Time) error {
 	return requireOneRow(res, err)
 }
 
+// DeletedUser is a user just deleted, and the sealed GitHub credential their
+// row held ("" if they had not linked one), which the server revokes on
+// GitHub: deleting the row only forgets the token, and GitHub would go on
+// honoring it.
+type DeletedUser struct {
+	Login            string
+	GitHubCredential string
+}
+
 // DeleteUser removes a user along with their workflows, drafts and feedback.
 // Their sections and items are deliberately left: once the user's workflows
 // are gone, nothing backs the items' ownership any more, so the workflow
 // cycle's release and prune pass removes them the way it removes a workflow
 // dropped from the config. Returns ErrNotFound when no user has that login.
 func (db *DB) DeleteUser(login string) error {
+	_, err := db.DeleteUserWithCredential(login)
+	return err
+}
+
+// DeleteUserWithCredential deletes a user as DeleteUser does and returns the
+// GitHub credential they held, read in the same transaction so a link stored
+// a moment before is not deleted unseen.
+func (db *DB) DeleteUserWithCredential(login string) (DeletedUser, error) {
 	tx, err := db.conn.Begin()
 	if err != nil {
-		return err
+		return DeletedUser{}, err
 	}
 	defer tx.Rollback()
 
 	canonical, err := canonicalLoginTx(tx, login)
 	if err != nil {
-		return err
+		return DeletedUser{}, err
 	}
-	if err := deleteUserTx(tx, canonical); err != nil {
-		return err
+	deleted, err := deleteUserTx(tx, canonical)
+	if err != nil {
+		return DeletedUser{}, err
 	}
-	return tx.Commit()
+	return deleted, tx.Commit()
 }
 
 // DeleteUsersIdleSince deletes, as DeleteUser does, every user last seen
 // before cutoff, and returns their logins. A user last seen exactly at cutoff
 // (to the second, the precision last_seen is stored at) is kept.
 func (db *DB) DeleteUsersIdleSince(cutoff time.Time) ([]string, error) {
+	deleted, err := db.DeleteUsersIdleSinceWithCredentials(cutoff)
+	if err != nil {
+		return nil, err
+	}
+	logins := make([]string, 0, len(deleted))
+	for _, d := range deleted {
+		logins = append(logins, d.Login)
+	}
+	return logins, nil
+}
+
+// DeleteUsersIdleSinceWithCredentials deletes the users DeleteUsersIdleSince
+// does and returns each with the GitHub credential they held, in login order.
+func (db *DB) DeleteUsersIdleSinceWithCredentials(cutoff time.Time) ([]DeletedUser, error) {
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return nil, err
@@ -230,32 +262,40 @@ func (db *DB) DeleteUsersIdleSince(cutoff time.Time) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	deleted := make([]DeletedUser, 0, len(logins))
 	for _, login := range logins {
-		if err := deleteUserTx(tx, login); err != nil {
+		d, err := deleteUserTx(tx, login)
+		if err != nil {
 			return nil, err
 		}
+		deleted = append(deleted, d)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return logins, nil
+	return deleted, nil
 }
 
-// deleteUserTx deletes a user by the login exactly as stored. Their
-// user_workflows rows go with them through the foreign key's cascade; their
-// drafts and feedback have no foreign key (local mode's rows have no user to
-// reference), so they are deleted here.
-func deleteUserTx(tx *sql.Tx, login string) error {
+// deleteUserTx deletes a user by the login exactly as stored, and returns
+// them with the GitHub credential the row held. Their user_workflows rows go
+// with them through the foreign key's cascade; their drafts and feedback have
+// no foreign key (local mode's rows have no user to reference), so they are
+// deleted here.
+func deleteUserTx(tx *sql.Tx, login string) (DeletedUser, error) {
+	var credential sql.NullString
+	if err := tx.QueryRow("SELECT github_token FROM users WHERE login = ?", login).Scan(&credential); err != nil {
+		return DeletedUser{}, err
+	}
 	for _, stmt := range []string{
 		"DELETE FROM LocalComment WHERE user_login = ?",
 		"DELETE FROM Feedback WHERE user_login = ?",
 		"DELETE FROM users WHERE login = ?",
 	} {
 		if _, err := tx.Exec(stmt, login); err != nil {
-			return err
+			return DeletedUser{}, err
 		}
 	}
-	return nil
+	return DeletedUser{Login: login, GitHubCredential: credential.String}, nil
 }
 
 // ReplaceUserWorkflows replaces a user's whole workflow list with workflows,

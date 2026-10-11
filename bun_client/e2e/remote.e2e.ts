@@ -97,8 +97,12 @@ test.describe('remote mode', () => {
             'RPCHandler.Authenticate',
             'RPCHandler.RegisterUser',
         ]);
+        // Whichever of the page's calls reached the server first was refused
+        // (the list and the AI feature list load at once); the list then went
+        // through on the re-registered session.
+        const [first] = await backend.calls();
+        expect(first.refused).toMatch(/^not authenticated: /);
         const reviews = await backend.calls('GetAllReviews');
-        expect(reviews[0].refused).toMatch(/^not authenticated: /);
         expect(reviews.at(-1)!.refused).toBeUndefined();
     });
 

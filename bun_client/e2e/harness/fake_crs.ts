@@ -10,15 +10,29 @@
 //
 // With `--listen host:port` it stands in for a hosted `crs --listen` instead:
 // the same methods over TCP, each connection a session that starts
-// unauthenticated, with Authenticate / RegisterUser per the contract in
-// docs/protocol.md and the server's method policy — `not authenticated:`
-// before a session, `permission denied:` for the admin-only methods, and
-// `refused:` for SubmitReview / MergePR while the identity gate is shut (see
-// the remote-mode hooks at the end of `handlers`). Registered users outlive
-// `E2E.Reset`, as they outlive a sync cycle on the real server.
+// unauthenticated, answered the way the Go server answers them (the error
+// strings and reply fields are copied from server/policy.go, users.go,
+// write_identity.go and github_link.go):
+//
+//   - Authenticate / RegisterUser per docs/protocol.md, with the
+//     github_linked / github_link_available flags;
+//   - the method policy: `not authenticated:` before a session,
+//     `permission denied:` for the administrator's methods and for SkipCache;
+//   - the write resolver for SubmitReview and MergePR: a linked user writes
+//     as themselves; otherwise the server's account only with the identity
+//     gate open (a merge then also needs an administrator); otherwise
+//     `refused: link-github:` where linking is available, `refused:` where
+//     it is not;
+//   - StartGitHubLink / GetGitHubLink / UnlinkGitHub, the device flow a test
+//     ends with `E2E.EndGitHubLink` the way GitHub would.
+//
+// Registered users outlive `E2E.Reset`, as they outlive a sync cycle on the
+// real server; their GitHub links and link flows do not. The remote-mode
+// hooks are at the end of `handlers`.
 
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Socket } from 'bun';
 import {
@@ -49,7 +63,8 @@ interface State {
     prs: PRFixture[];
     localComments: Map<string, CommentJSON[]>;
     feedback: Map<string, string>;
-    // `refused` is the policy error a listen-mode call was answered with.
+    // `refused` is the refusal a call was answered with: the method policy's,
+    // or one its handler gave (SkipCache, the write resolver).
     calls: { method: string; params: unknown; refused?: string }[];
     failNext: Map<string, string>;
     // Methods whose next call is recorded but left unanswered, and the calls
@@ -76,6 +91,13 @@ interface State {
     // Listen mode: whether the server lets remote users act under its GitHub
     // identity (AllowServerIdentityActions).
     identityActions: boolean;
+    // Listen mode: whether the server can link GitHub accounts (it has a
+    // GitHubOAuthClientID and a CRS_SECRET_KEY), the poll interval it hands
+    // out, and the device flows in progress or recently ended, by lowercased
+    // login.
+    linkAvailable: boolean;
+    linkInterval: number;
+    linkFlows: Map<string, LinkFlow>;
 }
 
 const CONFIG_PATH = '/tmp/crs-e2e/codereviewserver.toml';
@@ -130,6 +152,9 @@ function freshState(): State {
         aiDone: new Set(),
         config: freshConfig(),
         identityActions: false,
+        linkAvailable: false,
+        linkInterval: 1,
+        linkFlows: new Map(),
     };
 }
 
@@ -414,10 +439,38 @@ interface Peer {
     close(): void;
 }
 
+/** A user's linked GitHub account, as the server stores it. */
+interface GitHubLink {
+    githubLogin: string;
+    linkedAt: string;
+    /**
+     * `revoked`: revoked on github.com, which the server learns from the next
+     * write's 401. `unreadable`: sealed under a CRS_SECRET_KEY the server no
+     * longer has.
+     */
+    broken?: 'revoked' | 'unreadable';
+}
+
 interface RemoteUser {
     login: string;
     token: string;
     admin: boolean;
+    workflows: unknown[];
+    repos: string[];
+    sectionPriority: Record<string, number>;
+    sectionSorting: Record<string, string>;
+    link?: GitHubLink;
+}
+
+/** A device flow, waiting for its code or ended without a link. */
+interface LinkFlow {
+    status: 'pending' | 'expired' | 'denied' | 'mismatch' | 'error';
+    message: string;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: Date;
+    interval: number;
+    endedAt: number;
 }
 
 // Registered users by lowercased login (logins are case-insensitive), and every
@@ -434,50 +487,188 @@ const TOKEN_PATTERN = /^crs_[0-9a-f]{64}$/;
 const LOGIN_PATTERN = /^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$/;
 const MAX_WORKFLOWS = 50;
 
-const PUBLIC_METHODS = new Set([
-    'RPCHandler.Hello',
-    'RPCHandler.Authenticate',
-    'RPCHandler.RegisterUser',
-]);
-const ADMIN_METHODS = new Set([
-    'RPCHandler.GetConfig',
-    'RPCHandler.UpdateConfig',
-    'RPCHandler.RerunPlugins',
-    'RPCHandler.MergePR',
-    'RPCHandler.ListUsers',
-    'RPCHandler.DeleteUser',
-]);
-// Actions that go out under the server's GitHub identity.
-const IDENTITY_METHODS = new Set(['RPCHandler.SubmitReview', 'RPCHandler.MergePR']);
+// The method policy (server/policy.go) by bare method name. As there, any
+// RPCHandler method not listed — and any method of another service — is an
+// administrator's. E2E.* is this fake's own control surface, open to all.
+const METHOD_POLICY: Record<string, 'public' | 'user' | 'admin'> = {
+    Hello: 'public',
+    Authenticate: 'public',
+    RegisterUser: 'public',
+
+    GetAllReviews: 'user',
+    GetPR: 'user',
+    GetAdjacentPR: 'user',
+    SyncPR: 'user',
+    AddComment: 'user',
+    EditComment: 'user',
+    DeleteComment: 'user',
+    SetFeedback: 'user',
+    RemovePRComments: 'user',
+    GetMyWorkflows: 'user',
+    UpdateMyWorkflows: 'user',
+    SubmitReview: 'user',
+    MergePR: 'user',
+    StartGitHubLink: 'user',
+    GetGitHubLink: 'user',
+    UnlinkGitHub: 'user',
+    ListPlugins: 'user',
+    GetPluginOutput: 'user',
+    ListAIFeatures: 'user',
+    RunAIFeature: 'user',
+    GetAIOutput: 'user',
+    GetRateLimitStatus: 'user',
+    GetRateLimitHistory: 'user',
+    GetHunkContext: 'user',
+    GetImage: 'user',
+
+    GetConfig: 'admin',
+    UpdateConfig: 'admin',
+    RerunPlugins: 'admin',
+    ListUsers: 'admin',
+    DeleteUser: 'admin',
+};
+
+// The server's refusals, word for word. Clients match on their prefixes.
+const notAuthenticated = (method: string) =>
+    `not authenticated: ${method} needs an authenticated connection; call RPCHandler.Authenticate or RPCHandler.RegisterUser first`;
+const permissionDenied = (method: string) =>
+    `permission denied: ${method} requires an administrator`;
+const SKIP_CACHE_NEEDS_ADMIN = 'permission denied: SkipCache requires an administrator';
+const MERGE_AS_SERVER_NEEDS_ADMIN =
+    "permission denied: RPCHandler.MergePR requires an administrator to merge as this server's GitHub account";
+const SERVER_IDENTITY_REFUSED =
+    "refused: this server posts to GitHub as its own account, so it does not submit reviews or merge on users' behalf; an administrator can enable AllowServerIdentityActions";
+const LINK_REQUIRED =
+    'refused: link-github: link your GitHub account to submit reviews as yourself';
+const LINK_EXPIRED =
+    'refused: link-github: your GitHub authorization has expired or was revoked; link your account again';
+const LINK_UNREADABLE =
+    'refused: link-github: this server can no longer read your stored GitHub authorization; link your account again';
+
+// What the link RPCs say when they cannot link at all.
+const LOCAL_CANNOT_LINK =
+    "This is the local connection: it writes to GitHub with the server's own token and links no account";
+const ADMIN_CANNOT_LINK =
+    "This is the administrator token's session, the server's own identity, which writes to GitHub with the server's token; GitHub accounts are linked by registered users";
+const LINK_UNAVAILABLE =
+    'This server has no GitHubOAuthClientID configured, so GitHub accounts cannot be linked';
+
+const VERIFICATION_URI = 'https://github.com/login/device';
+// How long a code lasts (GitHub's default) and how long a failed link's
+// outcome is reported for (linkResultTTL).
+const LINK_CODE_TTL_MS = 15 * 60 * 1000;
+const LINK_RESULT_TTL_MS = 10 * 60 * 1000;
 
 /** The error the server's method policy answers `method` with, if it turns it down. */
 function refusal(method: string, session: Session): string | null {
-    if (session.local || method.startsWith('E2E.') || PUBLIC_METHODS.has(method)) return null;
-    if (session.login === null) {
-        return `not authenticated: ${method} needs a session; call RPCHandler.Authenticate or RPCHandler.RegisterUser first`;
-    }
-    if (ADMIN_METHODS.has(method) && !session.admin) {
-        return `permission denied: ${method} requires an administrator`;
-    }
-    if (IDENTITY_METHODS.has(method) && !state.identityActions) {
-        return `refused: ${method} would act as the server's GitHub account, which this server does not allow (AllowServerIdentityActions is off)`;
-    }
+    if (session.local || method.startsWith('E2E.')) return null;
+    const name = method.startsWith('RPCHandler.') ? method.slice('RPCHandler.'.length) : '';
+    const access = METHOD_POLICY[name] ?? 'admin';
+    if (access === 'public') return null;
+    if (session.login === null) return notAuthenticated(method);
+    if (access === 'admin' && !session.admin) return permissionDenied(method);
     return null;
 }
 
+/** SkipCache on GetPR / GetAdjacentPR is an administrator's (checked in the handler). */
+function checkSkipCache(args: Record<string, any>, session: Session) {
+    if (args.SkipCache && !session.local && !session.admin) throw new Error(SKIP_CACHE_NEEDS_ADMIN);
+}
+
+// The account the server's own token belongs to, which local writes and writes
+// through the open identity gate go out as.
+const SERVER_ACCOUNT = 'e2e-reviewer';
+
+const userOf = (session: Session) =>
+    session.login ? users.get(session.login.toLowerCase()) : undefined;
+
+/** A stored link the server can open, which writes then go out as. */
+const usableLink = (user: RemoteUser | undefined) =>
+    user?.link && user.link.broken !== 'unreadable' ? user.link : undefined;
+
+/**
+ * The write resolver (writeClientFor): the GitHub login SubmitReview or
+ * MergePR goes out as, or throws the refusal. Decided before anything is
+ * written, so a refused submit keeps its drafts.
+ */
+function writeIdentity(action: 'SubmitReview' | 'MergePR', session: Session): string {
+    if (session.local) return SERVER_ACCOUNT;
+    const user = userOf(session);
+    if (user?.link?.broken === 'unreadable') throw new Error(LINK_UNREADABLE);
+    if (user?.link?.broken === 'revoked') {
+        // GitHub answers the user's token with a 401: the link is cleared.
+        user.link = undefined;
+        throw new Error(LINK_EXPIRED);
+    }
+    if (user?.link) return user.link.githubLogin;
+    if (state.identityActions) {
+        if (action === 'MergePR' && !session.admin) throw new Error(MERGE_AS_SERVER_NEEDS_ADMIN);
+        return SERVER_ACCOUNT;
+    }
+    if (session.login && state.linkAvailable) throw new Error(LINK_REQUIRED);
+    throw new Error(SERVER_IDENTITY_REFUSED);
+}
+
+/** The reply flags of Authenticate, RegisterUser and GetMyWorkflows. */
+function linkFields(login: string) {
+    if (!login) return { github_linked: false, github_link_available: false };
+    return {
+        github_linked: !!usableLink(users.get(login.toLowerCase())),
+        github_link_available: state.linkAvailable,
+    };
+}
+
 function authenticate(args: Record<string, any>, peer: Peer) {
-    const token = String(args.Token ?? '');
+    const reply = {
+        okay: false,
+        known: false,
+        login: '',
+        is_admin: false,
+        message: '',
+        ...linkFields(''),
+    };
+    if (peer.session.local) {
+        return {
+            ...reply,
+            known: true,
+            message:
+                "This is the local connection: it acts as the server's own identity and needs no token",
+        };
+    }
+    const token = String(args.Token ?? '').trim();
+    if (!token) {
+        return { ...reply, message: 'No token given; register with RegisterUser to get one' };
+    }
     if (ADMIN_TOKEN && token === ADMIN_TOKEN) {
         peer.session = { login: '', admin: true, local: false };
-        return { okay: true, known: true, login: '', is_admin: true, message: '' };
+        return {
+            ...reply,
+            okay: true,
+            known: true,
+            is_admin: true,
+            message: "Authenticated as the server's administrator",
+        };
     }
     const user = [...users.values()].find(u => u.token === token);
     if (!user) {
-        return { okay: false, known: false, login: '', is_admin: false, message: 'unknown token' };
+        return {
+            ...reply,
+            message:
+                'No user holds this token: it was never registered here, or its user was deleted after a stretch of inactivity; register again with RegisterUser',
+        };
     }
     peer.session = { login: user.login, admin: user.admin, local: false };
-    return { okay: true, known: true, login: user.login, is_admin: user.admin, message: '' };
+    return {
+        okay: true,
+        known: true,
+        login: user.login,
+        is_admin: user.admin,
+        message: `Authenticated as ${user.login}`,
+        ...linkFields(user.login),
+    };
 }
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 function registerUser(args: Record<string, any>, peer: Peer) {
     const refuse = (message: string, errors: unknown[] = []) => ({
@@ -488,11 +679,31 @@ function registerUser(args: Record<string, any>, peer: Peer) {
         is_admin: false,
         message,
         errors,
+        ...linkFields(''),
     });
-    if (!REGISTRATION_KEY) return refuse('registration is disabled on this server');
-    if (args.RegistrationKey !== REGISTRATION_KEY) return refuse('wrong registration key');
+    if (peer.session.local) {
+        return refuse(
+            "This is the local connection: it acts as the server's own identity, and its workflows are the config file's"
+        );
+    }
+    if (!REGISTRATION_KEY) {
+        return refuse('Registration is disabled on this server: CRS_REGISTRATION_KEY is not set');
+    }
+    if (args.RegistrationKey !== REGISTRATION_KEY) return refuse('Wrong registration key');
     const login = String(args.Login ?? '').trim();
-    if (!LOGIN_PATTERN.test(login)) return refuse(`"${login}" is not a valid GitHub login`);
+    if (!LOGIN_PATTERN.test(login)) {
+        return refuse(
+            `${JSON.stringify(login)} is not a GitHub login: letters, digits and single hyphens, at most 39 characters`
+        );
+    }
+
+    const token = String(args.Token ?? '').trim();
+    const known = users.get(login.toLowerCase());
+    if (known && known.token !== token) {
+        return refuse(
+            `login already registered: ${known.login} is registered with another token; register with that token, or ask an administrator to delete the user`
+        );
+    }
 
     const workflows: unknown = args.Workflows ?? [];
     const errors: { workflow: number; field: string; message: string }[] = [];
@@ -512,28 +723,161 @@ function registerUser(args: Record<string, any>, peer: Peer) {
             seen.add(name);
         });
     }
-    if (errors.length > 0) return refuse('the workflows are not valid', errors);
+    if (errors.length > 0) {
+        return refuse(
+            `Not registered: found ${plural(errors.length, 'problem', 'problems')}`,
+            errors
+        );
+    }
 
-    const token = String(args.Token ?? '');
-    const known = users.get(login.toLowerCase());
-    if (known && known.token !== token) return refuse('login already registered');
-    const user: RemoteUser = known ?? {
-        login,
-        token: TOKEN_PATTERN.test(token) ? token : `crs_${randomBytes(32).toString('hex')}`,
-        admin: false,
+    const adminTokenMatches = !!ADMIN_TOKEN && args.AdminToken === ADMIN_TOKEN;
+    const reused = TOKEN_PATTERN.test(token) && ![...users.values()].some(u => u.token === token);
+    const user: RemoteUser = {
+        login: known?.login ?? login,
+        token: known?.token ?? (reused ? token : `crs_${randomBytes(32).toString('hex')}`),
+        // An administrator stays one whether or not this registration says so.
+        admin: (known?.admin ?? false) || adminTokenMatches,
+        workflows: Array.isArray(workflows) ? workflows : [],
+        repos: Array.isArray(args.Repos) ? args.Repos : [],
+        sectionPriority: args.SectionPriority ?? {},
+        sectionSorting: args.SectionSorting ?? {},
+        link: known?.link,
     };
-    if (ADMIN_TOKEN && args.AdminToken === ADMIN_TOKEN) user.admin = true;
     users.set(login.toLowerCase(), user);
     peer.session = { login: user.login, admin: user.admin, local: false };
+    let message = `${known ? 'Updated the registration of' : 'Registered'} ${user.login} with ${plural(
+        user.workflows.length,
+        'workflow',
+        'workflows'
+    )}; the dashboard follows on the next workflow cycle`;
+    if (args.AdminToken && !adminTokenMatches) {
+        message += '; AdminToken did not match, so not as an administrator';
+    }
     return {
         okay: true,
         created: !known,
         login: user.login,
         token: user.token,
         is_admin: user.admin,
-        message: '',
+        message,
         errors: [],
+        ...linkFields(user.login),
     };
+}
+
+/** GetMyWorkflows: the connection's user's stored workflows and settings. */
+function myWorkflows(session: Session) {
+    const user = userOf(session);
+    return {
+        okay: !!user,
+        known: !!user,
+        login: user?.login ?? session.login ?? '',
+        workflows: user?.workflows ?? [],
+        repos: user?.repos ?? [],
+        section_priority: user?.sectionPriority ?? {},
+        section_sorting: user?.sectionSorting ?? {},
+        workflow_types: [],
+        filters: [],
+        ...linkFields(user?.login ?? ''),
+    };
+}
+
+// --- Linking a GitHub account (listen mode) ----------------------------------
+
+/** Why this connection cannot link an account, or null when it can try. */
+function linkRefusal(session: Session): string | null {
+    if (session.local) return LOCAL_CANNOT_LINK;
+    if (!session.login) return ADMIN_CANNOT_LINK;
+    return null;
+}
+
+/**
+ * The login's flow: one in progress, or one that ended without a link in the
+ * last ten minutes. A pending flow whose code has expired ends as GitHub
+ * would end it.
+ */
+function currentFlow(login: string): LinkFlow | undefined {
+    const key = login.toLowerCase();
+    const flow = state.linkFlows.get(key);
+    if (!flow) return undefined;
+    const now = Date.now();
+    if (flow.status === 'pending' && now > flow.expiresAt.getTime()) {
+        endFlow(
+            flow,
+            'expired',
+            'The code expired before it was entered on GitHub; start the link again'
+        );
+    }
+    if (flow.status !== 'pending' && now - flow.endedAt > LINK_RESULT_TTL_MS) {
+        state.linkFlows.delete(key);
+        return undefined;
+    }
+    return flow;
+}
+
+function endFlow(flow: LinkFlow, status: LinkFlow['status'], message: string) {
+    flow.status = status;
+    flow.message = message;
+    flow.endedAt = Date.now();
+}
+
+/** A user code the way GitHub prints them: eight letters, `WDJB-MJHT`. */
+function userCode() {
+    const letters = 'BCDFGHJKLMNPQRSTVWXZ';
+    const pick = () => letters[randomBytes(1)[0] % letters.length];
+    return Array.from({ length: 9 }, (_, i) => (i === 4 ? '-' : pick())).join('');
+}
+
+const rfc3339 = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/** Ends `login`'s pending flow as GitHub would (E2E.EndGitHubLink). */
+function endGitHubLink(args: Record<string, any>) {
+    const login = String(args.Login ?? '');
+    const user = users.get(login.toLowerCase());
+    const flow = currentFlow(login);
+    if (!user || flow?.status !== 'pending') throw new Error(`${login} has no GitHub link pending`);
+    switch (args.Outcome) {
+        case 'linked':
+            user.link = {
+                githubLogin: args.GitHubLogin || user.login,
+                linkedAt: rfc3339(new Date()),
+            };
+            state.linkFlows.delete(login.toLowerCase());
+            break;
+        case 'denied':
+            endFlow(
+                flow,
+                'denied',
+                'The authorization was declined on GitHub, so nothing was linked'
+            );
+            break;
+        case 'expired':
+            endFlow(
+                flow,
+                'expired',
+                'The code expired before it was entered on GitHub; start the link again'
+            );
+            break;
+        case 'mismatch': {
+            const other = args.GitHubLogin || 'someone-else';
+            endFlow(
+                flow,
+                'mismatch',
+                `GitHub says that authorization is ${other}'s, but this connection is registered as ${user.login}, so nothing was stored; sign in to GitHub as ${user.login} and link again`
+            );
+            break;
+        }
+        case 'error':
+            endFlow(
+                flow,
+                'error',
+                `GitHub did not complete the link: ${args.Message || 'incorrect_client_credentials'}`
+            );
+            break;
+        default:
+            throw new Error(`unknown outcome ${JSON.stringify(args.Outcome)}`);
+    }
+    return { okay: true };
 }
 
 const REVIEW_STATE: Record<string, string> = {
@@ -541,6 +885,57 @@ const REVIEW_STATE: Record<string, string> = {
     REQUEST_CHANGES: 'CHANGES_REQUESTED',
     COMMENT: 'COMMENTED',
 };
+
+// --- Images -------------------------------------------------------------------
+
+// The images the fake has "downloaded", by URL: one PNG, two pixels wide.
+const IMAGES: Record<string, { contentType: string; base64: string }> = {
+    'https://github.com/user-attachments/assets/e2e-screenshot': {
+        contentType: 'image/png',
+        base64: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNQTX79/2ex2H8AFMsE9NJRZ9EAAAAASUVORK5CYII=',
+    },
+};
+
+/**
+ * GetImage. Locally the cached file is real (in the bridge's state
+ * directory), so the bridge can serve it from disk; on a listening fake the
+ * path is the "server's", which does not exist where the bridge runs, so a
+ * remote bridge has to ask for the bytes (IncludeData).
+ */
+function getImage(args: Record<string, any>, session: Session) {
+    const url = String(args.URL ?? '');
+    const image = IMAGES[url];
+    if (!image) {
+        return {
+            okay: false,
+            url,
+            path: '',
+            content_type: '',
+            size: 0,
+            cached: false,
+            error: 'not cached',
+        };
+    }
+    const bytes = Buffer.from(image.base64, 'base64');
+    const name = `${createHash('sha256').update(url).digest('hex')}.png`;
+    let path = join('/nonexistent/crs-server-host/images', name);
+    if (session.local) {
+        const dir = join(process.env.CRS_E2E_STATE_DIR || tmpdir(), 'images');
+        mkdirSync(dir, { recursive: true });
+        path = join(dir, name);
+        writeFileSync(path, bytes);
+    }
+    return {
+        okay: true,
+        url,
+        path,
+        content_type: image.contentType,
+        size: bytes.length,
+        cached: true,
+        error: '',
+        ...(args.IncludeData ? { data: image.base64 } : {}),
+    };
+}
 
 const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
     'RPCHandler.Hello': () => ({ okay: true }),
@@ -557,6 +952,8 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         return reply;
     },
 
+    'RPCHandler.GetMyWorkflows': (_args, peer) => myWorkflows(peer.session),
+
     'RPCHandler.GetAllReviews': () => ({
         okay: true,
         content: '',
@@ -569,11 +966,15 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         })),
     }),
 
-    'RPCHandler.GetPR': args => payload(findPR(args)),
+    'RPCHandler.GetPR': (args, peer) => {
+        checkSkipCache(args, peer.session);
+        return payload(findPR(args));
+    },
 
     'RPCHandler.SyncPR': args => ({ ...payload(findPR(args)), updated: state.syncUpdated }),
 
-    'RPCHandler.GetAdjacentPR': args => {
+    'RPCHandler.GetAdjacentPR': (args, peer) => {
+        checkSkipCache(args, peer.session);
         const items = state.prs.map(p => p.item);
         const idx = items.findIndex(
             i => i.owner === args.Owner && i.repo === args.Repo && i.number === args.Number
@@ -622,11 +1023,13 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         return payload(pr);
     },
 
-    'RPCHandler.SubmitReview': args => {
+    'RPCHandler.SubmitReview': (args, peer) => {
         const pr = findPR(args);
+        // Settled before anything is written: a refusal leaves the drafts.
+        const author = writeIdentity('SubmitReview', peer.session);
         const review: ReviewJSON = {
             id: state.nextReviewId++,
-            user: 'e2e-reviewer',
+            user: author,
             body: args.Body ?? '',
             state: REVIEW_STATE[args.Event] ?? 'COMMENTED',
             submitted_at: new Date().toISOString(),
@@ -637,9 +1040,21 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         // Pending local comments go out with the review and come back as
         // GitHub comments authored by the reviewer.
         for (const c of locals(pr).splice(0)) {
-            pr.comments.push({ ...c, author: 'e2e-reviewer', review_id: review.id });
+            pr.comments.push({ ...c, author, review_id: review.id });
         }
         return { ...payload(pr), failed_replies: [] };
+    },
+
+    // GitHub's answer passed through. No UI merges yet; this is here so the
+    // write resolver's merge rules can be driven through the bridge.
+    'RPCHandler.MergePR': (args, peer) => {
+        findPR(args);
+        writeIdentity('MergePR', peer.session);
+        return {
+            merged: true,
+            sha: '6dcb09b5b57875f334f61aebed695e2e4193db5e',
+            message: 'Pull Request successfully merged',
+        };
     },
 
     'RPCHandler.SetFeedback': args => {
@@ -702,7 +1117,7 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
 
     'RPCHandler.GetRateLimitHistory': () => ({ hours_back: 3, since: '', points: [] }),
 
-    'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
+    'RPCHandler.GetImage': (args, peer) => getImage(args, peer.session),
 
     'RPCHandler.ListAIFeatures': () => ({
         features: [
@@ -768,10 +1183,122 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         return { output: Object.fromEntries(features.map(f => [f.id, aiOutput(pr, f)])) };
     },
 
+    // --- Linking a GitHub account (listen mode) ---------------------------------
+
+    'RPCHandler.StartGitHubLink': (_args, peer) => {
+        const reply = {
+            okay: false,
+            status: 'unavailable',
+            user_code: '',
+            verification_uri: '',
+            expires_at: '',
+            interval: 0,
+            message: '',
+        };
+        const cannot = linkRefusal(peer.session);
+        if (cannot) return { ...reply, message: cannot };
+        if (!state.linkAvailable) return { ...reply, message: LINK_UNAVAILABLE };
+        const login = peer.session.login!;
+        let flow = currentFlow(login);
+        if (flow?.status !== 'pending') {
+            flow = {
+                status: 'pending',
+                message: '',
+                userCode: userCode(),
+                verificationUri: VERIFICATION_URI,
+                expiresAt: new Date(Date.now() + LINK_CODE_TTL_MS),
+                interval: state.linkInterval,
+                endedAt: 0,
+            };
+            state.linkFlows.set(login.toLowerCase(), flow);
+        }
+        const expiresAt = rfc3339(flow.expiresAt);
+        return {
+            okay: true,
+            status: 'pending',
+            user_code: flow.userCode,
+            verification_uri: flow.verificationUri,
+            expires_at: expiresAt,
+            interval: flow.interval,
+            message: `Enter ${flow.userCode} at ${flow.verificationUri} to link your GitHub account (signed in to GitHub as ${login}); the code expires at ${expiresAt}`,
+        };
+    },
+
+    'RPCHandler.GetGitHubLink': (_args, peer) => {
+        const reply = {
+            okay: false,
+            status: 'unavailable',
+            github_login: '',
+            user_code: '',
+            verification_uri: '',
+            expires_at: '',
+            message: '',
+        };
+        const cannot = linkRefusal(peer.session);
+        if (cannot) return { ...reply, message: cannot };
+        const login = peer.session.login!;
+        const user = users.get(login.toLowerCase());
+        const flow = currentFlow(login);
+        const link = usableLink(user);
+        if (link) reply.github_login = link.githubLogin;
+        reply.okay = true;
+        if (flow) {
+            reply.status = flow.status;
+            reply.message = flow.message;
+            if (flow.status === 'pending') {
+                reply.user_code = flow.userCode;
+                reply.verification_uri = flow.verificationUri;
+                reply.expires_at = rfc3339(flow.expiresAt);
+                reply.message = `Waiting for ${flow.userCode} to be entered at ${flow.verificationUri}`;
+            }
+            if (link) {
+                reply.message += `; your current link, to ${link.githubLogin}, stays until a new one completes`;
+            }
+            return reply;
+        }
+        if (link) {
+            reply.status = 'linked';
+            reply.message = `Linked to GitHub as ${link.githubLogin} since ${link.linkedAt}: your reviews and merges go out as you`;
+        } else if (!state.linkAvailable) {
+            reply.okay = false;
+            reply.message = LINK_UNAVAILABLE;
+        } else if (user?.link?.broken === 'unreadable') {
+            reply.status = 'error';
+            reply.message =
+                'Your stored GitHub link can no longer be read by this server (its CRS_SECRET_KEY changed); link your account again';
+        } else {
+            reply.status = 'unlinked';
+            reply.message = 'No GitHub account is linked; StartGitHubLink links yours';
+        }
+        return reply;
+    },
+
+    'RPCHandler.UnlinkGitHub': (_args, peer) => {
+        const cannot = linkRefusal(peer.session);
+        if (cannot) return { okay: false, message: cannot };
+        const key = peer.session.login!.toLowerCase();
+        const cancelled = state.linkFlows.get(key)?.status === 'pending';
+        state.linkFlows.delete(key);
+        const user = users.get(key);
+        const had = !!user?.link;
+        if (user) user.link = undefined;
+        let message = 'No GitHub account was linked';
+        if (had) {
+            message =
+                'Unlinked your GitHub account: your reviews and merges no longer go out as you; its token was revoked on GitHub';
+        } else if (cancelled) {
+            message = 'Cancelled the GitHub link in progress; no account is linked';
+        }
+        return { okay: true, message };
+    },
+
     // --- Test control surface -------------------------------------------------
 
     'E2E.Reset': () => {
         state = freshState();
+        // Users stay registered (the bridge registered once), but every test
+        // starts with nobody linked.
+        for (const user of users.values()) user.link = undefined;
         return { okay: true };
     },
 
@@ -834,6 +1361,8 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
     'E2E.ForgetUser': args => {
         const login = String(args.Login ?? '').toLowerCase();
         const forgotten = users.delete(login);
+        // Deleting a user cancels a link in progress; their link goes with them.
+        state.linkFlows.delete(login);
         let sessions = 0;
         for (const peer of peers) {
             if (peer.session.login?.toLowerCase() !== login) continue;
@@ -853,30 +1382,82 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         state.identityActions = !!args.allowed;
         return { okay: true };
     },
+
+    // Let the server link GitHub accounts, as GitHubOAuthClientID and
+    // CRS_SECRET_KEY do; off by default. `interval` is the seconds between
+    // polls StartGitHubLink asks for (1 unless set; GitHub's is 5).
+    'E2E.SetGitHubLinkAvailable': args => {
+        state.linkAvailable = !!args.available;
+        if (typeof args.interval === 'number') state.linkInterval = args.interval;
+        return { okay: true };
+    },
+
+    // End a user's pending link as GitHub would. `Outcome` is `linked` (as
+    // `GitHubLogin`, the user's own login unless set), `denied`, `expired`,
+    // `mismatch` (GitHub's login is `GitHubLogin`) or `error` (`Message`).
+    'E2E.EndGitHubLink': args => endGitHubLink(args),
+
+    // Store a link for a user without a device flow.
+    'E2E.LinkGitHub': args => {
+        const user = users.get(String(args.Login ?? '').toLowerCase());
+        if (!user) throw new Error(`no user ${args.Login}`);
+        user.link = { githubLogin: args.GitHubLogin || user.login, linkedAt: rfc3339(new Date()) };
+        return { okay: true };
+    },
+
+    // Break a user's stored link: `revoked` on github.com (the next write
+    // finds out and clears it), or `unreadable` (CRS_SECRET_KEY changed).
+    'E2E.BreakGitHubLink': args => {
+        const user = users.get(String(args.Login ?? '').toLowerCase());
+        if (!user?.link) throw new Error(`${args.Login} has no GitHub link`);
+        user.link.broken = args.How === 'unreadable' ? 'unreadable' : 'revoked';
+        return { okay: true };
+    },
+
+    // A user's link as the fake holds it: the flow, and the stored link.
+    'E2E.GitHubLink': args => {
+        const login = String(args.Login ?? '');
+        const flow = currentFlow(login);
+        return {
+            flow: flow
+                ? { status: flow.status, user_code: flow.userCode, message: flow.message }
+                : null,
+            link: users.get(login.toLowerCase())?.link ?? null,
+        };
+    },
+
+    // Replace a PR's description, e.g. to embed an image.
+    'E2E.SetPRBody': args => {
+        findPR(args).body = String(args.Body ?? '');
+        return { okay: true };
+    },
 };
 
 function respond(peer: Peer, id: Request['id'], result: unknown, error: string | null) {
     peer.send(`${JSON.stringify({ id, result: error ? null : result, error })}\n`);
 }
 
+// The prefixes of the server's refusals, which a call's record notes.
+const REFUSAL_PREFIX = /^(not authenticated|permission denied|refused):/;
+
 function handle(req: Request, peer: Peer) {
     const args = req.params?.[0] ?? {};
     const refused = refusal(req.method, peer.session);
-    if (!req.method.startsWith('E2E.')) {
-        state.calls.push({ method: req.method, params: args, ...(refused ? { refused } : {}) });
-    }
+    const call: State['calls'][number] = { method: req.method, params: args };
+    if (refused) call.refused = refused;
+    if (!req.method.startsWith('E2E.')) state.calls.push(call);
     if (refused) {
         respond(peer, req.id, null, refused);
         return;
     }
     if (state.holdNext.delete(req.method)) {
-        state.held.set(req.method, () => answer(req, args, peer));
+        state.held.set(req.method, () => answer(req, args, peer, call));
         return;
     }
-    answer(req, args, peer);
+    answer(req, args, peer, call);
 }
 
-function answer(req: Request, args: Record<string, any>, peer: Peer) {
+function answer(req: Request, args: Record<string, any>, peer: Peer, call: State['calls'][number]) {
     const injected = state.failNext.get(req.method);
     if (injected !== undefined) {
         state.failNext.delete(req.method);
@@ -891,7 +1472,10 @@ function answer(req: Request, args: Record<string, any>, peer: Peer) {
     try {
         respond(peer, req.id, handler(args, peer), null);
     } catch (e) {
-        respond(peer, req.id, null, e instanceof Error ? e.message : String(e));
+        const message = e instanceof Error ? e.message : String(e);
+        // A refusal a handler gave (SkipCache, the write resolver).
+        if (REFUSAL_PREFIX.test(message)) call.refused = message;
+        respond(peer, req.id, null, message);
     }
 }
 

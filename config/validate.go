@@ -67,6 +67,16 @@ func Validate(cfg *Config) []ValidationError {
 		}
 	}
 
+	// 0 is meaningful for both ("never"), so only a negative count is wrong.
+	if cfg.UserActiveHours < 0 {
+		problems = append(problems, rootError("UserActiveHours",
+			"must be 0 (run every user's workflows however long they have been idle) or a positive number of hours"))
+	}
+	if cfg.UserRetentionDays < 0 {
+		problems = append(problems, rootError("UserRetentionDays",
+			"must be 0 (never delete idle users) or a positive number of days"))
+	}
+
 	for section, sorting := range cfg.SectionSorting {
 		if !validSectionSorting[sorting] {
 			problems = append(problems, rootError("SectionSorting",

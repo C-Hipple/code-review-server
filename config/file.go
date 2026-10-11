@@ -44,6 +44,10 @@ type Update struct {
 	Plugins    *[]Plugin
 	AI         *AISettings
 	AIFeatures *[]AIFeature
+	// The hosted-server keys; see Config.
+	UserActiveHours            *int
+	UserRetentionDays          *int
+	AllowServerIdentityActions *bool
 }
 
 // IsEmpty reports whether the update carries no changes at all.
@@ -51,7 +55,8 @@ func (u Update) IsEmpty() bool {
 	return u.Repos == nil && u.SleepDuration == nil && u.JiraDomain == nil &&
 		u.GithubUsername == nil && u.RepoLocation == nil && u.AutoWorktree == nil &&
 		u.DesktopNotifications == nil && u.SectionPriority == nil && u.SectionSorting == nil &&
-		u.Workflows == nil && u.Plugins == nil && u.AI == nil && u.AIFeatures == nil
+		u.Workflows == nil && u.Plugins == nil && u.AI == nil && u.AIFeatures == nil &&
+		u.UserActiveHours == nil && u.UserRetentionDays == nil && u.AllowServerIdentityActions == nil
 }
 
 // setKey writes v into the TOML document when the update supplies it.
@@ -159,6 +164,9 @@ func (u Update) Render() ([]byte, *Config, error) {
 		}
 	}
 	setList(doc, "AIFeatures", u.AIFeatures)
+	setKey(doc, "UserActiveHours", u.UserActiveHours)
+	setKey(doc, "UserRetentionDays", u.UserRetentionDays)
+	setKey(doc, "AllowServerIdentityActions", u.AllowServerIdentityActions)
 
 	data, err := toml.Marshal(doc)
 	if err != nil {

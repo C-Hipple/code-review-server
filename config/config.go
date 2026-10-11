@@ -36,6 +36,15 @@ type RawWorkflow struct {
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
 	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
+
+	// User is the login of the user whose dashboard the workflow fills: "" for
+	// the config file's workflows, which are the server's own, and the
+	// registered user's login for a workflow a hosted server keeps for them.
+	// It is not a setting — nothing reads it from a file or a client, and it
+	// is never written back to either — but the identity the workflow is built
+	// for, which decides the sections it writes into and the ownership key it
+	// claims items under (OwnershipKey).
+	User string `toml:"-" json:"-"`
 }
 
 // RepoConfig holds per-repository configuration settings.
@@ -314,12 +323,35 @@ type Config struct {
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.
 	legacy legacyLLMKeys
+	// UserActiveHours, UserRetentionDays and AllowServerIdentityActions govern
+	// the users a hosted server keeps dashboards for; local mode has none.
+	//
+	// UserActiveHours is how recently a user must have been seen for the
+	// workflow cycle to run their workflows; an idle user's dashboard is kept,
+	// just not refreshed, until they come back. 0 never skips anyone.
+	UserActiveHours int
+	// UserRetentionDays is how long a user may stay idle before the server
+	// deletes them, with their workflows, drafts and feedback; their sections
+	// go in the same cycle. 0 never deletes anyone.
+	UserRetentionDays int
+	// AllowServerIdentityActions lets a remote user submit reviews and merge
+	// PRs, which GitHub records as the server token's user. Off by default:
+	// only an organization whose server token is a bot account should allow it.
+	AllowServerIdentityActions bool
 	// UsingDefaults is true when no config file exists and the server is
 	// running DefaultConfigTOML. Nothing behaves differently because of it; it
 	// exists so clients can say so.
 	UsingDefaults bool
 	DB            *database.DB
 }
+
+// Defaults for the keys a config file leaves out. Each is a count of hours or
+// days where 0 means "never", so a file that sets 0 has to be told apart from
+// one that says nothing; parseConfig reads them as pointers for that.
+const (
+	DefaultUserActiveHours   = 24
+	DefaultUserRetentionDays = 7
+)
 
 // LoginResolver looks up the GitHub login the configured API token belongs to,
 // so a config that never names a user still has an identity for the filters
@@ -414,6 +446,10 @@ func parseConfig(data []byte) (*Config, error) {
 		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
 		LegacyProvider     string `toml:"ExperimentalLLMProvider"`
 		LegacyModel        string `toml:"ExperimentalLLMModel"`
+		// Pointers, so an explicit 0 ("never") is not mistaken for absent.
+		UserActiveHours            *int
+		UserRetentionDays          *int
+		AllowServerIdentityActions bool
 	}
 
 	err := toml.Unmarshal(data, &intermediate_config)
@@ -471,21 +507,33 @@ func parseConfig(data []byte) (*Config, error) {
 		repoConfigs = make(map[string]RepoConfig)
 	}
 
+	userActiveHours := DefaultUserActiveHours
+	if intermediate_config.UserActiveHours != nil {
+		userActiveHours = *intermediate_config.UserActiveHours
+	}
+	userRetentionDays := DefaultUserRetentionDays
+	if intermediate_config.UserRetentionDays != nil {
+		userRetentionDays = *intermediate_config.UserRetentionDays
+	}
+
 	return &Config{
-		Repos:                intermediate_config.Repos,
-		RawWorkflows:         intermediate_config.Workflows,
-		SleepDuration:        parsed_sleep_duration,
-		JiraDomain:           intermediate_config.JiraDomain,
-		GithubUsername:       intermediate_config.GithubUsername,
-		RepoLocation:         repoLocation,
-		AutoWorktree:         intermediate_config.AutoWorktree,
-		DesktopNotifications: intermediate_config.DesktopNotifications,
-		SectionPriority:      intermediate_config.SectionPriority,
-		SectionSorting:       intermediate_config.SectionSorting,
-		Plugins:              intermediate_config.Plugins,
-		RepoConfigs:          repoConfigs,
-		AI:                   intermediate_config.AI,
-		AIFeatures:           intermediate_config.AIFeatures,
+		Repos:                      intermediate_config.Repos,
+		RawWorkflows:               intermediate_config.Workflows,
+		SleepDuration:              parsed_sleep_duration,
+		JiraDomain:                 intermediate_config.JiraDomain,
+		GithubUsername:             intermediate_config.GithubUsername,
+		RepoLocation:               repoLocation,
+		AutoWorktree:               intermediate_config.AutoWorktree,
+		DesktopNotifications:       intermediate_config.DesktopNotifications,
+		SectionPriority:            intermediate_config.SectionPriority,
+		SectionSorting:             intermediate_config.SectionSorting,
+		Plugins:                    intermediate_config.Plugins,
+		RepoConfigs:                repoConfigs,
+		AI:                         intermediate_config.AI,
+		AIFeatures:                 intermediate_config.AIFeatures,
+		UserActiveHours:            userActiveHours,
+		UserRetentionDays:          userRetentionDays,
+		AllowServerIdentityActions: intermediate_config.AllowServerIdentityActions,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

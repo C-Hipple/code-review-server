@@ -491,3 +491,58 @@ func TestUpdateConfigReportsDuplicatePluginNames(t *testing.T) {
 		t.Errorf("expected the second Summarize reported, got %+v", reply.Errors)
 	}
 }
+
+// The hosted-server keys travel like any other root setting: shown with their
+// defaults while the file leaves them out, saved when sent (an explicit 0
+// included), and refused when negative.
+func TestUpdateConfigRoundTripsTheUserKeys(t *testing.T) {
+	path := useTempConfig(t, testConfigTOML)
+
+	h := &RPCHandler{}
+	before := &GetConfigReply{}
+	if err := h.GetConfig(&GetConfigArgs{}, before); err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if before.Config.UserActiveHours != config.DefaultUserActiveHours ||
+		before.Config.UserRetentionDays != config.DefaultUserRetentionDays ||
+		before.Config.AllowServerIdentityActions {
+		t.Errorf("expected the defaults while the file is silent, got %+v", before.Config)
+	}
+
+	never, days, allow := 0, 30, true
+	reply := &UpdateConfigReply{}
+	args := &UpdateConfigArgs{UserActiveHours: &never, UserRetentionDays: &days, AllowServerIdentityActions: &allow}
+	if err := h.UpdateConfig(args, reply); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+	if !reply.Okay {
+		t.Fatalf("expected the update to be accepted, got %v", reply.Errors)
+	}
+	if reply.Config.UserActiveHours != 0 || reply.Config.UserRetentionDays != 30 || !reply.Config.AllowServerIdentityActions {
+		t.Errorf("settings not applied: %+v", reply.Config)
+	}
+	if cfg := config.C(); cfg.UserActiveHours != 0 || cfg.UserRetentionDays != 30 || !cfg.AllowServerIdentityActions {
+		t.Errorf("running config not reloaded: UserActiveHours=%d UserRetentionDays=%d AllowServerIdentityActions=%v",
+			cfg.UserActiveHours, cfg.UserRetentionDays, cfg.AllowServerIdentityActions)
+	}
+
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	negative := -1
+	rejected := &UpdateConfigReply{}
+	if err := h.UpdateConfig(&UpdateConfigArgs{UserRetentionDays: &negative}, rejected); err != nil {
+		t.Fatalf("a rejected update should not be an RPC error, got %v", err)
+	}
+	if rejected.Okay || len(rejected.Errors) != 1 || rejected.Errors[0].Field != "UserRetentionDays" {
+		t.Errorf("expected one UserRetentionDays problem, got okay=%v errors=%v", rejected.Okay, rejected.Errors)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(after) != string(saved) {
+		t.Errorf("a rejected update must leave the file alone, got:\n%s", after)
+	}
+}

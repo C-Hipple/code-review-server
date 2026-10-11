@@ -1117,6 +1117,11 @@ type ConfigView struct {
 	// here; the ai_features registry in the reply says which.
 	AI         config.AISettings  `json:"AI"`
 	AIFeatures []config.AIFeature `json:"AIFeatures"`
+	// The hosted-server keys, as in effect: a key the file leaves out shows
+	// its default.
+	UserActiveHours            int  `json:"UserActiveHours"`
+	UserRetentionDays          int  `json:"UserRetentionDays"`
+	AllowServerIdentityActions bool `json:"AllowServerIdentityActions"`
 }
 
 // newConfigView builds the view from a loaded config, normalizing nil maps and
@@ -1136,6 +1141,10 @@ func newConfigView(cfg config.Config) ConfigView {
 		Plugins:              cfg.Plugins,
 		AI:                   cfg.AI,
 		AIFeatures:           cfg.AIFeatures,
+
+		UserActiveHours:            cfg.UserActiveHours,
+		UserRetentionDays:          cfg.UserRetentionDays,
+		AllowServerIdentityActions: cfg.AllowServerIdentityActions,
 	}
 	if view.Repos == nil {
 		view.Repos = []string{}
@@ -1230,6 +1239,10 @@ type UpdateConfigArgs struct {
 	Plugins              *[]config.Plugin      `json:"Plugins"`
 	AI                   *config.AISettings    `json:"AI"`
 	AIFeatures           *[]config.AIFeature   `json:"AIFeatures"`
+
+	UserActiveHours            *int  `json:"UserActiveHours"`
+	UserRetentionDays          *int  `json:"UserRetentionDays"`
+	AllowServerIdentityActions *bool `json:"AllowServerIdentityActions"`
 }
 
 // UpdateConfigReply carries the same body as GetConfig plus any validation
@@ -1269,6 +1282,10 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 		Plugins:              normalizePlugins(args.Plugins),
 		AI:                   normalizeAISettings(args.AI),
 		AIFeatures:           normalizeAIFeatures(args.AIFeatures),
+
+		UserActiveHours:            args.UserActiveHours,
+		UserRetentionDays:          args.UserRetentionDays,
+		AllowServerIdentityActions: args.AllowServerIdentityActions,
 	}
 
 	if update.IsEmpty() {

@@ -50,7 +50,8 @@ Refusals are ordinary RPC errors. Clients match on the prefix:
 |--------|---------|
 | `not authenticated:` | The connection has not authenticated, or its user has been deleted since (by an administrator, or after `UserRetentionDays` of inactivity). The full text is `not authenticated: <Method> needs an authenticated connection; call RPCHandler.Authenticate or RPCHandler.RegisterUser first`. Run the connect flow again. |
 | `permission denied:` | The method needs an administrator: `permission denied: <Method> requires an administrator`, where `<Method>` is the full name, e.g. `RPCHandler.GetConfig`. `GetPR`'s and `GetAdjacentPR`'s `SkipCache` is refused as `permission denied: SkipCache requires an administrator`. |
-| `refused:` | The server will not write to GitHub for this connection: `SubmitReview` and `MergePR` go out under the server's own GitHub account, which a remote connection may only use where the server sets `AllowServerIdentityActions`. Final — retrying does not help. |
+| `refused: link-github:` | The write needs the user's own GitHub account, which is not linked — or its authorization expired or was revoked on GitHub, or can no longer be read by the server. Offer to [link the account](#linking-a-github-account) (`StartGitHubLink`) and retry the write once linked. The texts are `refused: link-github: link your GitHub account to submit reviews as yourself` and `refused: link-github: your GitHub authorization has expired or was revoked; link your account again` (or, after the server's `CRS_SECRET_KEY` changed, `refused: link-github: this server can no longer read your stored GitHub authorization; link your account again`). |
+| `refused:` (any other) | The server will not write to GitHub for this connection: without a linked account, `SubmitReview` and `MergePR` would go out under the server's own GitHub account, which a remote connection may only use where the server sets `AllowServerIdentityActions`, and this server cannot link accounts (or the connection is the administrator token's). Final — retrying does not help. |
 
 ### Method policy
 
@@ -59,13 +60,14 @@ Every method is classified in one table on the server (`server/policy.go`); a me
 | Who | Methods |
 |-----|---------|
 | Anyone, before authenticating | `Hello`, `Authenticate`, `RegisterUser` |
-| An authenticated connection | `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`, `DeleteComment`, `SetFeedback`, `RemovePRComments`, `SubmitReview`, `MergePR`, `GetMyWorkflows`, `UpdateMyWorkflows`, `ListPlugins`, `GetPluginOutput`, `ListAIFeatures`, `RunAIFeature`, `GetAIOutput`, `GetRateLimitStatus`, `GetRateLimitHistory`, `GetHunkContext`, `GetImage` |
+| An authenticated connection | `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`, `DeleteComment`, `SetFeedback`, `RemovePRComments`, `SubmitReview`, `MergePR`, `GetMyWorkflows`, `UpdateMyWorkflows`, `StartGitHubLink`, `GetGitHubLink`, `UnlinkGitHub`, `ListPlugins`, `GetPluginOutput`, `ListAIFeatures`, `RunAIFeature`, `GetAIOutput`, `GetRateLimitStatus`, `GetRateLimitHistory`, `GetHunkContext`, `GetImage` |
 | An administrator | `GetConfig`, `UpdateConfig`, `RerunPlugins`, `ListUsers`, `DeleteUser` |
 
 Within the methods an authenticated connection may call:
 
 - `SkipCache: true` on `GetPR` / `GetAdjacentPR` needs an administrator; `SyncPR` is how a user refreshes a PR.
-- `SubmitReview` and `MergePR` are refused (`refused:`) unless the server sets `AllowServerIdentityActions`, and with it set, `MergePR` still needs an administrator (`permission denied:`).
+- `SubmitReview` and `MergePR` go out as the user's own GitHub account once it is [linked](#linking-a-github-account). Without a link they are refused (`refused: link-github:` where the server can link accounts, `refused:` otherwise) unless the server sets `AllowServerIdentityActions`; with it set they go out as the server's account, and `MergePR` then needs an administrator (`permission denied:`).
+- `StartGitHubLink`, `GetGitHubLink` and `UnlinkGitHub` answer the administrator token's session with `okay: false`: it is the server's own identity and has no account to link.
 - `GetHunkContext` takes only a bare repository name as `Repo`.
 
 `Hello` answers before authenticating, with `Count: 0`.
@@ -87,8 +89,8 @@ Signs the connection in with a token `RegisterUser` issued, or with the administ
 | `login`                 | string | The user's login, as registered; `""` for the administrator token |
 | `is_admin`              | bool   | Whether the connection is an administrator |
 | `message`               | string | Human-readable outcome |
-| `github_linked`         | bool   | Whether the user's own GitHub account is linked for writes. Always `false` for now |
-| `github_link_available` | bool   | Whether this server can link GitHub accounts. Always `false` for now |
+| `github_linked`         | bool   | Whether the user's own GitHub account is [linked](#linking-a-github-account), so their reviews and merges go out as them. `false` for the administrator token |
+| `github_link_available` | bool   | Whether this server can link GitHub accounts (`StartGitHubLink`). `false` for the administrator token |
 
 ### `RPCHandler.RegisterUser`
 
@@ -204,10 +206,12 @@ Administrator only. Lists every registered user, by login.
 | `created_at`     | string | When they registered (RFC 3339) |
 | `last_seen`      | string | When they were last active (RFC 3339); what `UserActiveHours` and `UserRetentionDays` go by |
 | `workflow_count` | int    | How many workflows they have |
+| `github_linked`  | bool   | Whether they have [linked](#linking-a-github-account) a GitHub account this server can use |
+| `github_login`   | string | The linked GitHub account's login; `""` when none. The token itself is never shown |
 
 ### `RPCHandler.DeleteUser`
 
-Administrator only. Deletes a user with their workflows, drafts and feedback, as the retention sweep does. Their dashboard empties on the next workflow cycle. A connection still signed in as them gets `not authenticated:` on its next call, so its client registers them again if it still has the registration key.
+Administrator only. Deletes a user with their workflows, drafts and feedback, as the retention sweep does. Their dashboard empties on the next workflow cycle. A GitHub link they have in progress is cancelled, and the token of one they linked is revoked on GitHub when the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` (the `message` says whether it was). A connection still signed in as them gets `not authenticated:` on its next call, so its client registers them again if it still has the registration key.
 
 **Arguments** (`DeleteUserArgs`):
 | Field   | Type   | Required | Description |
@@ -219,6 +223,90 @@ Administrator only. Deletes a user with their workflows, drafts and feedback, as
 |-----------|--------|-------------|
 | `okay`    | bool   | `false` when no such user is registered |
 | `message` | string | Human-readable outcome |
+
+### Linking a GitHub account
+
+Everything a hosted server reads from GitHub goes through its own token, but GitHub records a review, a reply or a merge as whoever's token sends it. A user links their own GitHub account so that their `SubmitReview` and `MergePR` go out as them. Linking is optional: a user registers and browses without it. It is available when `github_link_available` is `true` in `Authenticate`, `RegisterUser` and `GetMyWorkflows` (the server has a `GitHubOAuthClientID` and a `CRS_SECRET_KEY`; see [Hosted Server](hosted_server.md#linking-your-github-account)).
+
+It uses GitHub's OAuth device flow:
+
+1. Call `StartGitHubLink`. Show the user `user_code` and `verification_uri` (`https://github.com/login/device`), ideally with a button that copies the code and opens the page.
+2. The user enters the code on GitHub while signed in to the GitHub account of their registered login, and authorizes the app. Meanwhile the server polls GitHub in the background.
+3. Poll `GetGitHubLink` every `interval` seconds until `status` is no longer `pending`. On `linked`, retry the write that was refused; on `expired`, `denied`, `mismatch` or `error`, show `message` and offer to start again.
+
+The server stores the token only once GitHub confirms it belongs to the registered login (case-insensitively), sealed with `CRS_SECRET_KEY`. It is never returned by any method. One link is in progress per user at a time: calling `StartGitHubLink` again, from any of the user's connections, returns the one in progress. A link in progress lives in the server's memory, so a restart drops it and the user starts again.
+
+`status` is one of:
+
+| Status | Meaning |
+|--------|---------|
+| `unavailable` | This server cannot link accounts (no `GitHubOAuthClientID`, or no valid `CRS_SECRET_KEY`), or the connection is the administrator token's |
+| `unlinked` | No account is linked |
+| `pending` | A device flow is waiting for the user to enter `user_code` |
+| `linked` | An account is linked; `github_login` says which |
+| `expired` | The code expired before it was entered |
+| `denied` | The user declined the authorization on GitHub |
+| `mismatch` | GitHub says the authorization is for another account than the registered login; nothing was stored |
+| `error` | Anything else, explained in `message`: GitHub refused the app (for instance device flow is not enabled on it), the user was deleted meanwhile, or a stored link can no longer be read because the server's `CRS_SECRET_KEY` changed |
+
+`expired`, `denied`, `mismatch` and `error` are reported for ten minutes after the link ended, then `GetGitHubLink` reports what is stored again. Linking again while linked replaces the earlier link once the new one completes.
+
+A linked token GitHub stops accepting — revoked on github.com, or a GitHub App token expired past refreshing — is deleted by the first write that finds out, which is refused with `refused: link-github: your GitHub authorization has expired or was revoked; link your account again`; the pending comments stay where they were.
+
+### `RPCHandler.StartGitHubLink`
+
+Starts linking the connection's user's GitHub account, or returns the link already in progress, once GitHub has issued its code.
+
+**Arguments** (`StartGitHubLinkArgs`):
+```json
+{}
+```
+
+**Reply** (`StartGitHubLinkReply`):
+| Field              | Type   | Description |
+|--------------------|--------|-------------|
+| `okay`             | bool   | `true` when a link is waiting for the user (`status` is `pending`) |
+| `status`           | string | `pending`; `unavailable` when the server or the connection cannot link; `error` when GitHub did not issue a code, or too many links are in progress on the server |
+| `user_code`        | string | The code the user enters on GitHub, e.g. `WDJB-MJHT` |
+| `verification_uri` | string | Where they enter it: `https://github.com/login/device` |
+| `expires_at`       | string | When the code expires (RFC 3339), usually 15 minutes away |
+| `interval`         | int    | Seconds between polls GitHub asks for: how often `GetGitHubLink` is worth calling |
+| `message`          | string | Human-readable outcome; says what to do with the code, or why there is none |
+
+### `RPCHandler.GetGitHubLink`
+
+Reports the connection's user's link: one in progress, how the last one ended if it failed in the last ten minutes, or what is stored. It only reads; clients poll it while a link is pending.
+
+**Arguments** (`GetGitHubLinkArgs`):
+```json
+{}
+```
+
+**Reply** (`GetGitHubLinkReply`):
+| Field              | Type   | Description |
+|--------------------|--------|-------------|
+| `okay`             | bool   | `false` only when `status` is `unavailable` |
+| `status`           | string | One of the [statuses](#linking-a-github-account) |
+| `github_login`     | string | The linked account's login whenever one is linked — also while a new link is pending or after one failed; `""` otherwise |
+| `user_code`        | string | While `pending`, as in `StartGitHubLink` |
+| `verification_uri` | string | While `pending`, as in `StartGitHubLink` |
+| `expires_at`       | string | While `pending`, as in `StartGitHubLink` (RFC 3339) |
+| `message`          | string | Human-readable state |
+
+### `RPCHandler.UnlinkGitHub`
+
+Deletes the connection's user's stored GitHub credential and cancels a link in progress. When the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` the token is also revoked on GitHub (best effort); otherwise the `message` asks the user to revoke it on github.com. From then on the user's writes are refused as above, or go out as the server's account where `AllowServerIdentityActions` is set.
+
+**Arguments** (`UnlinkGitHubArgs`):
+```json
+{}
+```
+
+**Reply** (`UnlinkGitHubReply`):
+| Field     | Type   | Description |
+|-----------|--------|-------------|
+| `okay`    | bool   | `true` once nothing is linked (also when nothing was); `false` for the administrator token's connection |
+| `message` | string | Human-readable outcome, including whether the token was revoked on GitHub |
 
 ---
 
@@ -854,7 +942,7 @@ Submits a review to GitHub. This will:
 
 **Reply** (`SubmitReviewReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
-The review and its replies go to GitHub under the server's own token, so GitHub records them as that token's user. On a [remote connection](#remote-connections) that is someone else's account, so the call is refused with `refused: ...` unless the server sets `AllowServerIdentityActions`. A refused submit touches nothing: every pending comment stays where it was.
+Locally, the review and its replies go to GitHub under the server's own token, so GitHub records them as that token's user. On a [remote connection](#remote-connections) they go out as the user's own GitHub account once it is [linked](#linking-a-github-account) — the replies too, through the same token; the refetch that builds the reply still reads with the server's token. Without a link the call is refused with `refused: link-github: ...` where the server can link accounts, or `refused: ...` where it cannot, unless the server sets `AllowServerIdentityActions`, which sends the review as the server's account. A refused submit touches nothing: every pending comment, empty ones included, stays where it was. Pending comments with no body are deleted once a submit has gone through.
 
 ---
 
@@ -862,7 +950,7 @@ The review and its replies go to GitHub under the server's own token, so GitHub 
 
 Asks GitHub to merge the given pull request. The merge method defaults to **squash** when `MergeMethod` is omitted or empty; callers may override it with any value GitHub accepts (`"merge"`, `"squash"`, or `"rebase"`).
 
-Like `SubmitReview`, a merge goes out under the server's own token: on a [remote connection](#remote-connections) it is refused with `refused: ...` unless the server sets `AllowServerIdentityActions`, and then needs an administrator (`permission denied: ...`).
+Like `SubmitReview`, a merge from a [remote connection](#remote-connections) goes out as the user's own [linked](#linking-a-github-account) GitHub account, so GitHub applies that account's own merge rights. Without a link it is refused (`refused: link-github: ...` or `refused: ...`) unless the server sets `AllowServerIdentityActions`, and merging as the server's account then needs an administrator (`permission denied: ...`).
 
 The server passes through GitHub's response verbatim — clients should rely on the `merged` and `message` fields to determine whether the merge succeeded rather than inferring success from the absence of an error. A non-error response with `merged: false` (e.g. due to a protected branch, failing checks, or a dirty mergeable state) is still a meaningful answer from GitHub.
 
@@ -1160,6 +1248,8 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 | `Plugins`                     | []Plugin          | Configured plugins (see [Plugins](plugins.md#plugin-configuration-options)) |
 | `AI`                          | AISettings        | The `[AI]` table: `DefaultProvider`, `DefaultCommand`, `DefaultModel` |
 | `AIFeatures`                  | []AIFeature       | The `[[AIFeatures]]` entries the file has (see below)            |
+| `UserActiveHours`, `UserRetentionDays`, `AllowServerIdentityActions` | int, int, bool | The [hosted server](hosted_server.md)'s user settings, as in effect (a key the file leaves out shows its default) |
+| `GitHubOAuthClientID`, `GitHubOAuthScopes` | string, string | The app users [link their GitHub accounts](#linking-a-github-account) through, and the scopes an OAuth App asks for (`repo` by default). The secrets linking needs are environment variables and never shown |
 
 `Plugins`, `AI` and `AIFeatures` use the TOML key names as field names: a plugin is `Name`, `Command`, `IncludeDiff`, `IncludeHeaders`, `IncludeComments`, `IncludeBranch`, `OnlyOnDemand`, `Provider` and `Model`, and an AI feature entry is `ID`, `Enabled`, `Mode`, `Automatic`, `Provider`, `Command` and `Model` (see [AI Features](ai_features.md#enabling-a-feature)). `AIFeatures` holds only the entries in the file: a feature switched on by a legacy root-level key such as `ExperimentalLLMReviewEase` has none, and its `ai_features` entry says so instead.
 

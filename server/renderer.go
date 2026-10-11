@@ -9,6 +9,7 @@ import (
 	"crs/org"
 	"crs/utils"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -31,14 +32,20 @@ const SortOldestFirst = "oldest_first"
 type OrgRenderer struct {
 	db         *database.DB
 	serializer org.OrgSerializer
+	// viewer is whose dashboard the renderer shows: a registered user's login,
+	// or "" for the server's own (local mode, and the config file's workflows).
+	viewer string
 }
 
-func NewOrgRenderer(db *database.DB) *OrgRenderer {
+// NewOrgRenderer returns a renderer of viewer's dashboard: their sections and
+// items only, sorted by their own SectionSorting.
+func NewOrgRenderer(db *database.DB, viewer string) *OrgRenderer {
 	// TODO: Figure out if we still want different org serializers
 	serializer := org.BaseOrgSerializer{}
 	return &OrgRenderer{
 		db:         db,
 		serializer: serializer,
+		viewer:     viewer,
 	}
 }
 
@@ -57,12 +64,12 @@ type sectionView struct {
 }
 
 // collectSections is the single pipeline behind all renderer entry points:
-// it loads every section and item, parses items into ReviewItems, and sorts
-// each section (per-section configured sorting, defaulting to the canonical
-// reviewItemLess ordering). Callers serialize the result to org text, JSON
-// items, or both.
+// it loads the viewer's sections and items, parses items into ReviewItems, and
+// sorts each section (per-section configured sorting, defaulting to the
+// canonical reviewItemLess ordering). Callers serialize the result to org
+// text, JSON items, or both.
 func (r *OrgRenderer) collectSections() ([]sectionView, error) {
-	sections, err := r.db.GetAllSections()
+	sections, err := r.db.GetSectionsForUser(r.viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +83,7 @@ func (r *OrgRenderer) collectSections() ([]sectionView, error) {
 	})
 
 	// Fetch all items at once to avoid N+1 queries
-	allItems, err := r.db.GetAllItems()
+	allItems, err := r.db.GetItemsForUser(r.viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +92,7 @@ func (r *OrgRenderer) collectSections() ([]sectionView, error) {
 		itemsBySection[item.SectionID] = append(itemsBySection[item.SectionID], item)
 	}
 
-	sectionSorting := config.C().SectionSorting
+	sectionSorting := sectionSortingFor(r.db, r.viewer)
 	views := make([]sectionView, 0, len(sections))
 	for _, section := range sections {
 		items := itemsBySection[section.ID]
@@ -101,6 +108,24 @@ func (r *OrgRenderer) collectSections() ([]sectionView, error) {
 		views = append(views, sectionView{section: section, entries: entries})
 	}
 	return views, nil
+}
+
+// sectionSortingFor returns the SectionSorting viewer's dashboard is shown
+// with: the config file's for the server's own, and the user's own otherwise.
+// A user who can't be read (one deleted while still connected) gets none, which
+// leaves every section in the canonical order rather than failing the render.
+func sectionSortingFor(db *database.DB, viewer string) map[string]string {
+	if viewer == "" {
+		return config.C().SectionSorting
+	}
+	user, err := db.GetUser(viewer)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			slog.Warn("Error loading the viewer's section sorting", "user", viewer, "error", err)
+		}
+		return nil
+	}
+	return user.SectionSorting
 }
 
 // sortEntries orders a section's entries in-place. A configured per-section
@@ -234,7 +259,8 @@ type ReviewItem struct {
 	MergeConflicts bool `json:"merge_conflicts"`
 }
 
-// GetAllReviewItems returns structured review items from all sections
+// GetAllReviewItems returns structured review items from all the viewer's
+// sections.
 func (r *OrgRenderer) GetAllReviewItems() ([]ReviewItem, error) {
 	views, err := r.collectSections()
 	if err != nil {
@@ -855,6 +881,9 @@ func convertIssueCommentToPRComment(ic *github.IssueComment) *github.PullRequest
 
 // cacheMissState records what was and wasn't in the DB at the time of a GetPRDetails call.
 type cacheMissState struct {
+	// viewer is whose drafts the request merged in, and so the drafts the
+	// report counts.
+	viewer       string
 	owner        string
 	repo         string
 	number       int
@@ -916,7 +945,7 @@ func workflowActionSection(db *database.DB, state cacheMissState, now time.Time)
 		return sb.String()
 	}
 
-	sb.WriteString(fmt.Sprintf("  Workflow:        %s\n", orNone(latest.WorkflowName)))
+	sb.WriteString(fmt.Sprintf("  Workflow:        %s\n", orNone(describeWorkflowKeys(latest.WorkflowName))))
 	sb.WriteString(fmt.Sprintf("  Action:          %s\n", latest.Action))
 	if latest.CreatedAt.IsZero() {
 		sb.WriteString("  When:            (unknown)\n")
@@ -964,11 +993,29 @@ func workflowActionSection(db *database.DB, state cacheMissState, now time.Time)
 				when = humanizeAgo(now.Sub(action.CreatedAt)) + " ago"
 			}
 			sb.WriteString(fmt.Sprintf("  %-9s %s by %s (sha %s)\n",
-				missed+":", when, orNone(action.WorkflowName), orNone(action.SHA)))
+				missed+":", when, orNone(describeWorkflowKeys(action.WorkflowName)), orNone(action.SHA)))
 		}
 	}
 
 	return sb.String()
+}
+
+// describeWorkflowKeys renders the workflow names an action log row holds —
+// one ownership key, or several comma-joined for a fetch made on behalf of
+// more than one workflow — for a person to read: a user's workflow as
+// "name (login)", the server's as its bare name. The key itself joins the two
+// with a control character.
+func describeWorkflowKeys(keys string) string {
+	if keys == "" {
+		return ""
+	}
+	parts := strings.Split(keys, ",")
+	for i, key := range parts {
+		if user, name := config.SplitOwnershipKey(key); user != "" {
+			parts[i] = fmt.Sprintf("%s (%s)", name, user)
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 func orNone(s string) string {
@@ -999,8 +1046,9 @@ func writeCacheMissLog(state cacheMissState) {
 
 	db := config.C().DB
 
-	// Gather local comment count
-	localComments, _ := db.GetLocalCommentsForPR("", state.owner, state.repo, state.number)
+	// Gather local comment count: the viewer's drafts, the ones this request
+	// merged in.
+	localComments, _ := db.GetLocalCommentsForPR(state.viewer, state.owner, state.repo, state.number)
 	localCommentCount := len(localComments)
 
 	// Gather workflow info: when was this PR first added by the workflow?
@@ -1072,7 +1120,12 @@ func writeCacheMissLog(state cacheMissState) {
 	}
 }
 
-func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDetails, error) {
+// GetPRDetails returns everything a review of the PR shows, from the DB caches
+// where they hold it and from GitHub where they don't. Everything in it is
+// shared by every user but the drafts merged into Comments, which are viewer's
+// own: "" for the server's, which is also what callers serving no one in
+// particular (the post-update hooks, the AI features) pass.
+func GetPRDetails(viewer, owner, repo string, number int, skipCache bool) (*PRDetails, error) {
 	client := git_tools.GetGithubClient()
 	ctx := context.Background()
 
@@ -1081,7 +1134,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// The probes run even under skipCache: a forced refresh doesn't consult the
 	// caches, but reporting every field as MISS just because we chose not to
 	// read them tells us nothing about whether the warm path is working.
-	missState := cacheMissState{owner: owner, repo: repo, number: number, skipCache: skipCache}
+	missState := cacheMissState{viewer: viewer, owner: owner, repo: repo, number: number, skipCache: skipCache}
 	if v, _ := config.C().DB.GetPRMetadataCache(owner, repo, number); v != "" {
 		missState.metadataHit = true
 	}
@@ -1386,7 +1439,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	comments := convertToPRComments(githubComments)
 	comments = filterComments(comments)
 
-	localComments, err := config.C().DB.GetLocalCommentsForPR("", owner, repo, number)
+	localComments, err := config.C().DB.GetLocalCommentsForPR(viewer, owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "pr", number, "repo", repo, "error", err)
 	}
@@ -1466,14 +1519,17 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}, nil
 }
 
-func GetFullPRResponse(owner string, repo string, number int, skipCache bool, details *PRDetails) (string, error) {
+// GetFullPRResponse renders the PR as the formatted text clients show. details,
+// when given, is what it renders; otherwise it fetches them for viewer, whose
+// drafts appear among the comments (see GetPRDetails).
+func GetFullPRResponse(viewer, owner, repo string, number int, skipCache bool, details *PRDetails) (string, error) {
 
 	// If we have details, use them. Otherwise, fetch everything.
 	// NOTE: This fallback path might be less optimized than the original if we don't fully implement it,
 	// but currently GetFullPRResponse is only called with details from fetchPRAndRunPlugins.
 	// If it's called with nil, we should probably fetch details first.
 	if details == nil {
-		d, err := GetPRDetails(owner, repo, number, skipCache)
+		d, err := GetPRDetails(viewer, owner, repo, number, skipCache)
 		if err != nil {
 			return "", err
 		}
@@ -1850,7 +1906,9 @@ func (c *JSONPRComment) GetDiffHunk() string     { return c.DiffHunk }
 func (c *JSONPRComment) GetReviewID() int64      { return c.ReviewID }
 func (c *JSONPRComment) GetHTMLURL() string      { return c.HTMLURL }
 
-func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
+// GetPRDiffWithInlineComments formats the PR's diff with its comments, and
+// viewer's drafts, inline.
+func GetPRDiffWithInlineComments(viewer, owner, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
 	client := git_tools.GetGithubClient()
 
 	// Check database first - skip API call if cached
@@ -1867,7 +1925,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 				// Continue to fetch from API
 			} else {
 				// Process cached diff with comments
-				return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff, skipCache, cachedSha)
+				return processPRDiffWithComments(client, viewer, owner, repo, number, cachedBody, parsedDiff, skipCache, cachedSha)
 			}
 		}
 	}
@@ -1900,10 +1958,10 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 	}
 
 	// Store the result in the database (with latest_sha for future feature)
-	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
+	return processPRDiffWithComments(client, viewer, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
 }
 
-func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
+func processPRDiffWithComments(client *github.Client, viewer, owner, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
 	var githubComments []*github.PullRequestComment
 	var comments []PRComment
 
@@ -1952,8 +2010,8 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 		comments = filterComments(comments)
 	}
 
-	// Fetch LocalComments from database for this specific PR and add them to the comments list
-	localComments, err := config.C().DB.GetLocalCommentsForPR("", owner, repo, number)
+	// Fetch the viewer's LocalComments for this specific PR and add them to the comments list
+	localComments, err := config.C().DB.GetLocalCommentsForPR(viewer, owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		// Continue without local comments

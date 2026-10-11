@@ -559,7 +559,7 @@ func TestGetPRDetailsRecordsWhatItKnewForAI(t *testing.T) {
 	db := aiTestSetup(t, nil)
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 
-	details, err := GetPRDetails(aiOwner, aiRepo, aiNumber, false)
+	details, err := GetPRDetails("", aiOwner, aiRepo, aiNumber, false)
 	if err != nil {
 		t.Fatalf("GetPRDetails: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestGetPRDetailsRecordsWhatItKnewForAI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	details, err = GetPRDetails(aiOwner, aiRepo, aiNumber, false)
+	details, err = GetPRDetails("", aiOwner, aiRepo, aiNumber, false)
 	if err != nil {
 		t.Fatalf("GetPRDetails: %v", err)
 	}

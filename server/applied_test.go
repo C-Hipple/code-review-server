@@ -151,7 +151,7 @@ func TestOrderDiffFilesNeverStartsARun(t *testing.T) {
 		return nil, nil
 	}
 
-	details, err := GetPRDetails(aiOwner, aiRepo, aiNumber, false)
+	details, err := GetPRDetails("", aiOwner, aiRepo, aiNumber, false)
 	if err != nil {
 		t.Fatalf("GetPRDetails: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	if second.Metadata.ReviewEase != "easy" {
 		t.Errorf("metadata review_ease = %q, want easy", second.Metadata.ReviewEase)
 	}
-	items, err := NewOrgRenderer(db).GetAllReviewItems()
+	items, err := NewOrgRenderer(db, "").GetAllReviewItems()
 	if err != nil || len(items) != 1 || items[0].ReviewEase != "easy" {
 		t.Errorf("the review list should carry the rating: %+v (err %v)", items, err)
 	}

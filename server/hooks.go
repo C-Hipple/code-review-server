@@ -105,7 +105,9 @@ func currentAIInputs(repo string, number int) (sha, digest string) {
 // serves it from the caches (reaching GitHub only on a miss), and the key is
 // read afterwards so it describes the caches as the feature saw them.
 func buildAIRequest(owner, repo string, number int) (ai.Request, error) {
-	details, err := GetPRDetails(owner, repo, number, false)
+	// Whose drafts come along makes no difference: the features judge what is
+	// on GitHub and leave every draft out (aiDiscussion).
+	details, err := GetPRDetails("", owner, repo, number, false)
 	if err != nil {
 		return ai.Request{}, err
 	}
@@ -249,7 +251,7 @@ func cleanRepoPath(p string) (string, error) {
 // triggered this, so the GetPRDetails call below is expected to be all cache
 // hits. It blocks for that read, so callers run it in a goroutine.
 func WarmPRAnalysis(owner, repo string, number int) {
-	details, err := GetPRDetails(owner, repo, number, false)
+	details, err := GetPRDetails("", owner, repo, number, false)
 	if err != nil {
 		slog.Warn("Error loading PR details to warm post-update hooks", "repo", repo, "pr", number, "error", err)
 		return

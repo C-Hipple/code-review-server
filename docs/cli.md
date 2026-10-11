@@ -34,6 +34,8 @@ Lists all PRs across all sections in a tab-aligned table format.
 - `AUTHOR` — PR author
 - `TITLE` — PR title
 
+On a server that keeps dashboards for registered users, every user's PRs are listed after the server's own, and a leading `USER` column says whose dashboard each row is on (empty for the server's). Without users the column is left out.
+
 **Example:**
 ```bash
 $ codereviewserver -list-prs
@@ -51,6 +53,8 @@ Lists all configured sections with their priority and item count.
 - `PRIORITY` — Section ordering priority (lower numbers first)
 - `ITEMS` — Number of PRs in the section
 
+As with `-list-prs`, a leading `USER` column appears once users have sections of their own.
+
 **Example:**
 ```bash
 $ codereviewserver -list-sections
@@ -65,7 +69,7 @@ Fetches and displays cached details for a specific PR. Uses the same code path a
 
 **Format:** `-pr owner/repo/number`
 
-**Output:** Full PR details including metadata, diff, comments, reviews, and local feedback.
+**Output:** Full PR details including metadata, diff, comments, reviews, and local feedback. The drafts shown are the server's own, the ones a local client writes.
 
 **Example:**
 ```bash

@@ -8,6 +8,7 @@ import (
 	"crs/git_tools"
 	"crs/workflows"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/rpc"
@@ -52,7 +53,13 @@ func (s *Stdio) Close() error {
 	return nil
 }
 
-type RPCHandler struct{}
+// RPCHandler serves the RPC methods to one connection. session is who that
+// connection acts as; nil is the local stdio connection, which RunServer
+// serves with a zero RPCHandler: the server's own identity, login "", and an
+// administrator. Each remote connection gets a handler and Session of its own.
+type RPCHandler struct {
+	session *Session
+}
 
 type HelloArgs struct{}
 type HelloReply struct {
@@ -61,12 +68,14 @@ type HelloReply struct {
 }
 
 func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
-	var count int
-	err := config.C().DB.QueryRow("SELECT COUNT(*) FROM sections").Scan(&count)
+	// The viewer's own sections: the count says how much of a dashboard there
+	// is to show, and other users' are none of this connection's business.
+	sections, err := config.C().DB.GetSectionsForUser(h.viewer())
 	if err != nil {
-		slog.Error("Error counting items", "error", err)
+		slog.Error("Error counting sections", "error", err)
 		return err
 	}
+	count := len(sections)
 	CurrentCount += count
 	reply.Content = fmt.Sprintf("hello %d", CurrentCount)
 	reply.Count = count
@@ -128,7 +137,7 @@ func (h *RPCHandler) GetAllReviews(args *GetReviewsArgs, reply *GetReviewsReply)
 		slog.Error("Error reloading config", "error", err)
 	}
 
-	renderer := NewOrgRenderer(config.C().DB)
+	renderer := NewOrgRenderer(config.C().DB, h.viewer())
 	content, items, err := renderer.RenderAndGetItems(RenderOptions{
 		IncludeDiff:     args.IncludeDiff,
 		IncludeComments: args.IncludeComments,
@@ -174,8 +183,9 @@ type PRPayload struct {
 }
 
 // populate fills the payload from fetched PR details, normalizing nil slices
-// to empty ones so JSON clients always see [] instead of null.
-func (p *PRPayload) populate(details *PRDetails, content string, owner, repo string, number int) {
+// to empty ones so JSON clients always see [] instead of null. The feedback is
+// viewer's own.
+func (p *PRPayload) populate(viewer string, details *PRDetails, content string, owner, repo string, number int) {
 	p.Okay = true
 	p.Content = content
 	p.Metadata = &details.Metadata
@@ -197,7 +207,7 @@ func (p *PRPayload) populate(details *PRDetails, content string, owner, repo str
 		p.Commits = []CommitJSON{}
 	}
 
-	feedback, err := config.C().DB.GetFeedback("", owner, repo, number)
+	feedback, err := config.C().DB.GetFeedback(viewer, owner, repo, number)
 	if err != nil {
 		slog.Warn("Error loading feedback for PR reply", "repo", repo, "pr", number, "error", err)
 	}
@@ -220,22 +230,26 @@ type GetPRReply struct {
 }
 
 func (h *RPCHandler) GetPR(args *GetPRstructArgs, reply *GetPRReply) error {
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, args.SkipCache)
+	viewer := h.viewer()
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, args.SkipCache)
 	if err != nil {
 		return err
 	}
 	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
-// fetchPR fetches PR details plus the fully formatted content string. It is a
-// pure query: it reads caches (or GitHub on a miss) but never dispatches
-// plugins or AI features — callers that want those side effects invoke
-// ensurePostUpdateHooks explicitly.
-func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
+// fetchPR fetches PR details plus the fully formatted content string, with
+// viewer's drafts among the comments. It is a pure query: it reads caches (or
+// GitHub on a miss) but never dispatches plugins or AI features — callers that
+// want those side effects invoke ensurePostUpdateHooks explicitly.
+//
+// Handlers read their viewer once and pass it along, so a call is served as
+// one identity throughout even if its connection authenticates again midway.
+func fetchPR(viewer, owner, repo string, number int, skipCache bool) (*PRDetails, string, error) {
 	fetchStart := time.Now()
-	details, err := GetPRDetails(owner, repo, number, skipCache)
+	details, err := GetPRDetails(viewer, owner, repo, number, skipCache)
 	if err != nil {
 		slog.Error("Error fetching PR details", "error", err)
 		return nil, "", err
@@ -245,7 +259,7 @@ func (h *RPCHandler) fetchPR(owner, repo string, number int, skipCache bool) (*P
 	// Get the full formatted response for the UI.
 	// We pass the already fetched details to avoid redundant API calls.
 	renderStart := time.Now()
-	content, err := GetFullPRResponse(owner, repo, number, false, details)
+	content, err := GetFullPRResponse(viewer, owner, repo, number, false, details)
 	if err != nil {
 		slog.Error("Error building formatted PR response", "repo", repo, "pr", number, "error", err)
 	}
@@ -356,7 +370,9 @@ type GetAdjacentPRReply struct {
 }
 
 func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPRReply) error {
-	renderer := NewOrgRenderer(config.C().DB)
+	// Next and previous walk the viewer's own review list.
+	viewer := h.viewer()
+	renderer := NewOrgRenderer(config.C().DB, viewer)
 	// Adjacency only needs the ordered items; skip rendering the org text.
 	items, err := renderer.GetAllReviewItems()
 	if err != nil {
@@ -393,7 +409,7 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 
 	adjacent := items[adjacentIdx]
 	slog.Info("GetAdjacentPR returning", "owner", adjacent.Owner, "repo", adjacent.Repo, "number", adjacent.Number)
-	details, content, err := h.fetchPR(adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
+	details, content, err := fetchPR(viewer, adjacent.Owner, adjacent.Repo, adjacent.Number, args.SkipCache)
 	if err != nil {
 		return err
 	}
@@ -402,7 +418,7 @@ func (h *RPCHandler) GetAdjacentPR(args *GetAdjacentPRArgs, reply *GetAdjacentPR
 	reply.AdjacentOwner = adjacent.Owner
 	reply.AdjacentRepo = adjacent.Repo
 	reply.AdjacentNumber = adjacent.Number
-	reply.populate(details, content, adjacent.Owner, adjacent.Repo, adjacent.Number)
+	reply.populate(viewer, details, content, adjacent.Owner, adjacent.Repo, adjacent.Number)
 	return nil
 }
 
@@ -422,18 +438,19 @@ type AddCommentReply struct {
 }
 
 func (h *RPCHandler) AddComment(args *AddCommentArgs, reply *AddCommentReply) error {
-	comment, err := config.C().DB.InsertLocalComment("", args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
+	viewer := h.viewer()
+	comment, err := config.C().DB.InsertLocalComment(viewer, args.Owner, args.Repo, args.Number, args.Filename, args.Position, &args.Body, args.ReplyToID)
 	if err != nil {
 		slog.Error("Error inserting local comment", "error", err)
 		return err
 	}
 	reply.ID = comment.ID
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -450,17 +467,18 @@ type EditCommentReply struct {
 }
 
 func (h *RPCHandler) EditComment(args *EditCommentArgs, reply *EditCommentReply) error {
-	err := config.C().DB.UpdateLocalComment("", args.ID, args.Body)
+	viewer := h.viewer()
+	err := config.C().DB.UpdateLocalComment(viewer, args.ID, args.Body)
 	if err != nil {
-		slog.Error("Error updating local comment", "error", err)
-		return err
+		slog.Error("Error updating local comment", "id", args.ID, "error", err)
+		return localCommentError(err)
 	}
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -476,18 +494,30 @@ type DeleteCommentReply struct {
 }
 
 func (h *RPCHandler) DeleteComment(args *DeleteCommentArgs, reply *DeleteCommentReply) error {
-	err := config.C().DB.DeleteLocalComment("", args.ID)
+	viewer := h.viewer()
+	err := config.C().DB.DeleteLocalComment(viewer, args.ID)
 	if err != nil {
-		slog.Error("Error deleting local comment", "error", err)
-		return err
+		slog.Error("Error deleting local comment", "id", args.ID, "error", err)
+		return localCommentError(err)
 	}
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
+}
+
+// localCommentError is the error EditComment and DeleteComment return for a
+// draft the database would not touch. A draft id that is not the viewer's —
+// someone else's, or none at all — reads the same either way, so an id is no
+// way to learn whether another user's draft exists.
+func localCommentError(err error) error {
+	if errors.Is(err, database.ErrNotFound) {
+		return errors.New("comment not found")
+	}
+	return err
 }
 
 type SetFeedbackArgs struct {
@@ -503,17 +533,18 @@ type SetFeedbackReply struct {
 }
 
 func (h *RPCHandler) SetFeedback(args *SetFeedbackArgs, reply *SetFeedbackReply) error {
-	err := config.C().DB.InsertFeedback("", args.Owner, args.Repo, args.Number, &args.Body)
+	viewer := h.viewer()
+	err := config.C().DB.InsertFeedback(viewer, args.Owner, args.Repo, args.Number, &args.Body)
 	if err != nil {
 		slog.Error("Error inserting feedback", "error", err)
 		return err
 	}
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -528,17 +559,18 @@ type RemovePRCommentsReply struct {
 }
 
 func (h *RPCHandler) RemovePRComments(args *RemovePRCommentsArgs, reply *RemovePRCommentsReply) error {
-	err := config.C().DB.DeleteLocalCommentsForPR("", args.Owner, args.Repo, args.Number)
+	viewer := h.viewer()
+	err := config.C().DB.DeleteLocalCommentsForPR(viewer, args.Owner, args.Repo, args.Number)
 	if err != nil {
 		slog.Error("Error removing local comments", "error", err)
 		return err
 	}
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, false)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, false)
 	if err != nil {
 		return err
 	}
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -592,8 +624,10 @@ func resolveReplyAnchor(c database.LocalComment, pending map[int64]database.Loca
 }
 
 func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewReply) error {
-	// 1. Fetch Local Comments
-	comments, err := config.C().DB.GetLocalCommentsForPR("", args.Owner, args.Repo, args.Number)
+	// 1. Fetch Local Comments: the viewer's own drafts, which are all this
+	// review is made of.
+	viewer := h.viewer()
+	comments, err := config.C().DB.GetLocalCommentsForPR(viewer, args.Owner, args.Repo, args.Number)
 	if err != nil {
 		slog.Error("Error fetching local comments", "error", err)
 		return err
@@ -617,7 +651,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 		if c.Body == nil {
 			// Nothing to submit, and nothing worth keeping: an empty row would
 			// sit in the pending list forever.
-			if err := config.C().DB.DeleteLocalComment("", c.ID); err != nil {
+			if err := config.C().DB.DeleteLocalComment(viewer, c.ID); err != nil {
 				slog.Error("Error deleting empty local comment", "id", c.ID, "error", err)
 			}
 			continue
@@ -634,7 +668,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			// Already on GitHub, so drop it now rather than after the review
 			// call below: if that call fails and the reviewer submits again,
 			// this reply must not be posted a second time.
-			if err := config.C().DB.DeleteLocalComment("", c.ID); err != nil {
+			if err := config.C().DB.DeleteLocalComment(viewer, c.ID); err != nil {
 				slog.Error("Error deleting submitted reply", "id", c.ID, "error", err)
 			}
 			continue
@@ -693,7 +727,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 
 		// 4. Clean up the Local Comments GitHub now has
 		for _, id := range reviewCommentIDs {
-			if err := config.C().DB.DeleteLocalComment("", id); err != nil {
+			if err := config.C().DB.DeleteLocalComment(viewer, id); err != nil {
 				slog.Error("Error deleting local comment after submission", "id", id, "error", err)
 			}
 		}
@@ -703,7 +737,8 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// dashboard reflects the review well before the next cycle, up to ten
 	// minutes away. Every targeting workflow is consulted, not just the ones
 	// holding the PR: a review can move a PR into a section ("waiting on
-	// author") as easily as out of one ("needs review").
+	// author") as easily as out of one ("needs review"). That is every active
+	// user's workflows too (workflows.RunSet), the reviewer's among them.
 	//
 	// Dispatched, not awaited. It is a second GitHub fan-out over the same PR,
 	// and the reply below is built from a fresh fetch of its own rather than
@@ -712,7 +747,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// rewrites are read by the dashboard, which refetches when it is opened.
 	workflows.ReprocessPRAsync(args.Owner, args.Repo, args.Number)
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
@@ -720,7 +755,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// dispatch in goroutines and are debounced per head SHA, so on the usual
 	// path — a review that changes no commits — this costs nothing.
 	ensurePostUpdateHooks(args.Owner, args.Repo, args.Number, details)
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -777,12 +812,13 @@ type SyncPRReply struct {
 }
 
 func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
+	viewer := h.viewer()
 	// Snapshot the cached state so we can tell the client whether the sync
 	// actually pulled in anything new. The fresh fetch below overwrites these
 	// cache entries.
 	before := readSyncSnapshot(args.Repo, args.Number)
 
-	details, content, err := h.fetchPR(args.Owner, args.Repo, args.Number, true)
+	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, true)
 	if err != nil {
 		return err
 	}
@@ -794,7 +830,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 
 	reply.Updated = syncDetectedChanges(before, readSyncSnapshot(args.Repo, args.Number))
 
-	reply.populate(details, content, args.Owner, args.Repo, args.Number)
+	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
 }
 
@@ -1775,7 +1811,7 @@ func (h *RPCHandler) GetPluginOutput(args *GetPluginOutputArgs, reply *GetPlugin
 	if len(results) == 0 {
 		slog.Info("No plugin results found, triggering async run", "pr", args.Number)
 		go func() {
-			details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+			details, err := GetPRDetails("", args.Owner, args.Repo, args.Number, false)
 			if err != nil {
 				slog.Error("Error fetching PR details for plugin trigger", "repo", args.Repo, "pr", args.Number, "error", err)
 				return
@@ -1829,7 +1865,7 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 	// the details can reach GitHub on a cache miss, and the caller only needs
 	// to know the rerun was accepted. Results arrive through GetPluginOutput.
 	go func() {
-		details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
+		details, err := GetPRDetails("", args.Owner, args.Repo, args.Number, false)
 		if err != nil {
 			slog.Error("Error fetching PR details for plugin rerun", "repo", args.Repo, "pr", args.Number, "error", err)
 			return

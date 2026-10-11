@@ -1048,7 +1048,7 @@ func TestBuildItemLinesRenderOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create item: %v", err)
 	}
-	r := NewOrgRenderer(db)
+	r := NewOrgRenderer(db, "")
 
 	for _, tc := range []struct {
 		name    string
@@ -1140,7 +1140,7 @@ func TestBuildItemLinesIncludesReviewEaseTag(t *testing.T) {
 	storeAIResult(t, db, "C-Hipple", "code-review-server", 83, ai.ReviewEaseID, ai.StatusSuccess, "sha-1",
 		ai.Result{Report: ai.ReviewEaseReport{Rating: "medium"}})
 
-	r := NewOrgRenderer(db)
+	r := NewOrgRenderer(db, "")
 	lines := r.buildItemLines(item, 2, FullRenderOptions())
 	if len(lines) == 0 {
 		t.Fatal("no lines rendered")
@@ -1175,7 +1175,7 @@ func TestReviewItemsCarryRequiredTeams(t *testing.T) {
 		t.Fatalf("failed to create item: %v", err)
 	}
 
-	r := NewOrgRenderer(db)
+	r := NewOrgRenderer(db, "")
 
 	// Nothing resolved yet: the row renders without team chips rather than
 	// failing or waiting on GitHub.
@@ -1228,7 +1228,7 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 		t.Fatalf("failed to create item: %v", err)
 	}
 
-	r := NewOrgRenderer(db)
+	r := NewOrgRenderer(db, "")
 
 	// Nothing cached yet: the row simply has no count.
 	items, err := r.GetAllReviewItems()
@@ -1343,7 +1343,7 @@ func TestReviewItemsCarryMergeConflicts(t *testing.T) {
 		}
 	}
 
-	content, items, err := NewOrgRenderer(db).RenderAndGetItems(RenderOptions{})
+	content, items, err := NewOrgRenderer(db, "").RenderAndGetItems(RenderOptions{})
 	if err != nil {
 		t.Fatalf("RenderAndGetItems: %v", err)
 	}

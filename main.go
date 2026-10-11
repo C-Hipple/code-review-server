@@ -33,6 +33,7 @@ func main() {
 	listSections := flag.Bool("list-sections", false, "List all sections from the database, every user's included")
 	getPRFlag := flag.String("pr", "", "Get cached details for a specific PR (format: owner/repo/number)")
 	printDefaultConfig := flag.Bool("print-default-config", false, "Print the built-in default configuration and exit")
+	printUserConfig := flag.Bool("print-user-config", false, "Print what registering with a hosted server sends from the config file (its Workflows, Repos, SectionPriority and SectionSorting) as JSON and exit")
 	listenAddr := flag.String("listen", "", "Run the workflows and serve remote clients over TCP on host:port, instead of one client over stdio")
 	flag.Parse()
 
@@ -42,6 +43,18 @@ func main() {
 		fmt.Print(config.DefaultConfigTOML)
 		return
 	}
+	// Likewise the payload a client registers with: it runs on the client's
+	// machine, which may have no database or token at all.
+	if *printUserConfig {
+		out, err := config.UserConfigJSON()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+		return
+	}
+
 	if *listenAddr != "" && (*serverFlag || *oneOff) {
 		fmt.Fprintln(os.Stderr, "error: -listen cannot be combined with -server or -oneoff")
 		os.Exit(1)

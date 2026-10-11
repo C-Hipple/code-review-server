@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { spawn } from 'bun';
-import { type GetImageReply, parseGitHubImageUrl } from './github_images';
+import { githubImageResponse } from './github_images';
 import { readLocationLines } from './lsp_lines';
 import {
     diffLspCheckout,
@@ -10,7 +10,12 @@ import {
     LspSessionPool,
     startLspServer,
 } from './lsp_pool';
-import { RemoteRpcClient, type RemoteSettings, remoteSettingsFromEnv } from './remote_rpc';
+import {
+    type BridgeSessionInfo,
+    RemoteRpcClient,
+    type RemoteSettings,
+    remoteSettingsFromEnv,
+} from './remote_rpc';
 import { JsonRpcLineParser } from './rpc_framing';
 
 let assets: Record<string, string> = {};
@@ -166,7 +171,8 @@ if (remote) {
         `[RpcBridge] Remote mode: crs at ${remote.address}${remote.tls ? ' over TLS' : ''}`
     );
 }
-const bridge: Pick<RpcBridge, 'call'> = remote ? new RemoteRpcClient(remote) : new RpcBridge();
+const remoteClient = remote ? new RemoteRpcClient(remote) : null;
+const bridge: Pick<RpcBridge, 'call'> = remoteClient ?? new RpcBridge();
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -386,6 +392,36 @@ Bun.serve<{
             return handleRpc('RPCHandler.GetAIOutput', [body]);
         }
 
+        // Linking the user's GitHub account on a shared server, so their
+        // reviews go out as them (docs/protocol.md). Locally the server
+        // answers that it links nothing.
+        if (url.pathname === '/api/start-github-link' && req.method === 'POST') {
+            return handleRpc('RPCHandler.StartGitHubLink', [{}]);
+        }
+
+        if (
+            url.pathname === '/api/get-github-link' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            return handleRpc('RPCHandler.GetGitHubLink', [{}]);
+        }
+
+        if (url.pathname === '/api/unlink-github' && req.method === 'POST') {
+            return handleRpc('RPCHandler.UnlinkGitHub', [{}]);
+        }
+
+        // Who the bridge is connected as: remote or not, and on a shared
+        // server the login, whether it is an administrator and whether its
+        // GitHub account is linked.
+        if (url.pathname === '/api/session' && req.method === 'GET') {
+            const session: BridgeSessionInfo = remoteClient
+                ? await remoteClient.describeSession()
+                : { remote: false };
+            return new Response(JSON.stringify(session), {
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+            });
+        }
+
         if (url.pathname === '/api/get-config' && (req.method === 'POST' || req.method === 'GET')) {
             return handleRpc('RPCHandler.GetConfig', [{}]);
         }
@@ -414,52 +450,15 @@ Bun.serve<{
         // Serve a GitHub-hosted image embedded in a comment or review. The Go
         // server owns the download — it holds the token a private repo's
         // attachments require, and caching there means every client gets the
-        // same images — so this hands back the file it cached.
+        // same images — so this hands back what it cached: the file, or in
+        // remote mode the bytes, since its files are on another machine.
         if (url.pathname === '/api/github-image' && req.method === 'GET') {
-            const target = parseGitHubImageUrl(url.searchParams.get('url'));
-            if (!target) {
-                return new Response('Not a GitHub image URL', {
-                    status: 400,
-                    headers: CORS_HEADERS,
-                });
-            }
-            try {
-                const image = (await bridge.call('RPCHandler.GetImage', [
-                    { URL: target.href },
-                ])) as GetImageReply;
-                if (!image?.okay || !image.path) {
-                    console.error(`[Image] ${image?.error || 'no path'} for ${target.href}`);
-                    return new Response('Image unavailable', {
-                        status: 502,
-                        headers: CORS_HEADERS,
-                    });
-                }
-                const file = Bun.file(image.path);
-                if (!(await file.exists())) {
-                    // A remote server caches on its own host, out of reach.
-                    console.error(
-                        remote
-                            ? `[Image] ${image.path} is on the crs host, which remote mode can't read`
-                            : `[Image] cached file is gone: ${image.path}`
-                    );
-                    return new Response('Image unavailable', {
-                        status: 502,
-                        headers: CORS_HEADERS,
-                    });
-                }
-                return new Response(file, {
-                    headers: {
-                        ...CORS_HEADERS,
-                        'Content-Type': image.content_type || 'application/octet-stream',
-                        // The same screenshot re-renders on every keystroke in
-                        // a reply box.
-                        'Cache-Control': 'private, max-age=600',
-                    },
-                });
-            } catch (err) {
-                console.error(`[Image] could not load ${target.href}:`, err);
-                return new Response('Image unavailable', { status: 502, headers: CORS_HEADERS });
-            }
+            return githubImageResponse(
+                (method, params) => bridge.call(method, params),
+                url.searchParams.get('url'),
+                !!remote,
+                CORS_HEADERS
+            );
         }
 
         // Read file contents from repository

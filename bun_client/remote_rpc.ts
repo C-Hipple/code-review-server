@@ -18,6 +18,10 @@
 // with `not authenticated:` re-runs the flow on its connection and is retried
 // once. Errors are rejected as strings, the shape a Go error string arrives in,
 // so the frontend shows them the same way.
+//
+// Who the flow signed in as — the login, whether it is an administrator, and
+// whether its GitHub account is linked for writes — is kept for the web UI's
+// /api/session (describeSession).
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -170,7 +174,15 @@ export function readUserConfig(path: string): {
     };
 }
 
-interface AuthenticateReply {
+/** The flags Authenticate, RegisterUser and GetMyWorkflows carry about the user's GitHub link. */
+interface GitHubLinkFlags {
+    /** Their own GitHub account is linked, so their reviews go out as them. */
+    github_linked?: boolean;
+    /** The server can link GitHub accounts (StartGitHubLink). */
+    github_link_available?: boolean;
+}
+
+interface AuthenticateReply extends GitHubLinkFlags {
     okay: boolean;
     known: boolean;
     login: string;
@@ -178,7 +190,7 @@ interface AuthenticateReply {
     message: string;
 }
 
-interface RegisterUserReply {
+interface RegisterUserReply extends GitHubLinkFlags {
     okay: boolean;
     created: boolean;
     login: string;
@@ -186,6 +198,37 @@ interface RegisterUserReply {
     is_admin: boolean;
     message: string;
     errors: unknown[] | null;
+}
+
+/**
+ * What GET /api/session tells the web UI about the bridge's connection.
+ * Spawning crs locally it is `{ remote: false }`: the local connection is the
+ * token owner's own, and links nothing.
+ */
+export interface BridgeSessionInfo {
+    /** Connected to a shared server (CRS_REMOTE) rather than a crs of its own. */
+    remote: boolean;
+    /** CRS_REMOTE, for display. */
+    address?: string;
+    /** The login the connect flow signed in as; '' for the administrator token. */
+    login?: string;
+    is_admin?: boolean;
+    github_linked?: boolean;
+    github_link_available?: boolean;
+    /** Why the session could not be read just now, e.g. the server is unreachable. */
+    error?: string;
+}
+
+/** Who the connect flow signed in as. */
+type RemoteSession = Required<Omit<BridgeSessionInfo, 'remote' | 'address' | 'error'>>;
+
+function sessionFrom(reply: AuthenticateReply | RegisterUserReply): RemoteSession {
+    return {
+        login: reply.login ?? '',
+        is_admin: !!reply.is_admin,
+        github_linked: !!reply.github_linked,
+        github_link_available: !!reply.github_link_available,
+    };
 }
 
 interface JsonRpcResponse {
@@ -330,6 +373,8 @@ export class RemoteRpcClient {
     private lastError = '';
     // A token the server issued while CRS_REMOTE_TOKEN named another one.
     private issuedToken = '';
+    // Who the last connect flow signed in as.
+    private session: RemoteSession | null = null;
     private cancelSleep: (() => void) | null = null;
     private readonly opts: Required<RemoteRpcOptions>;
 
@@ -371,6 +416,28 @@ export class RemoteRpcClient {
                 this.queue.push(call);
             }
         });
+    }
+
+    /**
+     * The session for the web UI: who the connect flow signed in as, with the
+     * GitHub link read fresh (GetMyWorkflows), since a link made or removed —
+     * from this UI or another client — changes it after the flow ran. When
+     * that read fails, the last known state comes back with the reason.
+     */
+    async describeSession(): Promise<BridgeSessionInfo> {
+        const base = { remote: true, address: this.settings.address };
+        try {
+            const reply = (await this.call('RPCHandler.GetMyWorkflows', [
+                {},
+            ])) as GitHubLinkFlags | null;
+            if (this.session) {
+                this.session.github_linked = !!reply?.github_linked;
+                this.session.github_link_available = !!reply?.github_link_available;
+            }
+        } catch (e) {
+            return { ...base, ...this.session, error: errorText(e) };
+        }
+        return { ...base, ...this.session };
     }
 
     /** Closes the connection for good, failing anything still waiting. */
@@ -481,6 +548,7 @@ export class RemoteRpcClient {
                 Token: token,
             })) as AuthenticateReply;
             if (reply?.okay) {
+                this.session = sessionFrom(reply);
                 conn.authEpoch++;
                 return;
             }
@@ -548,6 +616,7 @@ export class RemoteRpcClient {
                 `${this.where} issued a token other than CRS_REMOTE_TOKEN; it was saved to ${settings.tokenFile}, but CRS_REMOTE_TOKEN wins on the next start — update or unset it`
             );
         }
+        this.session = sessionFrom({ ...reply, login: reply.login || login });
         const who = `${reply.login || login}${reply.is_admin ? ' (administrator)' : ''}`;
         this.opts.log(
             `${reply.created ? 'Registered' : 'Re-registered'} with ${this.where} as ${who}; token saved to ${settings.tokenFile}`

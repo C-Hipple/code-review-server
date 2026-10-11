@@ -277,6 +277,80 @@ describe('RemoteRpcClient connect flow', () => {
     });
 });
 
+describe('RemoteRpcClient session', () => {
+    test('describes who the connect flow signed in as, the GitHub link read fresh', async () => {
+        let linked = false;
+        const { server, settings, connect } = setup({
+            'RPCHandler.Authenticate': (args, session) => {
+                session.login = 'octocat';
+                return {
+                    okay: args.Token === TOKEN_A,
+                    known: true,
+                    login: 'octocat',
+                    is_admin: true,
+                    message: '',
+                    github_linked: false,
+                    github_link_available: true,
+                };
+            },
+            'RPCHandler.GetMyWorkflows': () => ({
+                okay: true,
+                known: true,
+                login: 'octocat',
+                github_linked: linked,
+                github_link_available: true,
+            }),
+        });
+        await Bun.write(settings.tokenFile, `${TOKEN_A}\n`);
+        const client = connect();
+
+        expect(await client.describeSession()).toEqual({
+            remote: true,
+            address: settings.address,
+            login: 'octocat',
+            is_admin: true,
+            github_linked: false,
+            github_link_available: true,
+        });
+
+        // Linked since the flow ran, from this UI or another client.
+        linked = true;
+        expect(await client.describeSession()).toMatchObject({ github_linked: true });
+        expect(server.methods()).toEqual([
+            'RPCHandler.Authenticate',
+            'RPCHandler.GetMyWorkflows',
+            'RPCHandler.GetMyWorkflows',
+        ]);
+    });
+
+    test('a registration signs in as the login the server registered', async () => {
+        const { connect } = setup({
+            'RPCHandler.GetMyWorkflows': () => ({ okay: true, known: true }),
+        });
+        expect(await connect().describeSession()).toMatchObject({
+            remote: true,
+            login: 'octocat',
+            is_admin: false,
+            github_linked: false,
+            github_link_available: false,
+        });
+    });
+
+    test('says why it could not read the session, with what it last knew', async () => {
+        const { connect } = setup({
+            'RPCHandler.GetMyWorkflows': () => {
+                throw 'could not check this connection’s user: database is locked';
+            },
+        });
+        const session = await connect().describeSession();
+        expect(session).toMatchObject({
+            remote: true,
+            login: 'octocat',
+            error: 'could not check this connection’s user: database is locked',
+        });
+    });
+});
+
 describe('RemoteRpcClient recovery', () => {
     test('a call refused as not authenticated re-runs the flow and is retried once', async () => {
         const { server, connect } = setup();

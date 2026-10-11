@@ -71,6 +71,13 @@ type SyncReviewRequestsWorkflow struct {
 	// DesktopNotifications overrides the global setting for this workflow.
 	// nil means inherit the global config.
 	DesktopNotifications *bool
+
+	// User and SectionPriority place the workflow's section: on User's
+	// dashboard ("" is the server's own), sorted at SectionPriority. User comes
+	// from the RawWorkflow and SectionPriority from that dashboard's settings,
+	// both when the workflow set is built (RunSet).
+	User            string
+	SectionPriority int
 }
 
 func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
@@ -102,31 +109,28 @@ func (w SyncReviewRequestsWorkflow) Run(prs []*github.PullRequest, c chan FileCh
 	// point of the interaction prefilter is that the candidate set is large
 	// and the surviving set is small. See postFilterAuxRequirements.
 	if w.PostFilterAux != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
+		prefetchAuxForFilteredPRs(ownershipKey(w), prs, w.PostFilterAux)
 	}
 	db := config.C().DB
-	section, err := db.GetOrCreateSection("", w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := workflowSection(db, w)
 	if err != nil {
-		slog.Error("Error getting section", "error", err, "section", w.SectionTitle)
+		slog.Error("Error getting section", "error", err, "section", w.SectionTitle, "user", w.User)
 		return RunResult{}, errors.New("Section Not Found")
 	}
 	slog.Debug("Got section", "id", section.ID, "name", section.SectionName)
 
 	beforeCount, _ := db.GetItemCount()
 	slog.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(w.Name, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(ownershipKey(w), prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
 }
 
 // ShouldNotify resolves the effective desktop-notification setting for this
-// workflow: the per-workflow override if set, otherwise the global config.
+// workflow; see shouldNotify.
 func (w SyncReviewRequestsWorkflow) ShouldNotify() bool {
-	if w.DesktopNotifications != nil {
-		return *w.DesktopNotifications
-	}
-	return config.C().DesktopNotifications
+	return shouldNotify(w.User, w.DesktopNotifications)
 }
 
 func (w SyncReviewRequestsWorkflow) GetName() string {
@@ -135,6 +139,31 @@ func (w SyncReviewRequestsWorkflow) GetName() string {
 
 func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
+}
+
+func (w SyncReviewRequestsWorkflow) GetUser() string {
+	return w.User
+}
+
+func (w SyncReviewRequestsWorkflow) GetSectionPriority() int {
+	return w.SectionPriority
+}
+
+// shouldNotify resolves whether a workflow sends a desktop notification for
+// each PR it adds: its own override if set, otherwise the global config.
+//
+// A user's workflow never does, whatever either says. The notification is an
+// osascript popup on the machine the server runs on, which for a hosted server
+// is nobody's desktop — and the global setting is the server owner's choice
+// for their own workflows, not one a user's should inherit.
+func shouldNotify(user string, override *bool) bool {
+	if user != "" {
+		return false
+	}
+	if override != nil {
+		return *override
+	}
+	return config.C().DesktopNotifications
 }
 
 type ProjectListWorkflow struct {
@@ -149,15 +178,17 @@ type ProjectListWorkflow struct {
 	// DesktopNotifications overrides the global setting for this workflow.
 	// nil means inherit the global config.
 	DesktopNotifications *bool
+
+	// User and SectionPriority place the workflow's section, as on
+	// SyncReviewRequestsWorkflow.
+	User            string
+	SectionPriority int
 }
 
 // ShouldNotify resolves the effective desktop-notification setting for this
-// workflow: the per-workflow override if set, otherwise the global config.
+// workflow; see shouldNotify.
 func (w ProjectListWorkflow) ShouldNotify() bool {
-	if w.DesktopNotifications != nil {
-		return *w.DesktopNotifications
-	}
-	return config.C().DesktopNotifications
+	return shouldNotify(w.User, w.DesktopNotifications)
 }
 
 func (w ProjectListWorkflow) GetName() string {
@@ -166,6 +197,14 @@ func (w ProjectListWorkflow) GetName() string {
 
 func (w ProjectListWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
+}
+
+func (w ProjectListWorkflow) GetUser() string {
+	return w.User
+}
+
+func (w ProjectListWorkflow) GetSectionPriority() int {
+	return w.SectionPriority
 }
 
 func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
@@ -178,7 +217,7 @@ func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
 func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
 	client := git_tools.GetGithubClient()
 	db := config.C().DB
-	section, err := db.GetOrCreateSection("", w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := workflowSection(db, w)
 	if err != nil {
 		return RunResult{}, errors.New("Section Not Found")
 	}
@@ -216,7 +255,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(client, w.Name, ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
+		prefetchAuxDataForPRs(client, ownershipKey(w), ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
 			Comments: true,
 			CIStatus: true,
 			Diff:     true,
@@ -230,7 +269,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 
 	beforeCount, _ := db.GetItemCount()
 	slog.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(ownershipKey(w), allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -262,8 +301,9 @@ func resolveRepoRefs(entries []string) []jira.RepoRef {
 // PRs and persists it to the DB caches and the current global AuxDataStore.
 // Used by workflows whose PR set isn't known during the manager's collection
 // phase (ProjectListWorkflow, which resolves PR numbers via Jira at run time)
-// and for post-filter fetches (prefetchAuxForFilteredPRs). workflowName is
-// recorded in WorkflowActionLog alongside the fields each fetch writes.
+// and for post-filter fetches (prefetchAuxForFilteredPRs). workflowName, the
+// requesting workflow's ownership key, is recorded in WorkflowActionLog
+// alongside the fields each fetch writes.
 func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
 	if len(prs) == 0 {
 		return

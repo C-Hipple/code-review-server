@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func main() {
@@ -91,7 +92,10 @@ func main() {
 
 	cfg := config.C()
 	logConfigProblems(&cfg)
-	workflows_list := workflows.MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
+	// The config's workflows and those of the users active now; the manager
+	// rebuilds the set every cycle, so this one only seeds the sections and
+	// the first (or only, under -oneoff) cycle.
+	workflows_list := workflows.RunSet(cfg, time.Now())
 	ms := workflows.NewManagerService(
 		workflows_list,
 		*oneOff,

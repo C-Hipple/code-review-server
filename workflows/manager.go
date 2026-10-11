@@ -117,7 +117,8 @@ func deduplicateChanges(changes []SerializedFileChange) []SerializedFileChange {
 	// one canonical change per item per cycle, but different workflows that
 	// touch the same item must each contribute (e.g. one Update from workflow
 	// A and one Delete from workflow B both need to land so ownership is
-	// tracked correctly).
+	// tracked correctly). WorkflowName is the ownership key, so two users'
+	// workflows of the same name count as different workflows here too.
 	changesByIdentifier := make(map[string][]SerializedFileChange)
 	for _, change := range changes {
 		identifier := change.FileChange.Identifier + "\x00" + change.FileChange.WorkflowName
@@ -158,14 +159,16 @@ func deduplicateChanges(changes []SerializedFileChange) []SerializedFileChange {
 }
 
 func ListenChanges(channel chan FileChanges, wg *sync.WaitGroup) {
-	changesMap := make(map[string][]SerializedFileChange)
+	// Grouped by section id rather than name: two users can both have a
+	// "Needs Review", and their changes must not be deduplicated together.
+	changesMap := make(map[int64][]SerializedFileChange)
 	for fileChange := range channel {
 		if fileChange.ChangeType == "No Change" {
 			wg.Done()
 			continue
 		}
 		fileChange.Report()
-		key := fileChange.SectionName
+		key := fileChange.SectionID
 
 		var lines []string
 		if fileChange.ChangeType != "Delete" {
@@ -453,8 +456,9 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 }
 
 // prClaimedElsewhere reports whether the PR a Delete releases is still listed
-// by another workflow or in another section. On a lookup error it says yes,
-// so a worktree is never removed on a guess.
+// by another workflow or in another section — any user's, since the worktree
+// is the server's and shared by every dashboard listing the PR. On a lookup
+// error it says yes, so a worktree is never removed on a guess.
 func prClaimedElsewhere(db *database.DB, change *FileChanges) bool {
 	items, err := db.GetAllItems()
 	if err != nil {
@@ -485,14 +489,14 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 
 func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
 	// Helper which times the workflow run command.
-	slog.Info("Starting Workflow", "workflow", workflow.GetName())
+	slog.Info("Starting Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser())
 	start := time.Now()
 	result, err := workflow.Run(prs, workflow_chan, file_change_wg)
 	duration := time.Since(start)
 	if err != nil {
-		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
+		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser(), "after", duration, "error", err)
 	}
-	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
+	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser(), "took", duration, "result", result.Report())
 }
 
 // hasUnfetchedRequirements returns true if any PR data required by the workflow was
@@ -606,7 +610,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		// Skip if any required PR data was not successfully fetched (e.g. rate limit).
 		// Running section-matching against an empty list would delete all DB items.
 		if hasUnfetchedRequirements(workflow, repoStatePRs, specificPRs) {
-			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
+			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName(), "user", workflow.GetUser())
 			continue
 		}
 
@@ -721,23 +725,21 @@ func (ms *ManagerService) Run() {
 		if waitTimeout(&listener_wg, 240*time.Second) {
 			slog.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
-		releaseStaleWorkflowOwnership()
-		pruneOrphanedItems()
-		pruneRetiredSections()
-		pruneWorkflowActionLog()
+		finishCycle()
 	} else {
 		cycle_count := 0
 		for {
-			// Reload config and workflows before each cycle
+			// Reload config and workflows before each cycle. A failed reload
+			// leaves the previous config in place, and the run set is rebuilt
+			// from it all the same: users who registered, changed their
+			// workflows or came back since are picked up either way.
 			if err := config.Reload(); err != nil {
 				slog.Error("Failed to reload config before cycle", "error", err)
-			} else {
-				// Re-generate workflows
-				cfg := config.C()
-				ms.Workflows = MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
-				ms.sleepTime = cfg.SleepDuration
-				ms.Initialize()
 			}
+			cfg := config.C()
+			ms.Workflows = RunSet(cfg, time.Now())
+			ms.sleepTime = cfg.SleepDuration
+			ms.Initialize()
 
 			// Throttle: skip this cycle if the last completed cycle was within half the sleep interval.
 			// This prevents hammering the GitHub API when the server is restarted frequently.
@@ -773,10 +775,7 @@ func (ms *ManagerService) Run() {
 				slog.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 
-			releaseStaleWorkflowOwnership()
-			pruneOrphanedItems()
-			pruneRetiredSections()
-			pruneWorkflowActionLog()
+			finishCycle()
 
 			// Log cycle completion so the throttle check works on next server start.
 			if err := db.LogWorkflowCycle(); err != nil {
@@ -790,56 +789,61 @@ func (ms *ManagerService) Run() {
 	slog.Info("Exiting Service")
 }
 
-// configuredWorkflowSections maps each configured workflow name to the section
-// it writes into. It reads the raw config rather than the built workflow list on
-// purpose: a workflow that is present in the TOML but fails to build (unknown
-// WorkflowType, bad filter name) is skipped by MatchWorkflows, and treating that
-// as a removal would evict its items over a typo. Only a workflow actually
-// deleted from the config should lose its claims.
+// finishCycle is the housekeeping that follows a cycle once its changes have
+// landed. The retention sweep goes first so that a user it deletes is already
+// gone from the owned set read right after it: their items are released and
+// pruned, and their emptied sections deleted, in this same cycle.
 //
-// The config file's workflows are the server's own, so their sections are on
-// the server's dashboard, user "".
-func configuredWorkflowSections() map[string]database.SectionRef {
-	raw := config.C().RawWorkflows
-	sections := make(map[string]database.SectionRef, len(raw))
-	for _, wf := range raw {
-		sections[wf.Name] = database.SectionRef{User: "", Name: wf.SectionTitle}
+// The owned set is read here, at the end, rather than kept from the top of the
+// cycle, so a user who registered or changed their workflows while it ran is
+// judged by what they have now — a reprocess may already have written their
+// new sections.
+func finishCycle() {
+	cfg := config.C()
+	sweepIdleUsers(cfg, time.Now())
+	owned, ok := ownedSections(cfg)
+	if ok {
+		releaseStaleWorkflowOwnership(owned)
 	}
-	return sections
+	pruneOrphanedItems()
+	if ok {
+		pruneRetiredSections(owned)
+	}
+	pruneWorkflowActionLog()
 }
 
-// releaseStaleWorkflowOwnership drops item ownership held by workflows the
-// config no longer defines, so the items fall to pruneOrphanedItems. Run before
-// it, at the end of a cycle.
+// releaseStaleWorkflowOwnership drops item ownership held by workflows that
+// are gone — deleted from the config or from a user's list, or whose user was
+// deleted — so the items fall to pruneOrphanedItems. owned is ownedSections'
+// answer. Run before the prune, at the end of a cycle.
 //
-// The empty-config guard matters: config.Reload failing mid-run leaves the
-// previous config in place, but a config that legitimately parses to zero
-// workflows would otherwise release every item in the database.
-func releaseStaleWorkflowOwnership() {
-	ownedSections := configuredWorkflowSections()
-	if len(ownedSections) == 0 {
-		slog.Warn("No workflows configured; skipping stale ownership release")
+// The empty guard matters: config.Reload failing mid-run leaves the previous
+// config in place, but a config that legitimately parses to zero workflows,
+// on a server with no users, would otherwise release every item in the
+// database.
+func releaseStaleWorkflowOwnership(owned map[string]database.SectionRef) {
+	if len(owned) == 0 {
+		slog.Warn("No workflows configured or registered; skipping stale ownership release")
 		return
 	}
-	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(ownedSections)
+	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(owned)
 	if err != nil {
 		slog.Error("Failed to release stale workflow ownership", "error", err)
 		return
 	}
 	if released > 0 {
-		slog.Info("Released ownership held by workflows no longer in the config", "items", released)
+		slog.Info("Released ownership held by workflows that no longer exist", "items", released)
 	}
 }
 
-// pruneRetiredSections deletes empty sections that no configured workflow writes
+// pruneRetiredSections deletes empty sections that no workflow in owned writes
 // into. Run after pruneOrphanedItems, which is what empties them.
-func pruneRetiredSections() {
-	ownedSections := configuredWorkflowSections()
-	if len(ownedSections) == 0 {
+func pruneRetiredSections(owned map[string]database.SectionRef) {
+	if len(owned) == 0 {
 		return
 	}
-	keep := make([]database.SectionRef, 0, len(ownedSections))
-	for _, section := range ownedSections {
+	keep := make([]database.SectionRef, 0, len(owned))
+	for _, section := range owned {
 		keep = append(keep, section)
 	}
 	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep)
@@ -888,11 +892,11 @@ func pruneWorkflowActionLog() {
 }
 
 func (ms *ManagerService) Initialize() {
-	// Ensure all required sections exist.
+	// Ensure all required sections exist, each on its workflow's dashboard.
 	// Does this sync since GetSection has creation side effect
 	db := config.C().DB
 	for _, wf := range ms.Workflows {
-		db.GetOrCreateSection("", wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
+		workflowSection(db, wf)
 	}
 }
 
@@ -925,7 +929,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 
 	for _, wf := range ms.Workflows {
 		for _, req := range wf.GetPRRequirements() {
-			slog.Info("AuxDataRequirement", "workflow", wf.GetName(),
+			slog.Info("AuxDataRequirement", "workflow", wf.GetName(), "user", wf.GetUser(),
 				"repo", fmt.Sprintf("%s/%s", req.Owner, req.Repo),
 				"comments", req.AuxData.Comments, "ci_status", req.AuxData.CIStatus,
 				"diff", req.AuxData.Diff, "reviews", req.AuxData.Reviews, "commits", req.AuxData.Commits)
@@ -949,8 +953,8 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				}
 				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
 				prObjects[key] = pr
-				if !slices.Contains(prWorkflows[key], wf.GetName()) {
-					prWorkflows[key] = append(prWorkflows[key], wf.GetName())
+				if requester := ownershipKey(wf); !slices.Contains(prWorkflows[key], requester) {
+					prWorkflows[key] = append(prWorkflows[key], requester)
 				}
 
 				// Merge requirements (OR them together)
@@ -1113,8 +1117,9 @@ func applyAuxImplications(req AuxDataRequirement) AuxDataRequirement {
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
-// workflowName identifies who asked for the fetch; it is recorded in
-// WorkflowActionLog alongside the fields that actually landed.
+// workflowName identifies who asked for the fetch — the ownership keys of the
+// requesting workflows, comma-joined — and is recorded in WorkflowActionLog
+// alongside the fields that actually landed.
 func fetchAuxDataForPR(client *github.Client,
 	apiCalls *apiCallCounter,
 	workflowName string,

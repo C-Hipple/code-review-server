@@ -71,22 +71,48 @@ type PRAuxData struct {
 }
 
 type Workflow interface {
+	// GetName is the workflow's name as its list gives it, for logs. It is
+	// only unique within one user's list; ownershipKey is what the workflow
+	// claims items under.
 	GetName() string
 	GetPRRequirements() []PRRequirement
 	Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
 	GetOrgSectionName() string
+	// GetUser is the login whose dashboard the workflow fills, "" for the
+	// server's own (the config file's workflows).
+	GetUser() string
+	// GetSectionPriority is where the workflow's section sorts on that
+	// dashboard, resolved from its owner's SectionPriority when the workflow
+	// set was built.
+	GetSectionPriority() int
+}
+
+// ownershipKey is the name wf claims items under: the entry it adds to
+// items.workflows, its FileChanges' WorkflowName and the workflow it is logged
+// as. See config.OwnershipKey for why it is not simply the name.
+func ownershipKey(wf Workflow) string {
+	return config.OwnershipKey(wf.GetUser(), wf.GetName())
+}
+
+// workflowSection returns the section wf writes into — its user's section of
+// its title — creating it, or moving it to the workflow's priority, as needed.
+func workflowSection(db *database.DB, wf Workflow) (*database.Section, error) {
+	return db.GetOrCreateSection(wf.GetUser(), wf.GetOrgSectionName(), wf.GetSectionPriority())
 }
 
 type FileChanges struct {
-	ChangeType   string
-	Identifier   string
-	Status       string
-	Title        string
-	Details      []string
-	Tags         []string
-	SectionID    int64
-	SectionName  string
-	TTL          int64
+	ChangeType  string
+	Identifier  string
+	Status      string
+	Title       string
+	Details     []string
+	Tags        []string
+	SectionID   int64
+	SectionName string
+	TTL         int64
+	// WorkflowName is the ownership key of the workflow that produced the
+	// change (see ownershipKey): the claim an Addition or Update adds to the
+	// item and a Delete releases.
 	WorkflowName string
 	// HeadSHA is the PR head SHA this change was built from. Recorded in
 	// WorkflowActionLog so a later cache-miss report can tell whether the
@@ -481,6 +507,11 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 	return len(comments), str_comments
 }
 
+// ProcessPRsDB turns a workflow's PR list into the changes that make section
+// hold exactly those PRs as far as this workflow is concerned. workflowName is
+// the workflow's ownership key (ownershipKey): it is the claim each change adds
+// or releases, so a key other workflows share would let one release the others'
+// items.
 func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
 	result := RunResult{}
 
@@ -600,6 +631,8 @@ func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channe
 	return result
 }
 
+// SyncTODOToSectionDB builds the change that writes pr into section on behalf
+// of the workflow whose ownership key is workflowName.
 func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRequest, section *database.Section, includeDiff bool) FileChanges {
 	pr_as_org := PRToOrgBridge{PR: pr, IncludeDiff: includeDiff}
 

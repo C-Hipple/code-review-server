@@ -28,7 +28,7 @@ After building a feature, always open a pull request for it (once the change is 
 
 ## Architecture
 
-JSON-RPC server (over stdio) that aggregates GitHub PRs into a review dashboard. Two main subsystems:
+JSON-RPC server (over stdio, or over TCP for a hosted server with `--listen`) that aggregates GitHub PRs into a review dashboard. Two main subsystems:
 
 ### Workflow Layer (`workflows/`)
 Periodic background jobs fetch PRs from GitHub, apply filters, and persist results to SQLite.
@@ -43,10 +43,14 @@ RPC handlers serve data to clients (web UI, Emacs).
 - `renderer.go` — `GetPRDetails()` fetches PR metadata/diff/comments/reviews, checking DB caches first; `aiDiscussion` partitions its comments into threads/conversation for the AI features
 - `plugins.go` — async plugin execution
 - `hooks.go` — the post-update hooks (plugins, automatic AI features), the request for the applied AI features when a client opens a PR (`requestAppliedAIFeatures`), and AI request assembly
+- `listen.go` — `--listen host:port` (docs/hosted_server.md): each TCP connection gets its own `rpc.Server`, `RPCHandler` and `Session` (`session.go`; a nil session is the local stdio connection — login `""`, administrator, never gated) and is served through `gatedCodec`
+- `policy.go` — the method policy: `methodPolicy` classifies every exported `RPCHandler` method public/user/admin (unlisted = admin; `TestMethodPolicyClassifiesEveryMethod` fails for a new method until it is classified). `gatedCodec` renames a refused request to the `Gate.Refuse` service, its error carried in that call's own args since net/rpc reads requests sequentially but runs calls concurrently. `admit` re-reads the session's users row on every call (a deleted user's session is signed out → `not authenticated:`) and refreshes `last_seen`, throttled
+- `users.go` — `Authenticate`, `RegisterUser` (`CRS_REGISTRATION_KEY`; tokens `crs_`+64 hex, stored as SHA-256), `GetMyWorkflows`/`UpdateMyWorkflows`, and the admin-only `ListUsers`/`DeleteUser`
+- `write_identity.go` — `writeClientFor`, the one place `SubmitReview` and `MergePR` get their GitHub client: the server's token locally, or remotely only with `AllowServerIdentityActions` (merging then needs an admin); otherwise `refused:`. Asked before any side effect
 - `applied.go` — reads the applied AI features' stored results into what the server serves: `orderDiffFiles` (file-ordering → the diff's file order) and `reviewEase` (review-ease → `review_ease`), falling back to the pre-AI `DiffFileOrderingCache`, which nothing writes any more
 
 ### Supporting Packages
-- `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`)
+- `database/` — SQLite with WAL mode. Sections, items, PR caches, local comments, plugin results, workflow action log (`workflow_action_log.go`). A hosted server's `users` and `user_workflows` (`users.go`); sections, drafts and feedback carry `user_login` (`""` is the server's own)
 - `config/` — TOML config from `~/.config/codereviewserver.toml`, accessed via `config.C()` (global singleton with RWMutex)
 - `git_tools/` — GitHub API wrapper using go-github. Mostly REST; GraphQL (`graphql.go`) is reserved for what REST cannot answer — review-thread resolution (`review_threads.go`, `isResolved`), the review-request history (`team_reviews.go`), who reacted to each comment (`reactions.go`, since REST gives per-emoji totals but the logins only one comment at a time), and whether each PR merges cleanly (`mergeability.go`, since REST reports it one PR at a time and the list endpoint not at all)
 - `images/` — downloads and caches the images embedded in PR bodies, reviews and comments to `$CRS_HOME/images`, content-addressed by URL. Only `github.com` / `*.githubusercontent.com` are fetched, since bodies are attacker-supplied text. Clients render from the cached file rather than from GitHub: a private repo's attachments are served only to a request carrying the server's token
@@ -68,7 +72,7 @@ RPC handlers serve data to clients (web UI, Emacs).
 2. **Aux data fetch**: `fetchAuxDataForPR` (manager.go) fetches reviews/commits/CI/review-threads and persists to DB caches, recording each write in `WorkflowActionLog` (workflow name, head SHA, fields written). What gets fetched is the union of what the workflows' filters asked for and what `applyCacheWarmRequirements` adds for a PR that is new or has a new head SHA — the warm covers every field `GetPRDetails` reads, so opening a review is a pure cache hit
 3. **Post-update hooks**: for each PR the cycle added or re-fetched after a push, `notifyPRsUpdated` (manager.go) calls the hook registered via `workflows.SetPRUpdatedHook` — `server.WarmPRAnalysis` in server mode — which runs the plugins and any AI features configured `Automatic` in the background so they're cached before anyone opens the review. A client opening a PR (`ensurePostUpdateHooks`) runs the same hooks and also requests the enabled applied AI features, which no client asks for itself
 4. **Image prefetch**: `ensurePostUpdateHooks` also hands every image URL found in the description, reviews and comments to `images.Store.Prefetch`, ahead of the head-SHA debounce — a new comment carrying a screenshot doesn't change the SHA. `PRPayload.images` then reports where each one landed, and `GetImage` fetches on demand anything the prefetch hasn't reached
-5. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API
+5. **Client request**: RPC `GetPR` → `GetPRDetails` (renderer.go) → checks DB caches → falls back to GitHub API. A remote connection's request first passes the method policy (`gatedCodec`), and handlers serve it as the session's viewer (`h.viewer()`, read once per call)
 6. **Rendering**: `OrgRenderer` reads sections/items from DB, sorts by priority, returns org-mode or JSON
 
 Nothing on the read path waits for a plugin, an LLM call or an AI feature: `ensurePostUpdateHooks` dispatches them in goroutines, `orderDiffFiles` applies the stored file-ordering result or falls back to `sortFilesTestsLast`, and AI results are only ever read — by `GetAIOutput`, `orderDiffFiles` and `reviewEase` — none of which starts a run. The workflow layer cannot import `server` (`server` imports `workflows`), which is why step 3 goes through a registered callback wired up in `main.go`.
@@ -84,4 +88,6 @@ DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT th
 - `GEMINI_API_KEY` — for the summarization plugin and AI features using the `gemini` provider (`ai/`, through `llm/`)
 - `OPENROUTER_API_KEY` — for AI features and plugins using the `openrouter` provider
 - `CRS_STYLE_GUIDE_DIR` — a directory of Markdown files for the `style_guidelines` plugin, in place of `~/.config/style_guidelines.md`
+- `CRS_REGISTRATION_KEY` — `--listen` only: the key `RegisterUser` requires; unset disables registration
+- `CRS_ADMIN_TOKEN` — `--listen` only: authenticates a connection as the server's own identity (login `""`, administrator), and as `RegisterUser`'s `AdminToken` makes a user an administrator
 - `CRS_LLM_PROVIDER` / `CRS_LLM_MODEL` — which backend the bundled LLM plugins call; the server sets them per plugin, and a value exported to the server reaches every plugin that doesn't set its own

@@ -18,6 +18,9 @@ codereviewserver -pr owner/repo/123
 
 # Print the built-in default configuration
 codereviewserver -print-default-config
+
+# Print what registering with a hosted server sends from the config file
+codereviewserver -print-user-config
 ```
 
 ## Flags
@@ -93,6 +96,17 @@ codereviewserver -print-default-config > ~/.config/codereviewserver.toml
 
 Logs go to stderr, so the redirect above captures only TOML.
 
+### `-print-user-config`
+
+Prints, as one line of JSON, what a client sends when it registers with a [hosted server](hosted_server.md): the `[[Workflows]]`, `Repos`, `SectionPriority` and `SectionSorting` from `~/.config/codereviewserver.toml`, and nothing else.
+
+```bash
+$ codereviewserver -print-user-config
+{"Workflows":[{"WorkflowType":"SyncReviewRequestsWorkflow","Name":"review",...}],"Repos":["myorg/myrepo"],"SectionPriority":{},"SectionSorting":{}}
+```
+
+The values are as written in the file: a workflow's empty `GithubUsername` stays empty (the server fills in the registered login), and `DesktopNotifications` is dropped, as the server would drop it. Keys the file leaves out print as `[]` or `{}`, never `null`. Like `-print-default-config` it touches neither the database nor GitHub, so it works on a machine that only runs a client; the Emacs client runs it to register. A missing or unparsable file exits non-zero with a message on stderr.
+
 ## Use Cases
 
 ### Shell Scripting
@@ -132,6 +146,9 @@ To start the RPC server normally (for web and Emacs clients), omit the CLI flags
 codereviewserver                    # Run workflows once
 codereviewserver -server            # Run workflows + RPC server
 codereviewserver -oneoff            # Run workflows once only
+codereviewserver -listen host:port  # Run workflows + RPC server for remote clients
 ```
+
+`-listen host:port` (or `--listen`) serves the same RPCs over TCP to any number of remote clients, each registered as a user with a dashboard of their own, instead of to one client over stdio. It runs the workflows and their hooks like `-server`, never reads stdin, and cannot be combined with `-server` or `-oneoff`. See [Hosted Server](hosted_server.md).
 
 See [Configuration](configuration.md) for more details on server modes.

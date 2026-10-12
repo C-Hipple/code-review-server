@@ -30,15 +30,17 @@ costs one concatenation when it completes rather than one per chunk.")
 
 (defvar crs--review-submits (make-hash-table :test 'equal)
   "Review submits awaiting the server's reply, keyed by PR (\"owner/repo #N\").
-Each value is the server process the submit was sent to.  A PR takes one
-submit at a time, since a second would post its pending comments again.")
+Each value is the server process the submit was sent to, recorded once it
+was sent, so it is the connection the submit actually went out on.  A PR
+takes one submit at a time, since a second would post its pending
+comments again.")
 
 ;; Remote mode: a shared server started with `crs --listen' (crs-rpc.el).
 (defcustom crs-remote-address nil
   "Address (\"HOST:PORT\") of a shared crs server, or nil to run crs locally.
 Nil, `crs-start-server' runs its own `crs -server' as it always has.
 Set, it connects to a server started with `crs --listen' instead and
-authenticates as you with the token in `crs-remote-token-file',
+authenticates as you with its token in `crs-remote-token-directory',
 registering with `crs-remote-registration-key' the first time (and
 again if the server has dropped you after a stretch of inactivity).
 Anything that reads a path on the server's host, such as visiting a

@@ -1025,7 +1025,7 @@ The buffer is bound to `buffer' and killed afterwards."
       (should (= (length sent) 1))
       (should (equal (nth 0 (car sent)) "RPCHandler.SubmitReview"))
       (should (equal (json-encode (nth 1 (car sent)))
-                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Event\":\"APPROVE\",\"Body\":\"Ship it\"}]"))
+                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Event\":\"APPROVE\",\"Body\":\"Ship it\",\"ExpectedDraftIDs\":[]}]"))
       ;; Nothing has come back yet: the reviewer is told it is under way,
       ;; and the buffer is as it was.
       (should (equal events '((message . "Approving acme/widgets #42..."))))
@@ -1081,6 +1081,103 @@ The buffer is bound to `buffer' and killed afterwards."
               (crs-submit-review "APPROVE")
               (should (= (length sent) 3)))))
       (delete-process crs--process))))
+
+(ert-deftest crs-test-review-draft-ids ()
+  "The drafts a submit carries are the local comments, by their numeric ids."
+  (should (equal (crs--review-draft-ids
+                  '(((id . "9001") (author . "local"))
+                    ((id . "5") (author . "bob"))
+                    ((id . 9002) (author . "local"))
+                    ((id . "not-a-number") (author . "local"))))
+                 [9001 9002]))
+  (should (equal (crs--review-draft-ids []) [])))
+
+(ert-deftest crs-test-submit-review-names-the-drafts-it-showed ()
+  "A submit sends the ids of the pending comments the review buffer shows."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (setq crs--buffer-comments
+              '(((id . "9001") (author . "local") (body . "Name this better."))
+                ((id . "17") (author . "bob") (body . "LGTM"))))
+        (crs-submit-review "APPROVE"))
+      (should (equal (cdr (assq 'ExpectedDraftIDs (aref (nth 1 (car sent)) 0))) [9001])))))
+
+(defmacro crs-test--with-timers (&rest body)
+  "Run BODY with `run-at-time' recording instead of scheduling.
+Binds `scheduled' to each (FUNCTION . ARGS), most recent first."
+  (declare (indent 0))
+  `(let ((scheduled nil))
+     (cl-letf (((symbol-function 'run-at-time)
+                (lambda (_time _repeat fn &rest args) (push (cons fn args) scheduled))))
+       ,@body)))
+
+(ert-deftest crs-test-submit-review-lost-with-the-connection-is-outcome-unknown ()
+  "A submit whose connection dropped before the answer may have gone out:
+it says so and reloads the PR, rather than reading as not submitted."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (crs-test--with-timers
+        (with-current-buffer buffer
+          (crs-submit-review "APPROVE"))
+        (funcall (nth 2 (car sent))
+                 '((error . "connection lost: The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))
+        (should (equal (car events)
+                       (cons 'message
+                             (concat "Lost the connection to the server while submitting the review on"
+                                     " acme/widgets #42: it may or may not have gone out.  Check the PR"
+                                     " before submitting again; reloading it"))))
+        (should (equal scheduled '((crs--review-reload "acme" "widgets" 42))))
+        (should-not (assq 'render events))
+        ;; Kept, in case it did not go out.
+        (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+        ;; The reload syncs the PR into its buffer, without a word.
+        (apply (caar scheduled) (cdar scheduled))
+        (should (equal (nth 0 (car sent)) "RPCHandler.SyncPR"))
+        (funcall (nth 2 (car sent)) crs-test--submit-reply)
+        (should (equal (car events) `(render ,buffer ,crs-test--submit-reply t)))))))
+
+(ert-deftest crs-test-submit-review-whose-drafts-are-gone-reloads ()
+  "A submit refused because drafts it showed are gone says so and reloads the PR."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (crs-test--with-timers
+        (with-current-buffer buffer
+          (crs-submit-review "APPROVE"))
+        (funcall (nth 2 (car sent))
+                 '((error . "drafts changed: some of the pending comments this review was to carry no longer exist")))
+        (should (equal (car events)
+                       (cons 'message
+                             (concat "Review on acme/widgets #42 was not submitted: some of its pending"
+                                     " comments are gone, already submitted or removed with your account"
+                                     " after a stretch of inactivity.  Reloading the PR: check what is"
+                                     " pending, then submit again"))))
+        (should (equal scheduled '((crs--review-reload "acme" "widgets" 42))))
+        (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))))))
+
+(ert-deftest crs-test-submit-review-one-at-a-time-across-a-reconnect ()
+  "A submit that reconnects first still holds the PR until its reply lands.
+The connection it goes out on is the one sending it opened, not the one
+that dropped before."
+  (let ((crs--process nil)
+        (connection nil))
+    (unwind-protect
+        (crs-test--with-review-buffer "Ship it"
+          (crs-test--with-held-rpc
+            (cl-letf* ((held (symbol-function 'crs--send-request))
+                       ((symbol-function 'crs--send-request)
+                        (lambda (method params callback)
+                          ;; What sending does after a drop: reconnect.
+                          (unless crs--process
+                            (setq connection (make-pipe-process :name "crs-test-reconnected"
+                                                                :noquery t)
+                                  crs--process connection))
+                          (funcall held method params callback))))
+              (with-current-buffer buffer
+                (crs-submit-review "APPROVE")
+                (should-error (crs-submit-review "APPROVE") :type 'user-error)
+                (should (= (length sent) 1))))))
+      (when connection (delete-process connection)))))
 
 (ert-deftest crs-test-submit-review-reply-after-the-buffer-is-gone ()
   "A reply for a review buffer that was closed is still announced."
@@ -1490,7 +1587,8 @@ recent first."
                            " (Workflows[0].WorkflowType: unknown type)")))))
 
 (ert-deftest crs-test-remote-lost-connection-fails-what-it-owed ()
-  "A dropped connection answers its outstanding requests with an error."
+  "A dropped connection answers its outstanding requests with an error.
+One already sent may have been carried out, which its error says."
   (crs-test--with-remote
     (setq crs--remote-ready t)
     (let ((process crs--process)
@@ -1498,9 +1596,13 @@ recent first."
       (crs--send-request "RPCHandler.GetPR" (vector) (lambda (r) (push r replies)))
       ;; What the real `crs--send-request-now' would have recorded.
       (puthash 1 (nth 2 (car sent)) crs--pending-requests)
+      ;; And one still waiting for the connect flow, never sent.
+      (push (list "RPCHandler.SyncPR" (vector) (lambda (r) (push r replies)))
+            crs--remote-queue)
       (crs--remote-connection-lost process "connection broken by remote peer\n")
-      (should (equal replies
-                     '(((error . "The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))))
+      (should (equal (reverse replies)
+                     '(((error . "connection lost: The connection to crs at crs.test:7700 was lost (connection broken by remote peer)"))
+                       ((error . "The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))))
       (should-not crs--process)
       (should-not crs--remote-ready)
       (should (= (hash-table-count crs--pending-requests) 0))

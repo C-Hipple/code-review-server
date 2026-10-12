@@ -219,7 +219,9 @@ CALLBACK is called with the result, or with ((error . MESSAGE))."
 ;;      a dropped user gets the same one back.  The reply's token is saved.
 ;;
 ;; Requests made meanwhile wait in `crs--remote-queue'.  A dropped connection
-;; fails the requests in flight; the next request reconnects.
+;; fails the requests it owed; the next request reconnects.  One already sent
+;; fails with `crs--connection-lost-prefix', since the server finishes a
+;; request whose connection has gone: it may well have been carried out.
 ;;
 ;; Each server's token is kept in a file of its own, named after its address
 ;; (`crs--remote-token-file'), and only ever sent to that address.
@@ -243,6 +245,16 @@ CALLBACK is called with the result, or with ((error . MESSAGE))."
 (defun crs--remote-where ()
   "The shared server, for messages."
   (format "crs at %s" crs-remote-address))
+
+(defconst crs--connection-lost-prefix "connection lost:"
+  "Prefix of the error a request gets when its connection to a shared server
+dropped after it was sent, before the server answered.  The server finishes
+a request whose connection has gone, so it may well have been carried out:
+a review submitted, say.  The web client's bridge uses the same prefix.")
+
+(defun crs--connection-lost-p (err)
+  "Non-nil when ERR, an error message, is a request lost with its connection."
+  (and (stringp err) (string-prefix-p crs--connection-lost-prefix err)))
 
 (defun crs--remote-token-file-name (host port)
   "The name of the token file for the server at HOST and PORT.
@@ -519,11 +531,15 @@ word on a registration, goes with the message saying so."
       (apply #'crs--send-request-now request))))
 
 (defun crs--remote-drop (reason)
-  "Forget the connection, failing every request it still owed with REASON."
+  "Forget the connection, failing every request it still owed with REASON.
+One already sent gets REASON after `crs--connection-lost-prefix': the
+server may have carried it out all the same.  One still waiting to be
+sent gets REASON alone."
   (let ((process crs--process)
-        (callbacks (mapcar (lambda (request) (nth 2 request))
-                           (reverse crs--remote-queue))))
-    (maphash (lambda (_id callback) (push callback callbacks))
+        (queued (mapcar (lambda (request) (nth 2 request))
+                        (reverse crs--remote-queue)))
+        (sent nil))
+    (maphash (lambda (_id callback) (push callback sent))
              crs--pending-requests)
     (clrhash crs--pending-requests)
     (setq crs--process nil
@@ -532,7 +548,9 @@ word on a registration, goes with the message saying so."
           crs--response-pending nil)
     (when (and process (process-live-p process))
       (delete-process process))
-    (dolist (callback callbacks)
+    (dolist (callback sent)
+      (funcall callback `((error . ,(concat crs--connection-lost-prefix " " reason)))))
+    (dolist (callback queued)
       (funcall callback `((error . ,reason))))))
 
 (defun crs--remote-fail (reason)

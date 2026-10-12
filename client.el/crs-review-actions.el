@@ -9,6 +9,13 @@
 ;; while GitHub takes the review and the server refetches the PR.  When the
 ;; server replies, a message says what went out and the PR's review buffer is
 ;; redrawn from the reply.
+;;
+;; A submit names the pending comments the review buffer showed
+;; (ExpectedDraftIDs), so the server posts nothing if any of them is gone:
+;; sent by an earlier submit, or deleted with the user on a shared server.
+;; A submit whose connection to a shared server dropped before the answer
+;; may have gone out all the same, so it is reported as such rather than as
+;; not submitted.  Either way the PR is reloaded to show where it stands.
 
 ;;; Code:
 
@@ -48,6 +55,48 @@ than reading as a clean submit."
                 (format "%d replies could not be posted and are" count))
               (mapconcat #'identity failed-replies "; ")))))
 
+(defun crs--review-draft-ids (comments)
+  "The ids of the pending comments among COMMENTS, as a vector of numbers.
+These are the drafts a submit from the review buffer showing COMMENTS
+carries, which the server checks are all still there before it posts."
+  (vconcat
+   (delq nil
+         (mapcar (lambda (c)
+                   (let ((id (cdr (assq 'id c))))
+                     (when (equal (cdr (assq 'author c)) "local")
+                       (cond ((integerp id) id)
+                             ((and (stringp id) (string-match-p "\\`[0-9]+\\'" id))
+                              (string-to-number id))))))
+                 comments))))
+
+(defun crs--review-reload (owner repo number)
+  "Fetch OWNER/REPO #NUMBER afresh into its review buffer, if one is open.
+Quietly: the message before it says why.  It runs from a timer, out of the
+sentinel or filter that reported the submit, since reaching a shared
+server again may mean reconnecting."
+  (when (get-buffer (crs--review-buffer-name owner repo number))
+    (condition-case err
+        (crs--send-request
+         "RPCHandler.SyncPR"
+         (vector (list (cons 'Owner owner)
+                       (cons 'Repo repo)
+                       (cons 'Number number)))
+         (lambda (result)
+           (let ((buffer (get-buffer (crs--review-buffer-name owner repo number)))
+                 (inhibit-message t))
+             (if (cdr (assq 'error result))
+                 (message "Could not reload %s: %s" (crs--pr-label owner repo number)
+                          (cdr (assq 'error result)))
+               (when buffer
+                 (crs--render-and-update buffer result))))))
+      (error
+       (let ((inhibit-message t))
+         (message "Could not reload %s: %s" (crs--pr-label owner repo number)
+                  (error-message-string err)))))))
+
+(defconst crs--drafts-changed-prefix "drafts changed:"
+  "Prefix of SubmitReview's refusal of a review whose pending comments are gone.")
+
 (defun crs--review-submit-in-flight-p (ref)
   "Non-nil while a review submitted on the PR named REF awaits its reply.
 A submit sent to a server that has since exited will never be answered,
@@ -60,18 +109,32 @@ so it stops counting once that process is gone."
 BODY is the feedback that was sent.  The message comes first; the review
 buffer is then redrawn from RESULT, which is the PR as the server
 refetched it once the review was in."
-  (let ((ref (crs--pr-label owner repo number))
-        (err (cdr (assq 'error result))))
+  (let* ((ref (crs--pr-label owner repo number))
+         (err (cdr (assq 'error result)))
+         (text (if (stringp err) err (cdr (assq 'message err)))))
     (remhash ref crs--review-submits)
-    (if err
-        ;; Nothing went out: the feedback and the pending comments are left
-        ;; as they were, ready to submit again.  A shared server that needs
-        ;; the reviewer's own GitHub account says so; linking it is the fix.
-        (let ((text (if (stringp err) err (cdr (assq 'message err)))))
-          (message "Review on %s was not submitted: %s%s" ref text
-                   (if (crs--link-github-refusal-p text)
-                       ".  Your feedback is kept: link your GitHub account with M-x crs-link-github, then submit again"
-                     "")))
+    (cond
+     ((crs--connection-lost-p text)
+      ;; The server finishes a submit whose connection has gone, so it may
+      ;; well have been posted: offering it again would post it twice.
+      ;; Show where the PR stands instead.  The feedback is kept, in case.
+      (message "Lost the connection to the server while submitting the review on %s: it may or may not have gone out.  Check the PR before submitting again; reloading it"
+               ref)
+      (run-at-time 0 nil #'crs--review-reload owner repo number))
+     ((and (stringp text) (string-prefix-p crs--drafts-changed-prefix text))
+      ;; Nothing went out, but the buffer showed drafts that are gone.
+      (message "Review on %s was not submitted: some of its pending comments are gone, already submitted or removed with your account after a stretch of inactivity.  Reloading the PR: check what is pending, then submit again"
+               ref)
+      (run-at-time 0 nil #'crs--review-reload owner repo number))
+     (err
+      ;; Nothing went out: the feedback and the pending comments are left
+      ;; as they were, ready to submit again.  A shared server that needs
+      ;; the reviewer's own GitHub account says so; linking it is the fix.
+      (message "Review on %s was not submitted: %s%s" ref text
+               (if (crs--link-github-refusal-p text)
+                   ".  Your feedback is kept: link your GitHub account with M-x crs-link-github, then submit again"
+                 "")))
+     (t
       (message "%s" (crs--review-submitted-message
                      event ref (cdr (assq 'failed_replies result))))
       (let ((review-buffer (get-buffer (crs--review-buffer-name owner repo number))))
@@ -84,7 +147,7 @@ refetched it once the review was in."
           ;; Anything the redraw says goes to *Messages* only, so the
           ;; outcome stays in the echo area.
           (let ((inhibit-message t))
-            (crs--render-and-update review-buffer result)))))))
+            (crs--render-and-update review-buffer result))))))))
 
 (defun crs-submit-review (event)
   "Submit a review with EVENT on the PR in the current review buffer.
@@ -110,21 +173,21 @@ review.  A PR takes one submit at a time."
         (user-error "Aborted")))
 
     (message "%s %s..." (car (crs--review-submit-phrases event)) ref)
-    (puthash ref crs--process crs--review-submits)
-    (condition-case err
-        (crs--send-request
-         "RPCHandler.SubmitReview"
-         (vector (list (cons 'Owner owner)
-                       (cons 'Repo repo)
-                       (cons 'Number number)
-                       (cons 'Event event)
-                       (cons 'Body (or body ""))))
-         (lambda (result)
-           (crs--review-submit-finished owner repo number event body result)))
-      ;; Never sent, so no reply will come to clear it.
-      (error
-       (remhash ref crs--review-submits)
-       (signal (car err) (cdr err))))))
+    (crs--send-request
+     "RPCHandler.SubmitReview"
+     (vector (list (cons 'Owner owner)
+                   (cons 'Repo repo)
+                   (cons 'Number number)
+                   (cons 'Event event)
+                   (cons 'Body (or body ""))
+                   (cons 'ExpectedDraftIDs (crs--review-draft-ids crs--buffer-comments))))
+     (lambda (result)
+       (crs--review-submit-finished owner repo number event body result)))
+    ;; Recorded once sent, against the connection it went out on: sending
+    ;; to a shared server may have reconnected first, and the connection
+    ;; before that is gone.  The reply comes from the process filter, so it
+    ;; cannot land before this.
+    (puthash ref crs--process crs--review-submits)))
 
 (defun crs-set-review-feedback ()
   "Set the review feedback for the current PR."

@@ -396,6 +396,7 @@ pressed. To inspect the panel, right-click inside the modal and choose Inspect.
 | `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting                                      |
 | `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)             |
 | `src/content.ts`             | The modal on github.com, and the chips beside a PR's tabs                                 |
+| `src/tool_chips.ts`          | Which chips a PR page draws: an enabled feature and a plugin each (pure, unit tested)     |
 | `src/github_url.ts`          | Recognising PR URLs and building diff links                                               |
 | `src/rpc.ts`, `src/types.ts` | The panel's typed RPC client, the wire shapes and `RPC_METHODS`                           |
 | `src/panel/`                 | The React panel: `App.tsx` routes between `PRList.tsx` and `PRTools.tsx`                  |

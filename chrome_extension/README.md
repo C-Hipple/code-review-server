@@ -163,8 +163,9 @@ On a pull request's Files changed view (`…/pull/N/files`) the content script
 also lays the server's stored file-ordering result over GitHub's own page: the
 per-file diffs and the file tree are reordered to match it, so the tab reads in
 the order the feature suggests. Files the report doesn't name stay where GitHub
-put them, after the ones it does, and a directory follows the earliest file it
-holds. A page already in that order, one with neither diffs nor a tree, and one
+put them, after the ones it does, and a directory follows the latest file it
+holds — so a directory holding the report's last file reads last, and one whose
+files are nested under it carries them with it. A page already in that order, one with neither diffs nor a tree, and one
 whose PR has no stored order are all left exactly as GitHub drew them. The order
 is laid again after GitHub's in-page navigation, and as it loads more files as
 the reader scrolls, so a re-render doesn't undo it.

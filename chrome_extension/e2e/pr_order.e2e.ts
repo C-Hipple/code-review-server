@@ -24,7 +24,7 @@ function treeLabels(page: Page): Promise<string[]> {
     return page.locator('ul[aria-label="File Tree"] .ActionList-item-label').allTextContents();
 }
 
-/** The tree the fixture's order gives: directories ranked by their earliest file. */
+/** The tree the fixture's order gives: directories ranked by their latest file. */
 const ORDERED_TREE = [
     'internal',
     'api',

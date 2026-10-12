@@ -3,7 +3,7 @@
 // e2e/pr_order.e2e.ts.
 
 import { describe, expect, test } from 'bun:test';
-import { byRank, fileOrderingFiles, pathRanks, rankOf } from './file_order';
+import { byRank, directoryRank, fileOrderingFiles, pathRanks, rankOf } from './file_order';
 import { FILE_ORDERING, type AIFeatureOutput } from './types';
 
 function output(fields: Partial<AIFeatureOutput> = {}): AIFeatureOutput {
@@ -82,5 +82,21 @@ describe('ranking paths', () => {
         const ranks = pathRanks([]);
         const files = ['b.go', 'a.go'];
         expect(byRank(files, path => rankOf(ranks, path))).toEqual(files);
+    });
+});
+
+describe('ranking a directory in the file tree', () => {
+    test('a directory sits where the latest file it holds sits', () => {
+        // The shape that prompted this: journal#8's report is
+        // [frontend/src/App.js, README.md, frontend/src/App.test.js], so the
+        // frontend/src folder holds the last file and reads after README.md.
+        expect(directoryRank([0, 2])).toBe(2);
+        expect(directoryRank([2, 0])).toBe(2);
+        expect(directoryRank([0])).toBe(0);
+        expect(directoryRank([1, 3, 2])).toBe(3);
+    });
+
+    test('a directory holding no ranked file ranks after everything', () => {
+        expect(directoryRank([])).toBe(Number.POSITIVE_INFINITY);
     });
 });

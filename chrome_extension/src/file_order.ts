@@ -103,15 +103,21 @@ function treePath(root: Document, entry: Element): string | null {
     return label.includes('/') ? label : null;
 }
 
-/** A tree entry's rank: a file's own, a directory's as its earliest file's. */
+/**
+ * A directory's rank: the latest file it holds, so a directory reads where the
+ * last of its files belongs. A directory holding no ranked file — or none at
+ * all — ranks after everything.
+ */
+export function directoryRank(childRanks: readonly number[]): number {
+    return childRanks.length > 0 ? Math.max(...childRanks) : Number.POSITIVE_INFINITY;
+}
+
+/** A tree entry's rank: a file's own, a directory's as its latest file's. */
 function treeRank(root: Document, entry: Element, rank: (path: string | null) => number): number {
     const sub = entry.querySelector(':scope > ul');
     if (sub === null) return rank(treePath(root, entry));
-    let best = Number.POSITIVE_INFINITY;
-    for (const child of Array.from(sub.children)) {
-        if (child.tagName === 'LI') best = Math.min(best, treeRank(root, child, rank));
-    }
-    return best;
+    const children = Array.from(sub.children).filter(child => child.tagName === 'LI');
+    return directoryRank(children.map(child => treeRank(root, child, rank)));
 }
 
 /**
@@ -151,7 +157,7 @@ export function applyFileOrder(root: Document, files: readonly string[]): boolea
     const tree = root.querySelector(FILE_TREE);
     if (tree) {
         // The root's list first, then the ones inside it: a directory's own
-        // place follows the earliest file it holds.
+        // place follows the latest file it holds.
         for (const list of [tree, ...Array.from(tree.querySelectorAll('ul'))]) {
             const entries = Array.from(list.children).filter(child => child.tagName === 'LI');
             moved = reorderInPlace(entries, entry => treeRank(root, entry, rank)) || moved;

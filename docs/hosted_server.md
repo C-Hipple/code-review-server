@@ -226,8 +226,15 @@ missing if it is not. Clients see it as `github_link_available`.
   server at most 64.
 - **Changing `CRS_SECRET_KEY`** makes every stored link unreadable: writes are
   refused with `refused: link-github:` until each user links again, which
-  replaces the old link. Removing `GitHubOAuthClientID` stops new links;
-  existing ones keep working as long as `CRS_SECRET_KEY` is unchanged.
+  replaces the old link. **Losing it** — unset or invalid after a restart —
+  makes linking unavailable: a linked user's writes are refused (never sent
+  as the server's account instead), and work again once the key is back.
+- **Removing `GitHubOAuthClientID`** stops new links. Existing OAuth App links
+  keep working as long as `CRS_SECRET_KEY` is unchanged, but nothing can
+  refresh a GitHub App's expiring token any more, so each of those lapses
+  when it expires. A write whose link stopped working while the server cannot
+  link accounts is refused with a plain `refused:`, since a client offering
+  to link again would find linking unavailable.
 
 The RPCs (`StartGitHubLink`, `GetGitHubLink`, `UnlinkGitHub`) and the
 statuses a client sees are in the [protocol](protocol.md#linking-a-github-account).

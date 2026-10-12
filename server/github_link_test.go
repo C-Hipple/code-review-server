@@ -640,6 +640,57 @@ func TestExpiringLinkWithoutClientSecret(t *testing.T) {
 	}
 }
 
+// Without GitHubOAuthClientID nothing can refresh a GitHub App's token, so
+// the link lapses once it expires. The server cannot link an account either
+// then, so the refusal does not send the user to a link dialog.
+func TestExpiredLinkWithoutClientID(t *testing.T) {
+	lt := setupLinking(t, true)
+	alice, token := lt.connect(t, "alice")
+	lt.storeCredential(t, "alice", token, ghauth.Credential{
+		Token:       ghauth.Token{AccessToken: "gho_gone", RefreshToken: "ghr_gone", ExpiresAt: time.Now().Add(-time.Minute)},
+		GitHubLogin: "alice",
+	})
+	useTempConfig(t, "SleepDuration = 10\n")
+
+	wantError(t, "MergePR with an expired token and no client ID", alice.call("MergePR", &MergePRArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber}, &MergePRReply{}),
+		errLinkUnusable.Error())
+	if lt.gh.Refreshes() != 0 {
+		t.Error("refreshed without a client ID")
+	}
+	if writes, _ := lt.api.auths(); len(writes) != 0 {
+		t.Errorf("writes = %v, want none", writes)
+	}
+	if !strings.HasPrefix(errLinkUnusable.Error(), "refused: ") || strings.HasPrefix(errLinkUnusable.Error(), "refused: link-github:") {
+		t.Errorf("%q should be final: refused, not link-github", errLinkUnusable)
+	}
+}
+
+// A link the server cannot open because CRS_SECRET_KEY is missing — a
+// restart that lost it — is refused like one sealed under another key, never
+// quietly replaced by the server's account.
+func TestLinkWithoutTheSecretKey(t *testing.T) {
+	lt := setupLinking(t, true)
+	alice, _ := lt.link(t, "alice")
+	allowServerIdentityActions(t)
+	t.Setenv(secretKeyEnv, "")
+
+	wantError(t, "SubmitReview without the key", alice.call("SubmitReview", &SubmitReviewArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Event: "COMMENT", Body: "LGTM"}, &SubmitReviewReply{}),
+		errLinkUnusable.Error())
+	if writes, _ := lt.api.auths(); len(writes) != 0 {
+		t.Errorf("writes = %v, want none: the review went out as the server's account", writes)
+	}
+	if _, linked := lt.stored(t, "alice"); !linked {
+		t.Error("the link was cleared; it works again once the key is back")
+	}
+
+	// Once the key is back, so is the link.
+	t.Setenv(secretKeyEnv, testSecretKey)
+	alice.must("SubmitReview", &SubmitReviewArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Event: "COMMENT", Body: "LGTM"}, &SubmitReviewReply{})
+	if writes, _ := lt.api.auths(); len(writes) == 0 || writes[len(writes)-1] == "Bearer test-token" {
+		t.Errorf("writes = %v, want alice's own token", writes)
+	}
+}
+
 // A stored credential this server's key cannot open — the key changed — is
 // reported, and refused for writes rather than replaced by the server's
 // account.

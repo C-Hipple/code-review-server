@@ -70,6 +70,23 @@ var (
 	errLinkUnreadable = errors.New("refused: link-github: this server can no longer read your stored GitHub authorization; link your account again")
 )
 
+// errLinkUnusable is a write whose link has stopped working — expired,
+// revoked, or unreadable — on a server that cannot link accounts any more:
+// its GitHubOAuthClientID or CRS_SECRET_KEY was removed or is invalid. Not a
+// link-github refusal, which would send the user to a link the server cannot
+// make, and never quietly replaced by the server's account either.
+var errLinkUnusable = errors.New("refused: this server can no longer use your linked GitHub account, and cannot link one until its administrator restores GitHub account linking")
+
+// linkRefusal is the refusal of a write whose link stopped working: refusal,
+// which offers to link again, when the server can link an account, else
+// errLinkUnusable.
+func linkRefusal(setup linkSetup, refusal error) error {
+	if setup.unavailable() != "" {
+		return errLinkUnusable
+	}
+	return refusal
+}
+
 // errMergeAsServerNeedsAdmin is a remote merge under the server's account by
 // someone who is not an administrator. Reviews carry their author's name in
 // the text a reviewer sees; a merge carries nothing but the account, and lands
@@ -98,7 +115,7 @@ func (w *writeIdentity) refused(err error) error {
 		slog.Error("Error clearing a linked GitHub token GitHub refused", "login", w.login, "error", clearErr)
 	}
 	slog.Info("GitHub refused a user's linked token; cleared it", "login", w.login)
-	return errLinkExpired
+	return linkRefusal(currentLinkSetup(), errLinkExpired)
 }
 
 // isUnauthorized reports whether GitHub answered a call with 401: the token
@@ -148,14 +165,11 @@ func (h *RPCHandler) writeClientFor(viewer string, action writeAction) (*writeId
 }
 
 // linkedWriteIdentity returns the identity of login's linked GitHub account,
-// or nil when they have linked none this server can use: without a valid
-// CRS_SECRET_KEY no stored link is usable. A link that has stopped working is
-// refused with a link-github refusal rather than replaced by the server's
-// account.
+// or nil when they have linked none. A link that has stopped working is
+// refused rather than replaced by the server's account — including one the
+// server cannot open because CRS_SECRET_KEY is missing or invalid, say after
+// a restart that lost it: the user linked to write as themselves.
 func linkedWriteIdentity(login string, setup linkSetup) (*writeIdentity, error) {
-	if !setup.keyOK {
-		return nil, nil
-	}
 	stored, err := loadLink(login, setup)
 	if err != nil {
 		return nil, err
@@ -164,7 +178,10 @@ func linkedWriteIdentity(login string, setup linkSetup) (*writeIdentity, error) 
 	case stored.sealed == "":
 		return nil, nil
 	case stored.cred == nil:
-		return nil, errLinkUnreadable
+		if !setup.keyOK {
+			slog.Warn("Refused a write from a user whose stored GitHub link this server cannot open: "+setup.keyProblem, "login", login)
+		}
+		return nil, linkRefusal(setup, errLinkUnreadable)
 	}
 	cred, sealed := *stored.cred, stored.sealed
 	if cred.ExpiresWithin(time.Now(), refreshMargin) {
@@ -182,9 +199,9 @@ var refreshLocks sync.Map
 
 // refreshLink refreshes login's linked token and stores its successor. A
 // token GitHub will not refresh — its refresh token spent or expired, or no
-// client secret to refresh with once it has expired — is cleared and refused
-// as expired; a refresh that fails on the way is an ordinary error, and the
-// link stays for the next try.
+// client ID or secret to refresh with once it has expired — is cleared and
+// refused as expired; a refresh that fails on the way is an ordinary error,
+// and the link stays for the next try.
 func refreshLink(login string, setup linkSetup) (ghauth.Credential, string, error) {
 	mu, _ := refreshLocks.LoadOrStore(strings.ToLower(login), &sync.Mutex{})
 	mu.(*sync.Mutex).Lock()
@@ -196,9 +213,9 @@ func refreshLink(login string, setup linkSetup) (ghauth.Credential, string, erro
 	case err != nil:
 		return ghauth.Credential{}, "", err
 	case stored.sealed == "":
-		return ghauth.Credential{}, "", errLinkExpired
+		return ghauth.Credential{}, "", linkRefusal(setup, errLinkExpired)
 	case stored.cred == nil:
-		return ghauth.Credential{}, "", errLinkUnreadable
+		return ghauth.Credential{}, "", linkRefusal(setup, errLinkUnreadable)
 	}
 	cred, now := *stored.cred, time.Now()
 	if !cred.ExpiresWithin(now, refreshMargin) {
@@ -210,11 +227,14 @@ func refreshLink(login string, setup linkSetup) (ghauth.Credential, string, erro
 			slog.Error("Error clearing an expired GitHub link", "login", login, "error", err)
 		}
 		slog.Info("A user's linked GitHub token expired; cleared it", "login", login, "why", why)
-		return ghauth.Credential{}, "", errLinkExpired
+		return ghauth.Credential{}, "", linkRefusal(setup, errLinkExpired)
 	}
 	if !setup.hasClientSecret() || !cred.Refreshable(now) {
 		if cred.ExpiresWithin(now, 0) {
-			if !setup.hasClientSecret() {
+			switch {
+			case setup.app == nil:
+				return expire("no GitHubOAuthClientID to refresh it with")
+			case !setup.hasClientSecret():
 				return expire("no client secret to refresh it with")
 			}
 			return expire("its refresh token has expired")

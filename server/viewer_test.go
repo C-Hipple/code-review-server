@@ -177,6 +177,16 @@ func TestReviewListRPCsReadTheViewersList(t *testing.T) {
 	if hello.Count != 1 {
 		t.Errorf("Hello counted %d sections for alice, want her 1", hello.Count)
 	}
+
+	// The greeting is the viewer's own count too, not a running total of
+	// everyone's: bob, who has no sections, after alice said hello.
+	bob := &HelloReply{}
+	if err := handlerFor("bob", false).Hello(&HelloArgs{}, bob); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+	if bob.Count != 0 || bob.Content != "hello 0" {
+		t.Errorf("Hello for bob = %+v, want count 0 and \"hello 0\"", bob)
+	}
 }
 
 // localDrafts are the bodies of the drafts a reply shows.

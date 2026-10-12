@@ -23,11 +23,6 @@ import (
 	"github.com/google/go-github/v74/github"
 )
 
-// testing mutable state
-// RPC handler is recreated for each request, it's not stateful across requests
-// simulate a db lol
-var CurrentCount int
-
 func RunServer() {
 	server := rpc.NewServer()
 	handler := &RPCHandler{}
@@ -82,8 +77,7 @@ func (h *RPCHandler) Hello(args *HelloArgs, reply *HelloReply) error {
 		}
 		count = len(sections)
 	}
-	CurrentCount += count
-	reply.Content = fmt.Sprintf("hello %d", CurrentCount)
+	reply.Content = fmt.Sprintf("hello %d", count)
 	reply.Count = count
 
 	return nil

@@ -324,8 +324,8 @@ A simple health check / test method.
 **Reply** (`HelloReply`):
 | Field     | Type   | Description                                      |
 |-----------|--------|--------------------------------------------------|
-| `Count`   | int    | Number of sections in the database               |
-| `Content` | string | Greeting message with cumulative count           |
+| `Count`   | int    | Number of the viewer's own sections (0 on a remote connection that has not authenticated) |
+| `Content` | string | Greeting message with that count                 |
 
 ---
 

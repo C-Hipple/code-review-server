@@ -101,7 +101,7 @@ Registers a login with the workflows and settings from the client's config file 
 |-------------------|-------------------|----------|-------------|
 | `RegistrationKey` | string            | Yes      | Must equal the server's `$CRS_REGISTRATION_KEY`. Without that variable, registration is disabled |
 | `Login`           | string            | Yes      | GitHub login: letters, digits and single hyphens, at most 39 characters. Matched case-insensitively |
-| `Token`           | string            | No       | The token the client holds, if any. A registered login must present its own; a new login keeps a well-formed one (so a user deleted for inactivity gets the same token back) and gets a fresh one otherwise |
+| `Token`           | string            | No       | The token the client holds, if any. A registered login must present its own; a new login keeps a well-formed one (so a user deleted for inactivity gets the same token back) and gets a fresh one otherwise. The token of a user an administrator deleted is refused |
 | `Workflows`       | []Workflow        | No       | The [workflows](#workflow-object) from the config file, under their TOML keys. Validated as `UpdateConfig` validates the server's; at most 50, names unique and without control characters. `DesktopNotifications` is dropped. An empty `GithubUsername` stands for `Login` |
 | `Repos`           | []string          | No       | Fallback repositories for workflows that name none; the server's own `Repos` when empty |
 | `SectionPriority` | map[string]int    | No       | As in the config file, for the user's sections |
@@ -116,7 +116,7 @@ Registers a login with the workflows and settings from the client's config file 
 | `login`                 | string            | The login as registered (the case of the first registration) |
 | `token`                 | string            | The user's token. The server stores only its hash: this is the only place it is shown |
 | `is_admin`              | bool              | Whether the user is an administrator |
-| `message`               | string            | Human-readable outcome. For a login registered under another token it starts with `login already registered` |
+| `message`               | string            | Human-readable outcome. For a login registered under another token it starts with `login already registered`; for a token an administrator revoked by deleting its user, with `token revoked` |
 | `errors`                | []ValidationError | Validation problems, as in [`UpdateConfig`](#validationerror-object); `workflow` indexes `Workflows` |
 | `github_linked`         | bool              | As in `Authenticate` |
 | `github_link_available` | bool              | As in `Authenticate` |
@@ -211,7 +211,7 @@ Administrator only. Lists every registered user, by login.
 
 ### `RPCHandler.DeleteUser`
 
-Administrator only. Deletes a user with their workflows, drafts and feedback, as the retention sweep does. Their dashboard empties on the next workflow cycle. A GitHub link they have in progress is cancelled, and the token of one they linked is revoked on GitHub when the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` (the `message` says whether it was). A connection still signed in as them gets `not authenticated:` on its next call, so its client registers them again if it still has the registration key.
+Administrator only. Deletes a user with their workflows, drafts and feedback, as the retention sweep does. Their dashboard empties on the next workflow cycle. A GitHub link they have in progress is cancelled, and the token of one they linked is revoked on GitHub when the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` (the `message` says whether it was). A connection still signed in as them gets `not authenticated:` on its next call. Unlike the retention sweep, it also revokes their bearer token: a `RegisterUser` presenting it is refused (`okay: false`, the message starting `token revoked:`), so a client's automatic registration cannot take the login back. Whoever holds the login for real registers without the old token and gets a new one.
 
 **Arguments** (`DeleteUserArgs`):
 | Field   | Type   | Required | Description |

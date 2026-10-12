@@ -211,12 +211,28 @@ func (h *RPCHandler) RegisterUser(args *RegisterUserArgs, reply *RegisterUserRep
 	}
 
 	db := config.C().DB
+	token := strings.TrimSpace(args.Token)
+	// A token whose user an administrator deleted is refused outright rather
+	// than swapped for a fresh one: its client registers again on its own
+	// as soon as its user is gone, and a squatter an administrator removed
+	// would otherwise have the login back on their next call.
+	if token != "" {
+		revoked, err := db.IsTokenRevoked(hashToken(token))
+		if err != nil {
+			slog.Error("Error checking a registration's token", "login", login, "error", err)
+			return err
+		}
+		if revoked {
+			slog.Info("Refused a registration with a token an administrator revoked", "login", login)
+			reply.Message = revokedTokenMessage
+			return nil
+		}
+	}
 	existing, err := db.GetUser(login)
 	if err != nil && !errors.Is(err, database.ErrNotFound) {
 		slog.Error("Error looking up a user to register", "login", login, "error", err)
 		return err
 	}
-	token := strings.TrimSpace(args.Token)
 	if existing != nil && !secretMatches(hashToken(token), existing.TokenHash) {
 		reply.Message = loginTakenMessage(existing.Login)
 		return nil
@@ -299,6 +315,10 @@ func (h *RPCHandler) RegisterUser(args *RegisterUserArgs, reply *RegisterUserRep
 	slog.Info("Registered a user", "login", user.Login, "created", reply.Created, "admin", user.IsAdmin, "workflows", len(rows))
 	return nil
 }
+
+// revokedTokenMessage is RegisterUser's refusal of a token whose user an
+// administrator deleted.
+const revokedTokenMessage = "token revoked: an administrator deleted the user this token belonged to, so it cannot register again; remove the token your client stored to register afresh, or ask an administrator"
 
 func loginTakenMessage(login string) string {
 	return fmt.Sprintf("login already registered: %s is registered with another token; register with that token, or ask an administrator to delete the user", login)
@@ -587,8 +607,9 @@ type DeleteUserReply struct {
 // revokes the token of one they linked (best effort, with the client
 // secret). Their dashboard empties on the next workflow cycle, and a
 // connection still signed in as them is refused as not authenticated on its
-// next call, so its client registers again — unless the registration key has
-// changed meanwhile.
+// next call. Unlike the sweep, it also revokes their bearer token: the
+// client's automatic registration is refused, so deleting a squatter keeps
+// them out, while whoever holds the login for real registers afresh.
 func (h *RPCHandler) DeleteUser(args *DeleteUserArgs, reply *DeleteUserReply) error {
 	login := strings.TrimSpace(args.Login)
 	if login == "" {
@@ -607,7 +628,7 @@ func (h *RPCHandler) DeleteUser(args *DeleteUserArgs, reply *DeleteUserReply) er
 		return err
 	}
 	reply.Okay = true
-	reply.Message = fmt.Sprintf("Deleted %s with their workflows, drafts and feedback; their dashboard empties on the next workflow cycle", deleted.Login)
+	reply.Message = fmt.Sprintf("Deleted %s with their workflows, drafts and feedback, and revoked their token; their dashboard empties on the next workflow cycle", deleted.Login)
 	if deleted.GitHubCredential != "" {
 		revokeErr := revokeSealed(currentLinkSetup(), deleted.Login, deleted.GitHubCredential, "user deleted")
 		reply.Message += revokeOutcome(revokeErr, "their linked GitHub")

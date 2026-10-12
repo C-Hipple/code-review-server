@@ -172,6 +172,16 @@ func (db *DB) initSchema() error {
 		last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
+	-- The bearer tokens of users an administrator deleted (DeleteUser), by
+	-- hash. RegisterUser refuses them, so a client still holding one — a
+	-- squatter's, reconnecting — cannot claim the login again with it. The
+	-- retention sweep revokes none: a user it deletes gets their token back.
+	CREATE TABLE IF NOT EXISTS revoked_tokens (
+		token_hash TEXT PRIMARY KEY,
+		login TEXT NOT NULL,
+		revoked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
 	-- Each user's workflows, one config.RawWorkflow as JSON per row, in the
 	-- order the user listed them.
 	CREATE TABLE IF NOT EXISTS user_workflows (

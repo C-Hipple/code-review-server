@@ -48,6 +48,11 @@ func (db *DB) CreateUser(u User) error {
 // login registered meanwhile, two workflows of one name — must not leave a user
 // behind who exists but has no dashboard, or whose token then fails to match a
 // second attempt. It fails as CreateUser does.
+//
+// Drafts and feedback still under the login are deleted with it: they belong
+// to someone who held it before. Deleting a user deletes theirs, but a draft
+// admitted just before the delete can be written just after it — the method
+// policy checks the user when it reads a request, and the handler runs later.
 func (db *DB) CreateUserWithWorkflows(u User, workflows []UserWorkflow) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -57,6 +62,14 @@ func (db *DB) CreateUserWithWorkflows(u User, workflows []UserWorkflow) error {
 
 	if err := insertUserTx(tx, u); err != nil {
 		return err
+	}
+	for _, stmt := range []string{
+		"DELETE FROM LocalComment WHERE user_login = ? COLLATE NOCASE",
+		"DELETE FROM Feedback WHERE user_login = ? COLLATE NOCASE",
+	} {
+		if _, err := tx.Exec(stmt, u.Login); err != nil {
+			return err
+		}
 	}
 	if err := insertUserWorkflowsTx(tx, u.Login, workflows); err != nil {
 		return err
@@ -186,7 +199,8 @@ type DeletedUser struct {
 	GitHubCredential string
 }
 
-// DeleteUser removes a user along with their workflows, drafts and feedback.
+// DeleteUser removes a user along with their workflows, drafts and feedback,
+// and revokes their token (see DeleteUserWithCredential).
 // Their sections and items are deliberately left: once the user's workflows
 // are gone, nothing backs the items' ownership any more, so the workflow
 // cycle's release and prune pass removes them the way it removes a workflow
@@ -198,7 +212,9 @@ func (db *DB) DeleteUser(login string) error {
 
 // DeleteUserWithCredential deletes a user as DeleteUser does and returns the
 // GitHub credential they held, read in the same transaction so a link stored
-// a moment before is not deleted unseen.
+// a moment before is not deleted unseen. It also revokes their bearer token
+// (IsTokenRevoked): this is an administrator's delete, and the client of a
+// user an administrator removed must not register the login again with it.
 func (db *DB) DeleteUserWithCredential(login string) (DeletedUser, error) {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -210,6 +226,12 @@ func (db *DB) DeleteUserWithCredential(login string) (DeletedUser, error) {
 	if err != nil {
 		return DeletedUser{}, err
 	}
+	if _, err := tx.Exec(
+		"INSERT OR IGNORE INTO revoked_tokens (token_hash, login) SELECT token_hash, login FROM users WHERE login = ?",
+		canonical,
+	); err != nil {
+		return DeletedUser{}, err
+	}
 	deleted, err := deleteUserTx(tx, canonical)
 	if err != nil {
 		return DeletedUser{}, err
@@ -217,8 +239,16 @@ func (db *DB) DeleteUserWithCredential(login string) (DeletedUser, error) {
 	return deleted, tx.Commit()
 }
 
-// DeleteUsersIdleSince deletes, as DeleteUser does, every user last seen
-// before cutoff, and returns their logins. A user last seen exactly at cutoff
+// IsTokenRevoked reports whether hash is the token hash of a user an
+// administrator deleted.
+func (db *DB) IsTokenRevoked(hash string) (bool, error) {
+	var n int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM revoked_tokens WHERE token_hash = ?", hash).Scan(&n)
+	return n > 0, err
+}
+
+// DeleteUsersIdleSince deletes, as DeleteUser does but leaving their tokens
+// unrevoked, every user last seen before cutoff, and returns their logins. A user last seen exactly at cutoff
 // (to the second, the precision last_seen is stored at) is kept.
 func (db *DB) DeleteUsersIdleSince(cutoff time.Time) ([]string, error) {
 	deleted, err := db.DeleteUsersIdleSinceWithCredentials(cutoff)

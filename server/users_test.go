@@ -266,3 +266,32 @@ func TestDeleteUserReplies(t *testing.T) {
 		t.Errorf("ListUsers after deleting the only user = %#v, want []", users.Users)
 	}
 }
+
+// Drafts and feedback written under a login after its user was deleted — a
+// write admitted just before an administrator's DeleteUser lands just after
+// it — are not handed to whoever registers the login next.
+func TestRegistrationDropsWhatAPreviousHolderLeft(t *testing.T) {
+	db := remoteSetup(t)
+	draft := "the previous alice's draft"
+	if _, err := db.InsertLocalComment("alice", aiOwner, aiRepo, aiNumber, "src/main.ts", 2, &draft, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertFeedback("alice", aiOwner, aiRepo, aiNumber, &draft); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertFeedback("bob", aiOwner, aiRepo, aiNumber, &draft); err != nil {
+		t.Fatal(err)
+	}
+
+	r := dialRemote(t, startListener(t, defaultListenOptions))
+	r.register(registration("Alice", ""))
+	if n := draftCount(t, db, "alice"); n != 0 {
+		t.Errorf("the new alice inherited %d drafts", n)
+	}
+	if feedback, _ := db.GetFeedback("alice", aiOwner, aiRepo, aiNumber); feedback != "" {
+		t.Errorf("the new alice inherited feedback %q", feedback)
+	}
+	if feedback, _ := db.GetFeedback("bob", aiOwner, aiRepo, aiNumber); feedback != draft {
+		t.Errorf("bob's feedback = %q; registering alice touched it", feedback)
+	}
+}

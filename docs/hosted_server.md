@@ -112,12 +112,13 @@ SHA-256 is stored — and registering that login again needs it.
 | `AllowServerIdentityActions` | `false` | Lets remote users who have not linked a GitHub account submit reviews under the server's account, and administrators merge under it (see [Writing to GitHub](#writing-to-github)) |
 
 Any authenticated call counts as being seen (written at most once a minute per
-connection). Retention runs in the serving process only: a `crs -oneoff` or
-workflow-only run against the same database deletes nobody, since it could
-not revoke the GitHub tokens of the users it deleted. A deleted user's client gets `not authenticated:` on its next call
+connection). A deleted user's client gets `not authenticated:` on its next call
 and registers again with the token it holds, which the server accepts for a
 login it no longer knows — so retention costs an idle user their drafts and a
-cycle's wait for their dashboard, not their token.
+cycle's wait for their dashboard, not their token. (An administrator's
+`DeleteUser` does revoke the token.) Retention runs in the serving process
+only: a `crs -oneoff` or workflow-only run against the same database deletes
+nobody, since it could not revoke the GitHub tokens of the users it deleted.
 
 Administrators — the `CRS_ADMIN_TOKEN` connection, and users registered with
 it as `AdminToken` — can read and edit the server's config (`GetConfig`,
@@ -262,7 +263,9 @@ These are known, and accepted for a server on an internal network:
 
 - **Logins are claimed, not proven.** Anyone with the registration key can
   register a login nobody holds yet, and see that login's dashboard. The key
-  keeps strangers out; an administrator can `DeleteUser` a squatter. Writes
+  keeps strangers out; an administrator can `DeleteUser` a squatter, which
+  revokes the squatter's token so their client cannot register the login
+  again on its own (registering afresh by hand still takes the key). Writes
   are another matter: a squatter cannot link the real account, since GitHub
   has to vouch for it.
 - **Users can point workflows at any repository the server's token can

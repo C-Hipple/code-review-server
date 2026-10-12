@@ -435,14 +435,36 @@ func TestDeletedUserMustRegisterAgain(t *testing.T) {
 		t.Errorf("Authenticate with a deleted user's token = %+v, want known=false", reply)
 	}
 
-	again := alice.register(registration("alice", token))
-	if !again.Created || again.Token != token {
-		t.Errorf("re-registering after deletion = %+v, want created with the same token", again)
+	// An administrator's delete revokes the token: the client registering
+	// again on its own — what a squatter's does on its next call — is
+	// refused, for that login or any other. Without the token, the login is
+	// anyone's to register again.
+	for _, login := range []string{"alice", "alice2"} {
+		refused := &RegisterUserReply{}
+		alice.must("RegisterUser", registration(login, token), refused)
+		if refused.Okay || refused.Message != revokedTokenMessage {
+			t.Errorf("registering %s with the token of a user an administrator deleted = %+v", login, refused)
+		}
 	}
+	again := alice.register(registration("alice", ""))
+	if !again.Created || again.Token == token {
+		t.Errorf("re-registering after deletion = %+v, want created with a new token", again)
+	}
+	token = again.Token
 	alice.must("GetMyWorkflows", &GetMyWorkflowsArgs{}, &GetMyWorkflowsReply{})
 
-	// Retention deletes the same way. Someone else then registering the login
-	// does not hand them alice's open connection.
+	// Retention deletes the same way, but leaves the token good: the user's
+	// client registers them again with it.
+	if _, err := db.DeleteUsersIdleSince(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, "after retention", alice.call("GetMyWorkflows", &GetMyWorkflowsArgs{}, &GetMyWorkflowsReply{}), notAuth)
+	if back := alice.register(registration("alice", token)); !back.Created || back.Token != token {
+		t.Errorf("re-registering after retention = %+v, want created with the same token", back)
+	}
+
+	// Someone else registering the login after retention does not hand them
+	// alice's open connection.
 	if _, err := db.DeleteUsersIdleSince(time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}

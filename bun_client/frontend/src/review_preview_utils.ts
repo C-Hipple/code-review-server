@@ -1,4 +1,4 @@
-import { rpcErrorMessage, rpcRefusal } from './api';
+import { rpcDraftsChanged, rpcErrorMessage, rpcRefusal } from './api';
 import type { ParsedLine } from './diff_utils';
 import { groupIntoThreads } from './discussion_utils';
 import type { Comment } from './components/review/types';
@@ -191,6 +191,9 @@ export function reviewSubmittedMessage(event: string, pr: string, failedReplies 
  * reviewer has moved on.
  */
 export function reviewNotSubmittedMessage(pr: string, error: unknown): string {
+    if (rpcDraftsChanged(error)) {
+        return `Review on ${pr} was not submitted: some of its pending comments are gone — already submitted, or removed with your account after a stretch of inactivity. Check what is pending on the PR, then submit again.`;
+    }
     const refusal = rpcRefusal(error);
     if (refusal?.kind === 'link-github') {
         return `Review on ${pr} was not submitted: ${refusal.detail}. Your draft is kept — link your account from the account button at the top right, then submit it again.`;
@@ -199,4 +202,23 @@ export function reviewNotSubmittedMessage(pr: string, error: unknown): string {
         return `Review on ${pr} was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead.`;
     }
     return `Review on ${pr} was not submitted: ${rpcErrorMessage(error)}`;
+}
+
+/**
+ * The toast for a submit whose connection to the shared server dropped before
+ * the server answered. The server carries on with a call whose client has
+ * gone, so the review may well have been posted: this says the outcome is
+ * unknown rather than offering the draft back for a second post.
+ */
+export function reviewOutcomeUnknownMessage(pr: string): string {
+    return `Lost the connection to the server while submitting the review on ${pr}: it may or may not have gone out. Check the PR before submitting again.`;
+}
+
+/**
+ * The ids of the pending comments a submit was previewed with, which the
+ * server checks are all still there before it posts anything
+ * (SubmitReview's ExpectedDraftIDs).
+ */
+export function expectedDraftIDs(previews: PendingCommentPreview[]): number[] {
+    return previews.map(p => Number(p.comment.id)).filter(id => Number.isSafeInteger(id) && id > 0);
 }

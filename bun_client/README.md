@@ -46,7 +46,11 @@ you with `CRS_REGISTRATION_KEY`, your GitHub login (`CRS_LOGIN`, else the root
 `GithubUsername` of `~/.config/codereviewserver.toml`) and the workflows and
 section settings of that file, then saves the token it is given with mode
 `0600`. It reconnects on its own when the connection drops, and logs each step
-under `[Remote]`, including what to set when something is missing.
+under `[Remote]`, including what to set when something is missing. A request
+in flight when the connection drops fails with `connection lost:`, since the
+server may still carry it out: a review submit lost that way is reported as
+possibly posted, and the PR is reloaded instead of the draft being offered
+back.
 
 The header then shows the login you are signed in as, with a dot for your
 GitHub link, and opens Preferences → **Account**, where you link or unlink

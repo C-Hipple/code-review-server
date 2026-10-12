@@ -19,6 +19,9 @@ import {
 
 test.use({ baseURL: urlFor(REMOTE_PORT) });
 
+const PR42_ARGS = { Owner: PR42.owner, Repo: PR42.repo, Number: PR42.number };
+const DRAFT = { Filename: 'src/main.ts', Position: 4, Body: 'Name this better.' };
+
 const TOKEN_FILE = join(remoteHomeFor(REMOTE_PORT), '.crs/remote_token');
 const savedToken = () => readFileSync(TOKEN_FILE, 'utf-8').trim();
 
@@ -166,6 +169,65 @@ test.describe('remote mode', () => {
         await backend.rpc('E2E.SetIdentityActions', { allowed: true });
         await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
         await expect(page.getByRole('status')).toHaveText('Requested changes on acme/widgets#42');
+    });
+
+    test('a submit whose connection drops may have gone out, so it reloads the PR', async ({
+        page,
+        backend,
+    }) => {
+        await backend.rpc('E2E.SetIdentityActions', { allowed: true });
+        await backend.rpc('RPCHandler.AddComment', { ...PR42_ARGS, ...DRAFT });
+        await openReview(page);
+        await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
+        const dialog = modal(page, 'Submit Review');
+        await dialog.getByRole('button', { name: 'Approve' }).click();
+        await dialog.getByPlaceholder('Review Body (Optional)').fill('LGTM');
+        // The server posts the review, then the connection drops before the
+        // bridge hears back.
+        await backend.dropNext('SubmitReview');
+        await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+
+        await expect(page.getByRole('status')).toHaveText(
+            'Lost the connection to the server while submitting the review on acme/widgets#42: it may or may not have gone out. Check the PR before submitting again.'
+        );
+        // Not handed back as unsent, which would invite posting it twice:
+        // the PR is reloaded once the bridge has reconnected, showing what
+        // went out.
+        await expect(dialog).toHaveCount(0);
+        await expect.poll(async () => (await backend.calls('SyncPR')).length).toBe(1);
+        await expect(page.getByTitle('Delete local comment')).toHaveCount(0);
+        await page.getByRole('button', { name: /Discussion/ }).click();
+        await expect(page.getByText('LGTM')).toBeVisible();
+        expect(await backend.calls('SubmitReview')).toHaveLength(1);
+    });
+
+    test('a submit whose previewed drafts are gone posts nothing and says so', async ({
+        page,
+        backend,
+    }) => {
+        await backend.rpc('E2E.SetIdentityActions', { allowed: true });
+        const { id } = await backend.rpc('RPCHandler.AddComment', { ...PR42_ARGS, ...DRAFT });
+        await openReview(page);
+        const reviews = (await backend.rpc('RPCHandler.GetPR', PR42_ARGS)).reviews.length;
+        await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
+        const dialog = modal(page, 'Submit Review');
+        await expect(dialog.getByText(DRAFT.Body)).toBeVisible();
+        // The draft goes while the preview shows it: sent from another
+        // client, or deleted with the user by the server's retention.
+        await backend.rpc('RPCHandler.DeleteComment', { ...PR42_ARGS, ID: id });
+        await dialog.getByRole('button', { name: 'Approve' }).click();
+        await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
+
+        await expect(page.getByRole('status')).toHaveText(
+            'Review on acme/widgets#42 was not submitted: some of its pending comments are gone — already submitted, or removed with your account after a stretch of inactivity. Check what is pending on the PR, then submit again.'
+        );
+        const [submit] = await backend.calls('SubmitReview');
+        expect(submit.params.ExpectedDraftIDs).toEqual([id]);
+        // No verdict went out without the comment, and the PR is reloaded
+        // without it.
+        expect((await backend.rpc('RPCHandler.GetPR', PR42_ARGS)).reviews).toHaveLength(reviews);
+        await expect.poll(async () => (await backend.calls('SyncPR')).length).toBe(1);
+        await expect(page.getByTitle('Delete local comment')).toHaveCount(0);
     });
 
     test('the submit preview names the login the bridge signed in as', async ({

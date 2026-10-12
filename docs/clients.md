@@ -211,7 +211,7 @@ A connection starts unauthenticated, so the client opens each one with the conne
 1. `RPCHandler.Authenticate {Token}` with your stored token, if there is one.
 2. If the server doesn't know the token — you never registered there, or it removed you after a stretch of inactivity — or there is none, `RPCHandler.RegisterUser` with the server's registration key, your GitHub login, and the `Workflows`, `Repos`, `SectionPriority` and `SectionSorting` of your local `codereviewserver.toml`. Your stored token goes along, so a returning user gets the same one back. The token in the reply is saved, readable by you only.
 
-Requests made meanwhile wait for it. One the server refuses as `not authenticated:` runs the flow again and is retried once, and a dropped connection fails the requests in flight before the client reconnects.
+Requests made meanwhile wait for it. One the server refuses as `not authenticated:` runs the flow again and is retried once, and a dropped connection fails the requests in flight before the client reconnects. The server still carries out a request whose connection has gone, so a review submit lost that way may have been posted: the web client says its outcome is unknown and reloads the PR rather than offer to submit it again. A submit names the pending comments the client showed (`ExpectedDraftIDs`), so one sent again after the first went through — or after the server deleted your drafts with your account — posts nothing and is refused with `drafts changed:`.
 
 Your workflows are sent when the server registers you — the first time, and again whenever it has forgotten you. In between, the server runs the copy it has: editing your local file doesn't change it (`RPCHandler.UpdateMyWorkflows` does).
 
@@ -264,7 +264,7 @@ The bridge logs the connect flow under `[Remote]`, including what to set when so
 
 Connected to a shared server, the header shows who you are signed in as, with a dot for your GitHub link — green linked, amber not linked yet, grey when the server can't link accounts. It opens the **Account** tab of Preferences, which says which server and login you are on (and whether you are an administrator), and where your GitHub link stands, with **Link GitHub account** or **Unlink** (which asks first). Linking opens a dialog with GitHub's code, a Copy button and a link to the page to enter it on; it waits for GitHub and says how the link ended. Closing it stops the waiting but not the link, and opening it again shows the same code.
 
-A submit refused with `refused: link-github:` opens the same dialog, saying why the review wasn't submitted, with your draft kept; once linked, **Submit again** sends it. A plain `refused:` says so in a toast and leaves the draft in place to take to GitHub. The submit dialog's preview names the login you are signed in as, since the server's configuration, where a local client reads `GithubUsername`, is for its administrators.
+A submit refused with `refused: link-github:` opens the same dialog, saying why the review wasn't submitted, with your draft kept; once linked, **Submit again** sends it. A plain `refused:` says so in a toast and leaves the draft in place to take to GitHub. A submit whose connection dropped before the server answered says it may or may not have gone out and reloads the PR, without reopening the submit dialog: check the PR before submitting again. The submit dialog's preview names the login you are signed in as, since the server's configuration, where a local client reads `GithubUsername`, is for its administrators.
 
 ### Emacs client
 

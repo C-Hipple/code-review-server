@@ -5,6 +5,8 @@ import {
     getHunkContext,
     listAIFeatures,
     rpcCall,
+    rpcConnectionLost,
+    rpcDraftsChanged,
     rpcRefusal,
 } from '../api';
 import {
@@ -25,7 +27,9 @@ import { parseDiff } from '../diff_utils';
 import { pluginRerunFailedMessage } from '../plugin_utils';
 import {
     buildPendingPreviews,
+    expectedDraftIDs,
     reviewNotSubmittedMessage,
+    reviewOutcomeUnknownMessage,
     reviewSubmittedMessage,
 } from '../review_preview_utils';
 import { bridgeSession } from '../session';
@@ -433,7 +437,9 @@ export default function Review({
         }
     };
 
-    const handleSync = async () => {
+    // `announce` says how the sync went in a toast; a sync that follows a
+    // submit leaves the toast to say how the submit went.
+    const handleSync = async (announce = true) => {
         setLoading(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.SyncPR', [
@@ -446,6 +452,7 @@ export default function Review({
             applyPRResponse(res);
             loadPluginOutputs();
             loadAIOutputs();
+            if (!announce) return;
             if (res.updated) {
                 showToast('Synced — new commits, comments, or reviews pulled in', 'success');
             } else {
@@ -453,7 +460,7 @@ export default function Review({
             }
         } catch (e) {
             console.error(e);
-            showToast('Sync failed — see console for details', 'danger');
+            if (announce) showToast('Sync failed — see console for details', 'danger');
         } finally {
             setLoading(false);
         }
@@ -703,6 +710,9 @@ export default function Review({
         const key = prRef;
         const event = reviewEvent;
         const body = reviewBody;
+        // The drafts the reviewer was shown: the server posts nothing if any
+        // of them is gone, rather than a verdict without them.
+        const expected = expectedDraftIDs(pendingPreviews);
         setSubmitting(false);
         setSubmittingPRs(prev => new Set(prev).add(key));
         try {
@@ -717,6 +727,7 @@ export default function Review({
                     Number: number,
                     Event: event,
                     Body: body,
+                    ExpectedDraftIDs: expected,
                 },
             ]);
             // Only a view still showing this PR takes the refreshed payload;
@@ -740,6 +751,25 @@ export default function Review({
             );
         } catch (e) {
             console.error(e);
+            if (rpcConnectionLost(e)) {
+                // The server got it and may have posted it: offering the
+                // draft back would invite posting it twice. Show what the
+                // PR looks like now instead.
+                showToast(reviewOutcomeUnknownMessage(key), 'warning', REFUSAL_TOAST_MS);
+                if (prKey.current === key) void handleSync(false);
+                return;
+            }
+            if (rpcDraftsChanged(e)) {
+                // Nothing went out, but what the reviewer was shown is out of
+                // date: reload it before they submit again.
+                showToast(reviewNotSubmittedMessage(key, e), 'danger', REFUSAL_TOAST_MS);
+                if (prKey.current === key) {
+                    setReviewEvent(event);
+                    setReviewBody(body);
+                    void handleSync(false);
+                }
+                return;
+            }
             const refusal = rpcRefusal(e);
             if (refusal?.kind === 'link-github') {
                 // The server needs the reviewer's own GitHub account, which
@@ -1140,7 +1170,7 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
-                <Button onClick={handleSync} loading={loading}>
+                <Button onClick={() => handleSync()} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>
                 <Button

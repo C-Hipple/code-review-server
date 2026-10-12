@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { adminOnlyMessage, rpcErrorMessage, rpcRefusal } from './api';
+import {
+    adminOnlyMessage,
+    rpcConnectionLost,
+    rpcDraftsChanged,
+    rpcErrorMessage,
+    rpcRefusal,
+} from './api';
 
 describe('rpcErrorMessage', () => {
     test('unwraps the JSON-encoded string the Go server sends', () => {
@@ -67,6 +73,42 @@ describe('rpcRefusal', () => {
         expect(rpcRefusal(goError('not authenticated: no session'))).toBeNull();
         expect(rpcRefusal(goError('the reviewer refused: nothing to see'))).toBeNull();
         expect(rpcRefusal(new TypeError('Failed to fetch'))).toBeNull();
+    });
+});
+
+describe('rpcConnectionLost', () => {
+    const goError = (message: string) => new Error(JSON.stringify(message));
+
+    test('is a call the bridge lost with its connection, not one it never sent', () => {
+        expect(
+            rpcConnectionLost(
+                goError(
+                    'connection lost: the connection to crs at crs.test:7700 was lost before it answered'
+                )
+            )
+        ).toBe(true);
+        expect(
+            rpcConnectionLost(
+                goError('The connection to crs at crs.test:7700 closed before the call was sent')
+            )
+        ).toBe(false);
+        expect(rpcConnectionLost(goError("Can't reach crs at crs.test:7700: refused"))).toBe(false);
+        expect(rpcConnectionLost(new TypeError('Failed to fetch'))).toBe(false);
+    });
+});
+
+describe('rpcDraftsChanged', () => {
+    test('is SubmitReview refusing a review whose previewed drafts are gone', () => {
+        expect(
+            rpcDraftsChanged(
+                new Error(
+                    JSON.stringify(
+                        'drafts changed: some of the pending comments this review was to carry no longer exist'
+                    )
+                )
+            )
+        ).toBe(true);
+        expect(rpcDraftsChanged(new Error(JSON.stringify('GitHub is down')))).toBe(false);
     });
 });
 

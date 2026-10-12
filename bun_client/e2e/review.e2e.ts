@@ -146,6 +146,9 @@ test.describe('review view', () => {
             Number: 42,
             Event: 'APPROVE',
             Body: 'LGTM',
+            // The drafts the preview showed, which the server checks are
+            // all still there before it posts anything.
+            ExpectedDraftIDs: [9001],
         });
 
         await backend.release('SubmitReview');

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Socket, TCPSocketListener } from 'bun';
 import {
+    CONNECTION_LOST,
     describeProblem,
     parseRemoteAddress,
     RemoteRpcClient,
@@ -396,8 +397,10 @@ describe('RemoteRpcClient recovery', () => {
         const hanging = client.call('Test.Hang', [{}]);
         await Bun.sleep(20);
         server.drop();
+        // It reached the server, which may have acted on it: the caller
+        // is told it doesn't know, not that it failed.
         await expect(hanging).rejects.toBe(
-            `The connection to crs at ${settings.address} was lost before it answered`
+            `${CONNECTION_LOST} the connection to crs at ${settings.address} was lost before it answered`
         );
 
         expect(await client.call('Test.Echo', [{ n: 2 }])).toMatchObject({ echo: { n: 2 } });

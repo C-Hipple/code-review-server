@@ -417,9 +417,18 @@ markdown is not just markdown:
   from the saved feedback draft.
 - On mobile, a sticky bottom bar with thumb-sized Approve / Request / Comment buttons
   that open the same modal pre-set to the chosen event.
-- After `SubmitReview` succeeds, the client immediately runs a `SyncPR` to pick up the
-  server-side state (local comments are gone, the review is on GitHub, section
-  membership may have changed).
+- `SubmitReview` replies with the PR as the server refetched it after posting, which
+  the client applies as the refresh (local comments are gone, the review is on
+  GitHub, section membership may have changed).
+- The submit names the pending comments its preview showed (`ExpectedDraftIDs`). If
+  any is gone — sent by another submit, or deleted with the user by a shared
+  server's retention — the server posts nothing and answers `drafts changed:`; the
+  toast says the review was not submitted, the PR is reloaded (`SyncPR`) and the
+  body and verdict are kept for another go.
+- A submit to a shared server whose connection drops before the answer
+  (`connection lost:`, see `remote_rpc.ts`) may still have been posted: the server
+  finishes a call whose client has gone. The toast says the outcome is unknown, the
+  PR is reloaded once the bridge reconnects, and the submit dialog is not reopened.
 - The preview's verdict line names the reviewer: the config's `GithubUsername`
   locally, the session's login on a shared server, whose config only its
   administrators may read.

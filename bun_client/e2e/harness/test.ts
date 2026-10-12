@@ -71,6 +71,14 @@ class Backend {
         return this.rpc('E2E.Release', { method: `RPCHandler.${method}` });
     }
 
+    /**
+     * Remote bridge: carry out the next call to `method`, then hang up on the
+     * bridge instead of answering, as a connection lost mid-call would.
+     */
+    dropNext(method: string) {
+        return this.rpc('E2E.DropNext', { method: `RPCHandler.${method}` });
+    }
+
     setSyncUpdated(updated: boolean) {
         return this.rpc('E2E.SetSyncUpdated', { updated });
     }

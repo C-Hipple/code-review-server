@@ -3,8 +3,10 @@ import { parseDiff } from './diff_utils';
 import {
     buildPendingPreviews,
     contextForPosition,
+    expectedDraftIDs,
     pendingComments,
     reviewNotSubmittedMessage,
+    reviewOutcomeUnknownMessage,
     reviewSubmittedMessage,
     reviewVerdictLabel,
 } from './review_preview_utils';
@@ -247,6 +249,19 @@ describe('reviewNotSubmittedMessage', () => {
         );
     });
 
+    test('says to look again when the drafts it was shown with are gone', () => {
+        expect(
+            reviewNotSubmittedMessage(
+                'acme/widgets#42',
+                goError(
+                    'drafts changed: some of the pending comments this review was to carry no longer exist'
+                )
+            )
+        ).toBe(
+            'Review on acme/widgets#42 was not submitted: some of its pending comments are gone — already submitted, or removed with your account after a stretch of inactivity. Check what is pending on the PR, then submit again.'
+        );
+    });
+
     test('says to link the GitHub account when that is what the server needs', () => {
         expect(
             reviewNotSubmittedMessage(
@@ -258,5 +273,27 @@ describe('reviewNotSubmittedMessage', () => {
         ).toBe(
             'Review on acme/widgets#42 was not submitted: your GitHub authorization has expired or was revoked; link your account again. Your draft is kept — link your account from the account button at the top right, then submit it again.'
         );
+    });
+});
+
+describe('reviewOutcomeUnknownMessage', () => {
+    test('says the review may have gone out', () => {
+        expect(reviewOutcomeUnknownMessage('acme/widgets#42')).toBe(
+            'Lost the connection to the server while submitting the review on acme/widgets#42: it may or may not have gone out. Check the PR before submitting again.'
+        );
+    });
+});
+
+describe('expectedDraftIDs', () => {
+    test('are the ids of the drafts the submit was previewed with', () => {
+        const previews = buildPendingPreviews(
+            [
+                comment({ id: '9001', author: 'local' }),
+                comment({ id: '5', author: 'bob' }),
+                comment({ id: '9002', author: 'local', position: '6' }),
+            ],
+            []
+        );
+        expect(expectedDraftIDs(previews).sort()).toEqual([9001, 9002]);
     });
 });

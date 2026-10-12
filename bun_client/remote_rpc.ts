@@ -14,10 +14,11 @@
 //      the token in the reply is saved for next time.
 //
 // Calls made while that runs wait for it. A dropped connection fails the calls
-// in flight and reconnects with capped exponential backoff; a call refused
-// with `not authenticated:` re-runs the flow on its connection and is retried
-// once. Errors are rejected as strings, the shape a Go error string arrives in,
-// so the frontend shows them the same way.
+// in flight — with `connection lost:`, since the server may have acted on one
+// before it went — and reconnects with capped exponential backoff; a call
+// refused with `not authenticated:` re-runs the flow on its connection and is
+// retried once. Errors are rejected as strings, the shape a Go error string
+// arrives in, so the frontend shows them the same way.
 //
 // Who the flow signed in as — the login, whether it is an administrator, and
 // whether its GitHub account is linked for writes — is kept for the web UI's
@@ -257,6 +258,13 @@ function errorText(e: unknown): string {
 
 const NOT_AUTHENTICATED = 'not authenticated:';
 
+/**
+ * The prefix of a call the connection dropped before the server answered: it
+ * reached the server, which may well have acted on it — a review submitted,
+ * a PR merged — so the caller cannot take it for undone.
+ */
+export const CONNECTION_LOST = 'connection lost:';
+
 const isNotAuthenticated = (e: unknown) => typeof e === 'string' && e.startsWith(NOT_AUTHENTICATED);
 
 /** One TCP (or TLS) connection to the server, and the requests in flight on it. */
@@ -273,11 +281,16 @@ class Connection {
     // Bytes the socket didn't take yet, written on `drain`.
     private unsent: Buffer | null = null;
 
+    private lostMessage: string;
+    private notSentMessage: string;
+
     constructor(
         private nextId: () => number,
-        private lostMessage: string
+        where: string
     ) {
         this.closed = new Promise(resolve => (this.resolveClosed = resolve));
+        this.lostMessage = `${CONNECTION_LOST} the connection to ${where} was lost before it answered`;
+        this.notSentMessage = `The connection to ${where} closed before the call was sent`;
     }
 
     get open() {
@@ -285,7 +298,7 @@ class Connection {
     }
 
     request(method: string, params: unknown[]): Promise<unknown> {
-        if (this.isClosed) return Promise.reject(this.lostMessage);
+        if (this.isClosed) return Promise.reject(this.notSentMessage);
         const id = this.nextId();
         return new Promise((resolve, reject) => {
             this.inFlight.set(id, { resolve, reject });
@@ -493,10 +506,7 @@ export class RemoteRpcClient {
     }
 
     private async open(): Promise<Connection> {
-        const conn = new Connection(
-            () => this.nextId++,
-            `The connection to ${this.where} was lost before it answered`
-        );
+        const conn = new Connection(() => this.nextId++, this.where);
         const connecting = Bun.connect<Connection>({
             hostname: this.settings.hostname,
             port: this.settings.port,

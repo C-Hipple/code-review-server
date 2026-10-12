@@ -71,6 +71,9 @@ interface State {
     // held that way, each answered by `E2E.Release`.
     holdNext: Set<string>;
     held: Map<string, () => void>;
+    // Listen mode: methods whose next call is carried out, then the
+    // connection it came on is closed instead of answered (E2E.DropNext).
+    dropNext: Set<string>;
     syncUpdated: boolean;
     nextCommentId: number;
     nextReviewId: number;
@@ -141,6 +144,7 @@ function freshState(): State {
         failNext: new Map(),
         holdNext: new Set(),
         held: new Map(),
+        dropNext: new Set(),
         syncUpdated: false,
         nextCommentId: 9001,
         nextReviewId: 800,
@@ -536,6 +540,8 @@ const permissionDenied = (method: string) =>
 const SKIP_CACHE_NEEDS_ADMIN = 'permission denied: SkipCache requires an administrator';
 const MERGE_AS_SERVER_NEEDS_ADMIN =
     "permission denied: RPCHandler.MergePR requires an administrator to merge as this server's GitHub account";
+const DRAFTS_CHANGED =
+    'drafts changed: some of the pending comments this review was to carry no longer exist (already submitted, or deleted with your account after inactivity), so nothing was submitted; reload the PR and check what is pending before submitting again';
 const SERVER_IDENTITY_REFUSED =
     "refused: this server posts to GitHub as its own account, so it does not submit reviews or merge on users' behalf; an administrator can enable AllowServerIdentityActions";
 const LINK_REQUIRED =
@@ -1027,6 +1033,11 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         const pr = findPR(args);
         // Settled before anything is written: a refusal leaves the drafts.
         const author = writeIdentity('SubmitReview', peer.session);
+        // The drafts the client previewed must all still be there.
+        const pending = new Set(locals(pr).map(c => c.id));
+        for (const id of args.ExpectedDraftIDs ?? []) {
+            if (!pending.has(String(id))) throw new Error(DRAFTS_CHANGED);
+        }
         const review: ReviewJSON = {
             id: state.nextReviewId++,
             user: author,
@@ -1318,6 +1329,14 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         return { okay: true };
     },
 
+    // Listen mode: carry out the next call to `method`, then hang up on the
+    // connection it came on instead of answering — the server finished what
+    // the client never heard back about.
+    'E2E.DropNext': args => {
+        state.dropNext.add(args.method);
+        return { okay: true };
+    },
+
     'E2E.Release': args => {
         const answer = state.held.get(args.method);
         if (!answer) throw new Error(`no ${args.method} call is being held`);
@@ -1458,6 +1477,15 @@ function handle(req: Request, peer: Peer) {
 }
 
 function answer(req: Request, args: Record<string, any>, peer: Peer, call: State['calls'][number]) {
+    if (!peer.session.local && state.dropNext.delete(req.method)) {
+        try {
+            handlers[req.method]?.(args, peer);
+        } catch {
+            // Nobody hears how it went either way.
+        }
+        peer.close();
+        return;
+    }
     const injected = state.failNext.get(req.method);
     if (injected !== undefined) {
         state.failNext.delete(req.method);

@@ -322,6 +322,24 @@ export function rpcRefusal(e: unknown): RpcRefusal | null {
     return null;
 }
 
+/**
+ * Whether the bridge lost its connection to a shared server before the server
+ * answered the call (remote_rpc.ts, `connection lost:`). The call reached the
+ * server, which may have acted on it: a write's outcome is unknown, not failed.
+ */
+export function rpcConnectionLost(e: unknown): boolean {
+    return rpcErrorMessage(e).startsWith('connection lost:');
+}
+
+/**
+ * Whether SubmitReview refused a review because pending comments it was shown
+ * with are gone (`drafts changed:`): already sent by an earlier submit, or
+ * deleted with the user. Nothing was submitted; the PR wants reloading.
+ */
+export function rpcDraftsChanged(e: unknown): boolean {
+    return rpcErrorMessage(e).startsWith('drafts changed:');
+}
+
 /** What to say when a `permission-denied` refusal stops `action` ("rerun plugins"). */
 export function adminOnlyMessage(action: string): string {
     return `Only an administrator of this server can ${action}.`;

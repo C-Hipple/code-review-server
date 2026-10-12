@@ -72,6 +72,10 @@ that cannot link until the spec says otherwise. Specs read that log with
 handler — carries the error in `refused`. `E2E.ForgetUser` drops a user the
 way the server's retention sweep does (with `Disconnect: true` it also hangs
 up, as a restart would), and `E2E.SetIdentityActions` opens the identity gate.
+`backend.dropNext(method)` carries out the next call to `method` and then
+hangs up instead of answering, as a connection lost mid-call would. Like the
+server, `SubmitReview` posts nothing and answers `drafts changed:` when a
+pending comment named in its `ExpectedDraftIDs` is gone.
 
 For GitHub linking (`remote_link.e2e.ts`), `backend.setGitHubLinkAvailable`
 lets the server link accounts (its codes poll every second, not GitHub's

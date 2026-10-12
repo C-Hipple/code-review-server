@@ -6,7 +6,13 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { REMOTE_LOGIN, REMOTE_USER_REGISTRATION } from './fixtures/remote_user';
-import { REGISTRATION_KEY, REMOTE_PORT, remoteHomeFor, urlFor } from './harness/config';
+import {
+    REGISTRATION_KEY,
+    REMOTE_PORT,
+    remoteCrsPortFor,
+    remoteHomeFor,
+    urlFor,
+} from './harness/config';
 import {
     type AuthCall,
     expect,
@@ -22,7 +28,11 @@ test.use({ baseURL: urlFor(REMOTE_PORT) });
 const PR42_ARGS = { Owner: PR42.owner, Repo: PR42.repo, Number: PR42.number };
 const DRAFT = { Filename: 'src/main.ts', Position: 4, Body: 'Name this better.' };
 
-const TOKEN_FILE = join(remoteHomeFor(REMOTE_PORT), '.crs/remote_token');
+// Kept under the address it was issued for, and only sent there.
+const TOKEN_FILE = join(
+    remoteHomeFor(REMOTE_PORT),
+    `.crs/remote_tokens/127.0.0.1_${remoteCrsPortFor(REMOTE_PORT)}`
+);
 const savedToken = () => readFileSync(TOKEN_FILE, 'utf-8').trim();
 
 /**

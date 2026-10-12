@@ -39,9 +39,10 @@ export CRS_REGISTRATION_KEY=...                 # from its administrator; first 
 bun start
 ```
 
-On each connection the bridge authenticates with the token in
-`$CRS_HOME/remote_token` (default `~/.crs/remote_token`; `CRS_REMOTE_TOKEN`
-wins when set). With no token, or one the server no longer knows, it registers
+On each connection the bridge authenticates with the server's token, kept in
+`$CRS_HOME/remote_tokens/<host>_<port>` (default `~/.crs/remote_tokens/`; one
+file per server, since a token is a password for the server that issued it;
+`CRS_REMOTE_TOKEN` wins when set). With no token, or one the server no longer knows, it registers
 you with `CRS_REGISTRATION_KEY`, your GitHub login (`CRS_LOGIN`, else the root
 `GithubUsername` of `~/.config/codereviewserver.toml`) and the workflows and
 section settings of that file, then saves the token it is given with mode

@@ -215,7 +215,7 @@ Requests made meanwhile wait for it. One the server refuses as `not authenticate
 
 Your workflows are sent when the server registers you — the first time, and again whenever it has forgotten you. In between, the server runs the copy it has: editing your local file doesn't change it (`RPCHandler.UpdateMyWorkflows` does).
 
-Both clients keep the token in `$CRS_HOME/remote_token` (`~/.crs/remote_token`) by default, so they connect as the same user. To use a token from another machine, copy it there (or set `CRS_REMOTE_TOKEN`): registering a login the server already knows needs the token it was registered with.
+The token is a password for the server that issued it, so it is kept per server: in `$CRS_HOME/remote_tokens/<host>_<port>` (`~/.crs/remote_tokens/crs.internal.example.com_443`), named after the address you connect to — lower-cased, with any character other than a letter, digit, `.` or `-` written `_` — and only ever sent there. Pointing a client at another server registers you there afresh rather than handing it this one's token. To use a token from another machine, copy that server's file across (or set `CRS_REMOTE_TOKEN`): registering a login the server already knows needs the token it was registered with. The same server reached under two names (`localhost` and `127.0.0.1`, say) has two files.
 
 ### What is different on a shared server
 
@@ -251,7 +251,7 @@ Set these before `bun start` (or the compiled `crs-gui`):
 | `CRS_REGISTRATION_KEY` | The server's registration key, from its administrator. Needed only to register. |
 | `CRS_LOGIN` | Your GitHub login. Defaults to the root `GithubUsername` of your `codereviewserver.toml`. |
 | `CRS_REMOTE_TOKEN` | Your token, used instead of the token file. |
-| `CRS_HOME` | Where the token file lives (`$CRS_HOME/remote_token`, default `~/.crs`). |
+| `CRS_HOME` | Where the token files live (`$CRS_HOME/remote_tokens/<host>_<port>`, default `~/.crs`). |
 | `XDG_CONFIG_HOME` | Where `codereviewserver.toml` is read from (default `~/.config`). |
 
 ```bash

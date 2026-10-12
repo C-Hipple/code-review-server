@@ -12,6 +12,7 @@ import {
     type RemoteSettings,
     readUserConfig,
     remoteSettingsFromEnv,
+    tokenFileName,
 } from './remote_rpc';
 
 // biome-ignore lint/suspicious/noExplicitAny: decoded JSON-RPC arguments
@@ -179,7 +180,7 @@ function setup(
         port: server.port,
         tls: false,
         envToken: '',
-        tokenFile: join(dir, 'crs', 'remote_token'),
+        tokenFile: join(dir, 'crs', 'remote_tokens', `127.0.0.1_${server.port}`),
         login: '',
         registrationKey: 'sesame',
         configPath,
@@ -262,6 +263,23 @@ describe('RemoteRpcClient connect flow', () => {
         await connect().call('Test.Echo', [{}]);
         expect(server.received[0].params).toEqual({ Token: TOKEN_B });
         expect(server.received[1].params).toMatchObject({ Login: 'hubot', Token: TOKEN_B });
+    });
+
+    test('keeps a token per server, and never sends one server’s to another', async () => {
+        const { server, settings, connect, dir } = setup();
+        // Another server's token, kept the way this server's would be.
+        const elsewhere = join(dir, 'crs', 'remote_tokens', 'crs.other_7700');
+        await Bun.write(elsewhere, `${TOKEN_B}\n`);
+
+        await connect().call('Test.Echo', [{}]);
+        // This server had none of its own: it registered, with no token.
+        expect(server.received[0]).toEqual({
+            method: 'RPCHandler.RegisterUser',
+            params: expect.objectContaining({ Token: '' }),
+        });
+        expect(readToken(settings)).toBe(server.users.get('octocat')?.token ?? '');
+        expect(server.received.some(r => JSON.stringify(r.params).includes(TOKEN_B))).toBe(false);
+        expect(readFileSync(elsewhere, 'utf-8').trim()).toBe(TOKEN_B);
     });
 
     test('queues calls made while connecting and sends them in order', async () => {
@@ -497,7 +515,7 @@ describe('remoteSettingsFromEnv', () => {
             port: 7700,
             tls: false,
             envToken: '',
-            tokenFile: '/home/me/.crs/remote_token',
+            tokenFile: '/home/me/.crs/remote_tokens/crs.internal_7700',
             login: '',
             registrationKey: '',
             configPath: '/home/me/.config/codereviewserver.toml',
@@ -521,11 +539,22 @@ describe('remoteSettingsFromEnv', () => {
             port: 443,
             tls: true,
             envToken: TOKEN_A,
-            tokenFile: '/srv/crs/remote_token',
+            tokenFile: '/srv/crs/remote_tokens/__1_443',
             login: 'octocat',
             registrationKey: 'sesame',
             configPath: '/etc/xdg/codereviewserver.toml',
         });
+    });
+
+    test('keeps each server’s token in a file of its own', () => {
+        const file = (address: string) =>
+            remoteSettingsFromEnv({ CRS_REMOTE: address, HOME: '/home/me' })?.tokenFile;
+        expect(file('crs.internal:7700')).not.toBe(file('crs.other:7700'));
+        expect(file('crs.internal:7700')).not.toBe(file('crs.internal:7701'));
+        // A host name is case-insensitive; the file is the same either way.
+        expect(file('CRS.Internal:7700')).toBe(file('crs.internal:7700'));
+        expect(tokenFileName('fe80::1%eth0', 7700)).toBe('fe80__1_eth0_7700');
+        expect(tokenFileName('../../etc', 22)).toBe('.._.._etc_22');
     });
 
     test('rejects an address without a port', () => {

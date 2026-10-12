@@ -41,6 +41,6 @@ export const repoCopyFor = (port: number) => join(stateDirFor(port), 'repo');
 /**
  * The remote bridge's HOME, so nothing of the machine's leaks in: its
  * codereviewserver.toml is under .config, and the token it registers for
- * lands in .crs/remote_token.
+ * lands in .crs/remote_tokens/127.0.0.1_<port of its fake crs>.
  */
 export const remoteHomeFor = (port: number) => join(stateDirFor(port), 'home');

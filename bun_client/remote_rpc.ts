@@ -20,6 +20,9 @@
 // retried once. Errors are rejected as strings, the shape a Go error string
 // arrives in, so the frontend shows them the same way.
 //
+// The token is kept per server address ($CRS_HOME/remote_tokens/<host>_<port>),
+// and only ever sent to that address.
+//
 // Who the flow signed in as — the login, whether it is an administrator, and
 // whether its GitHub account is linked for writes — is kept for the web UI's
 // /api/session (describeSession).
@@ -39,7 +42,11 @@ export interface RemoteSettings {
     tls: boolean;
     /** CRS_REMOTE_TOKEN, which wins over the token file when set. */
     envToken: string;
-    /** Where a registration's token is kept: $CRS_HOME/remote_token. */
+    /**
+     * Where this server's token is kept: $CRS_HOME/remote_tokens/<host>_<port>.
+     * A token is a password for the server that issued it, so each server
+     * gets its own: pointing CRS_REMOTE elsewhere must not hand it over.
+     */
     tokenFile: string;
     /** CRS_LOGIN, which wins over the TOML's GithubUsername when set. */
     login: string;
@@ -59,6 +66,11 @@ export function parseRemoteAddress(value: string): { hostname: string; port: num
     return { hostname: match[1] ?? match[2], port };
 }
 
+/** The token file's name for a server: its host and port, safe as a file name. */
+export function tokenFileName(hostname: string, port: number): string {
+    return `${hostname.toLowerCase().replace(/[^a-z0-9.-]/g, '_')}_${port}`;
+}
+
 /** Remote mode's settings, or null when CRS_REMOTE is unset (spawn crs locally). */
 export function remoteSettingsFromEnv(
     env: Record<string, string | undefined> = process.env
@@ -75,7 +87,7 @@ export function remoteSettingsFromEnv(
         port,
         tls: ['1', 'true'].includes((env.CRS_REMOTE_TLS ?? '').trim().toLowerCase()),
         envToken: env.CRS_REMOTE_TOKEN?.trim() ?? '',
-        tokenFile: join(crsHome, 'remote_token'),
+        tokenFile: join(crsHome, 'remote_tokens', tokenFileName(hostname, port)),
         login: env.CRS_LOGIN?.trim() ?? '',
         registrationKey: env.CRS_REGISTRATION_KEY ?? '',
         configPath: join(configHome, 'codereviewserver.toml'),

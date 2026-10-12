@@ -120,6 +120,140 @@ const feedbackColumns = `
 		body TEXT,
 		UNIQUE(user_login, owner, repo, number)`
 
+// prCacheTable is one of the caches of what GitHub says about a PR — its diff,
+// comments, reviews, CI and the rest — and the shape it is created with.
+type prCacheTable struct {
+	name string
+	// columns is the table's definition, shared by the schema a fresh
+	// database is created with and the rebuild that migrates an older one.
+	columns string
+	// data lists its columns besides owner, repo and pr_number, which the
+	// migration copies across.
+	data string
+}
+
+// prCacheTables are keyed by the PR's owner as well as its repository's name
+// and number. They used to be keyed by the short name alone, which two
+// owners' repositories can share — orgA/api and orgB/api — and which on a
+// hosted server any user can make the server fetch for a repository of their
+// own (a fork of the same name, one PR in it, a SyncPR): its diff, head and
+// comments were then served for the other owner's PR of the same number.
+var prCacheTables = []prCacheTable{
+	{"PullRequests", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		latest_sha TEXT NOT NULL,
+		base_sha TEXT NOT NULL DEFAULT '',
+		body TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number, latest_sha)`, "latest_sha, base_sha, body"},
+	{"PRComments", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		comments_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "comments_json"},
+	{"RequestedReviewers", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reviewers_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reviewers_json"},
+	{"PRReviews", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reviews_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reviews_json"},
+	{"PRCommits", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		commits_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "commits_json"},
+	{"PRReviewThreads", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		threads_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "threads_json"},
+	{"PRReactions", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reactions_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reactions_json"},
+	{"PRTeamReviews", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		teams_json TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number)`, "teams_json, updated_at"},
+	// Whether each PR merges cleanly, as GitHub last answered for head_sha
+	// (see RecordPRMergeability).
+	{"PRMergeability", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		head_sha TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT '',
+		UNIQUE(owner, repo, pr_number)`, "head_sha, state"},
+	{"CIStatus", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		sha TEXT NOT NULL,
+		status_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number, sha)`, "sha, status_json"},
+}
+
+// prCacheOwner is the owner a short-name cache row is migrated under: the one
+// owner the database knows a PR of that repository name and number under —
+// from the caches that were always keyed by owner — or "" when it knows none,
+// or more than one, and cannot tell whose the row is.
+const prCacheOwner = `COALESCE((
+	SELECT CASE WHEN COUNT(DISTINCT k.owner) = 1 THEN MIN(k.owner) END FROM (
+		SELECT owner, repo, pr_number FROM PRMetadataCache
+		UNION SELECT owner, repo, pr_number FROM PluginResults
+		UNION SELECT owner, repo, pr_number FROM AIResults
+		UNION SELECT owner, repo, pr_number FROM Worktrees
+	) k WHERE k.repo = %[1]s.repo AND k.pr_number = %[1]s.pr_number AND k.owner != ''
+), '')`
+
+// migratePRCacheOwners rebuilds each PR cache that predates its owner column,
+// filing every row under its PR's owner where the database can tell it
+// (prCacheOwner) and dropping the rest: a cache row nobody can vouch for is
+// fetched again rather than served for the wrong PR. Each table checks for the
+// column first, so running this against a migrated database does nothing.
+func (db *DB) migratePRCacheOwners() error {
+	for _, t := range prCacheTables {
+		migrated, err := db.hasColumn(t.name, "owner")
+		if err != nil {
+			return err
+		}
+		if migrated {
+			continue
+		}
+		data := t.data
+		if t.name == "PullRequests" {
+			data = "latest_sha, COALESCE(base_sha, ''), body"
+		}
+		if err := db.rebuildTable(t.name, t.columns,
+			"owner, repo, pr_number, "+t.data,
+			fmt.Sprintf(prCacheOwner, t.name)+", repo, pr_number, "+data); err != nil {
+			return fmt.Errorf("rebuilding %s: %w", t.name, err)
+		}
+		res, err := db.conn.Exec("DELETE FROM " + t.name + " WHERE owner = ''")
+		if err != nil {
+			return err
+		}
+		dropped, _ := res.RowsAffected()
+		slog.Info("Migrated a PR cache to keys with the PR's owner", "table", t.name, "dropped_rows_of_unknown_owner", dropped)
+	}
+	return nil
+}
+
 func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sections (` + sectionsColumns + `
@@ -192,82 +326,6 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (user_login, name)
 	);
 
-	CREATE TABLE IF NOT EXISTS PullRequests (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		latest_sha TEXT NOT NULL,
-		body TEXT NOT NULL,
-		UNIQUE(pr_number, repo, latest_sha)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRComments (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		comments_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS RequestedReviewers (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reviewers_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRReviews (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reviews_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRCommits (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		commits_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRReviewThreads (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		threads_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRReactions (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reactions_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRTeamReviews (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		teams_json TEXT NOT NULL,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(pr_number, repo)
-	);
-
-	-- Whether each PR merges cleanly, as GitHub last answered for head_sha (see
-	-- RecordPRMergeability). Additive, like AIResults.
-	CREATE TABLE IF NOT EXISTS PRMergeability (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		head_sha TEXT NOT NULL DEFAULT '',
-		state TEXT NOT NULL DEFAULT '',
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS CIStatus (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		sha TEXT NOT NULL,
-		status_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo, sha)
-	);
-
 	CREATE TABLE IF NOT EXISTS PRMetadataCache (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,
@@ -329,12 +387,8 @@ func (db *DB) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
-	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
-	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
-	CREATE INDEX IF NOT EXISTS idx_prcommits_lookup ON PRCommits(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
-	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
 
 	CREATE TABLE IF NOT EXISTS WorkflowCycleLog (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,6 +434,14 @@ func (db *DB) initSchema() error {
 	_, err := db.conn.Exec(schema)
 	if err != nil {
 		return err
+	}
+	// Created here rather than in the schema block so their shape has one
+	// definition (prCacheTables); an older database keeps its tables until
+	// migratePRCacheOwners rebuilds them.
+	for _, t := range prCacheTables {
+		if _, err := db.conn.Exec("CREATE TABLE IF NOT EXISTS " + t.name + " (" + t.columns + "\n\t)"); err != nil {
+			return err
+		}
 	}
 
 	// Migration: Add PR columns to LocalComment table if they don't exist
@@ -619,6 +681,10 @@ func (db *DB) initSchema() error {
 	if err := db.migratePerUserColumns(); err != nil {
 		return fmt.Errorf("migrating to per-user dashboards: %w", err)
 	}
+	// Likewise: every query on the PR caches names owner.
+	if err := db.migratePRCacheOwners(); err != nil {
+		return fmt.Errorf("migrating the PR caches to keys with the PR's owner: %w", err)
+	}
 
 	return nil
 }
@@ -692,7 +758,8 @@ func (db *DB) hasColumn(table, column string) (bool, error) {
 // selectExprs the expressions, read from the old table, that fill them. The
 // copy carries ids across, so anything that refers to a row by id still finds
 // it. The rebuild does not carry over indexes of the table's own beyond its
-// constraints; neither table rebuilt today has any.
+// constraints; none of the tables rebuilt today needs one, and the old ones
+// go with the old table.
 //
 // Foreign keys are switched off for the rebuild, on the one connection it runs
 // on. With them on, dropping sections deletes every row of items through its
@@ -1674,7 +1741,9 @@ func requireOneRow(res sql.Result, err error) error {
 	return nil
 }
 
-func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) {
+// GetPullRequest returns the cached diff of owner/repo#prNumber and the head
+// SHA it is for.
+func (db *DB) GetPullRequest(owner, repo string, prNumber int) (string, string, error) {
 	var body string
 	var sha string
 	// A PR accumulates one row per head SHA it has ever had (the UNIQUE key
@@ -1683,8 +1752,8 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 	// stale) one. Without this, a bare LIMIT 1 could hand back an old SHA's diff
 	// or an empty placeholder row.
 	err := db.conn.QueryRow(
-		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
-		prNumber, repo,
+		"SELECT body, latest_sha FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ? ORDER BY rowid DESC LIMIT 1",
+		owner, repo, prNumber,
 	).Scan(&body, &sha)
 
 	if err == sql.ErrNoRows {
@@ -1697,10 +1766,10 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 }
 
 // GetPullRequestSHAs returns both the head and base SHAs for a cached PR.
-func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA string, err error) {
+func (db *DB) GetPullRequestSHAs(owner, repo string, prNumber int) (headSHA, baseSHA string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT latest_sha, COALESCE(base_sha, '') FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
-		prNumber, repo,
+		"SELECT latest_sha, base_sha FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ? ORDER BY rowid DESC LIMIT 1",
+		owner, repo, prNumber,
 	).Scan(&headSHA, &baseSHA)
 
 	if err == sql.ErrNoRows {
@@ -1709,28 +1778,28 @@ func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA st
 	return
 }
 
-func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, baseSha, body string) error {
+func (db *DB) UpsertPullRequest(owner, repo string, prNumber int, latestSha, baseSha, body string) error {
 	// Never overwrite a cached diff with an empty body. The workflow writes a
 	// SHA-only placeholder row (empty body) for PRs whose section doesn't need
 	// the diff, purely so CI/SHA lookups work. Clobbering the real diff with ""
 	// here would silently poison the cache and force a miss on the next review
 	// open, so keep the existing body when the incoming one is empty.
 	_, err := db.conn.Exec(
-		`INSERT INTO PullRequests (pr_number, repo, latest_sha, base_sha, body)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
+		`INSERT INTO PullRequests (owner, repo, pr_number, latest_sha, base_sha, body)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number, latest_sha) DO UPDATE SET
 			body = CASE WHEN excluded.body != '' THEN excluded.body ELSE body END,
 			base_sha = excluded.base_sha`,
-		prNumber, repo, latestSha, baseSha, body,
+		owner, repo, prNumber, latestSha, baseSha, body,
 	)
 	return err
 }
 
-func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRComments(owner, repo string, prNumber int) (string, error) {
 	var commentsJSON string
 	err := db.conn.QueryRow(
-		"SELECT comments_json FROM PRComments WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT comments_json FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&commentsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1742,21 +1811,21 @@ func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
 	return commentsJSON, nil
 }
 
-func (db *DB) UpsertPRComments(prNumber int, repo, commentsJSON string) error {
+func (db *DB) UpsertPRComments(owner, repo string, prNumber int, commentsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRComments (pr_number, repo, comments_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRComments (owner, repo, pr_number, comments_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			comments_json = excluded.comments_json`,
-		prNumber, repo, commentsJSON,
+		owner, repo, prNumber, commentsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRComments(prNumber int, repo string) error {
+func (db *DB) DeletePRComments(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRComments WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1767,13 +1836,13 @@ func (db *DB) DeletePRComments(prNumber int, repo string) error {
 // add up to the total GitHub's pull request list shows beside a PR. SQLite does
 // the counting, so totalling every PR on the review list never decodes their
 // comment JSON in Go. A PR with no cached comments returns an empty map.
-func (db *DB) GetPRCommentCountsByAuthor(prNumber int, repo string) (map[string]int, error) {
+func (db *DB) GetPRCommentCountsByAuthor(owner, repo string, prNumber int) (map[string]int, error) {
 	rows, err := db.conn.Query(
 		`SELECT COALESCE(json_extract(c.value, '$.user.login'), ''), COUNT(*)
 		 FROM PRComments p, json_each(p.comments_json) c
-		 WHERE p.pr_number = ? AND p.repo = ? AND c.type = 'object'
+		 WHERE p.owner = ? AND p.repo = ? AND p.pr_number = ? AND c.type = 'object'
 		 GROUP BY 1`,
-		prNumber, repo,
+		owner, repo, prNumber,
 	)
 	if err != nil {
 		return nil, err
@@ -1792,19 +1861,19 @@ func (db *DB) GetPRCommentCountsByAuthor(prNumber int, repo string) (map[string]
 	return counts, rows.Err()
 }
 
-func (db *DB) DeletePullRequests(prNumber int, repo string) error {
+func (db *DB) DeletePullRequests(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
 
-func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
+func (db *DB) GetRequestedReviewers(owner, repo string, prNumber int) (string, error) {
 	var reviewersJSON string
 	err := db.conn.QueryRow(
-		"SELECT reviewers_json FROM RequestedReviewers WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reviewers_json FROM RequestedReviewers WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reviewersJSON)
 
 	if err == sql.ErrNoRows {
@@ -1816,22 +1885,22 @@ func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
 	return reviewersJSON, nil
 }
 
-func (db *DB) UpsertRequestedReviewers(prNumber int, repo, reviewersJSON string) error {
+func (db *DB) UpsertRequestedReviewers(owner, repo string, prNumber int, reviewersJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO RequestedReviewers (pr_number, repo, reviewers_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO RequestedReviewers (owner, repo, pr_number, reviewers_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reviewers_json = excluded.reviewers_json`,
-		prNumber, repo, reviewersJSON,
+		owner, repo, prNumber, reviewersJSON,
 	)
 	return err
 }
 
-func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error) {
+func (db *DB) GetCIStatus(owner, repo string, prNumber int, sha string) (string, error) {
 	var statusJSON string
 	err := db.conn.QueryRow(
-		"SELECT status_json FROM CIStatus WHERE pr_number = ? AND repo = ? AND sha = ?",
-		prNumber, repo, sha,
+		"SELECT status_json FROM CIStatus WHERE owner = ? AND repo = ? AND pr_number = ? AND sha = ?",
+		owner, repo, prNumber, sha,
 	).Scan(&statusJSON)
 
 	if err == sql.ErrNoRows {
@@ -1843,13 +1912,13 @@ func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error)
 	return statusJSON, nil
 }
 
-func (db *DB) UpsertCIStatus(prNumber int, repo, sha, statusJSON string) error {
+func (db *DB) UpsertCIStatus(owner, repo string, prNumber int, sha, statusJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO CIStatus (pr_number, repo, sha, status_json)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+		`INSERT INTO CIStatus (owner, repo, pr_number, sha, status_json)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number, sha) DO UPDATE SET
 			status_json = excluded.status_json`,
-		prNumber, repo, sha, statusJSON,
+		owner, repo, prNumber, sha, statusJSON,
 	)
 	return err
 }
@@ -1975,11 +2044,11 @@ func (db *DB) Begin() (*sql.Tx, error) {
 	return db.conn.Begin()
 }
 
-func (db *DB) GetPRReviews(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReviews(owner, repo string, prNumber int) (string, error) {
 	var reviewsJSON string
 	err := db.conn.QueryRow(
-		"SELECT reviews_json FROM PRReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reviews_json FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reviewsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1991,30 +2060,30 @@ func (db *DB) GetPRReviews(prNumber int, repo string) (string, error) {
 	return reviewsJSON, nil
 }
 
-func (db *DB) UpsertPRReviews(prNumber int, repo, reviewsJSON string) error {
+func (db *DB) UpsertPRReviews(owner, repo string, prNumber int, reviewsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReviews (pr_number, repo, reviews_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReviews (owner, repo, pr_number, reviews_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reviews_json = excluded.reviews_json`,
-		prNumber, repo, reviewsJSON,
+		owner, repo, prNumber, reviewsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReviews(prNumber int, repo string) error {
+func (db *DB) DeletePRReviews(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
 
-func (db *DB) GetPRCommits(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRCommits(owner, repo string, prNumber int) (string, error) {
 	var commitsJSON string
 	err := db.conn.QueryRow(
-		"SELECT commits_json FROM PRCommits WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT commits_json FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&commitsJSON)
 
 	if err == sql.ErrNoRows {
@@ -2026,21 +2095,21 @@ func (db *DB) GetPRCommits(prNumber int, repo string) (string, error) {
 	return commitsJSON, nil
 }
 
-func (db *DB) UpsertPRCommits(prNumber int, repo, commitsJSON string) error {
+func (db *DB) UpsertPRCommits(owner, repo string, prNumber int, commitsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRCommits (pr_number, repo, commits_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRCommits (owner, repo, pr_number, commits_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			commits_json = excluded.commits_json`,
-		prNumber, repo, commitsJSON,
+		owner, repo, prNumber, commitsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRCommits(prNumber int, repo string) error {
+func (db *DB) DeletePRCommits(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRCommits WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -2048,11 +2117,11 @@ func (db *DB) DeletePRCommits(prNumber int, repo string) error {
 // Review-thread resolution state comes from GitHub's GraphQL API (the REST API
 // does not expose it), so it gets its own cache alongside the other PR caches.
 
-func (db *DB) GetPRReviewThreads(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReviewThreads(owner, repo string, prNumber int) (string, error) {
 	var threadsJSON string
 	err := db.conn.QueryRow(
-		"SELECT threads_json FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT threads_json FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&threadsJSON)
 
 	if err == sql.ErrNoRows {
@@ -2064,21 +2133,21 @@ func (db *DB) GetPRReviewThreads(prNumber int, repo string) (string, error) {
 	return threadsJSON, nil
 }
 
-func (db *DB) UpsertPRReviewThreads(prNumber int, repo, threadsJSON string) error {
+func (db *DB) UpsertPRReviewThreads(owner, repo string, prNumber int, threadsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReviewThreads (pr_number, repo, threads_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReviewThreads (owner, repo, pr_number, threads_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			threads_json = excluded.threads_json`,
-		prNumber, repo, threadsJSON,
+		owner, repo, prNumber, threadsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
+func (db *DB) DeletePRReviewThreads(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -2089,11 +2158,11 @@ func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
 // thumbs-up refresh without rewriting a comment cache whose contents have not
 // changed.
 
-func (db *DB) GetPRReactions(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReactions(owner, repo string, prNumber int) (string, error) {
 	var reactionsJSON string
 	err := db.conn.QueryRow(
-		"SELECT reactions_json FROM PRReactions WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reactions_json FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reactionsJSON)
 
 	if err == sql.ErrNoRows {
@@ -2105,21 +2174,21 @@ func (db *DB) GetPRReactions(prNumber int, repo string) (string, error) {
 	return reactionsJSON, nil
 }
 
-func (db *DB) UpsertPRReactions(prNumber int, repo, reactionsJSON string) error {
+func (db *DB) UpsertPRReactions(owner, repo string, prNumber int, reactionsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReactions (pr_number, repo, reactions_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReactions (owner, repo, pr_number, reactions_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reactions_json = excluded.reactions_json`,
-		prNumber, repo, reactionsJSON,
+		owner, repo, prNumber, reactionsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReactions(prNumber int, repo string) error {
+func (db *DB) DeletePRReactions(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReactions WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -2129,11 +2198,11 @@ func (db *DB) DeletePRReactions(prNumber int, repo string) error {
 // had its teams resolved" and "this PR has no required teams" (which caches as
 // "[]") is what stops the workflow re-asking GitHub for the request history on
 // every cycle.
-func (db *DB) GetPRTeamReviews(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRTeamReviews(owner, repo string, prNumber int) (string, error) {
 	var teamsJSON string
 	err := db.conn.QueryRow(
-		"SELECT teams_json FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT teams_json FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&teamsJSON)
 
 	if err == sql.ErrNoRows {
@@ -2145,22 +2214,22 @@ func (db *DB) GetPRTeamReviews(prNumber int, repo string) (string, error) {
 	return teamsJSON, nil
 }
 
-func (db *DB) UpsertPRTeamReviews(prNumber int, repo, teamsJSON string) error {
+func (db *DB) UpsertPRTeamReviews(owner, repo string, prNumber int, teamsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRTeamReviews (pr_number, repo, teams_json, updated_at)
-		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRTeamReviews (owner, repo, pr_number, teams_json, updated_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			teams_json = excluded.teams_json,
 			updated_at = CURRENT_TIMESTAMP`,
-		prNumber, repo, teamsJSON,
+		owner, repo, prNumber, teamsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
+func (db *DB) DeletePRTeamReviews(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -2178,28 +2247,28 @@ func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
 // for this code is still the best there is, so the review list doesn't lose a
 // conflict every time someone merges elsewhere. "unknown" for a new head
 // replaces it, because the old answer was about other code.
-func (db *DB) RecordPRMergeability(prNumber int, repo, headSHA, state string) error {
+func (db *DB) RecordPRMergeability(owner, repo string, prNumber int, headSHA, state string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRMergeability (pr_number, repo, head_sha, state)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRMergeability (owner, repo, pr_number, head_sha, state)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			state = CASE
 				WHEN excluded.state = 'unknown' AND excluded.head_sha = PRMergeability.head_sha
 				THEN PRMergeability.state
 				ELSE excluded.state
 			END,
 			head_sha = excluded.head_sha`,
-		prNumber, repo, headSHA, state,
+		owner, repo, prNumber, headSHA, state,
 	)
 	return err
 }
 
 // GetPRMergeability returns the mergeability recorded for a PR and the head SHA
 // it was recorded for, or two empty strings when none has been.
-func (db *DB) GetPRMergeability(prNumber int, repo string) (state, headSHA string, err error) {
+func (db *DB) GetPRMergeability(owner, repo string, prNumber int) (state, headSHA string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT state, head_sha FROM PRMergeability WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT state, head_sha FROM PRMergeability WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&state, &headSHA)
 	if err == sql.ErrNoRows {
 		return "", "", nil

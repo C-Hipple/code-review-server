@@ -219,7 +219,7 @@ func hunkContextRepo(t *testing.T, files map[string]string) string {
 	git("add", ".")
 	git("commit", "-q", "-m", "files")
 	sha := git("rev-parse", "HEAD")
-	if err := db.UpsertPullRequest(7, "widgets", sha, sha, "diff"); err != nil {
+	if err := db.UpsertPullRequest("acme", "widgets", 7, sha, sha, "diff"); err != nil {
 		t.Fatal(err)
 	}
 	return sha

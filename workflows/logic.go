@@ -322,7 +322,7 @@ func (prb PRToOrgBridge) Details() []string {
 				} else if prb.PR.Base != nil && prb.PR.Base.SHA != nil {
 					baseSHA = *prb.PR.Base.SHA
 				}
-				if err := config.C().DB.UpsertPullRequest(prb.PR.GetNumber(), prb.PR.Base.Repo.GetName(), sha, baseSHA, auxData.Diff); err != nil {
+				if err := config.C().DB.UpsertPullRequest(prb.PR.Base.Repo.GetOwner().GetLogin(), prb.PR.Base.Repo.GetName(), prb.PR.GetNumber(), sha, baseSHA, auxData.Diff); err != nil {
 					slog.Error("Error storing pre-fetched PR diff in database", "pr", prb.PR.GetNumber(), "error", err)
 				}
 			}
@@ -477,7 +477,7 @@ func getComments(owner string, repo string, number int) (int, []string) {
 	if marshalErr != nil {
 		slog.Error("Error marshaling comments for storage", "pr", number, "repo", repo, "error", marshalErr)
 	} else {
-		if err := config.C().DB.UpsertPRComments(number, repo, string(commentsJSON)); err != nil {
+		if err := config.C().DB.UpsertPRComments(owner, repo, number, string(commentsJSON)); err != nil {
 			slog.Error("Error storing PR comments in database", "pr", number, "repo", repo, "error", err)
 			// Continue even if storage fails
 		}
@@ -697,7 +697,7 @@ func getPRDiff(owner string, repo string, number int, headSHA string) []string {
 	}
 
 	// Store the result in the database (base SHA unknown at this point, will be filled by workflow)
-	if err := config.C().DB.UpsertPullRequest(number, repo, headSHA, "", diff); err != nil {
+	if err := config.C().DB.UpsertPullRequest(owner, repo, number, headSHA, "", diff); err != nil {
 		slog.Error("Error storing PR diff in database", "pr", number, "repo", repo, "error", err)
 		// Continue even if storage fails
 	}

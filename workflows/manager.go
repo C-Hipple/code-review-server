@@ -303,9 +303,8 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 	}
 
 	// We need head SHA and branch name. These are NOT in FileChanges.
-	// We might need to fetch them from DB if they were cached — under the
-	// short repo name, like every cache table.
-	_, sha, _ := db.GetPullRequest(prNumber, repoName)
+	// We might need to fetch them from DB if they were cached.
+	_, sha, _ := db.GetPullRequest(ownerName, repoName, prNumber)
 	if sha == "" {
 		// If we don't have it in DB, we can't easily manage worktree here without a refactor
 		// to include more info in FileChanges or performing a GitHub API call.
@@ -447,7 +446,7 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 	if _, err := os.Stat(path); err != nil {
 		return
 	}
-	_, sha, _ := db.GetPullRequest(number, repo)
+	_, sha, _ := db.GetPullRequest(owner, repo, number)
 	branch := cachedHeadRef(db, owner, repo, number)
 	if sha == "" || branch == "" {
 		return
@@ -1089,7 +1088,7 @@ func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 	if pr == nil || pr.Head == nil || pr.Head.SHA == nil {
 		return false
 	}
-	body, cachedSHA, err := db.GetPullRequest(key.Number, key.Repo)
+	body, cachedSHA, err := db.GetPullRequest(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		// On a lookup error, err on the side of warming.
 		return true
@@ -1353,7 +1352,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// 1. Comments
 	if allComments != nil {
 		if j, err := json.Marshal(allComments); err == nil {
-			if err := db.UpsertPRComments(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "comments")
@@ -1363,14 +1362,14 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 
 	// 2. Diff + SHA
 	if auxData.Diff != "" {
-		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, key.Repo, key.Number, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
 			slog.Error("Failed to cache PR diff", "pr", key.Number, "repo", key.Repo, "error", err)
 		} else {
 			written = append(written, "diff")
 		}
 	} else if auxData.HeadSHA != "" {
 		// Store SHA even without diff so GetPRDetails can look up CI status
-		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, key.Repo, key.Number, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
 			slog.Error("Failed to cache PR SHA", "pr", key.Number, "repo", key.Repo, "error", err)
 		} else {
 			written = append(written, "sha")
@@ -1406,7 +1405,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 			})
 		}
 		if j, err := json.Marshal(rvs); err == nil {
-			if err := db.UpsertPRReviews(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRReviews(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR reviews", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "reviews")
@@ -1421,7 +1420,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 			CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
 		}{Status: combinedStatus, CheckRuns: checkRuns}
 		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {
-			if err := db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j)); err != nil {
+			if err := db.UpsertCIStatus(key.Owner, key.Repo, key.Number, auxData.HeadSHA, string(j)); err != nil {
 				slog.Error("Failed to cache CI status", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "ci_status")
@@ -1436,7 +1435,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 			Teams: pr.RequestedTeams,
 		}
 		if j, err := json.Marshal(reviewers); err == nil {
-			if err := db.UpsertRequestedReviewers(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertRequestedReviewers(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache requested reviewers", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "requested_reviewers")
@@ -1464,7 +1463,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 			})
 		}
 		if j, err := json.Marshal(cms); err == nil {
-			if err := db.UpsertPRCommits(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRCommits(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR commits", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "commits")
@@ -1477,7 +1476,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// previously cached row is left alone rather than being blanked.
 	if auxData.ReviewThreads != nil {
 		if j, err := json.Marshal(auxData.ReviewThreads); err == nil {
-			if err := db.UpsertPRReviewThreads(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR review threads", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "review_threads")
@@ -1490,7 +1489,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// previously cached row stands rather than being blanked.
 	if auxData.TeamReviews != nil {
 		if j, err := json.Marshal(auxData.TeamReviews); err == nil {
-			if err := db.UpsertPRTeamReviews(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR team reviews", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "team_reviews")
@@ -1503,7 +1502,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// so the cached row stands rather than being blanked.
 	if auxData.Reactions != nil {
 		if j, err := json.Marshal(auxData.Reactions); err == nil {
-			if err := db.UpsertPRReactions(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRReactions(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR reactions", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "reactions")

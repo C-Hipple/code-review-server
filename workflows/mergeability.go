@@ -57,7 +57,7 @@ func recordMergeability(db *database.DB, prs []*github.PullRequest) {
 		if answer.State == git_tools.MergeabilityConflicting {
 			conflicting++
 		}
-		if err := db.RecordPRMergeability(ref.Number, ref.Repo, answer.HeadSHA, answer.State); err != nil {
+		if err := db.RecordPRMergeability(ref.Owner, ref.Repo, ref.Number, answer.HeadSHA, answer.State); err != nil {
 			slog.Error("Failed to cache PR mergeability", "pr", ref.Number, "repo", ref.Repo, "error", err)
 		}
 	}
@@ -96,8 +96,8 @@ func lookupMergeabilityWithRetry(refs []git_tools.PRRef) map[git_tools.PRRef]git
 	return answers
 }
 
-// openPRRef identifies an open PR by its base repository, under the short repo
-// name every PR cache is keyed by. Closed and merged PRs have no conflicts
+// openPRRef identifies an open PR by its base repository — its owner and the
+// short repo name every PR cache is keyed by. Closed and merged PRs have no conflicts
 // worth showing.
 func openPRRef(pr *github.PullRequest) (git_tools.PRRef, bool) {
 	if pr == nil || pr.GetState() != "open" || pr.GetNumber() == 0 {

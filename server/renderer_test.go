@@ -1190,10 +1190,10 @@ func TestReviewItemsCarryRequiredTeams(t *testing.T) {
 		t.Errorf("required teams = %+v, want none before a workflow resolves them", items[0].RequiredTeams)
 	}
 
-	// The workflow layer caches under the short repo name (see the cache key
-	// convention), which is what the item's Repo field carries.
+	// The workflow layer caches under the owner and the short repo name (see
+	// the cache key convention), which is what the item's Repo line carries.
 	seed := `[{"name":"Platform","slug":"platform","org":"C-Hipple","status":"changes_requested","mine":true,"personal":false}]`
-	if err := db.UpsertPRTeamReviews(83, "code-review-server", seed); err != nil {
+	if err := db.UpsertPRTeamReviews("C-Hipple", "code-review-server", 83, seed); err != nil {
 		t.Fatalf("failed to seed team reviews: %v", err)
 	}
 
@@ -1243,8 +1243,9 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 	}
 
 	// Cached the way the workflow writes it: review comments on the code plus
-	// the conversation comments converted alongside them, under the short repo
-	// name. The lint bot's comment is hidden in the review, so it isn't counted.
+	// the conversation comments converted alongside them, under the owner and
+	// short repo name. The lint bot's comment is hidden in the review, so it
+	// isn't counted.
 	comments := []*github.PullRequestComment{
 		{
 			ID:       github.Ptr(int64(1)),
@@ -1277,7 +1278,7 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal comments: %v", err)
 	}
-	if err := db.UpsertPRComments(84, "code-review-server", string(raw)); err != nil {
+	if err := db.UpsertPRComments("C-Hipple", "code-review-server", 84, string(raw)); err != nil {
 		t.Fatalf("failed to seed comments: %v", err)
 	}
 
@@ -1338,7 +1339,7 @@ func TestReviewItemsCarryMergeConflicts(t *testing.T) {
 		if pr.recorded == "" {
 			continue
 		}
-		if err := db.RecordPRMergeability(pr.number, "code-review-server", "sha", pr.recorded); err != nil {
+		if err := db.RecordPRMergeability("C-Hipple", "code-review-server", pr.number, "sha", pr.recorded); err != nil {
 			t.Fatalf("failed to record mergeability for %d: %v", pr.number, err)
 		}
 	}

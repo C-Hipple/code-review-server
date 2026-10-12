@@ -334,7 +334,7 @@ func dispatchPostUpdateHooks(owner, repo string, number int, details *PRDetails)
 	// an image is missing from the cache.
 	prefetchPRImages(repo, number, details)
 
-	_, sha, err := config.C().DB.GetPullRequest(number, repo)
+	_, sha, err := config.C().DB.GetPullRequest(owner, repo, number)
 	if err != nil {
 		slog.Warn("Error reading cached PR SHA for hook dispatch", "repo", repo, "pr", number, "error", err)
 	}
@@ -343,7 +343,7 @@ func dispatchPostUpdateHooks(owner, repo string, number int, details *PRDetails)
 	}
 
 	commentsJSON := "[]"
-	rawComments, err := config.C().DB.GetPRComments(number, repo)
+	rawComments, err := config.C().DB.GetPRComments(owner, repo, number)
 	if err != nil {
 		slog.Warn("Error reading cached PR comments for hook dispatch", "repo", repo, "pr", number, "error", err)
 	}
@@ -852,7 +852,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	// Snapshot the cached state so we can tell the client whether the sync
 	// actually pulled in anything new. The fresh fetch below overwrites these
 	// cache entries.
-	before := readSyncSnapshot(args.Repo, args.Number)
+	before := readSyncSnapshot(args.Owner, args.Repo, args.Number)
 
 	details, content, err := fetchPR(viewer, args.Owner, args.Repo, args.Number, true)
 	if err != nil {
@@ -864,7 +864,7 @@ func (h *RPCHandler) SyncPR(args *SyncPRArgs, reply *SyncPRReply) error {
 	// diff-lsp reads the worktree, so bring it along before replying.
 	workflows.SyncPRWorktree(config.C().DB, args.Owner, args.Repo, args.Number)
 
-	reply.Updated = syncDetectedChanges(before, readSyncSnapshot(args.Repo, args.Number))
+	reply.Updated = syncDetectedChanges(before, readSyncSnapshot(args.Owner, args.Repo, args.Number))
 
 	reply.populate(viewer, details, content, args.Owner, args.Repo, args.Number)
 	return nil
@@ -879,10 +879,10 @@ type syncSnapshot struct {
 	reviewsJSON  string
 }
 
-func readSyncSnapshot(repo string, number int) syncSnapshot {
-	_, sha, _ := config.C().DB.GetPullRequest(number, repo)
-	commentsJSON, _ := config.C().DB.GetPRComments(number, repo)
-	reviewsJSON, _ := config.C().DB.GetPRReviews(number, repo)
+func readSyncSnapshot(owner, repo string, number int) syncSnapshot {
+	_, sha, _ := config.C().DB.GetPullRequest(owner, repo, number)
+	commentsJSON, _ := config.C().DB.GetPRComments(owner, repo, number)
+	reviewsJSON, _ := config.C().DB.GetPRReviews(owner, repo, number)
 	return syncSnapshot{sha: sha, commentsJSON: commentsJSON, reviewsJSON: reviewsJSON}
 }
 
@@ -1134,7 +1134,7 @@ func aiFeatureOutput(owner, repo string, number int, f ai.Feature) (AIFeatureOut
 		Body:        PluginBody{BodyType: BodyTypeMarkdown},
 		Annotations: []PRAnnotation{},
 	}
-	sha, digest := currentAIInputs(repo, number)
+	sha, digest := currentAIInputs(owner, repo, number)
 	out.CurrentSHA, out.CurrentDigest = sha, ai.KeyDigest(f, digest)
 
 	stored, ok, err := config.C().DB.GetAIResult(owner, repo, number, f.ID())
@@ -1753,7 +1753,7 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	// Determine the ref to use.
 	// For "new" side, use the PR's head SHA; for "old" side, use the base SHA.
 	// Both are cached in the DB from workflow/renderer fetches.
-	headSHA, baseSHA, _ := config.C().DB.GetPullRequestSHAs(args.Number, args.Repo)
+	headSHA, baseSHA, _ := config.C().DB.GetPullRequestSHAs(args.Owner, args.Repo, args.Number)
 
 	var ref string
 	if args.Side == "new" {
@@ -1947,12 +1947,12 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 		}
 
 		commentsJSON := "[]"
-		rawComments, _ := config.C().DB.GetPRComments(args.Number, args.Repo)
+		rawComments, _ := config.C().DB.GetPRComments(args.Owner, args.Repo, args.Number)
 		if rawComments != "" {
 			commentsJSON = rawComments
 		}
 
-		_, sha, _ := config.C().DB.GetPullRequest(args.Number, args.Repo)
+		_, sha, _ := config.C().DB.GetPullRequest(args.Owner, args.Repo, args.Number)
 
 		metadataJSON, _ := json.Marshal(details.Metadata)
 		RunPluginsForce(args.Owner, args.Repo, args.Number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, true, args.Plugins)

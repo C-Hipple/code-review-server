@@ -81,7 +81,7 @@ Nothing on the read path waits for a plugin, an LLM call or an AI feature: `ensu
 
 ## Cache Key Convention
 
-DB cache tables use the **short repo name** (e.g., `code-review-server`), NOT the full name (`C-hipple/code-review-server`). `GetName()` returns the short name; `GetFullName()` returns `owner/repo`. All cache lookups from `GetPRDetails` use the short name from RPC args.
+DB cache tables key a PR by its owner, its **short repo name** (e.g., `code-review-server`, NOT the full name `C-hipple/code-review-server`) and its number, in separate columns. `GetName()` returns the short name; `GetFullName()` returns `owner/repo`. All cache lookups from `GetPRDetails` use the owner and short name from RPC args. The owner is part of every key (`prCacheTables` in `database.go`): two owners' repositories can share a short name, and a hosted server's users can make it fetch a PR of any repository they like, so a key without it would serve one owner's diff and comments for the other's PR.
 
 ## Environment Variables
 

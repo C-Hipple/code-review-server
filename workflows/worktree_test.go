@@ -57,9 +57,9 @@ func setupPRRepo(t *testing.T, repo string) (location, pusher string) {
 	return location, pusher
 }
 
-// The workflow caches write the short repo name (see "Cache Key Convention"
-// in CLAUDE.md), while item identifiers carry owner/repo — and owners and
-// repos both contain dashes. handleWorktreeChange has to cope with both, or
+// The workflow caches write the owner and the short repo name apart (see
+// "Cache Key Convention" in CLAUDE.md), while item identifiers carry
+// owner/repo — and owners and repos both contain dashes. handleWorktreeChange has to cope with both, or
 // no worktree is ever created and diff-lsp reads the main checkout instead.
 func TestHandleWorktreeChangeCreatesAndUpdatesWorktree(t *testing.T) {
 	cases := []struct{ owner, repo string }{
@@ -77,7 +77,7 @@ func TestHandleWorktreeChangeCreatesAndUpdatesWorktree(t *testing.T) {
 			// What fetchAuxDataForPR persists before the changes are applied.
 			cacheHead := func(sha string) {
 				t.Helper()
-				if err := db.UpsertPullRequest(number, c.repo, sha, "", "diff"); err != nil {
+				if err := db.UpsertPullRequest(c.owner, c.repo, number, sha, "", "diff"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -138,7 +138,7 @@ func TestSyncPRWorktreeMovesToCachedHead(t *testing.T) {
 	db := warmTestDB(t)
 	config.SetC(config.Config{DB: db, RepoLocation: location, AutoWorktree: true})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
-	if err := db.UpsertPullRequest(number, repo, runGitOrFail(t, pusher, "rev-parse", "HEAD"), "", "diff"); err != nil {
+	if err := db.UpsertPullRequest(owner, repo, number, runGitOrFail(t, pusher, "rev-parse", "HEAD"), "", "diff"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpsertPRMetadataCache(owner, repo, number, `{"head_ref":"feature/thing"}`); err != nil {
@@ -158,7 +158,7 @@ func TestSyncPRWorktreeMovesToCachedHead(t *testing.T) {
 	runGitOrFail(t, pusher, "commit", "-am", "more")
 	runGitOrFail(t, pusher, "push", "origin", "feature/thing")
 	newHead := runGitOrFail(t, pusher, "rev-parse", "HEAD")
-	if err := db.UpsertPullRequest(number, repo, newHead, "", "diff"); err != nil {
+	if err := db.UpsertPullRequest(owner, repo, number, newHead, "", "diff"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,7 +181,7 @@ func TestHandleWorktreeChangeKeepsWorktreeWhileClaimedElsewhere(t *testing.T) {
 	db := warmTestDB(t)
 	config.SetC(config.Config{DB: db, RepoLocation: location, AutoWorktree: true})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
-	if err := db.UpsertPullRequest(number, repo, "sha1", "", "diff"); err != nil {
+	if err := db.UpsertPullRequest(owner, repo, number, "sha1", "", "diff"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpsertPRMetadataCache(owner, repo, number, `{"head_ref":"feature/thing"}`); err != nil {

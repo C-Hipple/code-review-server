@@ -357,7 +357,7 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	}
 
 	// After a push, the PR keeps its rating until the new head is rated.
-	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-2", "base-1", aiTestDiff); err != nil {
+	if err := db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-2", "base-1", aiTestDiff); err != nil {
 		t.Fatal(err)
 	}
 	if got := reviewEase(aiOwner, aiRepo, aiNumber); got != "easy" {

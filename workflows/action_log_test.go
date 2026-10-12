@@ -173,7 +173,7 @@ func TestPersistPRCacheDataCachesReviewThreads(t *testing.T) {
 
 	// The row has to be readable back through the same accessor GetPRDetails
 	// uses, in the shape it expects, or the warm buys nothing.
-	cached, err := db.GetPRReviewThreads(key.Number, key.Repo)
+	cached, err := db.GetPRReviewThreads(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		t.Fatalf("GetPRReviewThreads: %v", err)
 	}
@@ -206,14 +206,14 @@ func TestPersistPRCacheDataKeepsReviewThreadsWhenNotFetched(t *testing.T) {
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 
 	key := PRKey{Owner: "C-hipple", Repo: "code-review-server", Number: 209}
-	if err := db.UpsertPRReviewThreads(key.Number, key.Repo, `[{"id":"T1","is_resolved":true}]`); err != nil {
+	if err := db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, `[{"id":"T1","is_resolved":true}]`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	persistPRCacheData("review_requests", key,
 		nil, &PRAuxData{HeadSHA: "abc123"}, nil, nil, nil, nil, nil)
 
-	cached, err := db.GetPRReviewThreads(key.Number, key.Repo)
+	cached, err := db.GetPRReviewThreads(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		t.Fatalf("GetPRReviewThreads: %v", err)
 	}

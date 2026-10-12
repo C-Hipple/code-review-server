@@ -71,7 +71,7 @@ func requestAppliedAIFeatures(owner, repo string, number int) {
 // aiJob is a runner job for one AI feature on a PR, keyed by the PR's inputs as
 // the DB caches have them right now.
 func aiJob(owner, repo string, number int, feature string, trigger ai.Trigger) ai.Job {
-	sha, digest := currentAIInputs(repo, number)
+	sha, digest := currentAIInputs(owner, repo, number)
 	return ai.Job{
 		Owner:   owner,
 		Repo:    repo,
@@ -89,15 +89,15 @@ func aiJob(owner, repo string, number int, feature string, trigger ai.Trigger) a
 // currentAIInputs reads the key a stored AI result is compared against: the
 // PR's head SHA and the digest of its discussion, both from the DB caches, so
 // working out whether a result is stale never reaches GitHub.
-func currentAIInputs(repo string, number int) (sha, digest string) {
+func currentAIInputs(owner, repo string, number int) (sha, digest string) {
 	db := config.C().DB
 	if db == nil {
 		return "", ""
 	}
-	_, sha, _ = db.GetPullRequest(number, repo)
-	comments, _ := db.GetPRComments(number, repo)
-	reviews, _ := db.GetPRReviews(number, repo)
-	threads, _ := db.GetPRReviewThreads(number, repo)
+	_, sha, _ = db.GetPullRequest(owner, repo, number)
+	comments, _ := db.GetPRComments(owner, repo, number)
+	reviews, _ := db.GetPRReviews(owner, repo, number)
+	threads, _ := db.GetPRReviewThreads(owner, repo, number)
 	return sha, ai.InputsDigest(comments, reviews, threads)
 }
 
@@ -111,8 +111,8 @@ func buildAIRequest(owner, repo string, number int) (ai.Request, error) {
 	if err != nil {
 		return ai.Request{}, err
 	}
-	sha, digest := currentAIInputs(repo, number)
-	rawComments, _ := config.C().DB.GetPRComments(number, repo)
+	sha, digest := currentAIInputs(owner, repo, number)
+	rawComments, _ := config.C().DB.GetPRComments(owner, repo, number)
 	metadataJSON, err := json.Marshal(details.Metadata)
 	if err != nil {
 		metadataJSON = []byte("{}")

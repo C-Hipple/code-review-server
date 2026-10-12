@@ -116,15 +116,15 @@ func seedAIPR(t *testing.T, db *database.DB, comments []*github.PullRequestComme
 	}
 	metadata, _ := json.Marshal(PRMetadata{Number: aiNumber, Title: "Add greeting helper", Author: "alice", BaseRef: "main", HeadRef: "alice/greeting", State: "open"})
 	must(db.UpsertPRMetadataCache(aiOwner, aiRepo, aiNumber, string(metadata)))
-	must(db.UpsertPullRequest(aiNumber, aiRepo, "sha-1", "base-1", aiTestDiff))
+	must(db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-1", "base-1", aiTestDiff))
 	rawComments, _ := json.Marshal(comments)
-	must(db.UpsertPRComments(aiNumber, aiRepo, string(rawComments)))
-	must(db.UpsertPRReviewThreads(aiNumber, aiRepo, threadsJSON))
-	must(db.UpsertPRReactions(aiNumber, aiRepo, `{"comments": {}, "reviews": {}}`))
+	must(db.UpsertPRComments(aiOwner, aiRepo, aiNumber, string(rawComments)))
+	must(db.UpsertPRReviewThreads(aiOwner, aiRepo, aiNumber, threadsJSON))
+	must(db.UpsertPRReactions(aiOwner, aiRepo, aiNumber, `{"comments": {}, "reviews": {}}`))
 	reviews, _ := json.Marshal([]ReviewJSON{{ID: 700, User: "bob", State: "COMMENTED", Body: "A question.", SubmittedAt: aiAt(0)}})
-	must(db.UpsertPRReviews(aiNumber, aiRepo, string(reviews)))
+	must(db.UpsertPRReviews(aiOwner, aiRepo, aiNumber, string(reviews)))
 	commits, _ := json.Marshal([]CommitJSON{{SHA: "sha-1", Message: "Add greeting helper", Author: "alice", Date: aiAt(2).Format(time.RFC3339)}})
-	must(db.UpsertPRCommits(aiNumber, aiRepo, string(commits)))
+	must(db.UpsertPRCommits(aiOwner, aiRepo, aiNumber, string(commits)))
 }
 
 // aiTestSetup points the server at a fresh DB and CRS home with the given AI
@@ -255,7 +255,7 @@ func TestAIOutputGoesStaleWhenAThreadIsResolved(t *testing.T) {
 	}
 
 	// Carol resolves her thread; the next workflow cycle rewrites the cache.
-	if err := db.UpsertPRReviewThreads(aiNumber, aiRepo, aiThreadsJSON(true)); err != nil {
+	if err := db.UpsertPRReviewThreads(aiOwner, aiRepo, aiNumber, aiThreadsJSON(true)); err != nil {
 		t.Fatal(err)
 	}
 	var poll GetAIOutputReply
@@ -617,7 +617,7 @@ func TestGetPRDetailsRecordsWhatItKnewForAI(t *testing.T) {
 	orig := git_tools.GraphQLEndpoint
 	git_tools.GraphQLEndpoint = gql.URL
 	t.Cleanup(func() { git_tools.GraphQLEndpoint = orig })
-	if err := db.DeletePRReviewThreads(aiNumber, aiRepo); err != nil {
+	if err := db.DeletePRReviewThreads(aiOwner, aiRepo, aiNumber); err != nil {
 		t.Fatal(err)
 	}
 
@@ -773,7 +773,7 @@ index 0000000..5555555
 func TestFeatureFlagsEndToEnd(t *testing.T) {
 	db := aiTestSetup(t, []config.AIFeature{{ID: ai.FeatureFlagsID, Enabled: true}})
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
-	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-1", "base-1", flagsTestDiff); err != nil {
+	if err := db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-1", "base-1", flagsTestDiff); err != nil {
 		t.Fatal(err)
 	}
 	r := useAIRunner(t, ai.FeatureFlags{})
@@ -830,7 +830,7 @@ func TestFeatureFlagsEndToEnd(t *testing.T) {
 	// A new comment changes the discussion, not the code: still current.
 	comments := append(aiTestComments(), issueComment(9002, "erin", "Is this safe to ship?", aiAt(3)))
 	raw, _ := json.Marshal(comments)
-	if err := db.UpsertPRComments(aiNumber, aiRepo, string(raw)); err != nil {
+	if err := db.UpsertPRComments(aiOwner, aiRepo, aiNumber, string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	if out := output(); out.Stale {
@@ -842,7 +842,7 @@ func TestFeatureFlagsEndToEnd(t *testing.T) {
 	}
 
 	// A push does.
-	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-2", "base-1", flagsTestDiff); err != nil {
+	if err := db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-2", "base-1", flagsTestDiff); err != nil {
 		t.Fatal(err)
 	}
 	if out := output(); !out.Stale || out.CurrentSHA != "sha-2" {

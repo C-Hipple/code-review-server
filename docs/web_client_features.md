@@ -750,8 +750,9 @@ Ordered roughly by how much time they'll cost you if missed.
    rules in [3.5](#35-diff-rendering-diffviewtsx-diff_utilsts) precisely, and
    exclude on-demand expanded context from the count.
 2. **Cache keys use the short repo name.** Pass `Repo` as `code-review-server`, not
-   `C-Hipple/code-review-server` — see the Cache Key Convention in the project's
-   `CLAUDE.md`. Full names miss the DB caches and hit GitHub every time.
+   `C-Hipple/code-review-server`, and the owner as `Owner` — see the Cache Key
+   Convention in the project's `CLAUDE.md`. Full names miss the DB caches and hit
+   GitHub every time.
 3. **Nothing on the read path blocks on plugins or the LLM.** `GetPR` returns
    immediately with whatever is cached; plugin output arrives via separate polling.
    Design your UI for results that show up late, and consider the list-view warm-up

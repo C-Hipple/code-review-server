@@ -255,7 +255,9 @@ statuses a client sees are in the [protocol](protocol.md#linking-a-github-accoun
 Everything the server computes "for me" is computed for the token's account,
 not the viewer: a team chip's `mine` and `personal`, a reaction's
 `viewer_reacted`. A user's workflows are the exception: their filters and
-searches compare against the user's own login.
+searches compare against the user's own login. The token can list only its
+own account's teams, so a user's review-request searches cover the requests
+made of them by name, not those made of their teams.
 
 ## Limitations
 

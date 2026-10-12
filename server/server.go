@@ -592,6 +592,61 @@ type SubmitReviewArgs struct {
 	Number int    `json:"Number"`
 	Event  string `json:"Event"` // APPROVE, REQUEST_CHANGES, or COMMENT
 	Body   string `json:"Body"`  // Top-level review body (optional)
+	// ExpectedDraftIDs are the pending comments the client showed the
+	// reviewer as part of this review (optional; null skips the check). If
+	// any of them is gone, nothing is submitted (errDraftsChanged): the
+	// review would go out without comments the reviewer believes it carries.
+	ExpectedDraftIDs []int64 `json:"ExpectedDraftIDs"`
+}
+
+// errDraftsChanged refuses a submit whose previewed drafts are no longer all
+// there: another submit of the same review already sent them — a retry of one
+// whose connection dropped while the server was still posting it — or they
+// were deleted with the reviewer's account after a stretch of inactivity.
+// Clients match on the "drafts changed:" prefix and reload the PR.
+var errDraftsChanged = errors.New("drafts changed: some of the pending comments this review was to carry no longer exist (already submitted, or deleted with your account after inactivity), so nothing was submitted; reload the PR and check what is pending before submitting again")
+
+// submitLocks serializes the submits of one viewer's review of one PR: a
+// second submit waits until the first has posted and deleted its drafts, and
+// then finds them gone instead of posting them again.
+var submitLocks = newKeyedMutex()
+
+// keyedMutex is a mutex per key, each forgotten once nothing holds or waits
+// for it.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*keyedLock
+}
+
+type keyedLock struct {
+	sync.Mutex
+	refs int
+}
+
+func newKeyedMutex() *keyedMutex {
+	return &keyedMutex{locks: map[string]*keyedLock{}}
+}
+
+// lock locks key and returns the function that unlocks it.
+func (k *keyedMutex) lock(key string) (unlock func()) {
+	k.mu.Lock()
+	l := k.locks[key]
+	if l == nil {
+		l = &keyedLock{}
+		k.locks[key] = l
+	}
+	l.refs++
+	k.mu.Unlock()
+
+	l.Lock()
+	return func() {
+		l.Unlock()
+		k.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
 type SubmitReviewReply struct {
@@ -646,6 +701,16 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	}
 	client := identity.client
 
+	// Held until the drafts GitHub took are deleted (step 4), not through
+	// the refetch: what a second submit must not do is read them first.
+	unlock := submitLocks.lock(strings.ToLower(fmt.Sprintf("%s\x1f%s/%s#%d", viewer, args.Owner, args.Repo, args.Number)))
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
+
 	// 1. Fetch Local Comments: the viewer's own drafts, which are all this
 	// review is made of.
 	comments, err := config.C().DB.GetLocalCommentsForPR(viewer, args.Owner, args.Repo, args.Number)
@@ -656,6 +721,12 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	pending := make(map[int64]database.LocalComment, len(comments))
 	for _, c := range comments {
 		pending[c.ID] = c
+	}
+	for _, id := range args.ExpectedDraftIDs {
+		if _, ok := pending[id]; !ok {
+			slog.Info("Refused a submit whose previewed drafts are gone", "login", viewer, "pr", args.Number, "repo", args.Repo, "missing", id)
+			return errDraftsChanged
+		}
 	}
 
 	// 2. Construct Review Request
@@ -762,6 +833,8 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			slog.Error("Error deleting local comment after submission", "id", id, "error", err)
 		}
 	}
+	locked = false
+	unlock()
 
 	// 5. Re-run the PR through the workflows that target its repo so the
 	// dashboard reflects the review well before the next cycle, up to ten

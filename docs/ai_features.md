@@ -231,7 +231,11 @@ change-diagram, file-ordering and review-ease run `oneshot` only.
   it is rendered.
 
 At most two automatic runs execute at once, across every feature; a run a
-client asked for never queues behind them. Each run has five minutes. Only one
+client asked for never queues behind them. Runs clients ask for — including
+the applied features opening a PR asks for — are capped at eight at once,
+across every feature and user, and don't queue either: one past the cap is
+answered `busy` and starts nothing, so ask again shortly. Each run has five
+minutes. Only one
 run per PR and feature is ever in flight, and a run that is still queued reads
 as `pending`. An automatic run doesn't retry a failure for inputs it already
 failed on; asking for the feature does.
@@ -736,6 +740,10 @@ registration; a client renders any feature's markdown body without changes.
   `GetAIOutput`, which also serves them the staleness information.
 - **Automatic-run cap.** Two concurrent automatic runs, shared by every
   feature. It isn't configurable yet.
+- **Requested-run cap.** Eight concurrent runs that clients asked for,
+  shared by every feature and user, refused as `busy` past it rather than
+  queued. On a hosted server any user can ask for a run of any PR, and each
+  spends on the server's model key and GitHub token.
 - **Applied features.** A feature whose result the server applies to what it
   already serves declares it (`AppliedFeature`). `ListAIFeatures` marks it
   `applied`, and clients offer no report for it. Since no client asks for one,

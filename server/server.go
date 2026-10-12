@@ -996,10 +996,11 @@ type RunAIFeatureArgs struct {
 }
 
 type RunAIFeatureReply struct {
-	// Okay is false when the feature can't run: unknown, or not enabled.
+	// Okay is false when the feature can't run: unknown, not enabled, or the
+	// server's runs a client asked for are at their cap.
 	Okay bool `json:"okay"`
 	// Outcome is what happened: started, up-to-date, already-running,
-	// disabled or unknown-feature.
+	// disabled, unknown-feature or busy.
 	Outcome string `json:"outcome"`
 	Message string `json:"message"`
 	// Output is the feature's output right after the dispatch: "pending" when
@@ -1032,6 +1033,8 @@ func (h *RPCHandler) RunAIFeature(args *RunAIFeatureArgs, reply *RunAIFeatureRep
 	case ai.OutcomeAlreadyRunning:
 		reply.Okay = true
 		reply.Message = fmt.Sprintf("%s is already running for PR %d", feature.Name(), args.Number)
+	case ai.OutcomeBusy:
+		reply.Message = fmt.Sprintf("Too many AI feature runs are in progress on this server; try %s again shortly", feature.Name())
 	default:
 		reply.Okay = true
 		reply.Message = fmt.Sprintf("Running %s for PR %d", feature.Name(), args.Number)

@@ -274,6 +274,53 @@ func TestRunnerQueuesAutomaticRunsButNotRequestedOnes(t *testing.T) {
 	waitFor(t, func() bool { return f.calls.Load() == 1 })
 }
 
+// Runs clients ask for don't queue, but they are capped: on a hosted server
+// any user can ask for any PR, and every run spends on the server's keys.
+// One past the cap is refused as busy, and leaves nothing in flight.
+func TestRunnerCapsRequestedRuns(t *testing.T) {
+	release := make(chan struct{})
+	f := &fakeFeature{id: "fake", run: func(context.Context, Request) (Result, error) {
+		<-release
+		return Result{}, nil
+	}}
+	r, _, _ := testRunner(t, nil, f)
+	pr := func(n int, trigger Trigger) Job {
+		j := job("fake", trigger, "s", "d")
+		j.Number = n
+		return j
+	}
+
+	for n := 1; n <= MaxRequestedRuns; n++ {
+		trigger := TriggerExplicit
+		if n%2 == 0 {
+			trigger = TriggerRerun
+		}
+		if got := r.Dispatch(pr(n, trigger)); got != OutcomeStarted {
+			t.Fatalf("requested run %d = %q, want started", n, got)
+		}
+	}
+	for _, trigger := range []Trigger{TriggerExplicit, TriggerRerun} {
+		if got := r.Dispatch(pr(100, trigger)); got != OutcomeBusy {
+			t.Errorf("a %s run past the cap = %q, want busy", trigger, got)
+		}
+	}
+	if r.Running("acme", "widgets", 100, "fake") {
+		t.Error("a run refused as busy reads as running")
+	}
+	// The background is capped on its own: it queues rather than being
+	// refused.
+	if got := r.Dispatch(pr(101, TriggerAutomatic)); got != OutcomeStarted {
+		t.Errorf("an automatic run while requested runs are at the cap = %q, want started", got)
+	}
+
+	close(release)
+	waitFor(t, func() bool { return len(r.requested) == 0 && f.calls.Load() == MaxRequestedRuns+1 })
+	if got := r.Dispatch(pr(100, TriggerExplicit)); got != OutcomeStarted {
+		t.Errorf("a requested run once the others finished = %q, want started", got)
+	}
+	waitFor(t, func() bool { return !r.Running("acme", "widgets", 100, "fake") })
+}
+
 func TestRunnerRecordsInputFailures(t *testing.T) {
 	f := &fakeFeature{id: "fake"}
 	r, db, crsHome := testRunner(t, nil, f)

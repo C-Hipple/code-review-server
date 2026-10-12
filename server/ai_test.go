@@ -7,6 +7,7 @@ import (
 	"crs/database"
 	"crs/git_tools"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -272,6 +273,46 @@ func TestAIOutputGoesStaleWhenAThreadIsResolved(t *testing.T) {
 	h.GetAIOutput(&GetAIOutputArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: "stub"}, &poll)
 	if poll.Output["stub"].Stale {
 		t.Errorf("the rerun should cover the new inputs: %+v", poll.Output["stub"])
+	}
+}
+
+// Runs clients ask for are capped server-wide; past the cap RunAIFeature
+// answers busy rather than starting another.
+func TestRunAIFeatureIsBusyPastTheCap(t *testing.T) {
+	release := make(chan struct{})
+	var entries []config.AIFeature
+	var features []ai.Feature
+	for i := 0; i <= ai.MaxRequestedRuns; i++ {
+		id := fmt.Sprintf("stub%d", i)
+		entries = append(entries, config.AIFeature{ID: id, Enabled: true})
+		features = append(features, &stubFeature{id: id, release: release})
+	}
+	db := aiTestSetup(t, entries)
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	useAIRunner(t, features...)
+	t.Cleanup(func() {
+		close(release)
+		for _, f := range features {
+			waitForAIRun(t, f.ID())
+		}
+	})
+	h := handlerFor("alice", false)
+
+	for _, f := range features[:ai.MaxRequestedRuns] {
+		var run RunAIFeatureReply
+		h.RunAIFeature(&RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: f.ID(), Force: true}, &run)
+		if !run.Okay || run.Outcome != string(ai.OutcomeStarted) {
+			t.Fatalf("RunAIFeature(%s) = %+v", f.ID(), run)
+		}
+	}
+	var busy RunAIFeatureReply
+	last := features[ai.MaxRequestedRuns].ID()
+	h.RunAIFeature(&RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: last, Force: true}, &busy)
+	if busy.Okay || busy.Outcome != string(ai.OutcomeBusy) || !strings.Contains(busy.Message, "again shortly") {
+		t.Errorf("RunAIFeature past the cap = %+v", busy)
+	}
+	if aiRunner.Running(aiOwner, aiRepo, aiNumber, last) {
+		t.Errorf("%s reads as running after it was refused", last)
 	}
 }
 

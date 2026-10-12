@@ -81,7 +81,7 @@ export interface AIFeatureOutput {
 
 export interface RunAIFeatureReply {
     okay: boolean;
-    outcome: 'started' | 'up-to-date' | 'already-running' | 'disabled' | 'unknown-feature' | string;
+    outcome: 'started' | 'up-to-date' | 'already-running' | 'disabled' | 'unknown-feature' | 'busy' | string;
     message: string;
     output: AIFeatureOutput | null;
 }

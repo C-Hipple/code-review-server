@@ -1180,8 +1180,8 @@ Unless `Force` is set, a stored result that already covers the PR's current inpu
 **Reply** (`RunAIFeatureReply`):
 | Field     | Type            | Description                                                              |
 |-----------|-----------------|--------------------------------------------------------------------------|
-| `okay`    | bool            | `false` when the feature can't run: unknown, or not enabled              |
-| `outcome` | string          | `started`, `up-to-date`, `already-running`, `disabled` or `unknown-feature` |
+| `okay`    | bool            | `false` when the feature can't run: unknown, not enabled, or busy        |
+| `outcome` | string          | `started`, `up-to-date`, `already-running`, `disabled`, `unknown-feature`, or `busy` when the runs clients asked for are at the server's cap (eight at once); ask again shortly |
 | `message` | string          | Human-readable status                                                    |
 | `output`  | AIFeatureOutput | The feature's output right after the dispatch (`pending` when a run started); `null` for an unknown feature |
 

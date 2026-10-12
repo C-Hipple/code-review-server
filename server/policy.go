@@ -76,7 +76,8 @@ var methodPolicy = map[string]access{
 
 	// Reads of what the server computes or caches for every user alike.
 	// RunAIFeature's Force is the client's rerun button; what it spends is
-	// bounded by the runner's concurrency cap.
+	// bounded by the runner's cap on the runs clients ask for
+	// (ai.MaxRequestedRuns), past which it answers busy.
 	"ListPlugins":         accessUser,
 	"GetPluginOutput":     accessUser,
 	"ListAIFeatures":      accessUser,

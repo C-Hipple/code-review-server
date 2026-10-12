@@ -796,7 +796,7 @@ func TestDeletingAUserEndsTheirLink(t *testing.T) {
 	lt := setupLinking(t, true)
 	_, _ = lt.link(t, "alice")
 	aliceCred, _ := lt.stored(t, "alice")
-	bob, bobToken := lt.connect(t, "bob")
+	bob, _ := lt.connect(t, "bob")
 	lt.gh.GrantAs("bob")
 	startLink(t, bob)
 
@@ -813,10 +813,10 @@ func TestDeletingAUserEndsTheirLink(t *testing.T) {
 		t.Errorf("revoked %v, want alice's token", revoked)
 	}
 	// bob's flow is gone: GitHub granting it now stores nothing, even once he
-	// is registered again under the same token.
+	// is registered again (under a new token: DeleteUser revoked his).
 	polls := len(lt.gh.Polls())
 	lt.gh.Script("ok")
-	bob.register(registration("bob", bobToken, elsewhere()))
+	bob.register(registration("bob", "", elsewhere()))
 	time.Sleep(5 * ghauthtest.Second)
 	if len(lt.gh.Polls()) != polls {
 		t.Error("a deleted user's flow is still polling GitHub")

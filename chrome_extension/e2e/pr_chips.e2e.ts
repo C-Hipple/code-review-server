@@ -23,7 +23,7 @@ test('a PR page offers a chip per enabled feature and plugin, and a chip opens t
     // The chips are in the tab row, right after "Files changed".
     await expect(chips(page)).toHaveText(CHIP_LABELS);
     await expect(page.locator('nav[aria-label="Pull request"] li#crs-tools')).toHaveCount(1);
-    await expect(page.locator('#crs-tools .chip').last()).toHaveText('style_guidelines');
+    await expect(chips(page).last()).toHaveText('style_guidelines');
 
     // Drawing them costs two read-only calls, the same the panel makes.
     await crs.waitForCall('ListAIFeatures');
@@ -60,11 +60,9 @@ test('away from a PR there are no chips, and GitHub’s in-page navigation re-po
     const page = await github.open('/acme/widgets/pulls');
     await expect(chips(page)).toHaveCount(0);
 
-    // Into a PR without a reload: the chips arrive for that PR.
-    await page.evaluate(() => {
-        history.pushState({}, '', '/acme/widgets/pull/57/files');
-        document.dispatchEvent(new Event('turbo:load'));
-    });
+    // Into a PR without a reload: GitHub swaps the page in, and the chips
+    // arrive for that PR.
+    await github.navigate(page, '/acme/widgets/pull/57/files');
     await expect(chips(page)).toHaveText(CHIP_LABELS);
 
     await chips(page).filter({ hasText: 'File ordering' }).click();
@@ -73,9 +71,6 @@ test('away from a PR there are no chips, and GitHub’s in-page navigation re-po
     await crs.waitForCall('GetPR', { Owner: 'acme', Repo: 'widgets', Number: 57 });
 
     // And back off PRs: the chips go with the tab row.
-    await page.evaluate(() => {
-        history.pushState({}, '', '/acme/widgets/issues');
-        document.dispatchEvent(new Event('turbo:load'));
-    });
+    await github.navigate(page, '/acme/widgets/issues');
     await expect(chips(page)).toHaveCount(0);
 });

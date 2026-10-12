@@ -155,6 +155,22 @@ export class GitHub {
     }
 
     /**
+     * Navigates in place the way GitHub does: the URL changes with no reload
+     * and the body is swapped for the markup this harness serves for the new
+     * URL, then Turbo's event fires. The content script stays where it is —
+     * it lives on `document`, and its own listeners pick the page up again.
+     */
+    async navigate(page: Page, path: string): Promise<void> {
+        await page.evaluate(async (target: string) => {
+            history.pushState({}, '', target);
+            const html = await (await fetch(target)).text();
+            const body = new DOMParser().parseFromString(html, 'text/html').body;
+            document.body.replaceChildren(...body.childNodes);
+            document.dispatchEvent(new Event('turbo:load'));
+        }, path);
+    }
+
+    /**
      * The manifest injects content.js at document_idle, which can come after
      * `load`. Asks the content script's own (isolated) world whether it is
      * there, so a toggle never races its injection.
@@ -218,10 +234,13 @@ export function modalHost(page: Page): Locator {
 
 /**
  * The chips the content script draws beside the PR tabs. They live in an open
- * shadow root inside the tab row, which locators pierce.
+ * shadow root inside the tab row: locators pierce shadow roots, but one
+ * selector can't straddle the boundary — `#crs-tools .chip` would have to
+ * match both halves inside the same tree — so the host is found first and the
+ * chips under it.
  */
 export function chips(page: Page): Locator {
-    return page.locator('#crs-tools .chip');
+    return page.locator('#crs-tools').locator('.chip');
 }
 
 /**

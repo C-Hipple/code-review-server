@@ -53,6 +53,10 @@ tests share nothing and run in parallel.
   runs the listener `background.ts` registered with the real tab, exactly as a
   click does. Before toggling, `github.open` waits until the content script
   is running (asked through `chrome.scripting.executeScript` in its world).
+- **In-page navigation**: `github.navigate(page, path)` does what GitHub's Turbo
+  does — pushState, the body swapped for the markup this harness serves for the
+  new URL, then `turbo:load` — so a spec can leave a page without a reload and
+  see the content script deal with the page that replaced it.
 - **The panel's frame** is in a closed shadow root, out of reach of locators,
   so `panelFrame` finds it among the page's frames by URL.
 - **No viewport emulation**: Chromium hit-tests the modal's out-of-process

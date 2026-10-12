@@ -25,21 +25,25 @@ test('on a PR page, the button opens the PR tools view for that PR', async ({ gi
     await expect(panel.locator('.summary-stats > .muted')).toHaveText('7 files changed');
     await expect(panel.locator('.summary-stats .pill')).toHaveText('Hard to review');
 
-    // GetPR for this PR, first: it fills the server's caches and starts the
-    // PR's post-update hooks. The outputs are read only once it has answered.
+    // The page's own read-only calls come first — the chips' two lists, and
+    // on this Files changed view the stored file order it lays over the diffs.
+    // The panel's GetPR follows: it fills the server's caches and starts the
+    // PR's post-update hooks, and the outputs are read only once it has
+    // answered.
     const getPR = await crs.waitForCall('GetPR', PR42_ARGS);
     expect(getPR.params).toEqual({ ...PR42_ARGS, SkipCache: false });
     await crs.waitForCall('GetAIOutput', PR42_ARGS);
     await crs.waitForCall('GetPluginOutput', PR42_ARGS);
     const methods = crs.calls().map(c => c.method);
-    expect(methods.indexOf('RPCHandler.GetPR')).toBeLessThan(
-        methods.indexOf('RPCHandler.GetAIOutput')
+    expect(methods.lastIndexOf('RPCHandler.GetPR')).toBeLessThan(
+        methods.lastIndexOf('RPCHandler.GetAIOutput')
     );
-    expect(methods.indexOf('RPCHandler.GetPR')).toBeLessThan(
-        methods.indexOf('RPCHandler.GetPluginOutput')
+    expect(methods.lastIndexOf('RPCHandler.GetPR')).toBeLessThan(
+        methods.lastIndexOf('RPCHandler.GetPluginOutput')
     );
-    expect(crs.calls('ListAIFeatures')).toHaveLength(1);
-    expect(crs.calls('ListPlugins')).toHaveLength(1);
+    // Each list is asked for once by the page's chips and once by the panel.
+    expect(crs.calls('ListAIFeatures')).toHaveLength(2);
+    expect(crs.calls('ListPlugins')).toHaveLength(2);
 
     // AI features: a card per enabled report feature plus file-ordering;
     // review-ease is the summary's pill, and the disabled one is named.

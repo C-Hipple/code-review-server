@@ -264,19 +264,24 @@ function ensureTools(): void {
     if (!row) return;
 
     // A tab row is a list, so the chips go in a list item; anything else gets
-    // the host itself. An open shadow root, unlike the modal's closed one:
-    // nothing here is private — feature and plugin names only, never a report
-    // — and an open one stays visible to tests and to the page's own tooling.
-    const host = document.createElement(
+    // the wrapper itself. Only a fixed set of elements can host a shadow root
+    // — <li> isn't one of them, and attachShadow throws for it — so the chips'
+    // host is a span inside the wrapper. An open shadow root, unlike the
+    // modal's closed one: nothing here is private — feature and plugin names
+    // only, never a report — and an open one stays visible to tests and to the
+    // page's own tooling.
+    const wrapper = document.createElement(
         row.tagName === 'UL' || row.tagName === 'OL' ? 'li' : 'div'
     );
-    host.id = TOOLS_ID;
+    wrapper.id = TOOLS_ID;
+    const host = document.createElement('span');
     const root = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
     style.textContent = CHIP_CSS;
     root.append(style);
     for (const chip of tools.chips) root.append(chipButton(chip));
-    row.append(host);
+    wrapper.append(host);
+    row.append(wrapper);
 }
 
 /** Asks the service worker what this page's PR has to offer. */

@@ -550,6 +550,44 @@ func TestRefusalsStayWithTheirCalls(t *testing.T) {
 	}
 }
 
+// A handler's panic is its own call's error, not the end of the server:
+// net/rpc runs each call on a goroutine of its own and recovers nothing, so
+// one bad request used to take every user's connection down with it.
+func TestRemoteHandlerPanicIsTheCallsError(t *testing.T) {
+	remoteSetup(t)
+	addr := startListener(t, defaultListenOptions)
+	admin, alice := dialRemote(t, addr), dialRemote(t, addr)
+	if reply := admin.authenticate(testAdminToken); !reply.Okay {
+		t.Fatalf("Authenticate(admin) = %+v", reply)
+	}
+	alice.register(registration("alice", ""))
+
+	// Hello counts the viewer's sections, which with no database to count
+	// them in is a nil dereference.
+	cfg := config.C()
+	config.SetC(config.Config{})
+	err := admin.call("Hello", &HelloArgs{}, &HelloReply{})
+	config.SetC(cfg)
+	wantError(t, "Hello with no database", err, "internal error: RPCHandler.Hello failed; the server logged why")
+
+	// Both connections are still served, the one that panicked included.
+	admin.must("Hello", &HelloArgs{}, &HelloReply{})
+	mine := &GetMyWorkflowsReply{}
+	alice.must("GetMyWorkflows", &GetMyWorkflowsArgs{}, mine)
+	if mine.Login != "alice" {
+		t.Errorf("GetMyWorkflows after the panic: login %q", mine.Login)
+	}
+
+	// Every method a remote connection may call runs under that recover.
+	for name := range methodPolicy {
+		if handlerMethods[name] == nil {
+			t.Errorf("RPCHandler.%s is not routed through %s, so a panic in it ends the server", name, callMethod)
+		}
+	}
+	err = admin.client.Call(callMethod, &struct{}{}, &struct{}{})
+	wantError(t, "calling the gate directly", err, "rpc: can't find method "+callMethod)
+}
+
 // Every exported RPCHandler method has a line in the method policy, and every
 // line names a method: a new RPC has to be classified before it ships.
 func TestMethodPolicyClassifiesEveryMethod(t *testing.T) {

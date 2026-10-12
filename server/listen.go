@@ -87,8 +87,8 @@ func serveConn(conn net.Conn, opts listenOptions) {
 		conn.Close()
 		return
 	}
-	if err := server.RegisterName(refusalServiceName, refusalService{}); err != nil {
-		slog.Error("Error registering the refusal service", "error", err)
+	if err := server.RegisterName(refusalServiceName, gateService{h: handler}); err != nil {
+		slog.Error("Error registering the gate service", "error", err)
 		conn.Close()
 		return
 	}

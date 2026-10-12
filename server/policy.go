@@ -3,10 +3,13 @@ package server
 import (
 	"crs/config"
 	"crs/database"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/rpc"
+	"reflect"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -176,31 +179,37 @@ func (h *RPCHandler) admit(serviceMethod string, now time.Time) error {
 	return nil
 }
 
-// refusalServiceName and refusalMethod are where gatedCodec sends a request the
-// policy refuses. The service is registered next to RPCHandler on every remote
-// connection's rpc.Server; a client calling it directly is refused by the
-// policy like any other unclassified method.
+// refusalServiceName, refusalMethod and callMethod are where gatedCodec sends
+// a remote connection's requests: a request the policy refuses to Refuse, and
+// every RPCHandler request it admits to Call (gateService). The service is
+// registered next to RPCHandler on every remote connection's rpc.Server; a
+// client calling it directly is refused by the policy like any other
+// unclassified method.
 const (
 	refusalServiceName = "Gate"
 	refusalMethod      = refusalServiceName + ".Refuse"
+	callMethod         = refusalServiceName + ".Call"
 )
 
 // gatedCodec is a remote connection's codec with the method policy in front
 // of it. A request the policy refuses is renamed to refusalMethod before
 // net/rpc looks it up, so net/rpc never reaches the method asked for and
 // answers with the refusal as the call's error, under the request's own id.
+// A request it admits for an RPCHandler method is renamed to callMethod,
+// which runs that method under a recover.
 //
 // net/rpc reads a connection's requests one at a time — each header, then its
 // body — on one goroutine, and only then runs the call, concurrently with the
-// next read. The refusal is carried from a header to its own body in refusal,
-// which nothing but that read loop touches, and from there into the call's
-// arguments (RefusalArgs). Nothing per request lives on the codec once its
-// body is read, so a header read meanwhile cannot change the error a call
-// already dispatched returns.
+// next read. The refusal or method is carried from a header to its own body in
+// refusal and call, which nothing but that read loop touches, and from there
+// into the call's arguments (RefusalArgs, CallArgs). Nothing per request lives
+// on the codec once its body is read, so a header read meanwhile cannot change
+// what a call already dispatched does.
 type gatedCodec struct {
 	rpc.ServerCodec
 	h       *RPCHandler
 	refusal error
+	call    *handlerMethod
 }
 
 func newGatedCodec(inner rpc.ServerCodec, h *RPCHandler) *gatedCodec {
@@ -208,7 +217,7 @@ func newGatedCodec(inner rpc.ServerCodec, h *RPCHandler) *gatedCodec {
 }
 
 func (c *gatedCodec) ReadRequestHeader(r *rpc.Request) error {
-	c.refusal = nil
+	c.refusal, c.call = nil, nil
 	if err := c.ServerCodec.ReadRequestHeader(r); err != nil {
 		return err
 	}
@@ -217,42 +226,132 @@ func (c *gatedCodec) ReadRequestHeader(r *rpc.Request) error {
 		slog.Info("Refused a remote call", "method", r.ServiceMethod, "login", login, "reason", err)
 		c.refusal = err
 		r.ServiceMethod = refusalMethod
+		return nil
+	}
+	if name, ok := strings.CutPrefix(r.ServiceMethod, handlerServicePrefix); ok {
+		if m := handlerMethods[name]; m != nil {
+			c.call = m
+			r.ServiceMethod = callMethod
+		}
 	}
 	return nil
 }
 
 func (c *gatedCodec) ReadRequestBody(body any) error {
-	refusal := c.refusal
-	c.refusal = nil
-	if refusal == nil {
-		return c.ServerCodec.ReadRequestBody(body)
+	refusal, call := c.refusal, c.call
+	c.refusal, c.call = nil, nil
+	switch {
+	case refusal != nil:
+		// The arguments were for the refused method; nothing reads them.
+		if err := c.ServerCodec.ReadRequestBody(nil); err != nil {
+			return err
+		}
+		if args, ok := body.(*RefusalArgs); ok {
+			args.err = refusal
+		}
+		return nil
+	case call != nil:
+		// Decoded as net/rpc would for the method itself.
+		argv := reflect.New(call.argType)
+		if err := c.ServerCodec.ReadRequestBody(argv.Interface()); err != nil {
+			return err
+		}
+		if args, ok := body.(*CallArgs); ok {
+			args.method, args.argv = call, argv
+		}
+		return nil
 	}
-	// The arguments were for the refused method; nothing reads them.
-	if err := c.ServerCodec.ReadRequestBody(nil); err != nil {
-		return err
-	}
-	if args, ok := body.(*RefusalArgs); ok {
-		args.err = refusal
-	}
-	return nil
+	return c.ServerCodec.ReadRequestBody(body)
 }
 
-// RefusalArgs carries a refused request's error to refusalService. Exported
-// only because net/rpc requires it; it has nothing a client can set.
+// handlerMethod is an RPCHandler method as net/rpc would serve it: exported,
+// taking a pointer to its arguments and one to its reply, returning an error.
+type handlerMethod struct {
+	name      string
+	fn        reflect.Value // the method's func, receiver first
+	argType   reflect.Type  // what its arguments point to
+	replyType reflect.Type  // what its reply points to
+}
+
+// handlerMethods are the RPCHandler methods gatedCodec routes through Call, by
+// bare name.
+var handlerMethods = func() map[string]*handlerMethod {
+	methods := map[string]*handlerMethod{}
+	t := reflect.TypeFor[*RPCHandler]()
+	for i := range t.NumMethod() {
+		m := t.Method(i)
+		ft := m.Type
+		if !m.IsExported() || ft.NumIn() != 3 || ft.NumOut() != 1 || ft.Out(0) != reflect.TypeFor[error]() ||
+			ft.In(1).Kind() != reflect.Pointer || ft.In(2).Kind() != reflect.Pointer {
+			continue
+		}
+		methods[m.Name] = &handlerMethod{name: m.Name, fn: m.Func, argType: ft.In(1).Elem(), replyType: ft.In(2).Elem()}
+	}
+	return methods
+}()
+
+// RefusalArgs carries a refused request's error to gateService.Refuse.
+// Exported only because net/rpc requires it; it has nothing a client can set.
 type RefusalArgs struct {
 	err error
 }
 
-// RefusalReply is refusalService's empty reply; a refused call has only an
-// error.
+// RefusalReply is Refuse's empty reply; a refused call has only an error.
 type RefusalReply struct{}
 
-type refusalService struct{}
+// CallArgs carries an admitted request's method and decoded arguments to
+// gateService.Call. Exported only because net/rpc requires it; it has nothing
+// a client can set.
+type CallArgs struct {
+	method *handlerMethod
+	argv   reflect.Value
+}
+
+// CallReply is the reply of the method Call ran, and encodes as that reply,
+// so the wire is what the method would have answered itself.
+type CallReply struct {
+	v any
+}
+
+func (r *CallReply) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.v)
+}
+
+// gateService is the service gatedCodec routes a remote connection's requests
+// to, for the connection's own handler.
+type gateService struct {
+	h *RPCHandler
+}
 
 // Refuse fails with the refusal gatedCodec put in args.
-func (refusalService) Refuse(args *RefusalArgs, reply *RefusalReply) error {
+func (gateService) Refuse(args *RefusalArgs, reply *RefusalReply) error {
 	if args.err == nil {
 		return errors.New("rpc: can't find method " + refusalMethod)
 	}
 	return args.err
+}
+
+// Call runs the RPCHandler method gatedCodec admitted, and turns a panic in it
+// into the call's error. net/rpc runs every call on a goroutine of its own and
+// recovers nothing, so a handler's panic would otherwise end the process: on a
+// hosted server, every user's connections, link flows and writes in flight,
+// for one bad request.
+func (g gateService) Call(args *CallArgs, reply *CallReply) (err error) {
+	m := args.method
+	if m == nil {
+		return errors.New("rpc: can't find method " + callMethod)
+	}
+	replyv := reflect.New(m.replyType)
+	reply.v = replyv.Interface()
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("An RPC handler panicked", "method", handlerServicePrefix+m.name, "login", g.h.viewer(), "panic", p, "stack", string(debug.Stack()))
+			err = fmt.Errorf("internal error: %s%s failed; the server logged why", handlerServicePrefix, m.name)
+		}
+	}()
+	out := m.fn.Call([]reflect.Value{reflect.ValueOf(g.h), args.argv, replyv})
+	if e, _ := out[0].Interface().(error); e != nil {
+		return e
+	}
+	return nil
 }

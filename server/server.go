@@ -1801,7 +1801,13 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 		if startLine < 1 {
 			startLine = 1
 		}
-		if endLine < 1 {
+		// An anchor past the end of the file at ref — a client's diff newer
+		// than the cached head, or a made-up line — has no lines before it
+		// that the file holds beyond its last.
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+		if endLine < 1 || startLine > endLine {
 			reply.Lines = []string{}
 			reply.StartLine = 0
 			reply.EndLine = 0

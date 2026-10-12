@@ -244,6 +244,37 @@ func TestDeletedUsersDashboardIsClearedOut(t *testing.T) {
 	checkDashboard(t, db, "bob", 7)
 }
 
+// A hosted server's config file may have no workflows of its own. That spares
+// the server's dashboard — the config may have lost them by mistake — but not
+// a deleted user's: deleting the last user with workflows still clears theirs
+// out.
+func TestDeletedUsersDashboardIsClearedOutWithoutConfigWorkflows(t *testing.T) {
+	db := usersTestDB(t, config.Config{})
+	now := time.Now()
+	registerUser(t, db, database.User{Login: "alice", LastSeen: now}, sharedWorkflow)
+	run := byOwner(t, RunSet(config.C(), now))
+	alice := run[config.OwnershipKey("alice", sharedWorkflow.Name)]
+	if len(run) != 1 || alice == nil {
+		t.Fatalf("run set = %v, want alice's alone", run)
+	}
+	runCycle(t, workflowRun{alice, widgetsPRs(t, 7)})
+	checkDashboard(t, db, "alice", 7)
+	// What a config that had workflows once left on the server's dashboard.
+	server := seedOwnedItem(t, db, sharedWorkflow.SectionTitle, "acme/widgets-8", 0, sharedWorkflow.Name)
+
+	if err := db.DeleteUser("alice"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	finishCycle()
+
+	if got := dashboard(t, db, "alice"); got != nil {
+		t.Errorf("alice's section survived her deletion, holding %v", got)
+	}
+	if !itemExists(t, db, server.ID, "acme/widgets-8") {
+		t.Error("the server's own dashboard was emptied by a config with no workflows")
+	}
+}
+
 // An idle user's workflows are not run, but they still own what they wrote:
 // the user comes back to the dashboard they left, not an empty one.
 func TestIdleUserIsSkippedButKeepsTheirDashboard(t *testing.T) {

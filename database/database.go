@@ -1242,10 +1242,15 @@ type SectionRef struct {
 // name in the list also pins items in sections that are still live, since the
 // list stays non-empty after the surviving workflows release their claims.
 //
+// spareServer leaves the items on the server's own dashboard (user "") as they
+// are, whatever owned says: what a caller passes when the config file has no
+// workflows, which may as well be a config that lost them as one that never
+// had any.
+//
 // Returns the number of items whose ownership list changed. Callers must not
 // pass an empty map when the configuration merely failed to load: that releases
 // every item in the database.
-func (db *DB) ReleaseStaleWorkflowOwnership(owned map[string]SectionRef) (int64, error) {
+func (db *DB) ReleaseStaleWorkflowOwnership(owned map[string]SectionRef, spareServer bool) (int64, error) {
 	type ownershipUpdate struct {
 		id        int64
 		workflows string
@@ -1255,10 +1260,12 @@ func (db *DB) ReleaseStaleWorkflowOwnership(owned map[string]SectionRef) (int64,
 	// updates run: SQLite does not want a write transaction opened underneath an
 	// open read.
 	collect := func() ([]ownershipUpdate, error) {
-		rows, err := db.conn.Query(
-			`SELECT i.id, COALESCE(i.workflows, '[]'), s.user_login, s.section_name
-			 FROM items i JOIN sections s ON s.id = i.section_id`,
-		)
+		query := `SELECT i.id, COALESCE(i.workflows, '[]'), s.user_login, s.section_name
+			 FROM items i JOIN sections s ON s.id = i.section_id`
+		if spareServer {
+			query += ` WHERE s.user_login != ''`
+		}
+		rows, err := db.conn.Query(query)
 		if err != nil {
 			return nil, err
 		}
@@ -1327,11 +1334,16 @@ func (db *DB) ReleaseStaleWorkflowOwnership(owned map[string]SectionRef) (int64,
 // them on the next cycle anyway.
 //
 // A keep entry spares only that user's section of that name: another user's
-// empty section of the same name is retired all the same.
-func (db *DB) DeleteEmptySectionsNotIn(keep []SectionRef) (int64, error) {
+// empty section of the same name is retired all the same. spareServer spares
+// every section of the server's own dashboard, as for
+// ReleaseStaleWorkflowOwnership.
+func (db *DB) DeleteEmptySectionsNotIn(keep []SectionRef, spareServer bool) (int64, error) {
 	// One statement, so an item written between finding a section empty and
 	// deleting it cannot be taken down by the ON DELETE CASCADE.
 	query := "DELETE FROM sections WHERE id NOT IN (SELECT section_id FROM items)"
+	if spareServer {
+		query += " AND user_login != ''"
+	}
 	args := []any{}
 	if len(keep) > 0 {
 		placeholders := strings.TrimSuffix(strings.Repeat("(?, ?),", len(keep)), ",")

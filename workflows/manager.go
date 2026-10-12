@@ -802,12 +802,13 @@ func finishCycle() {
 	cfg := config.C()
 	sweepIdleUsers(cfg, time.Now())
 	owned, ok := ownedSections(cfg)
+	spareServer := len(cfg.RawWorkflows) == 0
 	if ok {
-		releaseStaleWorkflowOwnership(owned)
+		releaseStaleWorkflowOwnership(owned, spareServer)
 	}
 	pruneOrphanedItems()
 	if ok {
-		pruneRetiredSections(owned)
+		pruneRetiredSections(owned, spareServer)
 	}
 	pruneWorkflowActionLog()
 }
@@ -817,16 +818,18 @@ func finishCycle() {
 // deleted — so the items fall to pruneOrphanedItems. owned is ownedSections'
 // answer. Run before the prune, at the end of a cycle.
 //
-// The empty guard matters: config.Reload failing mid-run leaves the previous
-// config in place, but a config that legitimately parses to zero workflows,
-// on a server with no users, would otherwise release every item in the
-// database.
-func releaseStaleWorkflowOwnership(owned map[string]database.SectionRef) {
-	if len(owned) == 0 {
-		slog.Warn("No workflows configured or registered; skipping stale ownership release")
-		return
+// spareServer, set when the config file has no workflows, leaves the server's
+// own dashboard alone: config.Reload failing mid-run leaves the previous config
+// in place, but a config that parses to zero workflows by mistake would
+// otherwise release every item on it. Users' dashboards are released all the
+// same — the users table, which loaded, says what they own — so a hosted
+// server whose config has no workflows of its own still clears out a deleted
+// user's dashboard.
+func releaseStaleWorkflowOwnership(owned map[string]database.SectionRef, spareServer bool) {
+	if spareServer && len(owned) == 0 {
+		slog.Warn("No workflows configured or registered; releasing only deleted users' items")
 	}
-	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(owned)
+	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(owned, spareServer)
 	if err != nil {
 		slog.Error("Failed to release stale workflow ownership", "error", err)
 		return
@@ -837,16 +840,14 @@ func releaseStaleWorkflowOwnership(owned map[string]database.SectionRef) {
 }
 
 // pruneRetiredSections deletes empty sections that no workflow in owned writes
-// into. Run after pruneOrphanedItems, which is what empties them.
-func pruneRetiredSections(owned map[string]database.SectionRef) {
-	if len(owned) == 0 {
-		return
-	}
+// into, sparing the server's own as releaseStaleWorkflowOwnership does. Run
+// after pruneOrphanedItems, which is what empties them.
+func pruneRetiredSections(owned map[string]database.SectionRef, spareServer bool) {
 	keep := make([]database.SectionRef, 0, len(owned))
 	for _, section := range owned {
 		keep = append(keep, section)
 	}
-	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep)
+	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep, spareServer)
 	if err != nil {
 		slog.Error("Failed to prune retired sections", "error", err)
 		return

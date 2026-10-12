@@ -416,7 +416,7 @@ func TestReleaseStaleWorkflowOwnershipPerUser(t *testing.T) {
 	released, err := db.ReleaseStaleWorkflowOwnership(map[string]SectionRef{
 		serverKey: {User: "", Name: "Needs Review"},
 		aliceKey:  {User: "alice", Name: "Needs Review"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestDeleteEmptySectionsNotInPerUser(t *testing.T) {
 	deleted, err := db.DeleteEmptySectionsNotIn([]SectionRef{
 		{User: "", Name: "Needs Review"},
 		{User: "alice", Name: "Needs Review"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

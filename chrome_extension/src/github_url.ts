@@ -42,6 +42,17 @@ export function parsePullUrl(url: string): PullRef | null {
     return Number.isSafeInteger(n) ? { owner, repo, number: n } : null;
 }
 
+/**
+ * Whether a PR URL is its Files changed view — `/:owner/:repo/pull/:number/files`,
+ * query and hash aside. That is the page the stored file order is laid over.
+ */
+export function isFilesView(url: string): boolean {
+    const parsed = tryParse(url);
+    if (!parsed || parsePullUrl(url) === null) return false;
+    // ['', owner, repo, 'pull', number, tab, ...]: the tab follows the number.
+    return parsed.pathname.split('/')[5] === 'files';
+}
+
 /** Whether two refs name the same PR; GitHub treats owner and repo case-insensitively. */
 export function samePull(a: PullRef | null, b: PullRef | null): boolean {
     if (!a || !b) return a === b;

@@ -1,11 +1,20 @@
-// Content script for github.com: the modal the toolbar button toggles, and the
-// chips beside a pull request's tabs that open it. It runs on every GitHub
-// page, so it stays small — no React, no RPC (the panel in the iframe talks to
-// the service worker itself, and the chips only ask it for names). Bundled as a
-// classic IIFE.
+// Content script for github.com: the modal the toolbar button toggles, the
+// chips beside a pull request's tabs that open it, and the file order laid
+// over a pull request's Files changed view. It runs on every GitHub page, so
+// it stays small — no React, no RPC (the panel in the iframe talks to the
+// service worker itself, and the chips and the file order only ask it for what
+// it already holds). Bundled as a classic IIFE.
 
-import { parsePullUrl, samePull, type PullRef } from './github_url';
-import type { PanelToPageMessage, ToolChip, ToolsRequestMessage, ToolsReply } from './types';
+import { applyFileOrder } from './file_order';
+import { isFilesView, parsePullUrl, samePull, type PullRef } from './github_url';
+import type {
+    FileOrderReply,
+    FileOrderRequestMessage,
+    PanelToPageMessage,
+    ToolChip,
+    ToolsRequestMessage,
+    ToolsReply,
+} from './types';
 
 const HOST_ID = 'crs-modal-host';
 // Set on the content script's (isolated) window so a re-injected copy — the
@@ -310,7 +319,10 @@ async function refreshTools(): Promise<void> {
     ensureTools();
 }
 
-/** Watches the page for the tab row being re-rendered, while on a PR page. */
+/**
+ * Watches the page while it is a pull request's, so that a tab row GitHub has
+ * re-rendered, and the files it loads as the reader scrolls, are dealt with.
+ */
 function observeTools(on: boolean): void {
     if (on === (toolsObserver !== null)) return;
     if (!on) {
@@ -318,28 +330,77 @@ function observeTools(on: boolean): void {
         toolsObserver = null;
         return;
     }
-    toolsObserver = new MutationObserver(scheduleTools);
+    toolsObserver = new MutationObserver(scheduleRefresh);
     toolsObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
-/** A burst of mutations is one refresh; GitHub mutates its pages constantly. */
-function scheduleTools(): void {
+/**
+ * A burst of mutations is one refresh; GitHub mutates its pages constantly.
+ * Both the chips and the file order hang off this, and both are cheap when
+ * they have nothing to do.
+ */
+function scheduleRefresh(): void {
     if (toolsTimer !== null) return;
     toolsTimer = setTimeout(() => {
         toolsTimer = null;
         void refreshTools();
+        void refreshOrder();
     }, 200);
 }
 
-// TODO(file-ordering): apply the file-ordering AI feature to GitHub's Files
-// changed tab here. When the page is a PR's /files view, ask the service
-// worker for the PR's stored file-ordering report (a new message it answers
-// read-only for the sender tab's own PR — content scripts get no general RPC
-// access), then reorder GitHub's per-file diff containers to match
-// `report.files`, leaving files the report doesn't name at the end in GitHub's
-// order. Re-apply on turbo:load / popstate and whenever GitHub lazily renders
-// more files (a MutationObserver on the diff list), and never fight a user who
-// has picked a file from GitHub's file tree.
+// --- The stored file order -----------------------------------------------------
+
+/**
+ * The order the server holds for the page's PR: `files` once it has one, null
+ * while it has none, and `asked` — when it was last asked for — so a page that
+ * found none can look again.
+ */
+let order: { pr: PullRef; files: string[] | null; asked: number } | null = null;
+let orderSeq = 0;
+
+/** How long a page that found no order waits before asking again. */
+const ORDER_RETRY_MS = 5000;
+
+/** Asks the service worker for this page's PR's stored file order. */
+async function requestOrder(): Promise<FileOrderReply | null> {
+    try {
+        const message: FileOrderRequestMessage = { type: 'crs-file-order' };
+        const reply = (await chrome.runtime.sendMessage(message)) as FileOrderReply | null;
+        return reply && typeof reply === 'object' ? reply : null;
+    } catch {
+        // The extension was reloaded under this page; GitHub's order stands.
+        return null;
+    }
+}
+
+/**
+ * Lays the PR's stored file order over its Files changed view — the file tree
+ * and the per-file diffs — and lays it again whenever GitHub re-renders or
+ * loads more files. Off that view, or with no order stored, GitHub's own order
+ * stands; a page already in the order it should be is left untouched.
+ */
+async function refreshOrder(): Promise<void> {
+    if (!isFilesView(location.href)) return;
+    const pr = parsePullUrl(location.href);
+    if (!pr) return;
+
+    if (order && samePull(order.pr, pr)) {
+        if (order.files) {
+            applyFileOrder(document, order.files);
+            return;
+        }
+        // Nothing stored yet. The server works an order out when the PR is
+        // opened — the panel may be doing that in this tab right now — so look
+        // again now and then rather than leave the page unordered for good.
+        if (Date.now() - order.asked < ORDER_RETRY_MS) return;
+    }
+
+    const seq = ++orderSeq;
+    const reply = await requestOrder();
+    if (seq !== orderSeq || !reply?.pr || !samePull(reply.pr, pr)) return;
+    order = { pr, files: reply.files, asked: Date.now() };
+    if (reply.files) applyFileOrder(document, reply.files);
+}
 
 const previous = (window as unknown as Record<string, { teardown(): void } | undefined>)[
     INSTANCE_KEY
@@ -353,16 +414,17 @@ document.getElementById(HOST_ID)?.remove();
 document.getElementById(TOOLS_ID)?.remove();
 
 chrome.runtime.onMessage.addListener(onRuntimeMessage);
-document.addEventListener('turbo:load', scheduleTools);
-window.addEventListener('popstate', scheduleTools);
+document.addEventListener('turbo:load', scheduleRefresh);
+window.addEventListener('popstate', scheduleRefresh);
 void refreshTools();
+void refreshOrder();
 
 (window as unknown as Record<string, { teardown(): void }>)[INSTANCE_KEY] = {
     teardown() {
         close();
         chrome.runtime.onMessage.removeListener(onRuntimeMessage);
-        document.removeEventListener('turbo:load', scheduleTools);
-        window.removeEventListener('popstate', scheduleTools);
+        document.removeEventListener('turbo:load', scheduleRefresh);
+        window.removeEventListener('popstate', scheduleRefresh);
         if (toolsTimer !== null) clearTimeout(toolsTimer);
         toolsTimer = null;
         observeTools(false);

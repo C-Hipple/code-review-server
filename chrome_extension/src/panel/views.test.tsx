@@ -444,7 +444,7 @@ describe('FileOrderingCard', () => {
         const html = card(AI_OUTPUTS['file-ordering']);
         expect(text(html)).toContain(text(FILE_ORDERING_NOTE));
         expect(FILE_ORDERING_NOTE).toBe(
-            "Applied feature — the suggested order to read this PR's files. A future version of the extension will reorder GitHub's Files changed tab to match; for now the order is listed here."
+            "Applied feature — the suggested order to read this PR's files. The extension lays it over GitHub's Files changed tab, reordering its diffs and its file tree to match; the server orders the diff it serves by it too."
         );
         expect(html).toContain('<ol class="file-order">');
         const t = text(html);
@@ -711,7 +711,11 @@ describe('Header', () => {
 // --- The PR tools view -------------------------------------------------------------------
 
 describe('PRToolsView', () => {
-    const view = (data: Partial<PRToolsData> = {}, actions: ActionState = NO_ACTIONS) =>
+    const view = (
+        data: Partial<PRToolsData> = {},
+        actions: ActionState = NO_ACTIONS,
+        focus: string | null = null
+    ) =>
         render(
             <PRToolsView
                 pr={PR}
@@ -719,6 +723,7 @@ describe('PRToolsView', () => {
                 actions={actions}
                 handlers={HANDLERS}
                 now={NOW}
+                focus={focus}
                 expanded={{ ai: ['comments-addressed'], plugins: ['security_check'] }}
             />
         );
@@ -806,5 +811,13 @@ describe('PRToolsView', () => {
         expect(t).toContain("Couldn't sync: GitHub is slow");
         expect(t).toContain('Already up to date');
         expect(html).toMatch(/aria-busy="true"[^>]*>.*Re-run all/);
+    });
+
+    test('the card a chip asked for is marked, and nothing else is', () => {
+        expect(view()).not.toContain('card-focused');
+        expect(view({}, NO_ACTIONS, 'change-diagram').match(/card-focused/g)).toHaveLength(1);
+        expect(view({}, NO_ACTIONS, 'security_check').match(/card-focused/g)).toHaveLength(1);
+        // A name the panel has no card for marks nothing; the panel just opens.
+        expect(view({}, NO_ACTIONS, 'review-ease')).not.toContain('card-focused');
     });
 });

@@ -224,4 +224,4 @@ Press the toolbar button or `Alt+Shift+R`:
 
 The panel follows the system's light or dark setting. It can call only a fixed list of read-and-run methods (`GetAllReviews`, `GetPR`, `SyncPR`, the plugin and AI feature RPCs, `Hello`), so it can't submit reviews, merge, comment or change the config.
 
-The extension doesn't reorder GitHub's Files changed tab by file-ordering yet; that is the next step on its roadmap.
+On a pull request's Files changed tab the content script lays the stored [file-ordering](ai_features.md#file-ordering) result over GitHub's own page, reordering the per-file diffs and the file tree to match it; files the report doesn't name stay where GitHub put them.

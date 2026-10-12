@@ -4,7 +4,6 @@
 
 import {
     CHANGE_DIAGRAM,
-    FILE_ORDERING,
     REVIEW_EASE,
     type AIFeature,
     type AIFeatureOutput,
@@ -127,14 +126,9 @@ export function changeClassesUsed(source: string): ChangeClass[] {
 }
 
 /** file-ordering's suggested order, or null when the output carries none. */
-export function fileOrderingFiles(output: AIFeatureOutput | null | undefined): string[] | null {
-    if (!output || output.feature !== FILE_ORDERING) return null;
-    const report = output.report as { files?: unknown } | null;
-    const files = report?.files;
-    if (!Array.isArray(files)) return null;
-    const paths = files.filter((f): f is string => typeof f === 'string' && f !== '');
-    return paths.length > 0 ? paths : null;
-}
+// The content script reorders GitHub's Files changed view by the same reading
+// of the report, so the one definition lives in file_order.ts.
+export { fileOrderingFiles } from '../file_order';
 
 function isEase(value: unknown): value is ReviewEase {
     return value === 'easy' || value === 'medium' || value === 'hard';

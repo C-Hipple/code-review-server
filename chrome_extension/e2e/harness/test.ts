@@ -46,6 +46,8 @@ import {
     HOST_NAME,
     PANEL_URL,
 } from './paths';
+import { diffAnchor } from '../../src/github_url';
+import { FILE_ORDER } from '../fixtures/data';
 import {
     CALLS_FILE,
     SCENARIO_FILE,
@@ -256,8 +258,95 @@ function escapeHtml(text: string): string {
     return text.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 }
 
+/**
+ * The files the fake Files changed view shows, in GitHub's own order — the
+ * server's order (FILE_ORDER, which a spec asserts the page ends up in) with
+ * test files last, as GitHub sorts them — plus one file the report doesn't
+ * name, which has to stay where GitHub put it: last.
+ */
+const GITHUB_ORDER = [
+    ...FILE_ORDER.filter(path => !path.endsWith('_test.go')).sort(),
+    ...FILE_ORDER.filter(path => path.endsWith('_test.go')),
+    'README.md',
+];
+
+interface Tree {
+    /** The path of the file this node is, when it is one. */
+    path?: string;
+    children: Map<string, Tree>;
+}
+
+/** The first file under `node`, which is the one a directory's link points at. */
+function firstFile(node: Tree): string | undefined {
+    if (node.path) return node.path;
+    for (const child of node.children.values()) {
+        const path = firstFile(child);
+        if (path) return path;
+    }
+    return undefined;
+}
+
+/** A file tree in GitHub's shape: nested directories, each with its own list. */
+function fileTree(paths: readonly string[], anchors: Map<string, string>): string {
+    const root: Tree = { children: new Map() };
+    for (const path of paths) {
+        const parts = path.split('/');
+        let node = root;
+        parts.forEach((part, index) => {
+            if (!node.children.has(part)) node.children.set(part, { children: new Map() });
+            node = node.children.get(part)!;
+            if (index === parts.length - 1) node.path = path;
+        });
+    }
+
+    const render = (node: Tree, depth: number): string =>
+        Array.from(node.children.entries())
+            .map(([name, child]) => {
+                const anchor = anchors.get(child.path ?? firstFile(child) ?? '') ?? '';
+                const label = child.path ?? name;
+                const link = `<a class="ActionList-content" href="#${anchor}"><span class="ActionList-item-label">${escapeHtml(label)}</span></a>`;
+                if (child.children.size === 0) {
+                    return `<li id="file-tree-item-${anchor}" class="ActionList-item ActionList-item--subItem" role="treeitem" aria-level="${depth}" data-tree-entry-type="file">${link}</li>`;
+                }
+                return `<li class="ActionList-item ActionList-item--hasSubItem" role="treeitem" aria-level="${depth}" data-tree-entry-type="directory">${link}<ul>${render(child, depth + 1)}</ul></li>`;
+            })
+            .join('\n');
+
+    return render(root, 1);
+}
+
+/**
+ * The Files changed view: a diff block per file, wrapped as GitHub wraps them
+ * and split over two progressive containers (the second empty, as GitHub's is
+ * until it loads the next batch), beside the file tree.
+ */
+function filesChanged(paths: readonly string[], anchors: Map<string, string>): string {
+    const blocks = paths
+        .map(path => {
+            const anchor = anchors.get(path);
+            return `<copilot-diff-entry data-file-path="${escapeHtml(path)}">
+<div class="file js-file" id="${anchor}">
+<div class="file-header" data-path="${escapeHtml(path)}"><a href="#${anchor}">${escapeHtml(path)}</a></div>
+<div class="blob-code">@@ -1,3 +1,3 @@</div>
+</div>
+</copilot-diff-entry>`;
+        })
+        .join('\n');
+    return `<div id="files" class="diff-view">
+<div class="js-diff-progressive-container">
+${blocks}
+</div>
+<div class="js-diff-progressive-container"></div>
+</div>
+<nav aria-label="File Tree Navigation">
+<ul aria-label="File Tree" class="ActionList ActionList--tree">
+${fileTree(paths, anchors)}
+</ul>
+</nav>`;
+}
+
 /** A stand-in GitHub page: a PR page for /:owner/:repo/pull/:n/..., else a repo page. */
-function githubPage(url: URL): string {
+export async function githubPage(url: URL): Promise<string> {
     const pr = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
     const title = pr ? `Pull request ${pr[1]}/${pr[2]}#${pr[3]}` : `GitHub ${url.pathname}`;
     const filler = '<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>'.repeat(40);
@@ -270,6 +359,15 @@ function githubPage(url: URL): string {
     <li><a href="/${pr[1]}/${pr[2]}/pull/${pr[3]}/files">Files changed</a></li>
 </ul></nav>`
         : '';
+    // Only the Files changed view carries diffs and a tree; GitHub's other PR
+    // pages have neither, and the content script orders nothing there.
+    const filesView = pr && url.pathname.split('/')[5] === 'files';
+    let files = '';
+    if (filesView) {
+        const anchors = new Map<string, string>();
+        for (const path of GITHUB_ORDER) anchors.set(path, await diffAnchor(path));
+        files = filesChanged(GITHUB_ORDER, anchors);
+    }
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -282,12 +380,17 @@ function githubPage(url: URL): string {
     main { padding: 24px 40px; }
     .tabnav-tabs { display: flex; align-items: center; gap: 12px; list-style: none; margin: 0 0 16px; padding: 0; }
     .tabnav-tabs a { color: #0969da; text-decoration: none; padding: 8px 4px; }
+    #files { margin-bottom: 24px; }
+    .file { border: 1px solid #d1d9e0; border-radius: 6px; margin-bottom: 12px; }
+    .file-header { padding: 8px 12px; background: #f6f8fa; }
+    .ActionList { list-style: none; padding-left: 16px; margin: 0; }
+    .ActionList-item { padding: 2px 0; }
     @media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } }
 </style>
 </head>
 <body>
 <header>GitHub (e2e fake) <input id="gh-search" placeholder="Search"></header>
-<main>${tabs}<h1 id="gh-title">${escapeHtml(title)}</h1>${filler}</main>
+<main>${tabs}<h1 id="gh-title">${escapeHtml(title)}</h1>${files}${filler}</main>
 </body>
 </html>`;
 }
@@ -298,10 +401,10 @@ async function routeGitHub(context: BrowserContext): Promise<void> {
         url => (url.protocol === 'http:' || url.protocol === 'https:') && url.host !== 'github.com',
         route => route.abort()
     );
-    await context.route('https://github.com/**', route =>
+    await context.route('https://github.com/**', async route =>
         route.fulfill({
             contentType: 'text/html; charset=utf-8',
-            body: githubPage(new URL(route.request().url())),
+            body: await githubPage(new URL(route.request().url())),
         })
     );
 }

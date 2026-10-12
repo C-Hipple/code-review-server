@@ -8,8 +8,9 @@ import { absoluteTime, relativeTime } from './time_utils';
 import { ToolCard } from './ToolCard';
 
 export const FILE_ORDERING_NOTE =
-    "Applied feature — the suggested order to read this PR's files. A future version of the " +
-    "extension will reorder GitHub's Files changed tab to match; for now the order is listed here.";
+    "Applied feature — the suggested order to read this PR's files. The extension lays it over " +
+    "GitHub's Files changed tab, reordering its diffs and its file tree to match; the server " +
+    'orders the diff it serves by it too.';
 
 export interface FileOrderingCardProps {
     pr: PullRef;
@@ -22,9 +23,10 @@ export interface FileOrderingCardProps {
 }
 
 /**
- * file-ordering, an applied feature: the server orders the diff it serves
- * by it. The extension doesn't reorder GitHub's page yet (see the
- * TODO(file-ordering) hook in content.ts), so this lists the stored order.
+ * file-ordering, an applied feature: the server orders the diff it serves by
+ * it, and the content script lays the same order over GitHub's Files changed
+ * tab — its diffs and its file tree (`file_order.ts`). This card lists the
+ * stored order, each file linking to its diff.
  */
 export function FileOrderingCard({
     pr,

@@ -3,6 +3,7 @@ import {
     diffAnchor,
     diffFileUrl,
     diffLineUrl,
+    isFilesView,
     isGitHubUrl,
     parsePullUrl,
     pullUrl,
@@ -75,6 +76,33 @@ describe('isGitHubUrl', () => {
         expect(isGitHubUrl('http://github.com/')).toBe(false);
         expect(isGitHubUrl('chrome://extensions')).toBe(false);
         expect(isGitHubUrl('')).toBe(false);
+    });
+});
+
+describe('isFilesView', () => {
+    test.each([
+        'https://github.com/C-hipple/code-review-server/pull/265/files',
+        'https://github.com/C-hipple/code-review-server/pull/265/files/',
+        'https://github.com/C-hipple/code-review-server/pull/265/files?diff=split&w=1',
+        'https://github.com/C-hipple/code-review-server/pull/265/files#diff-abc123',
+        'https://github.com/C-hipple/code-review-server/pull/265/files#diff-abc123R12',
+    ])('%s is the Files changed view', url => {
+        expect(isFilesView(url)).toBe(true);
+    });
+
+    test.each([
+        'https://github.com/C-hipple/code-review-server/pull/265',
+        'https://github.com/C-hipple/code-review-server/pull/265/',
+        'https://github.com/C-hipple/code-review-server/pull/265/commits',
+        'https://github.com/C-hipple/code-review-server/pull/265/checks',
+        'https://github.com/C-hipple/code-review-server/pull/265.diff',
+        'https://github.com/C-hipple/code-review-server/pull/265/files.diff',
+        'https://github.com/C-hipple/code-review-server/pulls',
+        'https://github.com/C-hipple/code-review-server/tree/main/files',
+        'https://github.com/C-hipple/code-review-server/blob/main/embedded',
+        'https://github.com/C-hipple/code-review-server/issues/265/files',
+    ])('%s is not the Files changed view', url => {
+        expect(isFilesView(url)).toBe(false);
     });
 });
 

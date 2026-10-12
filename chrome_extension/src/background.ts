@@ -4,12 +4,16 @@
 // anywhere else.
 
 import { isGitHubUrl, parsePullUrl, type PullRef } from './github_url';
+import { fileOrderingFiles } from './file_order';
 import { NativeClient } from './native_client';
 import type { ErrorInfo } from './native_protocol';
 import { chipsFor } from './tool_chips';
 import {
+    FILE_ORDERING,
     isRpcMethod,
     type AIFeature,
+    type AIFeatureOutput,
+    type FileOrderReply,
     type PluginConfig,
     type RpcReply,
     type ToggleMessage,
@@ -50,6 +54,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     if (msg.type === 'crs-tools') {
         if (sender.id !== chrome.runtime.id) return false;
         void toolsFor(sender).then(sendResponse);
+        return true;
+    }
+
+    // A PR's Files changed page may also ask for the file order to lay over
+    // it. Read-only too, and again only ever about the sender's own page.
+    if (msg.type === 'crs-file-order') {
+        if (sender.id !== chrome.runtime.id) return false;
+        void fileOrderFor(sender).then(sendResponse);
         return true;
     }
 
@@ -115,6 +127,34 @@ function arrayAt<T>(result: unknown, key: string): T[] | null {
     if (typeof result !== 'object' || result === null) return null;
     const value = (result as Record<string, unknown>)[key];
     return Array.isArray(value) ? (value as T[]) : null;
+}
+
+// --- The file order a Files changed page applies -------------------------------
+
+/**
+ * The file order stored for `sender`'s own PR, or null when the server holds
+ * none: one read-only GetAIOutput, the same call the panel makes, so a page
+ * loading never starts a run of its own. A failure — no server yet, say —
+ * leaves GitHub's own order alone, and the page asks again later.
+ */
+async function fileOrderFor(sender: chrome.runtime.MessageSender): Promise<FileOrderReply> {
+    const pr = contentScriptPR(sender);
+    if (!pr) return { pr: null, files: null };
+    const reply = await client.call('RPCHandler.GetAIOutput', {
+        Owner: pr.owner,
+        Repo: pr.repo,
+        Number: pr.number,
+        Feature: FILE_ORDERING,
+    });
+    const outputs = reply.ok ? recordAt<AIFeatureOutput>(reply.result, 'output') : null;
+    return { pr, files: fileOrderingFiles(outputs?.[FILE_ORDERING]) };
+}
+
+/** `result[key]` when it is an object, else null. */
+function recordAt<T>(result: unknown, key: string): Record<string, T> | null {
+    if (typeof result !== 'object' || result === null) return null;
+    const value = (result as Record<string, unknown>)[key];
+    return typeof value === 'object' && value !== null ? (value as Record<string, T>) : null;
 }
 
 // --- Toolbar button / Alt+Shift+R ----------------------------------------------

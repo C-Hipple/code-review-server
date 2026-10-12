@@ -663,8 +663,9 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   its `strict` security level, fitted to the card, with its legend, a
   **Source** toggle and **Copy source**. Of the applied features, review-ease
   is a pill at the top of the view, and file-ordering gets a card listing the
-  stored order, each file linking to its diff; the extension doesn't yet reorder
-  GitHub's own Files changed tab to match. Opening the view calls `GetPR`, which
+  stored order, each file linking to its diff; on a pull request's Files changed
+  tab the content script also reorders GitHub's own diffs and file tree to match
+  that order. Opening the view calls `GetPR`, which
   requests the applied features and runs the `Automatic` ones as any client
   does, and the view polls `GetAIOutput` while anything is pending.
 

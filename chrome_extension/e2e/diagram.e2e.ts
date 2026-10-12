@@ -63,8 +63,9 @@ test('the file-ordering card shows the follow-up note and the suggested order', 
     await expect(ordering.locator('.card-chips .pill')).toHaveText('Applied');
     await expect(statusChip(ordering)).toHaveText('Success');
     await expect(ordering.locator('.file-order-note')).toHaveText(
-        "Applied feature — the suggested order to read this PR's files. A future version of " +
-            "the extension will reorder GitHub's Files changed tab to match; for now the order is listed here."
+        "Applied feature — the suggested order to read this PR's files. The extension lays it over " +
+            "GitHub's Files changed tab, reordering its diffs and its file tree to match; the server " +
+            'orders the diff it serves by it too.'
     );
 
     // Open by default, in the stored order, each file linking to its diff.

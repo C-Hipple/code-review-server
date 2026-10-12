@@ -310,7 +310,26 @@ export interface ToolsReply {
     chips: ToolChip[];
 }
 
-export type ExtensionRequest = RpcRequestMessage | StatusRequestMessage | ToolsRequestMessage;
+/**
+ * Content script → service worker: the file order stored for the sender tab's
+ * own PR, so its Files changed view can be reordered to match. Read-only, and
+ * answered under the same rule as `crs-tools`: the PR is the one in the tab's
+ * URL, whatever the page says.
+ */
+export interface FileOrderRequestMessage {
+    type: 'crs-file-order';
+}
+
+/** The service worker's answer to `crs-file-order`. */
+export interface FileOrderReply {
+    /** The sender tab's PR, or null when that page isn't a pull request. */
+    pr: PullRef | null;
+    /** The suggested reading order (repo-relative paths); null when the server holds none. */
+    files: string[] | null;
+}
+
+export type ExtensionRequest =
+    RpcRequestMessage | StatusRequestMessage | ToolsRequestMessage | FileOrderRequestMessage;
 
 export type RpcReply = { ok: true; result: unknown } | { ok: false; error: ErrorInfo };
 

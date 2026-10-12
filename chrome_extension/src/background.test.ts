@@ -254,6 +254,69 @@ describe('the chips a PR page draws', () => {
     });
 });
 
+describe('the file order a Files changed page applies', () => {
+    const ASK = { type: 'crs-file-order' };
+
+    /** Sends crs-file-order as `sender` and reports the reply and what reached the server. */
+    async function ask(sender: object = CONTENT_SCRIPT) {
+        const before = ports.length > 0 ? ports[ports.length - 1].sent.length : 0;
+        const reply = sendAs(sender, ASK);
+        await settle();
+        const port = ports[ports.length - 1];
+        const requests =
+            (port?.sent as { id: number; method: string }[] | undefined)?.slice(before) ?? [];
+        return { reply, port, requests };
+    }
+
+    test('a content script on a PR is answered with the order the server holds', async () => {
+        const { reply, port, requests } = await ask();
+        expect(requests.map(r => r.method)).toEqual(['RPCHandler.GetAIOutput']);
+        expect(requests[0]).toMatchObject({
+            params: [{ Owner: 'o', Repo: 'r', Number: 1, Feature: 'file-ordering' }],
+        });
+        port!.receive({
+            id: requests[0].id,
+            result: {
+                output: {
+                    'file-ordering': {
+                        feature: 'file-ordering',
+                        report: { files: ['internal/api/router.go', 'docs/api.md'] },
+                    },
+                },
+            },
+            error: null,
+        });
+        expect(await reply).toEqual({
+            pr: { owner: 'o', repo: 'r', number: 1 },
+            files: ['internal/api/router.go', 'docs/api.md'],
+        });
+    });
+
+    test('a PR with no stored order is answered with none, so GitHub’s stands', async () => {
+        const { reply, port, requests } = await ask();
+        port!.receive({ id: requests[0].id, result: { output: {} }, error: null });
+        expect(await reply).toEqual({ pr: { owner: 'o', repo: 'r', number: 1 }, files: null });
+    });
+
+    test('a read that fails leaves the page with GitHub’s order', async () => {
+        const { reply, port, requests } = await ask();
+        port!.receive({ id: requests[0].id, result: null, error: 'the server is not running' });
+        expect(await reply).toEqual({ pr: { owner: 'o', repo: 'r', number: 1 }, files: null });
+    });
+
+    test('off a PR page nothing is asked for', async () => {
+        const sender = { ...CONTENT_SCRIPT, url: 'https://github.com/o/r/pulls' };
+        const { reply, requests } = await ask(sender);
+        expect(await reply).toEqual({ pr: null, files: null });
+        expect(requests).toEqual([]);
+        expect(fake.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    test('other extensions may not ask', async () => {
+        expect(await sendAs({ ...CONTENT_SCRIPT, id: 'someoneelse' }, ASK)).toBe('no response');
+    });
+});
+
 describe('toolbar button', () => {
     const click = (tab: object) => (fake.action.onClicked.listeners[0] as (t: object) => void)(tab);
 

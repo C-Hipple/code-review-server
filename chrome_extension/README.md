@@ -157,6 +157,24 @@ nothing the server holds for the PR lands in the page's own DOM. Away from a PR
 page there are no chips, and GitHub's in-page navigation redraws them for the
 new page.
 
+### The file order over the Files changed tab
+
+On a pull request's Files changed view (`…/pull/N/files`) the content script
+also lays the server's stored file-ordering result over GitHub's own page: the
+per-file diffs and the file tree are reordered to match it, so the tab reads in
+the order the feature suggests. Files the report doesn't name stay where GitHub
+put them, after the ones it does, and a directory follows the earliest file it
+holds. A page already in that order, one with neither diffs nor a tree, and one
+whose PR has no stored order are all left exactly as GitHub drew them. The order
+is laid again after GitHub's in-page navigation, and as it loads more files as
+the reader scrolls, so a re-render doesn't undo it.
+
+It comes from one more read-only message, `crs-file-order` — `GetAIOutput` for
+`file-ordering`, through the service worker, answered for the sender tab's own
+PR — so opening a page never starts a run. A page that finds no order stored yet
+asks again every few seconds, so one the server works out just after the page
+loaded arrives without a reload.
+
 The panel follows the system's light or dark setting, not GitHub's theme. The
 dot in its header says whether the server is connected; hovering it shows the
 server binary the host started, or the last connection error.
@@ -203,10 +221,10 @@ result; expanded, the whole report and its annotations.
   in the system's light or dark theme. When mermaid can't parse the diagram,
   its error shows beside the source.
 - **file-ordering** is an applied feature: the server orders the diff it serves
-  by it, and the extension doesn't reorder GitHub's Files changed tab yet (see
-  [Roadmap](#roadmap)). Its card says so and lists the stored order, each file
-  linking to its diff. It has no Run button; the server computes it when a PR is
-  opened.
+  by it, and the content script lays the same order over GitHub's own Files
+  changed tab (see [The file order over the Files changed tab](#the-file-order-over-the-files-changed-tab)).
+  Its card lists the stored order too, each file linking to its diff. It has no
+  Run button; the server computes it when a PR is opened.
 - **review-ease** has no card: it is the pill at the top of the view.
 
 Features the server has but doesn't enable are named on one line under the
@@ -292,11 +310,13 @@ server has started, `error` when it can't be found or started, and
 extension can submit a review, merge, comment or rewrite the config; using
 another method means adding it there and a function for it in `src/rpc.ts`.
 
-**What a content script may ask.** One message, `crs-tools`, answered for the
-sender tab's own PR — the PR in the tab's URL, which the page cannot argue with —
-with the names of its enabled AI features and configured plugins, from the same
-two read-only calls above. That is what the chips are drawn from, and all a
-content script can get out of the server.
+**What a content script may ask.** Two messages, both answered for the sender
+tab's own PR — the PR in the tab's URL, which the page cannot argue with — and
+nothing else. `crs-tools` carries the names of that PR's enabled AI features and
+configured plugins, from the two read-only calls above: what the chips are drawn
+from. `crs-file-order` carries the file order the server holds for it
+(`GetAIOutput` for `file-ordering`): what its Files changed view is laid out by.
+A content script can reach no other server method.
 
 **Content script and panel.** The content script runs on every GitHub page, so
 it stays small: no React and no server access. It draws the modal in a closed
@@ -310,8 +330,8 @@ never through the page. `panel.html` and its files are web-accessible to
 - The service worker answers only the extension's own pages for RPC and status:
   the sender must carry the extension's ID and a `chrome-extension://<id>/` URL.
   A content script shares the ID but reports the GitHub page's URL, so nothing a
-  page can influence reaches the server — its one message, `crs-tools`, is
-  answered with names for the tab's own PR and nothing else.
+  page can influence reaches the server — its own messages, `crs-tools` and
+  `crs-file-order`, are answered for the tab's own PR and nothing else.
 - The only message from the panel to the page is `close`, posted to
   `https://github.com`. The content script acts on it only when it comes from
   the extension's origin and from its own iframe's window.
@@ -395,8 +415,9 @@ pressed. To inspect the panel, right-click inside the modal and choose Inspect.
 | `src/background.ts`          | The service worker: RPC for extension pages, the toolbar button, the per-tab button title |
 | `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting                                      |
 | `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)             |
-| `src/content.ts`             | The modal on github.com, and the chips beside a PR's tabs                                 |
+| `src/content.ts`             | The modal on github.com, the chips beside a PR's tabs, the file order over its diffs      |
 | `src/tool_chips.ts`          | Which chips a PR page draws: an enabled feature and a plugin each (pure, unit tested)     |
+| `src/file_order.ts`          | Laying file-ordering's order over GitHub's Files changed view (e2e tested)                |
 | `src/github_url.ts`          | Recognising PR URLs and building diff links                                               |
 | `src/rpc.ts`, `src/types.ts` | The panel's typed RPC client, the wire shapes and `RPC_METHODS`                           |
 | `src/panel/`                 | The React panel: `App.tsx` routes between `PRList.tsx` and `PRTools.tsx`                  |
@@ -407,17 +428,3 @@ server's dependencies. It is still part of the module — `go build ./...` build
 it and `go install ./...` installs it — which is why `go.mod` has
 `ignore ./chrome_extension/node_modules`: some npm packages ship Go files that
 would otherwise be built as part of the module.
-
-## Roadmap
-
-- **Apply file-ordering to the Files changed tab.** The server already orders
-  the diff it serves by the stored file-ordering result; the extension only
-  lists that order. The follow-up reorders GitHub's own Files changed tab to
-  match. `TODO(file-ordering)` in `src/content.ts` marks where it goes and
-  sketches it: on a PR's `/files` view, ask the service worker for that PR's
-  stored file-ordering report (a new, read-only message it answers for the
-  sender tab's own PR, since content scripts get no general RPC access), move
-  GitHub's per-file diff containers into the report's order with the files it
-  doesn't name left at the end in GitHub's order, reapply after GitHub's in-page
-  navigation and as it lazily renders more files, and leave the order alone once
-  the user has picked a file from GitHub's file tree.

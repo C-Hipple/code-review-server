@@ -131,6 +131,9 @@ func main() {
 		// ends and would kill the hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
 		// Revoke the linked GitHub tokens of the users retention deletes.
+		// Registering it is also what turns retention on: a process that
+		// could not revoke them — -oneoff, or a workflow-only run against a
+		// hosted server's database — sweeps nobody.
 		workflows.SetUsersDeletedHook(server.ForgetDeletedUsers)
 
 		go func() {

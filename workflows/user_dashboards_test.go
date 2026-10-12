@@ -316,6 +316,8 @@ func TestIdleUserIsSkippedButKeepsTheirDashboard(t *testing.T) {
 // brings the dashboard back on the next.
 func TestRetentionSweepClearsAUserOutInOneCycle(t *testing.T) {
 	db := usersTestDB(t, config.Config{RawWorkflows: []config.RawWorkflow{sharedWorkflow}, UserRetentionDays: 7})
+	SetUsersDeletedHook(func([]database.DeletedUser) {})
+	t.Cleanup(func() { SetUsersDeletedHook(nil) })
 	now := time.Now()
 	registerUser(t, db, database.User{Login: "alice", LastSeen: now.Add(-8 * 24 * time.Hour)}, sharedWorkflow)
 	registerUser(t, db, database.User{Login: "bob", LastSeen: now.Add(-6 * 24 * time.Hour)}, sharedWorkflow)
@@ -388,6 +390,23 @@ func TestRetentionSweepHandsDeletedUsersToTheHook(t *testing.T) {
 	sweepIdleUsers(config.C(), now)
 	if got != nil {
 		t.Errorf("a sweep that deleted nobody handed the hook %+v", got)
+	}
+}
+
+// Without the hook — a -oneoff or workflow-only run against a hosted server's
+// database — nothing could revoke the tokens a sweep deletes, so it deletes
+// nobody: retention is the serving process's.
+func TestRetentionSweepNeedsTheHook(t *testing.T) {
+	db := usersTestDB(t, config.Config{UserRetentionDays: 7})
+	now := time.Now()
+	registerUser(t, db, database.User{Login: "alice", LastSeen: now.Add(-8 * 24 * time.Hour)})
+	if err := db.SetUserGitHubCredential("alice", "hash-of-alice", "v1:sealed"); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepIdleUsers(config.C(), now)
+	if sealed, err := db.GetUserGitHubCredential("alice"); err != nil || sealed != "v1:sealed" {
+		t.Errorf("a sweep with nothing to revoke tokens deleted alice's: credential %q, err %v", sealed, err)
 	}
 }
 

@@ -112,7 +112,9 @@ SHA-256 is stored — and registering that login again needs it.
 | `AllowServerIdentityActions` | `false` | Lets remote users who have not linked a GitHub account submit reviews under the server's account, and administrators merge under it (see [Writing to GitHub](#writing-to-github)) |
 
 Any authenticated call counts as being seen (written at most once a minute per
-connection). A deleted user's client gets `not authenticated:` on its next call
+connection). Retention runs in the serving process only: a `crs -oneoff` or
+workflow-only run against the same database deletes nobody, since it could
+not revoke the GitHub tokens of the users it deleted. A deleted user's client gets `not authenticated:` on its next call
 and registers again with the token it holds, which the server accepts for a
 login it no longer knows — so retention costs an idle user their drafts and a
 cycle's wait for their dashboard, not their token.

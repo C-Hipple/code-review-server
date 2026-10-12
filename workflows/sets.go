@@ -246,8 +246,14 @@ func SetUsersDeletedHook(fn func([]database.DeletedUser)) {
 // release and prune, which then find the swept users gone from the owned set:
 // their items are released and pruned, and their emptied sections deleted, in
 // the same cycle.
+//
+// Only a process with a users-deleted hook sweeps — the serving one, which can
+// revoke the GitHub tokens it deletes. A -oneoff or workflow-only run against
+// a hosted server's database would otherwise delete linked tokens that GitHub
+// goes on honoring, with nothing left that could revoke them.
 func sweepIdleUsers(cfg config.Config, now time.Time) {
-	if cfg.UserRetentionDays <= 0 || cfg.DB == nil {
+	hook := usersDeletedHook.Load()
+	if cfg.UserRetentionDays <= 0 || cfg.DB == nil || hook == nil {
 		return
 	}
 	cutoff := now.Add(-time.Duration(cfg.UserRetentionDays) * 24 * time.Hour)
@@ -264,7 +270,5 @@ func sweepIdleUsers(cfg config.Config, now time.Time) {
 		logins = append(logins, d.Login)
 	}
 	slog.Info("Deleted users idle past the retention window", "users", logins, "retention_days", cfg.UserRetentionDays)
-	if hook := usersDeletedHook.Load(); hook != nil {
-		(*hook)(swept)
-	}
+	(*hook)(swept)
 }

@@ -4,7 +4,7 @@ Code Review Server is designed to be client-agnostic. It communicates via standa
 
 If you want to build a new client (e.g. for VS Code, Vim, or a TUI), you should refer to the [Protocol Documentation](protocol.md).
 
-The server binary `codereviewserver` should be spawned as a child process by your client. Your client send requests to the server's `stdin` and reads responses from `stdout`.
+The server binary `crs` (installed by `go install ./...`; `codereviewserver` before the module was renamed) should be spawned as a child process by your client. Your client send requests to the server's `stdin` and reads responses from `stdout`.
 
 If you are building a **web** client, [Web Client Features](web_client_features.md) inventories everything the shipped `bun_client` does — the HTTP/WebSocket bridge that fronts the stdio server, the full feature list, which protocol methods it uses (and which it doesn't), and the gotchas worth knowing before you reimplement diff parsing or comment positions.
 

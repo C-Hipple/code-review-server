@@ -15,13 +15,14 @@ same as opening it in any other client.
 Like every client, it starts its own server. An extension can't start
 processes, so it does that through a small native messaging host,
 `crs_native_host`, which Chrome launches and which runs
-`codereviewserver --server` (see [Architecture](#architecture)).
+`crs --server` (see [Architecture](#architecture)).
 
 ## Prerequisites
 
 - **The server.** `go install ./...` from the repository root installs
-  `codereviewserver` (and `crs_native_host`, though `install.sh` builds its own
-  copy) to `$GOPATH/bin`.
+  `crs` — the server binary, called `codereviewserver` before the module was
+  renamed, and the host looks for either name — and `crs_native_host` (though
+  `install.sh` builds its own copy), to `$GOPATH/bin`.
 - **`CRS_GITHUB_TOKEN`**, as for every client, plus `GEMINI_API_KEY` or
   `OPENROUTER_API_KEY` for AI features and plugins on those providers. The
   browser does not start the host with your shell's environment, so these reach
@@ -54,7 +55,7 @@ processes, so it does that through a small native messaging host,
     `com.c_hipple.crs.json`, into the `NativeMessagingHosts` directory of every
     installed browser it finds (Chrome, Chrome Beta, Chromium, Brave, Edge), and
     with `--capture-env` writes `~/.crs/native_host.env`. It finishes by saying
-    whether it can see a `codereviewserver` for the host to start.
+    whether it can see a `crs` for the host to start.
 
 3. Open `chrome://extensions`, turn on **Developer mode**, click **Load
    unpacked** and pick `chrome_extension/dist`. The extension's ID must read
@@ -67,7 +68,7 @@ processes, so it does that through a small native messaging host,
 After pulling changes, rerun `bun run build` and `install.sh` (which rebuilds
 the host), then click the extension's reload button on `chrome://extensions`.
 Reloading also restarts the host and the server, so it is how a newly installed
-`codereviewserver` or an edited env file takes effect.
+`crs` or an edited env file takes effect.
 
 ### install.sh options
 
@@ -228,7 +229,7 @@ background.js            the service worker: sender checks, RPC_METHODS, call id
 crs_native_host          bridges the two framings, chunks large responses
         │  stdin/stdout: newline-delimited JSON-RPC 1.0
         ▼
-codereviewserver --server
+crs --server
 ```
 
 **One server per browser session.** The service worker owns a single native
@@ -308,14 +309,19 @@ fix it; other failures show in the section that hit them, with **Retry**.
 - **"The native host doesn't allow this extension"**: the manifest lists another
   extension ID. Rerun `install.sh --extension-id <ID>` with the ID the error card
   shows.
-- **"The server isn't running"**: the host couldn't find or start
-  `codereviewserver`, or the server exited; the card carries the host's message,
-  which lists every place it looked or the server's last lines of output. The
-  host looks for the server, in order, at `CRS_SERVER_PATH`, on `PATH`, beside
-  the host binary, then in `$GOBIN`, each `$GOPATH`'s `bin` and `~/go/bin` — all
-  after merging the env file. A server whose last lines say `No Github Token!`
-  didn't get `CRS_GITHUB_TOKEN`: rerun `install.sh --capture-env`, or set it in
-  the env file, and reload the extension.
+- **"The server isn't running"**: the host couldn't find or start the server,
+  or the server exited; the card carries the host's message, which lists every
+  place it looked or the server's last lines of output. The host looks for
+  `crs`, then `codereviewserver` (the name it had before the module was
+  renamed), in order at `CRS_SERVER_PATH`, on `PATH`, beside the host binary,
+  then in `$GOBIN`, each `$GOPATH`'s `bin` and `~/go/bin` — all after merging
+  the env file. A `codereviewserver` left by an older `go install` is easy to
+  be caught by, and a server older than the `CRS_GITHUB_TOKEN` rename reads
+  only `GTDBOT_GITHUB_TOKEN`, so the env file's token looks missing to it; the
+  panel's dot names the binary the host started. A server whose last lines say
+  `No Github Token!` didn't get `CRS_GITHUB_TOKEN`: rerun
+  `install.sh --capture-env`, or set it in the env file, and reload the
+  extension.
 - **"The server didn't answer in time"**: a call took longer than 120 seconds,
   the allowance for a `GetPR` that has to go to GitHub.
 - **"Lost the connection to the server"**: the native port closed for another

@@ -67,7 +67,7 @@ code-review-server is a service which runs highly configurable workflows to load
     go install ./...
     ```
 
-    This installs the server binary and included plugins to your `$GOPATH/bin`.
+    This installs the server binary (`crs`) and the included plugins to your `$GOPATH/bin`.
 
 4.  **Run a Client**
 

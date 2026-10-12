@@ -42,7 +42,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     To customize, start from those defaults and edit (see [Configuration](docs/configuration.md)):
 
     ```bash
-    codereviewserver -print-default-config > ~/.config/codereviewserver.toml
+    crs -print-default-config > ~/.config/codereviewserver.toml
     ```
 
     A fuller `~/.config/codereviewserver.toml`, once you know which repos you care about:
@@ -79,7 +79,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     go install ./...
     ```
 
-    This installs the server binary and included plugins to your `$GOPATH/bin`.
+    This installs the server binary (`crs`) and the included plugins to your `$GOPATH/bin`.
 
 4.  **Run a Client**
 

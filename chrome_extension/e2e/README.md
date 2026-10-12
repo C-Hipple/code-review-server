@@ -6,10 +6,10 @@ panel in its iframe, the service worker, and the real native host
 (`crs_native_host`, built fresh by `global_setup.ts`). Only the two ends are
 fakes, so the suite needs no GitHub token, network or SQLite database:
 
-| Real thing                  | E2E stand-in             | What it does                                                                                                                                                                                                                                                 |
-| --------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `codereviewserver --server` | `harness/fake_crs.ts`    | Newline-delimited JSON-RPC 1.0 on stdio, as Go's `net/rpc/jsonrpc` speaks it, serving `fixtures/data.ts`: the review list, PR `acme/widgets#42` with every AI feature and plugin output, and `acme/monorepo#77` with a ~3 MB multi-byte diff. Run under Bun. |
-| github.com                  | `context.route` handlers | A minimal page for any URL; nothing reaches the network.                                                                                                                                                                                                     |
+| Real thing     | E2E stand-in             | What it does                                                                                                                                                                                                                                                 |
+| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `crs --server` | `harness/fake_crs.ts`    | Newline-delimited JSON-RPC 1.0 on stdio, as Go's `net/rpc/jsonrpc` speaks it, serving `fixtures/data.ts`: the review list, PR `acme/widgets#42` with every AI feature and plugin output, and `acme/monorepo#77` with a ~3 MB multi-byte diff. Run under Bun. |
+| github.com     | `context.route` handlers | A minimal page for any URL; nothing reaches the network.                                                                                                                                                                                                     |
 
 ## Running
 

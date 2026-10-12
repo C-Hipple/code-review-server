@@ -20,7 +20,7 @@ Neither default names a repository or a user. They find their PRs through GitHub
 Print the defaults to start your own config from them:
 
 ```bash
-codereviewserver -print-default-config > ~/.config/codereviewserver.toml
+crs -print-default-config > ~/.config/codereviewserver.toml
 ```
 
 Editing the config from a client while running on defaults writes the same thing: the first save materializes the default workflows alongside whatever you changed, so nothing disappears out from under you.

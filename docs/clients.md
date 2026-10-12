@@ -35,7 +35,7 @@ The TUI client (`tui_client/`) is a fast, keyboard-driven terminal interface bui
 
 ### Installation
 
-**Prerequisites:** The `codereviewserver` binary must be installed and in your `$PATH` (see [Quickstart](index.md)).
+**Prerequisites:** The `crs` binary must be installed and in your `$PATH` (see [Quickstart](index.md)).
 
 ```bash
 cd tui_client
@@ -50,7 +50,7 @@ cargo install --path tui_client
 crs-tui
 ```
 
-The client automatically spawns `codereviewserver --server` as a child process, so no separate server process is needed.
+The client automatically spawns `crs --server` as a child process, so no separate server process is needed.
 
 ### Keybindings
 
@@ -95,7 +95,7 @@ Run a persistent sync daemon alongside your normal workflow:
 
 ```bash
 # Run as a background daemon (workflows repeat on schedule, default every 10 min)
-codereviewserver &
+crs &
 
 # Or use a more persistent approach via systemd, tmux, etc.
 ```
@@ -202,11 +202,11 @@ Enable it if you want a quick overview of comment activity without opening each 
 
 The Chrome extension (`chrome_extension/`) brings the server's [AI features](ai_features.md) and [plugins](plugins.md) to the GitHub pull request you are reading. It is not a review UI: it shows the reports and plugin output for the PR the tab is on, with Run and Re-run, and the review list for getting to a PR. It works for any PR, including ones in no review list — opening one makes the server fetch and cache it, as in any client.
 
-An extension can't start processes, so the extension starts the server through a native messaging host, `crs_native_host`: Chrome launches the host, and the host runs `codereviewserver --server` and bridges Chrome's message framing to the server's stdio. The full guide — the env file, troubleshooting, the architecture and the bridge's protocol — is the extension's [README](https://github.com/C-Hipple/code-review-server/blob/main/chrome_extension/README.md).
+An extension can't start processes, so the extension starts the server through a native messaging host, `crs_native_host`: Chrome launches the host, and the host runs `crs --server` and bridges Chrome's message framing to the server's stdio. The full guide — the env file, troubleshooting, the architecture and the bridge's protocol — is the extension's [README](https://github.com/C-Hipple/code-review-server/blob/main/chrome_extension/README.md).
 
 ### Installation
 
-**Prerequisites:** `codereviewserver` installed (`go install ./...`), Go and Bun, and Chrome 116 or later (or Chromium, Brave or Edge) on Linux or macOS.
+**Prerequisites:** `crs` installed (`go install ./...`), Go and Bun, and Chrome 116 or later (or Chromium, Brave or Edge) on Linux or macOS.
 
 1. `cd chrome_extension && bun install && bun run build`
 2. `./crs_native_host/install.sh --capture-env`, in a shell where `CRS_GITHUB_TOKEN` and any API keys are set. It builds the host into `~/.crs/bin/`, registers it with every supported browser it finds, and writes `~/.crs/native_host.env`.

@@ -14,7 +14,7 @@ All methods are exposed under the `RPCHandler` namespace (e.g., `RPCHandler.GetP
 
 Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle:
 
-1.  **Spawning**: The client should start the `codereviewserver` binary as a child process. A browser extension, which can't, has a native messaging host start it instead (see [Building Clients](building_clients.md)).
+1.  **Spawning**: The client should start the `crs` binary as a child process. A browser extension, which can't, has a native messaging host start it instead (see [Building Clients](building_clients.md)).
 2.  **Environment**: Ensure `CRS_GITHUB_TOKEN` is set in the environment if required.
 3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
 4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
@@ -205,7 +205,7 @@ AI annotations come from [`GetAIOutput`](#rpchandlergetaioutput).
 
 When `worktree_path` is provided, you can use it to quickly switch to the source code for that PR:
 
-- **Shell**: `cd $(codereviewserver get-path --owner octocat --repo hello --number 42)` or simply `cd <worktree_path>`
+- **Shell**: `cd $(crs get-path --owner octocat --repo hello --number 42)` or simply `cd <worktree_path>`
 - **Git Management**: The server manages these using `git worktree`. You can see all active worktrees with `git worktree list` inside the main repository.
 
 #### Rendered Comment Format

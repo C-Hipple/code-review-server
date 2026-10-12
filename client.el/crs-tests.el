@@ -1155,8 +1155,11 @@ it says so and reloads the PR, rather than reading as not submitted."
           (should (equal scheduled `((crs--review-reload "acme" "widgets" 42 ,note))))
           (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
           ;; A reload that cannot reach the server says so, with the note.
+          ;; The reason goes through "%s": `error' runs its format string
+          ;; through `format-message', which curves the apostrophe under a
+          ;; UTF-8 locale (as on CI) and leaves it straight under C.
           (cl-letf (((symbol-function 'crs--send-request)
-                     (lambda (&rest _) (error "Can't reach crs at crs.test:7700"))))
+                     (lambda (&rest _) (error "%s" "Can't reach crs at crs.test:7700"))))
             (apply (caar scheduled) (cdar scheduled)))
           (should (equal (car events)
                          (cons 'message

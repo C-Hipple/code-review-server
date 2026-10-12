@@ -21,6 +21,9 @@ function extensionId(): string | undefined {
 
 export function App({ params }: { params: PanelParams }) {
     const [route, setRoute] = useState<Route>(() => initialRoute(params));
+    // The card a chip asked for. It belongs to the PR the panel was opened on,
+    // so navigating within the panel drops it.
+    const [focus, setFocus] = useState<string | null>(params.focus);
     const [status, refreshStatus] = useHostStatus();
     const reviews = useReviewList(route.view === 'list', refreshStatus);
     const main = useRef<HTMLElement>(null);
@@ -62,6 +65,7 @@ export function App({ params }: { params: PanelParams }) {
 
     const openTools = (item: ReviewItem) => {
         listScroll.current = main.current?.scrollTop ?? 0;
+        setFocus(null);
         setRoute({ view: 'pr', pr: { owner: item.owner, repo: item.repo, number: item.number } });
     };
 
@@ -75,7 +79,10 @@ export function App({ params }: { params: PanelParams }) {
                     pr={pr}
                     status={status}
                     standalone={params.standalone}
-                    onBack={() => setRoute({ view: 'list' })}
+                    onBack={() => {
+                        setFocus(null);
+                        setRoute({ view: 'list' });
+                    }}
                     onClose={requestClose}
                 />
                 <main className="content" ref={main} tabIndex={-1}>
@@ -83,6 +90,7 @@ export function App({ params }: { params: PanelParams }) {
                         <PRTools
                             key={`${pr.owner}/${pr.repo}#${pr.number}`}
                             pr={pr}
+                            focus={focus}
                             listItem={findItem(reviews.list.value, pr)}
                             extensionId={id}
                             onActivity={refreshStatus}

@@ -215,6 +215,14 @@ export function modalHost(page: Page): Locator {
 }
 
 /**
+ * The chips the content script draws beside the PR tabs. They live in an open
+ * shadow root inside the tab row, which locators pierce.
+ */
+export function chips(page: Page): Locator {
+    return page.locator('#crs-tools .chip');
+}
+
+/**
  * The panel's iframe in the modal. It sits in a closed shadow root, out of
  * reach of locators, so it is found among the page's frames by its URL.
  */
@@ -253,6 +261,15 @@ function githubPage(url: URL): string {
     const pr = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
     const title = pr ? `Pull request ${pr[1]}/${pr[2]}#${pr[3]}` : `GitHub ${url.pathname}`;
     const filler = '<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>'.repeat(40);
+    // The tab row a pull request page carries, which the content script hangs
+    // its chips from (it finds it by the "Files changed" tab).
+    const tabs = pr
+        ? `<nav aria-label="Pull request" class="tabnav"><ul class="tabnav-tabs">
+    <li><a href="/${pr[1]}/${pr[2]}/pull/${pr[3]}">Conversation</a></li>
+    <li><a href="/${pr[1]}/${pr[2]}/pull/${pr[3]}/commits">Commits</a></li>
+    <li><a href="/${pr[1]}/${pr[2]}/pull/${pr[3]}/files">Files changed</a></li>
+</ul></nav>`
+        : '';
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -263,12 +280,14 @@ function githubPage(url: URL): string {
     body { margin: 0; font-family: sans-serif; background: #ffffff; color: #1f2328; }
     header { height: 56px; background: #24292f; color: #fff; display: flex; align-items: center; gap: 16px; padding: 0 24px; }
     main { padding: 24px 40px; }
+    .tabnav-tabs { display: flex; align-items: center; gap: 12px; list-style: none; margin: 0 0 16px; padding: 0; }
+    .tabnav-tabs a { color: #0969da; text-decoration: none; padding: 8px 4px; }
     @media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } }
 </style>
 </head>
 <body>
 <header>GitHub (e2e fake) <input id="gh-search" placeholder="Search"></header>
-<main><h1 id="gh-title">${escapeHtml(title)}</h1>${filler}</main>
+<main>${tabs}<h1 id="gh-title">${escapeHtml(title)}</h1>${filler}</main>
 </body>
 </html>`;
 }

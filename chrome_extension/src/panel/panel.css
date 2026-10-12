@@ -976,6 +976,12 @@ h4 {
     min-width: 0;
 }
 
+/* The card a chip on the GitHub page asked for, when the panel opens. */
+.card-focused {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
 .card-skeleton {
     display: flex;
     flex-direction: column;

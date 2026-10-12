@@ -42,6 +42,8 @@ export interface PRToolsViewProps {
     actions: ActionState;
     handlers: PRToolsHandlers;
     now: number;
+    /** An AI feature id or plugin name to bring into view, from a chip on the page. */
+    focus?: string | null;
     listItem?: ReviewItem | null;
     extensionId?: string;
     /** Cards to open regardless of what was remembered (tests). */
@@ -55,6 +57,7 @@ export function PRToolsView({
     actions,
     handlers,
     now,
+    focus,
     listItem,
     extensionId,
     expanded,
@@ -96,6 +99,7 @@ export function PRToolsView({
                 outputs={data.aiOutputs}
                 actions={actions}
                 now={now}
+                focus={focus}
                 onRun={handlers.onRunFeature}
                 onRetryFeatures={handlers.onRetryFeatures}
                 onRetryOutputs={handlers.onRetryOutputs}
@@ -106,6 +110,7 @@ export function PRToolsView({
                 plugins={data.plugins}
                 outputs={data.pluginOutputs}
                 actions={actions}
+                focus={focus}
                 onRun={handlers.onRunPlugin}
                 onRerunAll={handlers.onRerunAll}
                 onRetryPlugins={handlers.onRetryPlugins}

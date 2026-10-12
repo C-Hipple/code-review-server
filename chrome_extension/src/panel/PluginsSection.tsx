@@ -15,6 +15,8 @@ export interface PluginsSectionProps {
     plugins: Resource<PluginConfig[]>;
     outputs: Resource<Record<string, PluginOutput>>;
     actions: ActionState;
+    /** A plugin name to bring into view, from a chip on the page. */
+    focus?: string | null;
     onRun: (name: string) => void;
     onRerunAll: () => void;
     onRetryPlugins: () => void;
@@ -29,6 +31,7 @@ export function PluginsSection({
     plugins,
     outputs,
     actions,
+    focus,
     onRun,
     onRerunAll,
     onRetryPlugins,
@@ -96,6 +99,7 @@ export function PluginsSection({
                             outputLoading={outputLoading}
                             busy={actions.busy[pluginKey(p.Name)]}
                             error={actions.errors[pluginKey(p.Name)]}
+                            focused={focus === p.Name}
                             onRun={onRun}
                             defaultExpanded={expanded?.includes(p.Name)}
                         />

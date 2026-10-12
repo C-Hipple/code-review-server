@@ -6,15 +6,39 @@ describe('readPanelParams', () => {
         expect(readPanelParams('?owner=octocat&repo=hello.js&number=42')).toEqual({
             standalone: false,
             pr: { owner: 'octocat', repo: 'hello.js', number: 42 },
+            focus: null,
         });
     });
 
+    test('the card a chip asked to see', () => {
+        expect(
+            readPanelParams('?owner=octocat&repo=hello.js&number=42&focus=change-diagram')
+        ).toEqual({
+            standalone: false,
+            pr: { owner: 'octocat', repo: 'hello.js', number: 42 },
+            focus: 'change-diagram',
+        });
+    });
+
+    test('a focus with no PR to show it on is dropped', () => {
+        expect(readPanelParams('?focus=change-diagram')).toEqual({
+            standalone: false,
+            pr: null,
+            focus: null,
+        });
+        expect(readPanelParams('?standalone=1&focus=change-diagram').focus).toBeNull();
+    });
+
     test('the standalone window', () => {
-        expect(readPanelParams('?standalone=1')).toEqual({ standalone: true, pr: null });
+        expect(readPanelParams('?standalone=1')).toEqual({
+            standalone: true,
+            pr: null,
+            focus: null,
+        });
     });
 
     test('no query', () => {
-        expect(readPanelParams('')).toEqual({ standalone: false, pr: null });
+        expect(readPanelParams('')).toEqual({ standalone: false, pr: null, focus: null });
     });
 
     test.each([
@@ -31,7 +55,7 @@ describe('readPanelParams', () => {
 
 describe('linkTarget', () => {
     test('navigates the GitHub tab when embedded, a new tab when standalone', () => {
-        expect(linkTarget({ standalone: false, pr: null })).toBe('_top');
-        expect(linkTarget({ standalone: true, pr: null })).toBe('_blank');
+        expect(linkTarget({ standalone: false, pr: null, focus: null })).toBe('_top');
+        expect(linkTarget({ standalone: true, pr: null, focus: null })).toBe('_blank');
     });
 });

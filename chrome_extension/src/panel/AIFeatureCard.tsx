@@ -33,6 +33,8 @@ export interface AIFeatureCardProps {
     /** What the last Run did, when worth saying ("Already up to date"). */
     note?: string;
     now: number;
+    /** A chip on the GitHub page asked for this card; bring it into view. */
+    focused?: boolean;
     onRun: (feature: AIFeature, force: boolean) => void;
     defaultExpanded?: boolean;
 }
@@ -47,6 +49,7 @@ export function AIFeatureCard({
     error,
     note,
     now,
+    focused = false,
     onRun,
     defaultExpanded,
 }: AIFeatureCardProps) {
@@ -95,6 +98,7 @@ export function AIFeatureCard({
             storageKey={`ai:${feature.id}`}
             title={feature.name || feature.id}
             titleHint={feature.description}
+            focused={focused}
             chips={chips}
             meta={
                 updated && (

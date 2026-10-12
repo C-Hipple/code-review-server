@@ -10,6 +10,8 @@ export interface PanelParams {
     standalone: boolean;
     /** The PR the GitHub tab is on, when it is on one. */
     pr: PullRef | null;
+    /** An AI feature id or plugin name to bring into view, from a chip on the page. */
+    focus: string | null;
 }
 
 export function readPanelParams(search: string): PanelParams {
@@ -25,7 +27,8 @@ export function readPanelParams(search: string): PanelParams {
                   `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pull/${encodeURIComponent(number)}`
               )
             : null;
-    return { standalone: q.get('standalone') === '1', pr };
+    const focus = (q.get('focus') ?? '').trim();
+    return { standalone: q.get('standalone') === '1', pr, focus: pr && focus ? focus : null };
 }
 
 /**

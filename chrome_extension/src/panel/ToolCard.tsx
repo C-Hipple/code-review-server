@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronRightIcon } from './icons';
 
 const STORAGE_PREFIX = 'crs.expanded.';
@@ -40,6 +40,11 @@ export interface ToolCardProps {
     /** The card has a body to expand into. */
     expandable: boolean;
     defaultExpanded?: boolean;
+    /**
+     * A chip on the GitHub page asked for this card: scroll it into view, and
+     * mark it so it is clear which one was asked for.
+     */
+    focused?: boolean;
     children?: ReactNode;
 }
 
@@ -56,11 +61,19 @@ export function ToolCard({
     notice,
     expandable,
     defaultExpanded = false,
+    focused = false,
     children,
 }: ToolCardProps) {
     const bodyId = useId();
     const [open, setOpen] = useState(() => readExpanded(storageKey, defaultExpanded));
     const expanded = expandable && open;
+    const card = useRef<HTMLElement>(null);
+
+    // The card arrives with its data, so this runs when it is finally on
+    // screen, not when the panel was opened.
+    useEffect(() => {
+        if (focused) card.current?.scrollIntoView({ block: 'nearest' });
+    }, [focused]);
 
     const toggle = () => {
         setOpen(!expanded);
@@ -83,7 +96,10 @@ export function ToolCard({
     );
 
     return (
-        <article className={`card${expanded ? ' card-expanded' : ''}`}>
+        <article
+            ref={card}
+            className={`card${expanded ? ' card-expanded' : ''}${focused ? ' card-focused' : ''}`}
+        >
             <div className="card-header">
                 <h3 className="card-heading">
                     {expandable ? (

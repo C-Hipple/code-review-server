@@ -15,6 +15,8 @@ export interface AIFeaturesSectionProps {
     outputs: Resource<Record<string, AIFeatureOutput>>;
     actions: ActionState;
     now: number;
+    /** An AI feature id to bring into view, from a chip on the page. */
+    focus?: string | null;
     onRun: (feature: AIFeature, force: boolean) => void;
     onRetryFeatures: () => void;
     onRetryOutputs: () => void;
@@ -33,6 +35,7 @@ export function AIFeaturesSection({
     outputs,
     actions,
     now,
+    focus,
     onRun,
     onRetryFeatures,
     onRetryOutputs,
@@ -81,6 +84,7 @@ export function AIFeaturesSection({
                             error={actions.errors[aiKey(f.id)]}
                             note={actions.notes[aiKey(f.id)]}
                             now={now}
+                            focused={focus === f.id}
                             onRun={onRun}
                             defaultExpanded={expanded?.includes(f.id)}
                         />
@@ -92,6 +96,7 @@ export function AIFeaturesSection({
                             output={output(fileOrdering.id)}
                             outputLoading={outputLoading}
                             now={now}
+                            focused={focus === fileOrdering.id}
                         />
                     )}
                 </div>

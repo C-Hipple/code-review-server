@@ -58,6 +58,8 @@ function withEntries<T>(prev: Outputs<T>, entries: Record<string, T>): Outputs<T
 
 export interface PRToolsProps {
     pr: PullRef;
+    /** An AI feature id or plugin name to bring into view, from a chip on the page. */
+    focus?: string | null;
     /** The PR's review-list entry, when the list is loaded and has it. */
     listItem?: ReviewItem | null;
     extensionId?: string;
@@ -65,7 +67,7 @@ export interface PRToolsProps {
     onActivity?: () => void;
 }
 
-export function PRTools({ pr, listItem, extensionId, onActivity }: PRToolsProps) {
+export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRToolsProps) {
     const [payload, setPayload] = useState<Resource<PRPayload>>(() => loading());
     const [features, setFeatures] = useState<Resource<AIFeature[]>>(() => loading());
     const [plugins, setPlugins] = useState<Resource<PluginConfig[]>>(() => loading());
@@ -270,6 +272,7 @@ export function PRTools({ pr, listItem, extensionId, onActivity }: PRToolsProps)
             actions={actions}
             handlers={handlers}
             now={now}
+            focus={focus}
             listItem={listItem}
             extensionId={extensionId}
         />

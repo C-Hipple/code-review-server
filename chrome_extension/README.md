@@ -140,6 +140,23 @@ The modal closes with its ✕, `Esc`, a click outside it, or the button again.
 While it is open, GitHub's in-page navigation to another PR (or off PRs) reloads
 the panel for the new page.
 
+### The chips beside the tabs
+
+On a pull request's pages the content script also draws a row of chips in
+GitHub's own tab row, right after **Files changed**: one per AI feature the
+server has enabled and one per configured plugin, each labelled with the
+feature's or plugin's name. Pressing one opens the same modal, on the PR the tab
+is on, with that card scrolled into view and marked with an accent ring. A chip
+whose card the panel doesn't draw — the applied features, review-ease of which
+is the summary's pill — just opens the panel on the PR.
+
+The chips come from the two read-only calls the panel makes anyway
+(`ListAIFeatures`, `ListPlugins`), asked for through the service worker, which
+answers only the sender tab's own PR. A chip carries a name, never a report, so
+nothing the server holds for the PR lands in the page's own DOM. Away from a PR
+page there are no chips, and GitHub's in-page navigation redraws them for the
+new page.
+
 The panel follows the system's light or dark setting, not GitHub's theme. The
 dot in its header says whether the server is connected; hovering it shows the
 server binary the host started, or the last connection error.
@@ -275,17 +292,26 @@ server has started, `error` when it can't be found or started, and
 extension can submit a review, merge, comment or rewrite the config; using
 another method means adding it there and a function for it in `src/rpc.ts`.
 
+**What a content script may ask.** One message, `crs-tools`, answered for the
+sender tab's own PR — the PR in the tab's URL, which the page cannot argue with —
+with the names of its enabled AI features and configured plugins, from the same
+two read-only calls above. That is what the chips are drawn from, and all a
+content script can get out of the server.
+
 **Content script and panel.** The content script runs on every GitHub page, so
 it stays small: no React and no server access. It draws the modal in a closed
-shadow root, which keeps GitHub's CSS out, and puts the panel in an iframe.
-The panel is an extension page: GitHub's page can't script into it, and it talks
-to the service worker directly, never through the page. `panel.html` and its
-files are web-accessible to `https://github.com/*` only. The trust checks:
+shadow root, which keeps GitHub's CSS out, and puts the panel in an iframe; and
+it draws the chips in an open one inside GitHub's tab row, since a chip is a name
+and a caption and nothing GitHub may not read. The panel is an extension page:
+GitHub's page can't script into it, and it talks to the service worker directly,
+never through the page. `panel.html` and its files are web-accessible to
+`https://github.com/*` only. The trust checks:
 
-- The service worker answers only the extension's own pages: the sender must
-  carry the extension's ID and a `chrome-extension://<id>/` URL. A content
-  script shares the ID but reports the GitHub page's URL, so nothing a page can
-  influence reaches the server.
+- The service worker answers only the extension's own pages for RPC and status:
+  the sender must carry the extension's ID and a `chrome-extension://<id>/` URL.
+  A content script shares the ID but reports the GitHub page's URL, so nothing a
+  page can influence reaches the server — its one message, `crs-tools`, is
+  answered with names for the tab's own PR and nothing else.
 - The only message from the panel to the page is `close`, posted to
   `https://github.com`. The content script acts on it only when it comes from
   the extension's origin and from its own iframe's window.
@@ -369,7 +395,7 @@ pressed. To inspect the panel, right-click inside the modal and choose Inspect.
 | `src/background.ts`          | The service worker: RPC for extension pages, the toolbar button, the per-tab button title |
 | `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting                                      |
 | `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)             |
-| `src/content.ts`             | The modal on github.com                                                                   |
+| `src/content.ts`             | The modal on github.com, and the chips beside a PR's tabs                                 |
 | `src/github_url.ts`          | Recognising PR URLs and building diff links                                               |
 | `src/rpc.ts`, `src/types.ts` | The panel's typed RPC client, the wire shapes and `RPC_METHODS`                           |
 | `src/panel/`                 | The React panel: `App.tsx` routes between `PRList.tsx` and `PRTools.tsx`                  |

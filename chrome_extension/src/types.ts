@@ -4,6 +4,7 @@
 // capitalised names where a struct has no JSON tags (PluginConfig).
 
 import type { ErrorInfo, HostReady } from './native_protocol';
+import type { PullRef } from './github_url';
 
 // --- Server replies -------------------------------------------------------
 
@@ -284,7 +285,32 @@ export interface StatusRequestMessage {
     type: 'crs-status';
 }
 
-export type ExtensionRequest = RpcRequestMessage | StatusRequestMessage;
+/**
+ * Content script → service worker: which chips to draw beside GitHub's PR tabs
+ * for the sender tab's own PR. Answered read-only, from the sender's own page
+ * (`crs-tools`): a content script reaches no server method this way.
+ */
+export interface ToolsRequestMessage {
+    type: 'crs-tools';
+}
+
+/** One chip on a PR page: an enabled AI feature, or a configured plugin. */
+export interface ToolChip {
+    kind: 'ai' | 'plugin';
+    /** What the panel brings into view when the chip is pressed: a feature id, or a plugin name. */
+    id: string;
+    /** The chip's label. */
+    name: string;
+}
+
+/** The service worker's answer to `crs-tools`. */
+export interface ToolsReply {
+    /** The sender tab's PR, or null when that page isn't a pull request. */
+    pr: PullRef | null;
+    chips: ToolChip[];
+}
+
+export type ExtensionRequest = RpcRequestMessage | StatusRequestMessage | ToolsRequestMessage;
 
 export type RpcReply = { ok: true; result: unknown } | { ok: false; error: ErrorInfo };
 

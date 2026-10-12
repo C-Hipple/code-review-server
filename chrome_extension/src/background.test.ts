@@ -2,9 +2,40 @@
 // reaches the native port, and what the toolbar button does.
 
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import type { AIFeature, PluginConfig } from './types';
 
 const EXT_ID = 'acmghogknbbihjoejbkejhhikiapmiib';
 const BASE = `chrome-extension://${EXT_ID}/`;
+
+const settle = () => new Promise(r => setTimeout(r, 5));
+
+function feature(id: string, name: string, enabled = true): AIFeature {
+    return {
+        id,
+        name,
+        description: '',
+        enabled,
+        automatic: false,
+        mode: 'oneshot',
+        modes: ['oneshot'],
+        provider: 'gemini',
+        applied: false,
+    };
+}
+
+function plugin(name: string): PluginConfig {
+    return {
+        Name: name,
+        Command: name,
+        IncludeDiff: true,
+        IncludeHeaders: true,
+        IncludeComments: false,
+        IncludeBranch: false,
+        OnlyOnDemand: false,
+        Provider: '',
+        Model: '',
+    };
+}
 
 type Listener = (...args: never[]) => unknown;
 
@@ -156,9 +187,75 @@ describe('messages', () => {
     });
 });
 
+describe('the chips a PR page draws', () => {
+    const TOOLS = { type: 'crs-tools' };
+
+    /** Sends crs-tools and reports the reply and whatever reached the server. */
+    async function ask(sender: object = CONTENT_SCRIPT) {
+        const before = ports.length > 0 ? ports[ports.length - 1].sent.length : 0;
+        const reply = sendAs(sender, TOOLS);
+        await settle();
+        const port = ports[ports.length - 1];
+        const requests =
+            (port?.sent as { id: number; method: string }[] | undefined)?.slice(before) ?? [];
+        const lists = requests.filter(r => r.method.startsWith('RPCHandler.List'));
+        return { reply, port, lists };
+    }
+
+    test('a content script on a PR is offered its features and plugins', async () => {
+        const { reply, port, lists } = await ask();
+        expect(lists.map(r => r.method).sort()).toEqual([
+            'RPCHandler.ListAIFeatures',
+            'RPCHandler.ListPlugins',
+        ]);
+        for (const request of lists) {
+            port!.receive({
+                id: request.id,
+                result:
+                    request.method === 'RPCHandler.ListAIFeatures'
+                        ? {
+                              features: [
+                                  feature('change-diagram', 'Change diagram'),
+                                  feature('test-gaps', 'Test gaps', false),
+                              ],
+                          }
+                        : { plugins: [plugin('security_check')] },
+                error: null,
+            });
+        }
+        expect(await reply).toEqual({
+            pr: { owner: 'o', repo: 'r', number: 1 },
+            chips: [
+                { kind: 'ai', id: 'change-diagram', name: 'Change diagram' },
+                { kind: 'plugin', id: 'security_check', name: 'security_check' },
+            ],
+        });
+    });
+
+    test('off a PR page the content script gets nothing, and reaches no server', async () => {
+        const sender = { ...CONTENT_SCRIPT, url: 'https://github.com/o/r/pulls' };
+        const { reply, lists } = await ask(sender);
+        expect(await reply).toEqual({ pr: null, chips: [] });
+        expect(lists).toEqual([]);
+        expect(fake.runtime.connectNative).not.toHaveBeenCalled();
+    });
+
+    test('a list that fails leaves the page with no chips', async () => {
+        const { reply, port, lists } = await ask();
+        expect(lists).toHaveLength(2);
+        for (const request of lists) {
+            port!.receive({ id: request.id, result: null, error: 'the server is not running' });
+        }
+        expect(await reply).toEqual({ pr: { owner: 'o', repo: 'r', number: 1 }, chips: [] });
+    });
+
+    test('other extensions may not ask', async () => {
+        expect(await sendAs({ ...CONTENT_SCRIPT, id: 'someoneelse' }, TOOLS)).toBe('no response');
+    });
+});
+
 describe('toolbar button', () => {
     const click = (tab: object) => (fake.action.onClicked.listeners[0] as (t: object) => void)(tab);
-    const settle = () => new Promise(r => setTimeout(r, 5));
 
     test('toggles the modal on a GitHub tab', async () => {
         click({ id: 3, url: 'https://github.com/o/r/pull/1/files' });

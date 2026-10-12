@@ -3,10 +3,18 @@
 // and turns a toolbar click into the modal on github.com or a popup window
 // anywhere else.
 
-import { isGitHubUrl, parsePullUrl } from './github_url';
+import { isGitHubUrl, parsePullUrl, type PullRef } from './github_url';
 import { NativeClient } from './native_client';
 import type { ErrorInfo } from './native_protocol';
-import { isRpcMethod, type RpcReply, type ToggleMessage } from './types';
+import { chipsFor } from './tool_chips';
+import {
+    isRpcMethod,
+    type AIFeature,
+    type PluginConfig,
+    type RpcReply,
+    type ToggleMessage,
+    type ToolsReply,
+} from './types';
 
 const HOST_NAME = 'com.c_hipple.crs';
 const TITLE = 'Code Review Server';
@@ -32,10 +40,22 @@ function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
-    if (!isExtensionPage(sender) || typeof message !== 'object' || message === null) {
+    if (typeof message !== 'object' || message === null) {
         return false;
     }
     const msg = message as Record<string, unknown>;
+
+    // Content scripts may ask which chips to draw on their own PR page, and
+    // nothing else: what they get back is names, never a report.
+    if (msg.type === 'crs-tools') {
+        if (sender.id !== chrome.runtime.id) return false;
+        void toolsFor(sender).then(sendResponse);
+        return true;
+    }
+
+    if (!isExtensionPage(sender)) {
+        return false;
+    }
 
     if (msg.type === 'crs-status') {
         sendResponse(client.status());
@@ -58,6 +78,44 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
     return false;
 });
+
+// --- The chips a PR page draws ------------------------------------------------
+
+/**
+ * The PR a content script is on. Content scripts share the extension's id but
+ * report the web page's URL, so the URL — not anything the page says — decides
+ * which PR is asked about, and a content script can only ever ask about its
+ * own page.
+ */
+function contentScriptPR(sender: chrome.runtime.MessageSender): PullRef | null {
+    const url = sender.tab?.url ?? sender.url;
+    return typeof url === 'string' ? parsePullUrl(url) : null;
+}
+
+/**
+ * What the content script on `sender`'s tab should draw: the PR it is on, and
+ * a chip for each enabled AI feature and configured plugin. Two read-only
+ * calls, the same the panel makes; a failure — no server yet, say — leaves the
+ * page with no chips rather than an error, and the next page load retries.
+ */
+async function toolsFor(sender: chrome.runtime.MessageSender): Promise<ToolsReply> {
+    const pr = contentScriptPR(sender);
+    if (!pr) return { pr: null, chips: [] };
+    const [features, plugins] = await Promise.all([
+        client.call('RPCHandler.ListAIFeatures', {}),
+        client.call('RPCHandler.ListPlugins', {}),
+    ]);
+    const featureList = features.ok ? arrayAt<AIFeature>(features.result, 'features') : null;
+    const pluginList = plugins.ok ? arrayAt<PluginConfig>(plugins.result, 'plugins') : null;
+    return { pr, chips: chipsFor(featureList, pluginList) };
+}
+
+/** `result[key]` when it is an array, else null. */
+function arrayAt<T>(result: unknown, key: string): T[] | null {
+    if (typeof result !== 'object' || result === null) return null;
+    const value = (result as Record<string, unknown>)[key];
+    return Array.isArray(value) ? (value as T[]) : null;
+}
 
 // --- Toolbar button / Alt+Shift+R ----------------------------------------------
 

@@ -17,6 +17,8 @@ export interface FileOrderingCardProps {
     output: AIFeatureOutput | undefined;
     outputLoading?: boolean;
     now: number;
+    /** A chip on the GitHub page asked for this card; bring it into view. */
+    focused?: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export function FileOrderingCard({
     output,
     outputLoading = false,
     now,
+    focused = false,
 }: FileOrderingCardProps) {
     const files = fileOrderingFiles(output);
     const status = output?.status ?? 'not-run';
@@ -49,6 +52,7 @@ export function FileOrderingCard({
             storageKey={`ai:${feature.id}`}
             title={feature.name || 'File ordering'}
             titleHint={feature.description}
+            focused={focused}
             chips={
                 <>
                     <Pill tone="done" title="The server applies this feature's result itself">

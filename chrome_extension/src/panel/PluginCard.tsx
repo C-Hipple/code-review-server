@@ -23,6 +23,8 @@ export interface PluginCardProps {
     outputLoading?: boolean;
     busy?: boolean;
     error?: RpcError | null;
+    /** A chip on the GitHub page asked for this card; bring it into view. */
+    focused?: boolean;
     onRun: (name: string) => void;
     defaultExpanded?: boolean;
 }
@@ -35,6 +37,7 @@ export function PluginCard({
     outputLoading = false,
     busy = false,
     error,
+    focused = false,
     onRun,
     defaultExpanded,
 }: PluginCardProps) {
@@ -57,6 +60,7 @@ export function PluginCard({
             storageKey={`plugin:${plugin.Name}`}
             title={plugin.Name}
             titleHint={plugin.Command}
+            focused={focused}
             chips={
                 outputLoading ? (
                     <StatusChip tone="neutral" label="Loading" spinning />

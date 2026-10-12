@@ -1295,21 +1295,65 @@ func latestCommitTime(commits []*github.RepositoryCommit) time.Time {
 	return latest
 }
 
-func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
+// InteractionStateCacheKey is where GetInteractionState caches login's state
+// for a PR.
+func InteractionStateCacheKey(login, owner, repo string, number int) string {
+	return fmt.Sprintf("interaction_state:%s:%s/%s:%d", strings.ToLower(login), owner, repo, number)
+}
+
+// GetInteractionState returns where a PR stands for login: whether their last
+// review was dismissed, whether others' comments wait on them, whether their
+// approval stands, and who acted last. Every login the server serves — its own
+// and each hosted user's — gets an answer of its own: the PR's reviews,
+// comments and commits are fetched once for all of them (interactionData), and
+// each login's state is worked out from that.
+func GetInteractionState(owner, repo, login string, pr *github.PullRequest) InteractionState {
 	if pr == nil || pr.Number == nil {
 		return InteractionState{}
 	}
 
-	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *pr.Number)
+	cacheKey := InteractionStateCacheKey(login, owner, repo, *pr.Number)
 	if val, found := GlobalCache.Get(cacheKey); found {
 		return val.(InteractionState)
+	}
+
+	data := getInteractionData(owner, repo, pr)
+	state := CalculateInteractionState(login, pr, data.reviews, data.reviewComments, data.issueComments)
+	state.LastCommitTime = latestCommitTime(data.commits)
+	GlobalCache.Set(cacheKey, state, data.ttl())
+	return state
+}
+
+// interactionData is what GetInteractionState fetches for a PR. It names no
+// login, so every login's state is worked out from one fetch.
+type interactionData struct {
+	reviews        []*github.PullRequestReview
+	reviewComments []*github.PullRequestComment
+	issueComments  []*github.IssueComment
+	commits        []*github.RepositoryCommit
+	hasError       bool
+}
+
+// ttl is how long the data, and a state worked out from it, is cached: less
+// when a fetch failed, so a partial answer is retried sooner without a retry
+// storm.
+func (d interactionData) ttl() time.Duration {
+	if d.hasError {
+		return 2 * time.Minute
+	}
+	return 10 * time.Minute
+}
+
+func getInteractionData(owner, repo string, pr *github.PullRequest) interactionData {
+	cacheKey := fmt.Sprintf("interaction_data:%s/%s:%d", owner, repo, *pr.Number)
+	if val, found := GlobalCache.Get(cacheKey); found {
+		return val.(interactionData)
 	}
 
 	client := GetGithubClient()
 	// Add timeout to prevent hanging indefinitely
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	myLogin := config.C().GithubUsername
 
 	// Use goroutines to fetch data in parallel instead of sequentially
 	type result struct {
@@ -1373,44 +1417,30 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 	}()
 
 	// Collect results
-	var reviews []*github.PullRequestReview
-	var reviewComments []*github.PullRequestComment
-	var issueComments []*github.IssueComment
-	var commits []*github.RepositoryCommit
-	hasError := false
-
+	var data interactionData
 	for i := 0; i < 4; i++ {
 		res := <-resultChan
 		if res.err != nil {
-			hasError = true
+			data.hasError = true
 		}
 		if res.reviews != nil {
-			reviews = res.reviews
+			data.reviews = res.reviews
 		}
 		if res.reviewComments != nil {
-			reviewComments = res.reviewComments
+			data.reviewComments = res.reviewComments
 		}
 		if res.issueComments != nil {
-			issueComments = res.issueComments
+			data.issueComments = res.issueComments
 		}
 		if res.commits != nil {
-			commits = res.commits
+			data.commits = res.commits
 		}
 	}
 
-	state := CalculateInteractionState(myLogin, pr, reviews, reviewComments, issueComments)
-
-	// Set LastCommitTime from commits
-	state.LastCommitTime = latestCommitTime(commits)
-
-	// Cache the result even if there were errors (with shorter TTL)
-	// This prevents retry storms
-	ttl := 10 * time.Minute
-	if hasError {
-		ttl = 2 * time.Minute // Shorter cache for partial/error states
-	}
-	GlobalCache.Set(cacheKey, state, ttl)
-	return state
+	// Cached even if there were errors (for less long, see ttl): this
+	// prevents retry storms.
+	GlobalCache.Set(cacheKey, data, data.ttl())
+	return data
 }
 
 func GetMyTeams() []string {
@@ -1544,7 +1574,7 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 			}
 
 			sem <- struct{}{}
-			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, myLogin, pr)
 			<-sem
 
 			shouldFilter := state.MyReviewDismissed || (state.HasUnrespondedComments && !state.MyApprovalStands)
@@ -1655,7 +1685,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 			}
 
 			sem <- struct{}{}
-			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+			state := GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, myLogin, pr)
 			<-sem
 
 			actedSinceOthers := !state.LastMeTime.IsZero() && state.LastMeTime.After(state.LastOthersTime) && state.LastMeTime.After(state.LastCommitTime)

@@ -69,30 +69,30 @@ carries, which the server checks are all still there before it posts."
                               (string-to-number id))))))
                  comments))))
 
-(defun crs--review-reload (owner repo number)
-  "Fetch OWNER/REPO #NUMBER afresh into its review buffer, if one is open.
-Quietly: the message before it says why.  It runs from a timer, out of the
-sentinel or filter that reported the submit, since reaching a shared
-server again may mean reconnecting."
-  (when (get-buffer (crs--review-buffer-name owner repo number))
-    (condition-case err
-        (crs--send-request
-         "RPCHandler.SyncPR"
-         (vector (list (cons 'Owner owner)
-                       (cons 'Repo repo)
-                       (cons 'Number number)))
-         (lambda (result)
-           (let ((buffer (get-buffer (crs--review-buffer-name owner repo number)))
-                 (inhibit-message t))
-             (if (cdr (assq 'error result))
-                 (message "Could not reload %s: %s" (crs--pr-label owner repo number)
-                          (cdr (assq 'error result)))
-               (when buffer
-                 (crs--render-and-update buffer result))))))
-      (error
-       (let ((inhibit-message t))
-         (message "Could not reload %s: %s" (crs--pr-label owner repo number)
-                  (error-message-string err)))))))
+(defun crs--review-reload (owner repo number note)
+  "Fetch OWNER/REPO #NUMBER afresh into its review buffer, then say NOTE again.
+NOTE is why: that a submit may or may not have gone out, say.  It is said
+again once the PR is in, since reconnecting to a shared server has
+messages of its own.  This runs from a timer, out of the sentinel or
+filter that reported the submit, since reconnecting can take a while."
+  (condition-case err
+      (crs--send-request
+       "RPCHandler.SyncPR"
+       (vector (list (cons 'Owner owner)
+                     (cons 'Repo repo)
+                     (cons 'Number number)))
+       (lambda (result)
+         (let ((buffer (get-buffer (crs--review-buffer-name owner repo number)))
+               (err (cdr (assq 'error result))))
+           (if err
+               (message "%s (could not reload the PR: %s)" note err)
+             (when buffer
+               ;; The redraw's own messages go to *Messages* only.
+               (let ((inhibit-message t))
+                 (crs--render-and-update buffer result)))
+             (message "%s" note)))))
+    (error
+     (message "%s (could not reload the PR: %s)" note (error-message-string err)))))
 
 (defconst crs--drafts-changed-prefix "drafts changed:"
   "Prefix of SubmitReview's refusal of a review whose pending comments are gone.")
@@ -118,14 +118,16 @@ refetched it once the review was in."
       ;; The server finishes a submit whose connection has gone, so it may
       ;; well have been posted: offering it again would post it twice.
       ;; Show where the PR stands instead.  The feedback is kept, in case.
-      (message "Lost the connection to the server while submitting the review on %s: it may or may not have gone out.  Check the PR before submitting again; reloading it"
-               ref)
-      (run-at-time 0 nil #'crs--review-reload owner repo number))
+      (let ((note (format "Lost the connection to the server while submitting the review on %s: it may or may not have gone out.  Check the PR before submitting again"
+                          ref)))
+        (message "%s (reloading it...)" note)
+        (run-at-time 0 nil #'crs--review-reload owner repo number note)))
      ((and (stringp text) (string-prefix-p crs--drafts-changed-prefix text))
       ;; Nothing went out, but the buffer showed drafts that are gone.
-      (message "Review on %s was not submitted: some of its pending comments are gone, already submitted or removed with your account after a stretch of inactivity.  Reloading the PR: check what is pending, then submit again"
-               ref)
-      (run-at-time 0 nil #'crs--review-reload owner repo number))
+      (let ((note (format "Review on %s was not submitted: some of its pending comments are gone, already submitted or removed with your account after a stretch of inactivity.  Check what is pending, then submit again"
+                          ref)))
+        (message "%s (reloading the PR...)" note)
+        (run-at-time 0 nil #'crs--review-reload owner repo number note)))
      (err
       ;; Nothing went out: the feedback and the pending comments are left
       ;; as they were, ready to submit again.  A shared server that needs

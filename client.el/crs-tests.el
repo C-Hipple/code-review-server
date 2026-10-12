@@ -1122,20 +1122,21 @@ it says so and reloads the PR, rather than reading as not submitted."
           (crs-submit-review "APPROVE"))
         (funcall (nth 2 (car sent))
                  '((error . "connection lost: The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))
-        (should (equal (car events)
-                       (cons 'message
-                             (concat "Lost the connection to the server while submitting the review on"
-                                     " acme/widgets #42: it may or may not have gone out.  Check the PR"
-                                     " before submitting again; reloading it"))))
-        (should (equal scheduled '((crs--review-reload "acme" "widgets" 42))))
-        (should-not (assq 'render events))
-        ;; Kept, in case it did not go out.
-        (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
-        ;; The reload syncs the PR into its buffer, without a word.
-        (apply (caar scheduled) (cdar scheduled))
-        (should (equal (nth 0 (car sent)) "RPCHandler.SyncPR"))
-        (funcall (nth 2 (car sent)) crs-test--submit-reply)
-        (should (equal (car events) `(render ,buffer ,crs-test--submit-reply t)))))))
+        (let ((note (concat "Lost the connection to the server while submitting the review on"
+                            " acme/widgets #42: it may or may not have gone out.  Check the PR"
+                            " before submitting again")))
+          (should (equal (car events) (cons 'message (concat note " (reloading it...)"))))
+          (should (equal scheduled `((crs--review-reload "acme" "widgets" 42 ,note))))
+          (should-not (assq 'render events))
+          ;; Kept, in case it did not go out.
+          (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+          ;; The reload syncs the PR into its buffer, then says it again:
+          ;; reconnecting has its own messages.
+          (apply (caar scheduled) (cdar scheduled))
+          (should (equal (nth 0 (car sent)) "RPCHandler.SyncPR"))
+          (funcall (nth 2 (car sent)) crs-test--submit-reply)
+          (should (equal (seq-take events 2)
+                         `((message . ,note) (render ,buffer ,crs-test--submit-reply t)))))))))
 
 (ert-deftest crs-test-submit-review-whose-drafts-are-gone-reloads ()
   "A submit refused because drafts it showed are gone says so and reloads the PR."
@@ -1146,14 +1147,21 @@ it says so and reloads the PR, rather than reading as not submitted."
           (crs-submit-review "APPROVE"))
         (funcall (nth 2 (car sent))
                  '((error . "drafts changed: some of the pending comments this review was to carry no longer exist")))
-        (should (equal (car events)
-                       (cons 'message
-                             (concat "Review on acme/widgets #42 was not submitted: some of its pending"
-                                     " comments are gone, already submitted or removed with your account"
-                                     " after a stretch of inactivity.  Reloading the PR: check what is"
-                                     " pending, then submit again"))))
-        (should (equal scheduled '((crs--review-reload "acme" "widgets" 42))))
-        (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))))))
+        (let ((note (concat "Review on acme/widgets #42 was not submitted: some of its pending"
+                            " comments are gone, already submitted or removed with your account"
+                            " after a stretch of inactivity.  Check what is pending, then submit"
+                            " again")))
+          (should (equal (car events) (cons 'message (concat note " (reloading the PR...)"))))
+          (should (equal scheduled `((crs--review-reload "acme" "widgets" 42 ,note))))
+          (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+          ;; A reload that cannot reach the server says so, with the note.
+          (cl-letf (((symbol-function 'crs--send-request)
+                     (lambda (&rest _) (error "Can't reach crs at crs.test:7700"))))
+            (apply (caar scheduled) (cdar scheduled)))
+          (should (equal (car events)
+                         (cons 'message
+                               (concat note " (could not reload the PR: Can't reach crs at"
+                                       " crs.test:7700)")))))))))
 
 (ert-deftest crs-test-submit-review-one-at-a-time-across-a-reconnect ()
   "A submit that reconnects first still holds the PR until its reply lands.

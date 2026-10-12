@@ -55,14 +55,17 @@ front of it terminates TLS."
   :type 'boolean
   :group 'crs)
 
-(defcustom crs-remote-token-file
-  (expand-file-name "remote_token" (or (getenv "CRS_HOME") "~/.crs"))
-  "File holding the token a shared server issued you.
-It is written, readable by you only, when the server registers you.
-The environment variable CRS_REMOTE_TOKEN wins over it when set.  The
-web client's bridge keeps its token in the same file by default, so
-both clients connect as the same user."
-  :type 'file
+(defcustom crs-remote-token-directory
+  (expand-file-name "remote_tokens" (or (getenv "CRS_HOME") "~/.crs"))
+  "Directory holding the tokens shared servers issued you, one per server.
+A server's token is in a file named after its `crs-remote-address',
+HOST_PORT (see `crs--remote-token-file'), written readable by you only
+when the server registers you, and only ever sent to that address: a
+token is a password for the server that issued it.  The environment
+variable CRS_REMOTE_TOKEN wins over it when set.  The web client's
+bridge keeps its tokens in the same files by default, so both clients
+connect to a server as the same user."
+  :type 'directory
   :group 'crs)
 
 (defcustom crs-remote-login nil

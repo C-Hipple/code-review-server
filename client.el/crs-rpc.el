@@ -220,6 +220,9 @@ CALLBACK is called with the result, or with ((error . MESSAGE))."
 ;;
 ;; Requests made meanwhile wait in `crs--remote-queue'.  A dropped connection
 ;; fails the requests in flight; the next request reconnects.
+;;
+;; Each server's token is kept in a file of its own, named after its address
+;; (`crs--remote-token-file'), and only ever sent to that address.
 
 (defun crs--non-empty (string)
   "STRING trimmed, or nil when it is nil or blank."
@@ -240,6 +243,21 @@ CALLBACK is called with the result, or with ((error . MESSAGE))."
 (defun crs--remote-where ()
   "The shared server, for messages."
   (format "crs at %s" crs-remote-address))
+
+(defun crs--remote-token-file-name (host port)
+  "The name of the token file for the server at HOST and PORT.
+HOST lower-cased, with anything but a letter, digit, `.' or `-' written
+`_', then `_' and PORT: what the web client's bridge names it too."
+  (let ((case-fold-search nil))
+    (format "%s_%d" (replace-regexp-in-string "[^a-z0-9.-]" "_" (downcase host) t t)
+            port)))
+
+(defun crs--remote-token-file ()
+  "The file holding the token the server at `crs-remote-address' issued.
+It is in `crs-remote-token-directory'; a server is only ever sent its own."
+  (let ((address (crs--remote-parse-address crs-remote-address)))
+    (expand-file-name (crs--remote-token-file-name (car address) (cdr address))
+                      crs-remote-token-directory)))
 
 (defun crs--remote-connect ()
   "Connect to `crs-remote-address' and start the connect flow.
@@ -268,23 +286,24 @@ Returns the connection's process."
 (defun crs--remote-token ()
   "The token to authenticate with, and where it came from, as (TOKEN . SOURCE).
 TOKEN is \"\" when there is none yet."
-  (cond
-   (crs--remote-issued-token
-    (cons crs--remote-issued-token crs-remote-token-file))
-   ((crs--non-empty (getenv "CRS_REMOTE_TOKEN"))
-    (cons (crs--non-empty (getenv "CRS_REMOTE_TOKEN")) "CRS_REMOTE_TOKEN"))
-   (t
-    (cons (or (and (file-readable-p crs-remote-token-file)
-                   (crs--non-empty
-                    (with-temp-buffer
-                      (insert-file-contents crs-remote-token-file)
-                      (buffer-string))))
-              "")
-          crs-remote-token-file))))
+  (let ((file (crs--remote-token-file)))
+    (cond
+     (crs--remote-issued-token
+      (cons crs--remote-issued-token file))
+     ((crs--non-empty (getenv "CRS_REMOTE_TOKEN"))
+      (cons (crs--non-empty (getenv "CRS_REMOTE_TOKEN")) "CRS_REMOTE_TOKEN"))
+     (t
+      (cons (or (and (file-readable-p file)
+                     (crs--non-empty
+                      (with-temp-buffer
+                        (insert-file-contents file)
+                        (buffer-string))))
+                "")
+            file)))))
 
 (defun crs--remote-save-token (token)
-  "Save TOKEN to `crs-remote-token-file', readable by its owner only."
-  (let ((file (expand-file-name crs-remote-token-file)))
+  "Save TOKEN to the server's `crs--remote-token-file', readable by its owner only."
+  (let ((file (crs--remote-token-file)))
     (with-file-modes #o700
       (make-directory (file-name-directory file) t))
     (with-file-modes #o600
@@ -388,7 +407,7 @@ what went wrong when it fails."
       (crs--remote-fail
        (if (string-empty-p token)
            (format "Not registered with %s: set `crs-remote-registration-key' (or CRS_REGISTRATION_KEY) to the server's registration key, or put an existing token in %s"
-                   (crs--remote-where) crs-remote-token-file)
+                   (crs--remote-where) (crs--remote-token-file))
          (format "%s doesn't know the token from %s, and no registration key is set to register again with it: set `crs-remote-registration-key' (or CRS_REGISTRATION_KEY)"
                  (crs--remote-where) source))))
      ((null login)
@@ -418,7 +437,7 @@ what went wrong when it fails."
                   (cons 'SectionSorting (or (cdr (assq 'SectionSorting config))
                                             (make-hash-table)))))
            (lambda (reply)
-             (crs--remote-registered login reply)))))))))
+             (crs--remote-registered login reply source)))))))))
 
 (defun crs--remote-problem (problem)
   "One entry of a RegisterUser reply's `errors', worded like the server's."
@@ -430,10 +449,14 @@ what went wrong when it fails."
           ((crs--non-empty field) (format "%s: %s" field message))
           (t (format "%s" message)))))
 
-(defun crs--remote-registered (login reply)
-  "Handle the RegisterUser REPLY for LOGIN."
+(defun crs--remote-registered (login reply &optional source)
+  "Handle the RegisterUser REPLY for LOGIN, sent with the token from SOURCE.
+The server's word on a registration goes with the message saying who the
+connection signed in as: a new user's dashboard follows only on the
+server's next workflow cycle, so it starts out empty."
   (let ((err (crs--remote-reply-error reply))
-        (issued (crs--non-empty (cdr (assq 'token reply)))))
+        (issued (crs--non-empty (cdr (assq 'token reply))))
+        (file (crs--remote-token-file)))
     (cond
      (err
       (crs--remote-fail (format "%s answered RegisterUser with an error: %s"
@@ -444,32 +467,36 @@ what went wrong when it fails."
         (crs--remote-fail
          (concat (format "%s refused to register %s: %s" (crs--remote-where) login reason)
                  (when problems (format " (%s)" (string-join problems "; ")))
+                 ;; Which stored token the server will never take again.
+                 (when (and source (string-prefix-p "token revoked" reason))
+                   (format ".  That token is the one in %s" source))
                  (when (string-match-p "already registered" reason)
                    (format ".  The server holds a different token for %s: copy it from the machine that registered into %s (or CRS_REMOTE_TOKEN), or ask the server's administrator to delete the user"
-                           login crs-remote-token-file))))))
+                           login file))))))
      (t
       (condition-case err
           (crs--remote-save-token issued)
         (error
          (display-warning 'crs (format "Could not save the token to %s: %s"
-                                       crs-remote-token-file
-                                       (error-message-string err)))))
+                                       file (error-message-string err)))))
       (let ((env-token (crs--non-empty (getenv "CRS_REMOTE_TOKEN"))))
         (when (and env-token (not (equal issued env-token)))
           (setq crs--remote-issued-token issued)
           (display-warning
            'crs (format "%s issued a token other than CRS_REMOTE_TOKEN; it was saved to %s, but CRS_REMOTE_TOKEN wins in the next Emacs session: update or unset it"
-                        (crs--remote-where) crs-remote-token-file))))
+                        (crs--remote-where) file))))
       (message "%s with %s as %s; token saved to %s"
                (if (eq (cdr (assq 'created reply)) t) "Registered" "Re-registered")
                (crs--remote-where) (or (cdr (assq 'login reply)) login)
-               crs-remote-token-file)
-      (crs--remote-ready (or (crs--non-empty (cdr (assq 'login reply))) login) reply)))))
+               file)
+      (crs--remote-ready (or (crs--non-empty (cdr (assq 'login reply))) login) reply
+                         (crs--non-empty (cdr (assq 'message reply))))))))
 
-(defun crs--remote-ready (login &optional reply)
+(defun crs--remote-ready (login &optional reply note)
   "Mark the connection authenticated as LOGIN and send what waited for it.
 REPLY is the Authenticate or RegisterUser reply that signed it in, whose
-GitHub link flags are kept in `crs--remote-session'."
+GitHub link flags are kept in `crs--remote-session'.  NOTE, the server's
+word on a registration, goes with the message saying so."
   (setq crs--remote-ready t
         crs--remote-last-error nil
         crs--remote-session
@@ -478,8 +505,9 @@ GitHub link flags are kept in `crs--remote-session'."
               (cons 'github_linked (eq (cdr (assq 'github_linked reply)) t))
               (cons 'github_link_available
                     (eq (cdr (assq 'github_link_available reply)) t))))
-  (message "Connected to %s%s%s" (crs--remote-where)
+  (message "Connected to %s%s%s%s" (crs--remote-where)
            (if (crs--non-empty login) (format " as %s" login) "")
+           (if note (format ": %s" note) "")
            ;; Reviews are refused until then, so say so up front.
            (if (and (cdr (assq 'github_link_available crs--remote-session))
                     (not (cdr (assq 'github_linked crs--remote-session))))

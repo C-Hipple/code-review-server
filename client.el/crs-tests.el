@@ -1122,7 +1122,7 @@ Binds `sent', `warnings' and `dir' (holding the token file and config)."
                                   v))
                                process-environment)))
           (crs-remote-address "crs.test:7700")
-          (crs-remote-token-file (expand-file-name "crs/remote_token" dir))
+          (crs-remote-token-directory (expand-file-name "crs/remote_tokens" dir))
           (crs-remote-registration-key "sesame")
           (crs-remote-login "octocat")
           (crs--remote-ready nil)
@@ -1362,10 +1362,12 @@ recent first."
                                    (token . ,crs-test--token) (is_admin . :json-false)))
     (should crs--remote-ready)
     (should (equal (with-temp-buffer
-                     (insert-file-contents crs-remote-token-file)
+                     (insert-file-contents (crs--remote-token-file))
                      (buffer-string))
                    (concat crs-test--token "\n")))
-    (should (= (file-modes crs-remote-token-file) #o600))
+    (should (equal (crs--remote-token-file)
+                   (expand-file-name "crs/remote_tokens/crs.test_7700" dir)))
+    (should (= (file-modes (crs--remote-token-file)) #o600))
     ;; The request that waited goes out now.
     (should (equal (nth 0 (car sent)) "RPCHandler.GetAllReviews"))
     (should-not crs--remote-queue)))
@@ -1425,6 +1427,55 @@ recent first."
       (should (equal replies `(((error . ,(car warnings))))))
       ;; The connection is dropped, so the next request reconnects.
       (should-not crs--process))))
+
+(ert-deftest crs-test-remote-token-file-per-server ()
+  "Each server's token has a file of its own, named the way the bridge names it."
+  (crs-test--with-remote
+    (let ((file (lambda (address)
+                  (let ((crs-remote-address address))
+                    (file-name-nondirectory (crs--remote-token-file))))))
+      (should (equal (funcall file "crs.test:7700") "crs.test_7700"))
+      (should (equal (funcall file "CRS.Test:7700") "crs.test_7700"))
+      (should (equal (funcall file "[::1]:443") "__1_443"))
+      (should (equal (funcall file "[fe80::1%eth0]:7700") "fe80__1_eth0_7700"))
+      (should-not (equal (funcall file "crs.test:7701") "crs.test_7700")))))
+
+(ert-deftest crs-test-remote-never-sends-another-servers-token ()
+  "A token another server issued stays in its file: this one is registered afresh."
+  (crs-test--with-remote
+    (let ((crs-remote-address "crs.other:7700"))
+      (crs--remote-save-token crs-test--token))
+    (crs--remote-authenticate)
+    (should (= (length sent) 1))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (cdr (assq 'Token (aref (nth 1 (car sent)) 0))) ""))))
+
+(ert-deftest crs-test-remote-registration-passes-on-the-servers-word ()
+  "Signing in by registering says what the server said: when the dashboard follows."
+  (crs-test--with-remote
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (crs--remote-authenticate)
+        (crs-test--answer (car sent)
+                          `((okay . t) (created . t) (login . "octocat") (token . ,crs-test--token)
+                            (message . "Registered octocat with 1 workflow; the dashboard follows on the next workflow cycle")))
+        (should (equal (car messages)
+                       (concat "Connected to crs at crs.test:7700 as octocat: Registered octocat"
+                               " with 1 workflow; the dashboard follows on the next workflow cycle")))))))
+
+(ert-deftest crs-test-remote-revoked-token-says-which ()
+  "A token the server revoked names the file it is in, to remove it."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent) '((okay . :json-false) (known . :json-false)))
+    (crs-test--answer (car sent)
+                      '((okay . :json-false)
+                        (message . "token revoked: an administrator deleted the user this token belonged to, so it cannot register again; remove the token your client stored to register afresh, or ask an administrator")))
+    (should (string-suffix-p (format "or ask an administrator.  That token is the one in %s"
+                                     (crs--remote-token-file))
+                             (car warnings)))))
 
 (ert-deftest crs-test-remote-refused-registration-gives-the-reasons ()
   "A registration the server refuses says why, worded like the server's errors."

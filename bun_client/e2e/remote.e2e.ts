@@ -52,7 +52,12 @@ test.describe('remote mode', () => {
         page,
         backend,
     }) => {
+        // The server builds a user's dashboard on its next workflow cycle,
+        // so there is nothing on it yet.
         await page.goto('/');
+        await expect(page.getByText('No reviews tracked yet.')).toBeVisible();
+        await backend.runCycle();
+        await page.getByRole('button', { name: 'Refresh' }).click();
         await expect(page.getByText('4 reviews tracked')).toBeVisible();
 
         // With no token yet, the bridge registered straight away, sending the
@@ -78,6 +83,9 @@ test.describe('remote mode', () => {
         backend,
     }) => {
         const token = savedToken();
+        await backend.runCycle();
+        await page.goto('/');
+        await expect(page.getByText('4 reviews tracked')).toBeVisible();
         const before = (await backend.authLog()).length;
 
         // The retention sweep drops the user, and the server hangs up: the
@@ -99,7 +107,12 @@ test.describe('remote mode', () => {
         expect(register.reply).toMatchObject({ okay: true, created: true, token });
         expect(savedToken()).toBe(token);
 
+        // The dashboard went with the user; the new one follows on the next
+        // cycle.
         await page.goto('/');
+        await expect(page.getByText('No reviews tracked yet.')).toBeVisible();
+        await backend.runCycle();
+        await page.getByRole('button', { name: 'Refresh' }).click();
         await expect(page.getByText('4 reviews tracked')).toBeVisible();
     });
 
@@ -107,12 +120,15 @@ test.describe('remote mode', () => {
         page,
         backend,
     }) => {
+        await backend.runCycle();
         const before = (await backend.authLog()).length;
         // The connection stays up, but the server no longer knows who is on it.
         await backend.rpc('E2E.ForgetUser', { Login: REMOTE_LOGIN, Disconnect: false });
 
+        // The list loads, on the session registered anew — empty until the
+        // next cycle.
         await page.goto('/');
-        await expect(page.getByText('4 reviews tracked')).toBeVisible();
+        await expect(page.getByText('No reviews tracked yet.')).toBeVisible();
 
         expect(await authMethodsSince(backend, before)).toEqual([
             'RPCHandler.Authenticate',
@@ -211,7 +227,7 @@ test.describe('remote mode', () => {
         expect(await backend.calls('SubmitReview')).toHaveLength(1);
     });
 
-    test('a submit whose previewed drafts are gone posts nothing and says so', async ({
+    test('a submit after the server swept the user and their drafts posts nothing', async ({
         page,
         backend,
     }) => {
@@ -222,17 +238,30 @@ test.describe('remote mode', () => {
         await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
         const dialog = modal(page, 'Submit Review');
         await expect(dialog.getByText(DRAFT.Body)).toBeVisible();
-        // The draft goes while the preview shows it: sent from another
-        // client, or deleted with the user by the server's retention.
-        await backend.rpc('RPCHandler.DeleteComment', { ...PR42_ARGS, ID: id });
+        // While the preview shows the draft, the retention sweep deletes the
+        // user and their drafts with them.
+        const before = (await backend.authLog()).length;
+        await backend.rpc('E2E.ForgetUser', { Login: REMOTE_LOGIN, Disconnect: false });
         await dialog.getByRole('button', { name: 'Approve' }).click();
         await dialog.getByRole('button', { name: 'Submit', exact: true }).click();
 
         await expect(page.getByRole('status')).toHaveText(
             'Review on acme/widgets#42 was not submitted: some of its pending comments are gone — already submitted, or removed with your account after a stretch of inactivity. Check what is pending on the PR, then submit again.'
         );
-        const [submit] = await backend.calls('SubmitReview');
-        expect(submit.params.ExpectedDraftIDs).toEqual([id]);
+        // The bridge registered again without a word, and sent the submit
+        // again, naming the draft it previewed — which the new user doesn't
+        // have.
+        expect(await authMethodsSince(backend, before)).toEqual([
+            'RPCHandler.Authenticate',
+            'RPCHandler.RegisterUser',
+        ]);
+        const submits = await backend.calls('SubmitReview');
+        const last = submits.at(-1)!;
+        expect(last.refused).toBeUndefined();
+        expect(last.params.ExpectedDraftIDs).toEqual([id]);
+        for (const refused of submits.slice(0, -1)) {
+            expect(refused.refused).toMatch(/^not authenticated: /);
+        }
         // No verdict went out without the comment, and the PR is reloaded
         // without it.
         expect((await backend.rpc('RPCHandler.GetPR', PR42_ARGS)).reviews).toHaveLength(reviews);

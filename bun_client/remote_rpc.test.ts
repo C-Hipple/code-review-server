@@ -282,6 +282,27 @@ describe('RemoteRpcClient connect flow', () => {
         expect(readFileSync(elsewhere, 'utf-8').trim()).toBe(TOKEN_B);
     });
 
+    test('says what the server said of the registration', async () => {
+        const { connect, logs } = setup({
+            'RPCHandler.RegisterUser': (args, session) => {
+                session.login = args.Login;
+                return {
+                    okay: true,
+                    created: true,
+                    login: args.Login,
+                    token: TOKEN_A,
+                    is_admin: false,
+                    message: `Registered ${args.Login} with 1 workflow; the dashboard follows on the next workflow cycle`,
+                    errors: [],
+                };
+            },
+        });
+        await connect().call('Test.Echo', [{}]);
+        expect(logs.find(l => l.startsWith('Registered with'))).toEndWith(
+            '. Registered octocat with 1 workflow; the dashboard follows on the next workflow cycle'
+        );
+    });
+
     test('queues calls made while connecting and sends them in order', async () => {
         const { server, connect } = setup();
         const client = connect();
@@ -510,6 +531,26 @@ describe('RemoteRpcClient configuration problems', () => {
             .catch(e => e);
         expect(err).toContain(
             'refused to register octocat: invalid workflows (Workflows[0].WorkflowType: unknown type)'
+        );
+    });
+
+    test('a token the server revoked says which one it is', async () => {
+        const { settings, connect } = setup({
+            'RPCHandler.Authenticate': () => ({ okay: false, known: false }),
+            'RPCHandler.RegisterUser': () => ({
+                okay: false,
+                message:
+                    'token revoked: an administrator deleted the user this token belonged to, so it cannot register again; remove the token your client stored to register afresh, or ask an administrator',
+                errors: [],
+            }),
+        });
+        await Bun.write(settings.tokenFile, `${TOKEN_A}\n`);
+        const err = await connect()
+            .call('Test.Echo', [{}])
+            .catch(e => e);
+        expect(err).toContain('refused to register octocat: token revoked: ');
+        expect(err).toEndWith(
+            `or ask an administrator. That token is the one in ${settings.tokenFile}.`
         );
     });
 

@@ -107,6 +107,15 @@ class Backend {
     }
 
     /**
+     * Remote bridge: run a workflow cycle, which builds every registered
+     * user's dashboard. Until one runs — after every reset, and after a
+     * user registers — a user's dashboard is empty, as on the real server.
+     */
+    runCycle() {
+        return this.rpc('E2E.RunCycle');
+    }
+
+    /**
      * Remote bridge: let the server link GitHub accounts (off after every
      * reset), handing out `interval` seconds between polls (1 unless set).
      */

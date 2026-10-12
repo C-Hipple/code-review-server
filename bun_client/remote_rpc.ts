@@ -630,6 +630,10 @@ export class RemoteRpcClient {
             const problems = (reply?.errors ?? []).map(describeProblem).filter(Boolean);
             let message = `${this.where} refused to register ${login}: ${reply?.message || 'no reason given'}`;
             if (problems.length > 0) message += ` (${problems.join('; ')})`;
+            // Which stored token the server will never take again.
+            if (/^token revoked/i.test(reply?.message ?? '')) {
+                message += `. That token is the one in ${source}.`;
+            }
             if (/already registered/i.test(reply?.message ?? '')) {
                 message += `. The server holds a different token for ${login}: copy it from the machine that registered into ${settings.tokenFile} (or CRS_REMOTE_TOKEN), or ask the server's administrator to delete the user.`;
             }
@@ -651,8 +655,10 @@ export class RemoteRpcClient {
         }
         this.session = sessionFrom({ ...reply, login: reply.login || login });
         const who = `${reply.login || login}${reply.is_admin ? ' (administrator)' : ''}`;
+        // The server's own word on it says when the dashboard fills in: not
+        // until its next workflow cycle, so a new user's starts out empty.
         this.opts.log(
-            `${reply.created ? 'Registered' : 'Re-registered'} with ${this.where} as ${who}; token saved to ${settings.tokenFile}`
+            `${reply.created ? 'Registered' : 'Re-registered'} with ${this.where} as ${who}; token saved to ${settings.tokenFile}${reply.message ? `. ${reply.message}` : ''}`
         );
     }
 

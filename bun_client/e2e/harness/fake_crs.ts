@@ -26,8 +26,14 @@
 //   - StartGitHubLink / GetGitHubLink / UnlinkGitHub, the device flow a test
 //     ends with `E2E.EndGitHubLink` the way GitHub would.
 //
+// Drafts and feedback are each login's own, as on the server: the stdio
+// session's are the server's own (login ''), and a user's go when the user
+// does. So does a user's dashboard, which — as on the server, whose workflow
+// cycle builds it — is empty after registering until `E2E.RunCycle`.
+//
 // Registered users outlive `E2E.Reset`, as they outlive a sync cycle on the
-// real server; their GitHub links and link flows do not. The remote-mode
+// real server; their GitHub links and link flows do not, and nor do their
+// dashboards: every test starts before the first cycle. The remote-mode
 // hooks are at the end of `handlers`.
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -61,6 +67,8 @@ const DIAGRAM_SOURCE = `flowchart TD
 
 interface State {
     prs: PRFixture[];
+    // Drafts and feedback by owner (lowercased login, '' for the server's
+    // own) and PR: see ownKey.
     localComments: Map<string, CommentJSON[]>;
     feedback: Map<string, string>;
     // `refused` is the refusal a call was answered with: the method policy's,
@@ -179,8 +187,13 @@ function findPR(args: { Owner: string; Repo: string; Number: number }): PRFixtur
     return pr;
 }
 
-function locals(pr: PRFixture): CommentJSON[] {
-    const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+/** A PR's key for what `session`'s login owns of it: its drafts, its feedback. */
+const ownKey = (session: Session, pr: PRFixture) =>
+    `${(session.login ?? '').toLowerCase()}\0${key(pr.item.owner, pr.item.repo, pr.item.number)}`;
+
+/** The drafts `session`'s login has left on `pr`. */
+function locals(pr: PRFixture, session: Session): CommentJSON[] {
+    const k = ownKey(session, pr);
     let list = state.localComments.get(k);
     if (!list) {
         list = [];
@@ -194,8 +207,8 @@ function reviewEase(pr: PRFixture): string {
     return state.reviewEaseEnabled ? pr.item.review_ease : '';
 }
 
-function payload(pr: PRFixture) {
-    const all = [...pr.comments, ...locals(pr)];
+function payload(pr: PRFixture, session: Session) {
+    const all = [...pr.comments, ...locals(pr, session)];
     const reviewers = (s: string) =>
         Array.from(new Set(pr.reviews.filter(r => r.state === s).map(r => r.user)));
     return {
@@ -234,7 +247,7 @@ function payload(pr: PRFixture) {
         outdated_comments: all.filter(c => c.outdated),
         reviews: pr.reviews,
         commits: [],
-        feedback: state.feedback.get(key(pr.item.owner, pr.item.repo, pr.item.number)) ?? '',
+        feedback: state.feedback.get(ownKey(session, pr)) ?? '',
         annotations: [],
         images: [],
     };
@@ -464,6 +477,8 @@ interface RemoteUser {
     sectionPriority: Record<string, number>;
     sectionSorting: Record<string, string>;
     link?: GitHubLink;
+    /** A workflow cycle has built their dashboard since they registered. */
+    dashboard: boolean;
 }
 
 /** A device flow, waiting for its code or ended without a link. */
@@ -748,6 +763,9 @@ function registerUser(args: Record<string, any>, peer: Peer) {
         sectionPriority: args.SectionPriority ?? {},
         sectionSorting: args.SectionSorting ?? {},
         link: known?.link,
+        // A new user's dashboard waits for the next cycle; an update keeps
+        // the one there is.
+        dashboard: known?.dashboard ?? false,
     };
     users.set(login.toLowerCase(), user);
     peer.session = { login: user.login, admin: user.admin, local: false };
@@ -960,24 +978,32 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
 
     'RPCHandler.GetMyWorkflows': (_args, peer) => myWorkflows(peer.session),
 
-    'RPCHandler.GetAllReviews': () => ({
+    // The server's own dashboard (stdio, the admin token) is the fixtures'; a
+    // user's is too once a cycle has built it, and empty until then.
+    'RPCHandler.GetAllReviews': (_args, peer) => ({
         okay: true,
         content: '',
         // Counted like the server does, from the PR's GitHub comments: local
         // drafts don't count until they are submitted.
-        items: state.prs.map(p => ({
-            ...p.item,
-            review_ease: reviewEase(p),
-            comment_count: p.comments.length,
-        })),
+        items:
+            peer.session.login && !userOf(peer.session)?.dashboard
+                ? []
+                : state.prs.map(p => ({
+                      ...p.item,
+                      review_ease: reviewEase(p),
+                      comment_count: p.comments.length,
+                  })),
     }),
 
     'RPCHandler.GetPR': (args, peer) => {
         checkSkipCache(args, peer.session);
-        return payload(findPR(args));
+        return payload(findPR(args), peer.session);
     },
 
-    'RPCHandler.SyncPR': args => ({ ...payload(findPR(args)), updated: state.syncUpdated }),
+    'RPCHandler.SyncPR': (args, peer) => ({
+        ...payload(findPR(args), peer.session),
+        updated: state.syncUpdated,
+    }),
 
     'RPCHandler.GetAdjacentPR': (args, peer) => {
         checkSkipCache(args, peer.session);
@@ -988,17 +1014,20 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         const step = args.Previous ? -1 : 1;
         const next = items[(idx + step + items.length) % items.length];
         return {
-            ...payload(findPR({ Owner: next.owner, Repo: next.repo, Number: next.number })),
+            ...payload(
+                findPR({ Owner: next.owner, Repo: next.repo, Number: next.number }),
+                peer.session
+            ),
             adjacent_owner: next.owner,
             adjacent_repo: next.repo,
             adjacent_number: next.number,
         };
     },
 
-    'RPCHandler.AddComment': args => {
+    'RPCHandler.AddComment': (args, peer) => {
         const pr = findPR(args);
         const id = state.nextCommentId++;
-        locals(pr).push(
+        locals(pr, peer.session).push(
             comment({
                 id: String(id),
                 author: 'local',
@@ -1009,24 +1038,24 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
                 created_at: new Date().toISOString(),
             })
         );
-        return { ...payload(pr), id };
+        return { ...payload(pr, peer.session), id };
     },
 
-    'RPCHandler.EditComment': args => {
+    'RPCHandler.EditComment': (args, peer) => {
         const pr = findPR(args);
-        const c = locals(pr).find(l => l.id === String(args.ID));
+        const c = locals(pr, peer.session).find(l => l.id === String(args.ID));
         if (!c) throw new Error(`local comment ${args.ID} not found`);
         c.body = args.Body;
-        return payload(pr);
+        return payload(pr, peer.session);
     },
 
-    'RPCHandler.DeleteComment': args => {
+    'RPCHandler.DeleteComment': (args, peer) => {
         const pr = findPR(args);
-        const list = locals(pr);
+        const list = locals(pr, peer.session);
         const idx = list.findIndex(l => l.id === String(args.ID));
         if (idx === -1) throw new Error(`local comment ${args.ID} not found`);
         list.splice(idx, 1);
-        return payload(pr);
+        return payload(pr, peer.session);
     },
 
     'RPCHandler.SubmitReview': (args, peer) => {
@@ -1034,7 +1063,7 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         // Settled before anything is written: a refusal leaves the drafts.
         const author = writeIdentity('SubmitReview', peer.session);
         // The drafts the client previewed must all still be there.
-        const pending = new Set(locals(pr).map(c => c.id));
+        const pending = new Set(locals(pr, peer.session).map(c => c.id));
         for (const id of args.ExpectedDraftIDs ?? []) {
             if (!pending.has(String(id))) throw new Error(DRAFTS_CHANGED);
         }
@@ -1050,10 +1079,10 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         pr.reviews.push(review);
         // Pending local comments go out with the review and come back as
         // GitHub comments authored by the reviewer.
-        for (const c of locals(pr).splice(0)) {
+        for (const c of locals(pr, peer.session).splice(0)) {
             pr.comments.push({ ...c, author, review_id: review.id });
         }
-        return { ...payload(pr), failed_replies: [] };
+        return { ...payload(pr, peer.session), failed_replies: [] };
     },
 
     // GitHub's answer passed through. No UI merges yet; this is here so the
@@ -1068,14 +1097,13 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
         };
     },
 
-    'RPCHandler.SetFeedback': args => {
-        const pr = findPR(args);
-        state.feedback.set(key(pr.item.owner, pr.item.repo, pr.item.number), args.Body);
+    'RPCHandler.SetFeedback': (args, peer) => {
+        state.feedback.set(ownKey(peer.session, findPR(args)), args.Body);
         return { okay: true };
     },
 
-    'RPCHandler.RemovePRComments': args => {
-        locals(findPR(args)).splice(0);
+    'RPCHandler.RemovePRComments': (args, peer) => {
+        locals(findPR(args), peer.session).splice(0);
         return { okay: true };
     },
 
@@ -1308,8 +1336,11 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
     'E2E.Reset': () => {
         state = freshState();
         // Users stay registered (the bridge registered once), but every test
-        // starts with nobody linked.
-        for (const user of users.values()) user.link = undefined;
+        // starts with nobody linked, before the first cycle.
+        for (const user of users.values()) {
+            user.link = undefined;
+            user.dashboard = false;
+        }
         return { okay: true };
     },
 
@@ -1373,6 +1404,13 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
     // Every Authenticate / RegisterUser since the fake started, with its reply.
     'E2E.AuthLog': () => ({ calls: authLog }),
 
+    // A workflow cycle, as far as dashboards go: it builds every registered
+    // user's from the fixtures.
+    'E2E.RunCycle': () => {
+        for (const user of users.values()) user.dashboard = true;
+        return { okay: true, users: users.size };
+    },
+
     // Forget a registered user, as the server's retention sweep does. With
     // `Disconnect` their connections are closed too, as by a server restart,
     // and the bridge reconnects; without, they stay open but lose their
@@ -1380,8 +1418,12 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
     'E2E.ForgetUser': args => {
         const login = String(args.Login ?? '').toLowerCase();
         const forgotten = users.delete(login);
-        // Deleting a user cancels a link in progress; their link goes with them.
+        // Deleting a user cancels a link in progress; their link goes with
+        // them, and so do their drafts, feedback and dashboard.
         state.linkFlows.delete(login);
+        for (const owned of [state.localComments, state.feedback]) {
+            for (const k of owned.keys()) if (k.startsWith(`${login}\0`)) owned.delete(k);
+        }
         let sessions = 0;
         for (const peer of peers) {
             if (peer.session.login?.toLowerCase() !== login) continue;

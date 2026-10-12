@@ -69,13 +69,20 @@ The remote fake keeps its registered users and its log of `Authenticate` /
 starts — but not their GitHub links: every test starts unlinked, on a server
 that cannot link until the spec says otherwise. Specs read that log with
 `backend.authLog()`, and a call the server refused — by its policy or in the
-handler — carries the error in `refused`. `E2E.ForgetUser` drops a user the
-way the server's retention sweep does (with `Disconnect: true` it also hangs
-up, as a restart would), and `E2E.SetIdentityActions` opens the identity gate.
-`backend.dropNext(method)` carries out the next call to `method` and then
-hangs up instead of answering, as a connection lost mid-call would. Like the
-server, `SubmitReview` posts nothing and answers `drafts changed:` when a
-pending comment named in its `ExpectedDraftIDs` is gone.
+handler — carries the error in `refused`.
+
+Drafts and feedback are each login's own, as on the server, and so is the
+dashboard: a user's is empty after registering — and after every reset —
+until the spec runs a workflow cycle with `backend.runCycle()`, which builds
+every user's from the fixtures. The server's own (stdio, and the admin token)
+always has them. `E2E.ForgetUser` drops a user with their drafts, feedback and
+dashboard, the way the server's retention sweep does (with `Disconnect: true`
+it also hangs up, as a restart would), and `E2E.SetIdentityActions` opens the
+identity gate. `backend.dropNext(method)` carries out the next call to
+`method` and then hangs up instead of answering, as a connection lost mid-call
+would. Like the server, `SubmitReview` posts nothing and answers
+`drafts changed:` when a pending comment named in its `ExpectedDraftIDs` is
+gone.
 
 For GitHub linking (`remote_link.e2e.ts`), `backend.setGitHubLinkAvailable`
 lets the server link accounts (its codes poll every second, not GitHub's

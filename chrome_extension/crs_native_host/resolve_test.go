@@ -19,7 +19,7 @@ func writeExecutable(t *testing.T, path string, mode os.FileMode) {
 
 func TestResolveServerOrder(t *testing.T) {
 	root := t.TempDir()
-	name := serverBinaryName()
+	name := serverBinaryNames()[0]
 	home := filepath.Join(root, "home")
 	hostExe := filepath.Join(root, "hostdir", "crs_native_host")
 	env := map[string]string{
@@ -72,7 +72,7 @@ func TestResolveServerOrder(t *testing.T) {
 
 func TestResolveServerSkipsWhatCannotRun(t *testing.T) {
 	root := t.TempDir()
-	name := serverBinaryName()
+	name := serverBinaryNames()[0]
 	// A file that isn't executable, a directory with the server's name, and
 	// an executable in a relative PATH entry are all passed over.
 	writeExecutable(t, filepath.Join(root, "noexec", name), 0o644)
@@ -98,6 +98,40 @@ func TestResolveServerSkipsWhatCannotRun(t *testing.T) {
 	}, "", "")
 	if err != nil || got != want {
 		t.Errorf("got %q, %v; want %s", got, err, want)
+	}
+}
+
+// The server installed under the current name wins over one under the old
+// name in the same directory, and the old name is still found on its own:
+// `go install ./...` writes `crs` now, while older installs (and most of the
+// docs) have `codereviewserver`.
+func TestResolveServerAcceptsBothNames(t *testing.T) {
+	root := t.TempDir()
+	names := serverBinaryNames()
+	if len(names) < 2 {
+		t.Skip("only one server binary name")
+	}
+	dir := filepath.Join(root, "bin")
+	current, old := filepath.Join(dir, names[0]), filepath.Join(dir, names[1])
+	writeExecutable(t, old, 0o755)
+	writeExecutable(t, current, 0o755)
+	getenv := func(k string) string {
+		if k == "PATH" {
+			return dir
+		}
+		return ""
+	}
+	got, err := resolveServer(getenv, "", "")
+	if err != nil || got != current {
+		t.Fatalf("got %q, %v; want %s", got, err, current)
+	}
+
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveServer(getenv, "", "")
+	if err != nil || got != old {
+		t.Errorf("with only %s there: got %q, %v; want %s", names[1], got, err, old)
 	}
 }
 

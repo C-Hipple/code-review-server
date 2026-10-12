@@ -43,7 +43,7 @@ test('the server exiting shows the server error card with the host’s message',
     expect(crs.calls('GetAllReviews')).toHaveLength(2);
 });
 
-test.describe('with no codereviewserver anywhere the host looks', () => {
+test.describe('with no server binary anywhere the host looks', () => {
     // An empty HOME (no ~/go/bin) and an env file pointing everything else
     // at nothing.
     const home = join(E2E_ROOT, 'empty-home');
@@ -66,8 +66,9 @@ test.describe('with no codereviewserver anywhere the host looks', () => {
         await expect(error.getByRole('heading')).toHaveText("The server isn't running");
         const message = error.locator('.error-message');
         await expect(message).toContainText(
-            'codereviewserver not found; tried $CRS_SERVER_PATH=/nonexistent/codereviewserver (not an executable file), codereviewserver on PATH (/nonexistent/bin)'
+            'crs or codereviewserver not found; tried $CRS_SERVER_PATH=/nonexistent/codereviewserver (not an executable file), crs on PATH (/nonexistent/bin)'
         );
+        await expect(message).toContainText(`${home}/go/bin/crs`);
         await expect(message).toContainText(`${home}/go/bin/codereviewserver`);
         await expect(message).toContainText('Install it with `go install ./...`');
         await expect(error).toContainText(crs.logPath);

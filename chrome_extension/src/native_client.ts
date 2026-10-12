@@ -3,8 +3,8 @@
 // or chunked) and host events back. The port is injected so tests can drive
 // it without Chrome; background.ts passes chrome.runtime.connectNative.
 //
-// One open port is one running server: the host starts `codereviewserver
-// --server` when Chrome connects and stops it when the port closes. An open
+// One open port is one running server: the host starts `crs --server` when
+// Chrome connects and stops it when the port closes. An open
 // native port also keeps the MV3 service worker alive (Chrome >= 105), so
 // the server lives as long as the browser does.
 

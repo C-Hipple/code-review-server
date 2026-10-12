@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Registers crs_native_host with Chrome-family browsers, so the Code Review
-# Server extension can start codereviewserver. Rerun it after pulling to
+# Server extension can start the server (`crs`). Rerun it after pulling to
 # rebuild the host. See --help.
 #
 # Written for bash 3.2 too (macOS's /bin/bash): no mapfile, no ${x,,}, and
@@ -251,22 +251,26 @@ else
 fi
 
 # Point out early if the host will have nothing to start. These are the
-# places the host searches that don't depend on its environment.
+# places the host searches that don't depend on its environment. The server
+# is `crs` since the rename; `codereviewserver` is the older name, and the
+# host takes either.
 server=""
-for d in "$(dirname "$host_path")" "${GOBIN:-}" "${GOPATH:+${GOPATH%%:*}/bin}" "$HOME/go/bin"; do
-    if [[ -n "$d" && -x "$d/codereviewserver" ]]; then
-        server="$d/codereviewserver"
-        break
-    fi
+for name in crs codereviewserver; do
+    for d in "$(dirname "$host_path")" "${GOBIN:-}" "${GOPATH:+${GOPATH%%:*}/bin}" "$HOME/go/bin"; do
+        if [[ -n "$d" && -x "$d/$name" ]]; then
+            server="$d/$name"
+            break 2
+        fi
+    done
 done
 echo
 if [[ -n "$server" ]]; then
     echo "Server: $server"
-elif [[ -x "${CRS_SERVER_PATH:-}" ]] || command -v codereviewserver >/dev/null 2>&1; then
+elif [[ -x "${CRS_SERVER_PATH:-}" ]] || command -v crs >/dev/null 2>&1 || command -v codereviewserver >/dev/null 2>&1; then
     echo "Server: found through this shell's CRS_SERVER_PATH or PATH, which the browser may"
     echo "not share. The host sees them through $env_file (--capture-env writes it)."
 else
-    echo "codereviewserver was not found. Install it with: (cd $repo_root && go install ./...)"
+    echo "crs (or codereviewserver) was not found. Install it with: (cd $repo_root && go install ./...)"
 fi
 
 cat <<EOF

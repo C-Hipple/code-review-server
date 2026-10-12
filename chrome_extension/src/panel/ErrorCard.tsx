@@ -131,7 +131,7 @@ function ErrorDetails({ error, extensionId }: { error: RpcError; extensionId?: s
                         </p>
                     )}
                     <p className="muted">
-                        The host starts <code>codereviewserver --server</code> with the variables in{' '}
+                        The host starts <code>crs --server</code> with the variables in{' '}
                         <code>~/.crs/native_host.env</code> — check that it is on the host&apos;s{' '}
                         <code>PATH</code> and that <code>CRS_GITHUB_TOKEN</code> is set.
                     </p>

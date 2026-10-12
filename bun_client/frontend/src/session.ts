@@ -8,14 +8,22 @@ import { getBridgeSession, rpcErrorMessage, type BridgeSession } from './api';
  *
  * Reads are applied in the order they were started, so a slow read begun
  * before a link completed can never overwrite the one made after it.
+ *
+ * While a shared server's session is not signed in yet, or could not be read,
+ * it is read again every `retryMs` for as long as anything shows it: the
+ * bridge reconnects on its own, and the header should say so when it has.
  */
 export class SessionStore {
     private current: BridgeSession | null = null;
     private started = 0;
     private applied = 0;
     private listeners = new Set<() => void>();
+    private retry: ReturnType<typeof setTimeout> | null = null;
 
-    constructor(private load: () => Promise<BridgeSession>) {}
+    constructor(
+        private load: () => Promise<BridgeSession>,
+        private retryMs = 5_000
+    ) {}
 
     /** The session as last read; null until the first read lands. */
     get = (): BridgeSession | null => this.current;
@@ -33,6 +41,10 @@ export class SessionStore {
      * features need no session.
      */
     refresh = async (): Promise<BridgeSession> => {
+        if (this.retry) {
+            clearTimeout(this.retry);
+            this.retry = null;
+        }
         const seq = ++this.started;
         let session: BridgeSession;
         try {
@@ -44,9 +56,20 @@ export class SessionStore {
             this.applied = seq;
             this.current = session;
             for (const listener of this.listeners) listener();
+            this.retryUnlessSignedIn();
         }
         return this.current ?? session;
     };
+
+    private retryUnlessSignedIn() {
+        const s = this.current;
+        if (this.retry || this.listeners.size === 0 || !s?.remote) return;
+        if (s.connected !== false && !s.error) return;
+        this.retry = setTimeout(() => {
+            this.retry = null;
+            if (this.listeners.size > 0) void this.refresh();
+        }, this.retryMs);
+    }
 
     /** Starts the first read, unless one has started already. */
     ensure = () => {

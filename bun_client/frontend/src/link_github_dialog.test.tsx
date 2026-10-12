@@ -228,4 +228,24 @@ describe('AccountChip', () => {
     test('the administrator token reads as the administrator', () => {
         expect(textOf(chip(session({ login: '', is_admin: true })))).toBe('administrator');
     });
+
+    test('a bridge that has not signed in names nobody, and says why', () => {
+        const refused: BridgeSession = {
+            remote: true,
+            address: 'crs.test:7700',
+            connected: false,
+            error: 'Not registered with crs at crs.test:7700: set CRS_REGISTRATION_KEY',
+        };
+        expect(textOf(chip(refused))).toBe('not connected');
+        expect(chip(refused)).not.toContain('administrator');
+        expect(chip(refused)).toContain(
+            'aria-label="Account: not connected, Not registered with crs at crs.test:7700: set CRS_REGISTRATION_KEY"'
+        );
+        expect(chip(refused)).toContain('title="Not connected to crs.test:7700');
+        // One from before the bridge said whether it had signed in, with no
+        // login to show, is no administrator either.
+        expect(textOf(chip({ remote: true, address: 'crs.test:7700', error: 'down' }))).toBe(
+            'not connected'
+        );
+    });
 });

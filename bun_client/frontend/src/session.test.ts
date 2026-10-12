@@ -79,4 +79,29 @@ describe('SessionStore', () => {
         await store.refresh();
         expect(told).toBe(0);
     });
+    test('reads again until a shared server signs in, then stops', async () => {
+        const replies: BridgeSession[] = [
+            { remote: true, address: 'crs.test:7700', connected: false, error: "Can't reach crs" },
+            remote({ connected: true }),
+        ];
+        let loads = 0;
+        const store = new SessionStore(async () => replies[Math.min(loads++, 1)], 5);
+        store.subscribe(() => {});
+        store.ensure();
+
+        await Bun.sleep(60);
+        expect(store.get()).toEqual(remote({ connected: true }));
+        expect(loads).toBe(2);
+    });
+
+    test('reads again only while something shows the session', async () => {
+        let loads = 0;
+        const store = new SessionStore(async () => {
+            loads++;
+            return { remote: true, connected: false, error: 'refused' };
+        }, 5);
+        await store.refresh();
+        await Bun.sleep(30);
+        expect(loads).toBe(1);
+    });
 });

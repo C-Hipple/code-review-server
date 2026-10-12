@@ -223,6 +223,11 @@ export interface BridgeSessionInfo {
     remote: boolean;
     /** CRS_REMOTE, for display. */
     address?: string;
+    /**
+     * Remote only: whether the connect flow has signed in. Until it has, there
+     * is no login to show, only `error`.
+     */
+    connected?: boolean;
     /** The login the connect flow signed in as; '' for the administrator token. */
     login?: string;
     is_admin?: boolean;
@@ -450,7 +455,11 @@ export class RemoteRpcClient {
      * that read fails, the last known state comes back with the reason.
      */
     async describeSession(): Promise<BridgeSessionInfo> {
-        const base = { remote: true, address: this.settings.address };
+        const base = () => ({
+            remote: true,
+            address: this.settings.address,
+            connected: this.session !== null,
+        });
         try {
             const reply = (await this.call('RPCHandler.GetMyWorkflows', [
                 {},
@@ -460,9 +469,9 @@ export class RemoteRpcClient {
                 this.session.github_link_available = !!reply?.github_link_available;
             }
         } catch (e) {
-            return { ...base, ...this.session, error: errorText(e) };
+            return { ...base(), ...this.session, error: errorText(e) };
         }
-        return { ...base, ...this.session };
+        return { ...base(), ...this.session };
     }
 
     /** Closes the connection for good, failing anything still waiting. */
@@ -492,6 +501,8 @@ export class RemoteRpcClient {
             } catch (e) {
                 conn?.close();
                 this.conn = null;
+                // Not signed in as anyone until a connect flow succeeds again.
+                this.session = null;
                 if (this.stopped) return;
                 const message = errorText(e);
                 delay = this.backoffMs;

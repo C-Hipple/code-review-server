@@ -326,6 +326,7 @@ describe('RemoteRpcClient session', () => {
         expect(await client.describeSession()).toEqual({
             remote: true,
             address: settings.address,
+            connected: true,
             login: 'octocat',
             is_admin: true,
             github_linked: false,
@@ -353,6 +354,32 @@ describe('RemoteRpcClient session', () => {
             github_linked: false,
             github_link_available: false,
         });
+    });
+
+    test('says it is not connected until the connect flow has signed in', async () => {
+        const { connect } = setup({}, { registrationKey: '' });
+        const session = await connect().describeSession();
+        expect(session).toMatchObject({ remote: true, connected: false });
+        expect(session.login).toBeUndefined();
+        expect(session.error).toContain('set CRS_REGISTRATION_KEY');
+    });
+
+    test('signs in as nobody while it cannot connect', async () => {
+        const { server, connect } = setup();
+        const client = connect();
+        expect(await client.describeSession()).toMatchObject({ connected: true });
+
+        server.stop();
+        server.drop();
+        // The reconnect fails, and with it who the bridge was signed in as.
+        let session = await client.describeSession();
+        for (let i = 0; i < 50 && session.connected; i++) {
+            await Bun.sleep(20);
+            session = await client.describeSession();
+        }
+        expect(session).toMatchObject({ remote: true, connected: false });
+        expect(session.login).toBeUndefined();
+        expect(session.error).toStartWith("Can't reach crs at");
     });
 
     test('says why it could not read the session, with what it last knew', async () => {

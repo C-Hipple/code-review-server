@@ -126,7 +126,7 @@ browser cannot. Reproduce them if you want the corresponding features.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/github-image?url=` | Serves a GitHub-hosted image embedded in a comment or review. The bridge does not fetch it: it calls `GetImage`, which downloads with the server's token and caches, and streams back the file that comes out — or, in remote mode, where that file is on the server's machine, the bytes it asks for with `IncludeData` (`github_images.ts`). Only `github.com` and `*.githubusercontent.com` are accepted. |
-| `GET /api/session` | Who the bridge is connected as: `{remote: false}` locally; in remote mode the `address`, `login` (`""` for the admin token), `is_admin`, `github_linked` and `github_link_available`, re-read from `GetMyWorkflows` on each call, with an `error` when the server can't be reached. |
+| `GET /api/session` | Who the bridge is connected as: `{remote: false}` locally; in remote mode the `address` and whether the connect flow has signed in (`connected`), then — once it has — the `login` (`""` for the admin token), `is_admin`, `github_linked` and `github_link_available`, re-read from `GetMyWorkflows` on each call, with an `error` when the server can't be reached. Until it has signed in there is no `login`, only the `error` saying why. |
 | `POST /api/read-file` | Read a file from disk. Accepts an absolute `filePath`, or `repoPath` + relative `filePath` (rejects paths that escape `repoPath`). Powers the code viewer. |
 | `POST /api/list-files` | Recursive file listing under `repoPath`, skipping `node_modules`, `.git`, `.next`, `dist`. Powers the code viewer's file tree. |
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
@@ -664,8 +664,15 @@ User-facing behavior is in
 - **Session** — `session.ts` holds the `/api/session` reply for every component
   (`useBridgeSession`), and re-reads it after a link is made or removed, or a write is
   refused because the link stopped working. Reads apply in the order they started.
+  While the bridge has not signed in (`connected: false` — the server unreachable,
+  or registration refused) or the read carried an `error`, it is read again every
+  five seconds for as long as anything shows it, so the header catches up when the
+  bridge reconnects.
 - **Account chip** — in the header: the login, with a dot green when the GitHub
-  account is linked, amber when it isn't yet, grey when the server can't link. It
+  account is linked, amber when it isn't yet, grey when the server can't link.
+  Before the bridge has signed in it reads "not connected", red, with the reason in
+  its tooltip (and the Account tab says the same): it names nobody, not even the
+  administrator, whose token's session is the only one with an empty login. It
   opens Preferences on the **Account** tab, which only a remote bridge has: server
   and login, an Administrator badge, and the link state from `GetGitHubLink` with
   Link / Continue linking / Unlink (Unlink asks first).

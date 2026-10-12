@@ -217,6 +217,11 @@ export interface BridgeSession {
     remote: boolean;
     /** The shared server's host:port. */
     address?: string;
+    /**
+     * Whether the bridge has signed in to the shared server. Until it has
+     * there is no login — `error` says why — and nobody to show as signed in.
+     */
+    connected?: boolean;
     /** The login the bridge registered as; '' for the server's administrator token. */
     login?: string;
     is_admin?: boolean;

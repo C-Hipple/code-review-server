@@ -46,9 +46,12 @@ export default function AccountPanel() {
         }
     }, []);
 
+    // Read once signed in: a bridge still connecting has no link to ask about,
+    // and one that signs in later should not keep that failed read.
+    const signedIn = !!session && isSignedIn(session);
     useEffect(() => {
-        void load();
-    }, [load]);
+        if (signedIn) void load();
+    }, [signedIn, load]);
 
     const handleUnlink = async () => {
         setUnlinking(true);
@@ -72,6 +75,16 @@ export default function AccountPanel() {
         return (
             <div style={{ color: colors.textSecondary }}>
                 This client runs its own server, which posts to GitHub with your own token.
+            </div>
+        );
+    }
+
+    if (!isSignedIn(session)) {
+        return (
+            <div style={{ padding: '10px 0' }}>
+                <div style={heading}>Not connected</div>
+                <div>Not signed in to the shared server at {session.address} yet.</div>
+                {session.error && <div style={hint}>{session.error}</div>}
             </div>
         );
     }
@@ -272,9 +285,19 @@ const hint: CSSProperties = {
 };
 
 /**
+ * Whether the bridge has signed in to its shared server, so the session names
+ * who it is: a login, or '' for the administrator token. A bridge still
+ * connecting, or refused, has no login to show — not even the administrator.
+ */
+export function isSignedIn(session: BridgeSession): boolean {
+    return session.connected !== false && typeof session.login === 'string';
+}
+
+/**
  * The account indicator in the header, on a bridge connected to a shared
  * server: the login, with a dot for the GitHub link — green linked, amber
  * not linked yet, grey when the server cannot link. Opens the Account tab.
+ * Until the bridge has signed in it says so instead, in red.
  */
 export function AccountChip({
     session,
@@ -285,21 +308,30 @@ export function AccountChip({
     compact: boolean;
     onOpen: () => void;
 }) {
-    const who = session.login || 'administrator';
-    const variant: StatusVariant = session.github_linked
-        ? 'success'
-        : session.github_link_available
-          ? 'warning'
-          : 'neutral';
-    const state = session.github_linked
-        ? 'GitHub account linked'
-        : session.github_link_available
-          ? 'GitHub account not linked'
-          : 'GitHub accounts cannot be linked on this server';
+    const signedIn = isSignedIn(session);
+    const who = !signedIn ? 'not connected' : session.login || 'administrator';
+    const variant: StatusVariant = !signedIn
+        ? 'danger'
+        : session.github_linked
+          ? 'success'
+          : session.github_link_available
+            ? 'warning'
+            : 'neutral';
+    const state = !signedIn
+        ? session.error || 'connecting'
+        : session.github_linked
+          ? 'GitHub account linked'
+          : session.github_link_available
+            ? 'GitHub account not linked'
+            : 'GitHub accounts cannot be linked on this server';
     return (
         <button
             onClick={onOpen}
-            title={`Signed in to ${session.address} as ${who} — ${state}`}
+            title={
+                signedIn
+                    ? `Signed in to ${session.address} as ${who} — ${state}`
+                    : `Not connected to ${session.address} — ${state}`
+            }
             aria-label={`Account: ${who}, ${state}`}
             style={{
                 display: 'flex',

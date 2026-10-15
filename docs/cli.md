@@ -18,6 +18,9 @@ codereviewserver -pr owner/repo/123
 
 # Print the built-in default configuration
 codereviewserver -print-default-config
+
+# Print what registering with a hosted server sends from the config file
+codereviewserver -print-user-config
 ```
 
 ## Flags
@@ -33,6 +36,8 @@ Lists all PRs across all sections in a tab-aligned table format.
 - `#` — Pull request number
 - `AUTHOR` — PR author
 - `TITLE` — PR title
+
+On a server that keeps dashboards for registered users, every user's PRs are listed after the server's own, and a leading `USER` column says whose dashboard each row is on (empty for the server's). Without users the column is left out.
 
 **Example:**
 ```bash
@@ -51,6 +56,8 @@ Lists all configured sections with their priority and item count.
 - `PRIORITY` — Section ordering priority (lower numbers first)
 - `ITEMS` — Number of PRs in the section
 
+As with `-list-prs`, a leading `USER` column appears once users have sections of their own.
+
 **Example:**
 ```bash
 $ codereviewserver -list-sections
@@ -65,7 +72,7 @@ Fetches and displays cached details for a specific PR. Uses the same code path a
 
 **Format:** `-pr owner/repo/number`
 
-**Output:** Full PR details including metadata, diff, comments, reviews, and local feedback.
+**Output:** Full PR details including metadata, diff, comments, reviews, and local feedback. The drafts shown are the server's own, the ones a local client writes.
 
 **Example:**
 ```bash
@@ -88,6 +95,17 @@ codereviewserver -print-default-config > ~/.config/codereviewserver.toml
 ```
 
 Logs go to stderr, so the redirect above captures only TOML.
+
+### `-print-user-config`
+
+Prints, as one line of JSON, what a client sends when it registers with a [hosted server](hosted_server.md): the `[[Workflows]]`, `Repos`, `SectionPriority` and `SectionSorting` from `~/.config/codereviewserver.toml`, and nothing else.
+
+```bash
+$ codereviewserver -print-user-config
+{"Workflows":[{"WorkflowType":"SyncReviewRequestsWorkflow","Name":"review",...}],"Repos":["myorg/myrepo"],"SectionPriority":{},"SectionSorting":{}}
+```
+
+The values are as written in the file: a workflow's empty `GithubUsername` stays empty (the server fills in the registered login), and `DesktopNotifications` is dropped, as the server would drop it. Keys the file leaves out print as `[]` or `{}`, never `null`. Like `-print-default-config` it touches neither the database nor GitHub, so it works on a machine that only runs a client; the Emacs client runs it to register. A missing or unparsable file exits non-zero with a message on stderr.
 
 ## Use Cases
 
@@ -128,6 +146,9 @@ To start the RPC server normally (for web and Emacs clients), omit the CLI flags
 codereviewserver                    # Run workflows once
 codereviewserver -server            # Run workflows + RPC server
 codereviewserver -oneoff            # Run workflows once only
+codereviewserver -listen host:port  # Run workflows + RPC server for remote clients
 ```
+
+`-listen host:port` (or `--listen`) serves the same RPCs over TCP to any number of remote clients, each registered as a user with a dashboard of their own, instead of to one client over stdio. It runs the workflows and their hooks like `-server`, never reads stdin, and cannot be combined with `-server` or `-oneoff`. See [Hosted Server](hosted_server.md).
 
 See [Configuration](configuration.md) for more details on server modes.

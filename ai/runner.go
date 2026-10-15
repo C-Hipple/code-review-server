@@ -21,6 +21,13 @@ const DefaultTimeout = 5 * time.Minute
 // asked for never waits behind them.
 const MaxAutomaticRuns = 2
 
+// MaxRequestedRuns caps how many runs clients asked for — RunAIFeature, and the
+// applied features opening a PR asks for — execute at once. A client is
+// waiting on them, so they don't queue: one past the cap is refused as busy.
+// On a hosted server any user can ask for any PR, and each run costs a model
+// call on the server's key and a PR fetch on its GitHub token.
+const MaxRequestedRuns = 8
+
 // Stages the runner attributes failures to, beside llm's call stages.
 const (
 	// StageInput means the PR's inputs could not be assembled.
@@ -37,8 +44,9 @@ type Runner struct {
 	// NewProvider builds the provider a run's config chose. Tests replace it.
 	NewProvider func(choice config.AIProviderChoice) (Provider, error)
 
-	slots    chan struct{}
-	inflight sync.Map // runKey -> struct{}
+	slots     chan struct{} // automatic runs executing (MaxAutomaticRuns)
+	requested chan struct{} // requested runs executing (MaxRequestedRuns)
+	inflight  sync.Map      // runKey -> struct{}
 }
 
 func NewRunner(registry *Registry) *Runner {
@@ -46,6 +54,7 @@ func NewRunner(registry *Registry) *Runner {
 		registry:    registry,
 		NewProvider: NewProvider,
 		slots:       make(chan struct{}, MaxAutomaticRuns),
+		requested:   make(chan struct{}, MaxRequestedRuns),
 	}
 }
 
@@ -92,6 +101,9 @@ const (
 	OutcomeDisabled Outcome = "disabled"
 	// OutcomeUnknown means no feature is registered under the job's ID.
 	OutcomeUnknown Outcome = "unknown-feature"
+	// OutcomeBusy means a requested job found MaxRequestedRuns already
+	// executing; nothing was started.
+	OutcomeBusy Outcome = "busy"
 )
 
 // claim is a job the runner accepted, with the config it runs under.
@@ -149,8 +161,17 @@ func (r *Runner) claim(job Job) (claim, Outcome) {
 	if job.Trigger != TriggerRerun && storedCovers(cfg, job) {
 		return claim{}, OutcomeUpToDate
 	}
-	if _, running := r.inflight.LoadOrStore(runKey(job.Owner, job.Repo, job.Number, job.Feature), struct{}{}); running {
+	key := runKey(job.Owner, job.Repo, job.Number, job.Feature)
+	if _, running := r.inflight.LoadOrStore(key, struct{}{}); running {
 		return claim{}, OutcomeAlreadyRunning
+	}
+	if job.Trigger != TriggerAutomatic {
+		select {
+		case r.requested <- struct{}{}: // released by execute
+		default:
+			r.inflight.Delete(key)
+			return claim{}, OutcomeBusy
+		}
 	}
 	return claim{job: job, feature: f, mode: resolveMode(f, entry), provider: cfg.AIProviderFor(entry)}, OutcomeStarted
 }
@@ -185,6 +206,9 @@ func (r *Runner) execute(c claim) {
 	if job.Trigger == TriggerAutomatic {
 		r.slots <- struct{}{}
 		defer func() { <-r.slots }()
+	} else {
+		// Taken by claim.
+		defer func() { <-r.requested }()
 	}
 
 	timeout := DefaultTimeout

@@ -1,5 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
-import { LSP_PORT, NO_LSP_PORT, REAL_LSP, REAL_LSP_PORT, urlFor } from './harness/config';
+import {
+    LSP_PORT,
+    NO_LSP_PORT,
+    REAL_LSP,
+    REAL_LSP_PORT,
+    REMOTE_PORT,
+    urlFor,
+} from './harness/config';
 
 // Runs the real Bun bridge (server.ts) and the built frontend against a fake
 // `crs` backend and fake language servers — see e2e/README.md.
@@ -36,11 +43,12 @@ export default defineConfig({
     webServer: [
         bridge(LSP_PORT, 'fake'),
         bridge(NO_LSP_PORT, 'none'),
+        bridge(REMOTE_PORT, 'remote'),
         ...(REAL_LSP ? [bridge(REAL_LSP_PORT, 'real')] : []),
     ],
 });
 
-function bridge(port: number, lsp: 'fake' | 'none' | 'real') {
+function bridge(port: number, lsp: 'fake' | 'none' | 'real' | 'remote') {
     return {
         command: `bun e2e/harness/start_server.ts ${port} ${lsp}`,
         cwd: '..',

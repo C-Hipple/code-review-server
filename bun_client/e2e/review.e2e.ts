@@ -1,4 +1,4 @@
-import { diffRow, expect, modal, openReview, PR42, test } from './harness/test';
+import { diffRow, expect, modal, openReview, PR42, SCREENSHOT_URL, test } from './harness/test';
 
 test.describe('review view', () => {
     test('renders the PR header, discussion and diff', async ({ page, backend }) => {
@@ -146,6 +146,9 @@ test.describe('review view', () => {
             Number: 42,
             Event: 'APPROVE',
             Body: 'LGTM',
+            // The drafts the preview showed, which the server checks are
+            // all still there before it posts anything.
+            ExpectedDraftIDs: [9001],
         });
 
         await backend.release('SubmitReview');
@@ -390,6 +393,22 @@ test.describe('review view', () => {
     // Known gap: Review sets its content to "Error loading PR." when GetPR
     // fails but never renders `content`, so a PR that cannot be loaded shows
     // an empty review. Remove test.fail() once the view surfaces the error.
+    test('an embedded screenshot is served from the file the server cached', async ({
+        page,
+        backend,
+    }) => {
+        await backend.setPRBody(PR42, `Before: <img src="${SCREENSHOT_URL}" alt="e2e screenshot">`);
+        await openReview(page);
+
+        const image = page.getByRole('img', { name: 'e2e screenshot' });
+        await expect
+            .poll(() => image.evaluate(img => (img as HTMLImageElement).naturalWidth))
+            .toBe(2);
+        // A local bridge reads the server's file; it never needs the bytes sent.
+        const [asked] = await backend.calls('GetImage');
+        expect(asked.params).toEqual({ URL: SCREENSHOT_URL });
+    });
+
     test('reports a PR the backend cannot load', async ({ page }) => {
         test.fail();
         await page.goto('/?owner=acme&repo=widgets&number=999');

@@ -1,7 +1,11 @@
 package server
 
 import (
+	"crs/config"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,7 +23,10 @@ func extractHunkContextLines(content string, anchorLine int, direction string, c
 		if startLine < 1 {
 			startLine = 1
 		}
-		if endLine < 1 {
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+		if endLine < 1 || startLine > endLine {
 			return []string{}, 0, 0
 		}
 	} else {
@@ -180,6 +187,78 @@ func TestGetHunkContextValidation(t *testing.T) {
 	}
 }
 
+// hunkContextRepo commits files to a git repository under a fresh
+// RepoLocation, where GetHunkContext reads them, and caches the commit as the
+// head of PR acme/widgets#7. It returns the commit's SHA.
+func hunkContextRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	db := setupTestDB(t)
+	location := t.TempDir()
+	config.SetC(config.Config{DB: db, RepoLocation: location})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	dir := filepath.Join(location, "widgets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "files")
+	sha := git("rev-parse", "HEAD")
+	if err := db.UpsertPullRequest("acme", "widgets", 7, sha, sha, "diff"); err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+// An anchor past the end of the file — a client's diff newer than the cached
+// head, or a made-up line — has nothing before it to show. It used to slice
+// past the end of the file and panic, which on a hosted server took every
+// user's connection down with it.
+func TestGetHunkContextAnchorPastEndOfFile(t *testing.T) {
+	hunkContextRepo(t, map[string]string{"f.go": "one\ntwo\nthree\n"})
+	h := &RPCHandler{}
+
+	for _, anchor := range []int{500, 30} {
+		for _, direction := range []string{"before", "after"} {
+			reply := GetHunkContextReply{}
+			args := &GetHunkContextArgs{Owner: "acme", Repo: "widgets", Number: 7, Filename: "f.go", Side: "new",
+				AnchorLine: anchor, Direction: direction, Count: 20}
+			if err := h.GetHunkContext(args, &reply); err != nil {
+				t.Fatalf("anchor %d %s: %v", anchor, direction, err)
+			}
+			if len(reply.Lines) != 0 || reply.StartLine != 0 || reply.EndLine != 0 {
+				t.Errorf("anchor %d %s: got lines %q (%d-%d), want none", anchor, direction, reply.Lines, reply.StartLine, reply.EndLine)
+			}
+		}
+	}
+
+	// Lines before an anchor just past the end are the file's last ones.
+	reply := GetHunkContextReply{}
+	args := &GetHunkContextArgs{Owner: "acme", Repo: "widgets", Number: 7, Filename: "f.go", Side: "new",
+		AnchorLine: 6, Direction: "before", Count: 3, NewStart: 6, OrigStart: 6}
+	if err := h.GetHunkContext(args, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(reply.Lines, "|") != "three|" || reply.StartLine != 3 || reply.EndLine != 4 {
+		t.Errorf("before line 6: got %q (%d-%d)", reply.Lines, reply.StartLine, reply.EndLine)
+	}
+}
+
 func TestGetHunkContextCountDefaults(t *testing.T) {
 	// Verify count capping logic
 	tests := []struct {
@@ -277,9 +356,9 @@ func simulateGetHunkContext(
 //
 // Scenario: a 30-line file, hunk originally at @@ -15,3 +15,4 @@ func doStuff()
 //
-//   Expansion 1: 3 lines before (top of hunk)  → lines 12-14, header @@ -12,6 +12,7 @@
-//   Expansion 2: 3 more lines before            → lines 9-11,  header @@ -9,9 +9,10 @@
-//   Expansion 3: 3 lines after (bottom of hunk) → lines 19-21, header @@ -9,12 +9,13 @@
+//	Expansion 1: 3 lines before (top of hunk)  → lines 12-14, header @@ -12,6 +12,7 @@
+//	Expansion 2: 3 more lines before            → lines 9-11,  header @@ -9,9 +9,10 @@
+//	Expansion 3: 3 lines after (bottom of hunk) → lines 19-21, header @@ -9,12 +9,13 @@
 func TestConsecutiveHunkExpansion(t *testing.T) {
 	// Build a 30-line file: "line 1\nline 2\n...line 30"
 	var lines []string
@@ -298,7 +377,7 @@ func TestConsecutiveHunkExpansion(t *testing.T) {
 	// The client tracks the top and bottom anchors of the visible hunk.
 	// "before" anchor = first line of the hunk on the new side = newStart
 	// "after"  anchor = last line of the hunk on the new side  = newStart + newLength - 1
-	topAnchor := newStart                   // 15
+	topAnchor := newStart                    // 15
 	bottomAnchor := newStart + newLength - 1 // 18
 
 	// Track all context lines the client has accumulated (prepended/appended).

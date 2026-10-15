@@ -13,6 +13,24 @@ no GitHub token, network, or SQLite database:
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 
+Started with `--listen host:port`, `fake_crs.ts` stands in for a hosted
+`crs --listen` instead: the same methods over TCP, each connection a session
+that must `Authenticate` or `RegisterUser` first, answered with the Go
+server's own error strings and reply fields — its method policy
+(`not authenticated:` before a session, `permission denied:` for the
+administrator's methods and for `SkipCache`), and its write resolver for
+`SubmitReview` / `MergePR`: a user who linked their GitHub account writes as
+themselves, the open identity gate lends the server's account, and otherwise
+the write is refused with `refused: link-github:` where the server can link
+accounts and `refused:` where it cannot. `StartGitHubLink`, `GetGitHubLink`
+and `UnlinkGitHub` keep a device flow per user, which a spec ends the way
+GitHub would.
+
+Its `GetImage` serves one screenshot (`SCREENSHOT_URL` in `harness/test.ts`;
+embed it with `backend.setPRBody`): from a real file to a local bridge, and
+from a path that only exists on "the server's host" to a remote one, which
+has to ask for the bytes.
+
 ## Running
 
 ```bash
@@ -29,6 +47,13 @@ for the fakes, so nothing installed on the machine leaks in. Two bridges run:
 
 - `:5190` — fake `crs`, fake `diff-lsp`, fake TypeScript server
 - `:5191` — fake `crs` and no language servers (the "LSP not active" paths)
+- `:5193` — remote mode (`remote.e2e.ts`, `remote_link.e2e.ts`): no `crs` on PATH at all; the
+  bridge connects with `CRS_REMOTE` to a fake `crs --listen` on `:5194` and
+  registers with `CRS_REGISTRATION_KEY`. Its `HOME`, `XDG_CONFIG_HOME` and
+  `CRS_HOME` are under its state directory, holding the TOML from
+  `fixtures/remote_user.ts` and the token it is issued, so nothing of the
+  machine's leaks in (the launcher also strips any `CRS_REMOTE*` /
+  `CRS_LOGIN` / `CRS_REGISTRATION_KEY` from every bridge's environment).
 
 The bridge pools language servers per workspace (`lsp_pool.ts`), so a fake
 server started by one test can still be answering in the next: the fake
@@ -38,6 +63,35 @@ that need a fresh server pass a unique `worktree` when preparing the tempfile.
 Set `CRS_E2E_PORT` to move them. Each test resets the fake backend
 (`E2E.Reset`), and specs assert on what the UI sent through `backend.calls()`
 and `lsp.received()` (see `harness/test.ts`).
+
+The remote fake keeps its registered users and its log of `Authenticate` /
+`RegisterUser` calls across `E2E.Reset` — the bridge registers once, as it
+starts — but not their GitHub links: every test starts unlinked, on a server
+that cannot link until the spec says otherwise. Specs read that log with
+`backend.authLog()`, and a call the server refused — by its policy or in the
+handler — carries the error in `refused`.
+
+Drafts and feedback are each login's own, as on the server, and so is the
+dashboard: a user's is empty after registering — and after every reset —
+until the spec runs a workflow cycle with `backend.runCycle()`, which builds
+every user's from the fixtures. The server's own (stdio, and the admin token)
+always has them. `E2E.ForgetUser` drops a user with their drafts, feedback and
+dashboard, the way the server's retention sweep does (with `Disconnect: true`
+it also hangs up, as a restart would), and `E2E.SetIdentityActions` opens the
+identity gate. `backend.dropNext(method)` carries out the next call to
+`method` and then hangs up instead of answering, as a connection lost mid-call
+would. Like the server, `SubmitReview` posts nothing and answers
+`drafts changed:` when a pending comment named in its `ExpectedDraftIDs` is
+gone.
+
+For GitHub linking (`remote_link.e2e.ts`), `backend.setGitHubLinkAvailable`
+lets the server link accounts (its codes poll every second, not GitHub's
+five), `backend.gitHubLink` reads a user's flow — with the code the dialog
+should show — and stored link, `backend.endGitHubLink` ends a pending flow as
+GitHub would (`linked`, `denied`, `expired`, `mismatch` or `error`),
+`backend.linkGitHub` links without a flow, and `backend.breakGitHubLink`
+revokes a link on "GitHub" (the next write is refused with
+`refused: link-github:` and clears it) or makes it unreadable to the server.
 
 ## Real language servers (opt-in)
 

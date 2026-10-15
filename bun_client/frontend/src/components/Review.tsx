@@ -5,7 +5,9 @@ import {
     getHunkContext,
     listAIFeatures,
     rpcCall,
-    rpcErrorMessage,
+    rpcConnectionLost,
+    rpcDraftsChanged,
+    rpcRefusal,
 } from '../api';
 import {
     attentionCount,
@@ -18,10 +20,19 @@ import {
 import { Button, Theme, StatusVariant } from '../design';
 import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
+import { useBridgeSession } from '../hooks/useBridgeSession';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
-import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
+import { pluginRerunFailedMessage } from '../plugin_utils';
+import {
+    buildPendingPreviews,
+    expectedDraftIDs,
+    reviewNotSubmittedMessage,
+    reviewOutcomeUnknownMessage,
+    reviewSubmittedMessage,
+} from '../review_preview_utils';
+import { bridgeSession } from '../session';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
@@ -35,6 +46,7 @@ import {
 import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
 import AIReportModal from './AIReportModal';
 import CodeViewerModal from './CodeViewerModal';
+import LinkGitHubDialog from './LinkGitHubDialog';
 import AddCommentModal from './review/AddCommentModal';
 import DiffView from './review/DiffView';
 import FileIndex from './review/FileIndex';
@@ -63,8 +75,12 @@ interface ReviewProps {
     // Raises a transient notification. It outlives this view, so a review
     // submit that lands after the reviewer has gone back to the list still
     // reports how it went.
-    onToast: (message: string, variant?: StatusVariant) => void;
+    onToast: (message: string, variant?: StatusVariant, duration?: number) => void;
 }
+
+// A refused submit's toast explains where to go instead, which takes longer
+// to read than the default four seconds allow.
+const REFUSAL_TOAST_MS = 10_000;
 
 export default function Review({
     owner,
@@ -204,8 +220,16 @@ export default function Review({
     // Submit form
     const [reviewBody, setReviewBody] = useState('');
     const [reviewEvent, setReviewEvent] = useState('COMMENT');
-    // The login the review posts as, for the submit preview's verdict line.
+    // The login the review posts as, for the submit preview's verdict line:
+    // the configured GithubUsername locally, the session's login on a shared
+    // server, whose configuration only its administrators may read.
     const [githubUsername, setGithubUsername] = useState('');
+    const session = useBridgeSession();
+    const previewUsername = session?.remote ? session.login || '' : githubUsername;
+    // A submit the shared server refused until the reviewer's GitHub account
+    // is linked — which PR, and the server's reason — while the link dialog
+    // offers to link it.
+    const [linkRefusal, setLinkRefusal] = useState<{ pr: string; detail: string } | null>(null);
 
     // Where the PR's files are on disk for the code viewer: its worktree when
     // the server made one, else the main checkout, which may be on another
@@ -241,6 +265,7 @@ export default function Review({
         loadPluginOutputs();
         prKey.current = prRef;
         setOpenAIFeature(null);
+        setLinkRefusal(null);
         setAIOutputs({});
         loadAIFeatures();
         return () => {
@@ -257,8 +282,9 @@ export default function Review({
     // The submit preview attributes the review to the configured login. Fetched
     // the first time the modal opens rather than on mount: the review view has
     // no other use for the server config, and the preview reads fine without it.
+    // A shared server's session already says who the review goes out as.
     useEffect(() => {
-        if (!submitting || githubUsername) return;
+        if (!submitting || githubUsername || !session || session.remote) return;
         let cancelled = false;
         getConfig()
             .then(reply => {
@@ -272,7 +298,7 @@ export default function Review({
         return () => {
             cancelled = true;
         };
-    }, [submitting, githubUsername]);
+    }, [submitting, githubUsername, session]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -370,6 +396,7 @@ export default function Review({
             await loadPluginOutputs();
         } catch (e) {
             console.error('Failed to execute plugin:', e);
+            showToast(pluginRerunFailedMessage(pluginName, e), 'danger');
         } finally {
             setExecutingPlugins((prev: Set<string>) => {
                 const next = new Set(prev);
@@ -410,7 +437,9 @@ export default function Review({
         }
     };
 
-    const handleSync = async () => {
+    // `announce` says how the sync went in a toast; a sync that follows a
+    // submit leaves the toast to say how the submit went.
+    const handleSync = async (announce = true) => {
         setLoading(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.SyncPR', [
@@ -423,6 +452,7 @@ export default function Review({
             applyPRResponse(res);
             loadPluginOutputs();
             loadAIOutputs();
+            if (!announce) return;
             if (res.updated) {
                 showToast('Synced — new commits, comments, or reviews pulled in', 'success');
             } else {
@@ -430,7 +460,7 @@ export default function Review({
             }
         } catch (e) {
             console.error(e);
-            showToast('Sync failed — see console for details', 'danger');
+            if (announce) showToast('Sync failed — see console for details', 'danger');
         } finally {
             setLoading(false);
         }
@@ -680,6 +710,9 @@ export default function Review({
         const key = prRef;
         const event = reviewEvent;
         const body = reviewBody;
+        // The drafts the reviewer was shown: the server posts nothing if any
+        // of them is gone, rather than a verdict without them.
+        const expected = expectedDraftIDs(pendingPreviews);
         setSubmitting(false);
         setSubmittingPRs(prev => new Set(prev).add(key));
         try {
@@ -694,6 +727,7 @@ export default function Review({
                     Number: number,
                     Event: event,
                     Body: body,
+                    ExpectedDraftIDs: expected,
                 },
             ]);
             // Only a view still showing this PR takes the refreshed payload;
@@ -717,10 +751,49 @@ export default function Review({
             );
         } catch (e) {
             console.error(e);
-            showToast(`Review on ${key} was not submitted: ${rpcErrorMessage(e)}`, 'danger');
+            if (rpcConnectionLost(e)) {
+                // The server got it and may have posted it: offering the
+                // draft back would invite posting it twice. Show what the
+                // PR looks like now instead.
+                showToast(reviewOutcomeUnknownMessage(key), 'warning', REFUSAL_TOAST_MS);
+                if (prKey.current === key) void handleSync(false);
+                return;
+            }
+            if (rpcDraftsChanged(e)) {
+                // Nothing went out, but what the reviewer was shown is out of
+                // date: reload it before they submit again.
+                showToast(reviewNotSubmittedMessage(key, e), 'danger', REFUSAL_TOAST_MS);
+                if (prKey.current === key) {
+                    setReviewEvent(event);
+                    setReviewBody(body);
+                    void handleSync(false);
+                }
+                return;
+            }
+            const refusal = rpcRefusal(e);
+            if (refusal?.kind === 'link-github') {
+                // The server needs the reviewer's own GitHub account, which
+                // isn't linked or stopped working: offer to link it, keeping
+                // the draft to submit again once it is.
+                void bridgeSession.refresh();
+                if (prKey.current === key) {
+                    setReviewEvent(event);
+                    setReviewBody(body);
+                    setLinkRefusal({ pr: key, detail: refusal.detail });
+                } else {
+                    showToast(reviewNotSubmittedMessage(key, e), 'warning', REFUSAL_TOAST_MS);
+                }
+                return;
+            }
+            showToast(
+                reviewNotSubmittedMessage(key, e),
+                'danger',
+                refusal?.kind === 'refused' ? REFUSAL_TOAST_MS : undefined
+            );
             // Nothing went out, so hand the draft back for a retry, as it
             // was when Submit was clicked — unless the reviewer has moved on
-            // to another PR.
+            // to another PR. A server that refused to post it still leaves
+            // the body there to take to GitHub.
             if (prKey.current === key) {
                 setReviewEvent(event);
                 setReviewBody(body);
@@ -1097,7 +1170,7 @@ export default function Review({
                     zIndex: 10,
                 }}
             >
-                <Button onClick={handleSync} loading={loading}>
+                <Button onClick={() => handleSync()} loading={loading}>
                     {loading ? 'Syncing...' : '↻ Sync'}
                 </Button>
                 <Button
@@ -1714,12 +1787,30 @@ export default function Review({
                 onSubmit={handleAddComment}
             />
 
+            <LinkGitHubDialog
+                isOpen={linkRefusal?.pr === prRef}
+                reason={
+                    linkRefusal
+                        ? `Your review on ${linkRefusal.pr} was not submitted: ${linkRefusal.detail}. Your draft is kept.`
+                        : undefined
+                }
+                retryLabel="Submit again"
+                onRetry={() => {
+                    setLinkRefusal(null);
+                    handleSubmitReview();
+                }}
+                // Back to the draft, to submit it or keep editing.
+                onClose={() => {
+                    setLinkRefusal(null);
+                    setSubmitting(true);
+                }}
+            />
             <ReviewSubmitModal
                 isOpen={submitting}
                 reviewEvent={reviewEvent}
                 reviewBody={reviewBody}
                 pendingPreviews={pendingPreviews}
-                username={githubUsername}
+                username={previewUsername}
                 diffTheme={customDiffTheme}
                 onChangeReviewEvent={setReviewEvent}
                 onChangeReviewBody={setReviewBody}

@@ -61,16 +61,19 @@ type SinglePRMatcher interface {
 	MatchesPR(pr *github.PullRequest, ownedByWorkflow bool) bool
 }
 
-// ReprocessPR re-evaluates a single PR against every configured workflow that
-// targets its repo and syncs the PR's membership in each of those workflows'
-// sections. Call it after an action that changes how the filters see a PR —
-// submitting a review, most notably.
+// ReprocessPR re-evaluates a single PR against every workflow in the run set
+// that targets its repo and syncs the PR's membership in each of those
+// workflows' sections. Call it after an action that changes how the filters
+// see a PR — submitting a review, most notably.
+//
+// The run set is every dashboard the cycle would refresh, not just the one of
+// whoever acted: a review moves the PR on every dashboard that lists it, and
+// the user who submitted it, having just been active, is among them.
 //
 // It fetches the PR and its auxiliary data fresh: the whole point is to judge
 // the PR by its post-action state, and the caches still hold the pre-action one.
 func ReprocessPR(owner, repo string, number int) error {
-	cfg := config.C()
-	targets := WorkflowsTargetingRepo(MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain), owner, repo)
+	targets := WorkflowsTargetingRepo(RunSet(config.C(), time.Now()), owner, repo)
 	if len(targets) == 0 {
 		slog.Debug("No workflows target this repo, nothing to reprocess",
 			"owner", owner, "repo", repo, "pr", number)
@@ -88,7 +91,7 @@ func ReprocessPR(owner, repo string, number int) error {
 
 	names := make([]string, 0, len(targets))
 	for _, wf := range targets {
-		names = append(names, wf.GetName())
+		names = append(names, ownershipKey(wf))
 	}
 	// Refreshes the DB caches as a side effect, so the PR the user is still
 	// looking at reads back its new review state rather than a cache miss.
@@ -108,7 +111,7 @@ func WorkflowsTargetingRepo(wfs []Workflow, owner, repo string) []Workflow {
 		targeter, ok := wf.(RepoTargeter)
 		if !ok {
 			slog.Warn("Workflow cannot report its repos; skipping it during reprocess",
-				"workflow", wf.GetName())
+				"workflow", wf.GetName(), "user", wf.GetUser())
 			continue
 		}
 		if targeter.TargetsRepo(owner, repo) {
@@ -134,23 +137,23 @@ func applyReprocessedPR(db *database.DB, wfs []Workflow, pr *github.PullRequest)
 		matcher, ok := wf.(SinglePRMatcher)
 		if !ok {
 			slog.Warn("Workflow cannot evaluate a single PR; skipping it during reprocess",
-				"workflow", wf.GetName())
+				"workflow", wf.GetName(), "user", wf.GetUser())
 			continue
 		}
 
-		sectionName := wf.GetOrgSectionName()
-		section, err := db.GetOrCreateSection(sectionName, config.C().SectionPriority[sectionName])
+		section, err := workflowSection(db, wf)
 		if err != nil {
 			slog.Error("Error getting section during reprocess",
-				"section", sectionName, "workflow", wf.GetName(), "error", err)
+				"section", wf.GetOrgSectionName(), "workflow", wf.GetName(), "user", wf.GetUser(), "error", err)
 			continue
 		}
 
+		key := ownershipKey(wf)
 		item, err := db.GetItem(section.ID, identifier)
-		owned := err == nil && item != nil && slices.Contains(item.GetWorkflows(), wf.GetName())
+		owned := err == nil && item != nil && slices.Contains(item.GetWorkflows(), key)
 
 		if matcher.MatchesPR(pr, owned) {
-			change := SyncTODOToSectionDB(db, wf.GetName(), pr, section, workflowIncludesDiff(wf))
+			change := SyncTODOToSectionDB(db, key, pr, section, workflowIncludesDiff(wf))
 			change.TTL = ttl
 			change.NotifyOnAdd = workflowShouldNotify(wf)
 			changes = append(changes, change)
@@ -172,7 +175,7 @@ func applyReprocessedPR(db *database.DB, wfs []Workflow, pr *github.PullRequest)
 			SectionID:    section.ID,
 			SectionName:  section.SectionName,
 			TTL:          0,
-			WorkflowName: wf.GetName(),
+			WorkflowName: key,
 		})
 	}
 

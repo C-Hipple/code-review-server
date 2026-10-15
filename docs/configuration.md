@@ -49,6 +49,11 @@ RepoLocation: str [optional, default="~/"]
 DesktopNotifications: bool [optional, default=false]
 SectionPriority: map[string]int [optional]
 SectionSorting: map[string]string [optional]
+UserActiveHours: int [optional, default=24]
+UserRetentionDays: int [optional, default=7]
+AllowServerIdentityActions: bool [optional, default=false]
+GitHubOAuthClientID: str [optional]
+GitHubOAuthScopes: str [optional, default="repo"]
 ```
 
 - **SectionPriority**: Allows you to define the order of sections in your client. Lower numbers come first. This map keys the section title to an integer.
@@ -57,6 +62,14 @@ SectionSorting: map[string]string [optional]
 - **GithubUsername**: Your GitHub login. Required by every filter that compares PRs against you (`FilterMyPRs`, `FilterNotMyPRs`, `FilterMyReviewRequested`, `FilterWaitingOnMe`, `FilterWaitingOnAuthor`) and by `ListMyPRsWorkflow`. A workflow may set its own `GithubUsername` to override this; if neither is set, workflows using those filters are skipped at startup with an error in the log rather than running with no identity and matching nothing.
 - **RepoLocation**: The directory where you keep your git repositories. It defaults to "~/" if not defined. This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 - **DesktopNotifications**: When `true`, sends a desktop notification each time a PR is newly added to a section. Defaults to `false`. Currently only macOS is supported (via `osascript`); enabling this on other operating systems will log an error.
+
+`UserActiveHours`, `UserRetentionDays`, `AllowServerIdentityActions`, `GitHubOAuthClientID` and `GitHubOAuthScopes` only matter to a [hosted server](hosted_server.md), which keeps dashboards for registered users as well as its own; a server only you use has no users and ignores them. The config file's workflows are the server's own and fill the dashboard a local client sees. Each user's workflows fill a dashboard of their own, their drafts and feedback are theirs alone, and their workflows never send desktop notifications, which would pop up on the server's machine rather than theirs.
+
+- **UserActiveHours**: How recently a user must have been seen for the background sync to run their workflows. A user idle for longer keeps their dashboard as it was — nothing is removed — and it starts refreshing again on the first sync after they come back. `0` runs every user's workflows however long they have been away.
+- **UserRetentionDays**: How long a user may stay idle before the server deletes them along with their workflows, drafts and feedback. Their sections and PRs are cleared out by the same sync. `0` never deletes anyone. A deleted user's client registers them again on its next connection, and their dashboard fills back in on the following sync.
+- **AllowServerIdentityActions**: Submitting a review or merging a PR goes to GitHub with the server's token, so GitHub records it as the token's user, whoever pressed the button. Users connecting from elsewhere may only do either when this is `true`, which suits an organization whose server token is a bot account, and merging that way also takes an administrator. A local client, which started the server itself, is never refused. Defaults to `false`. A user who has [linked their GitHub account](hosted_server.md#linking-your-github-account) writes as themselves instead, whatever this says.
+- **GitHubOAuthClientID**: The client ID of the OAuth App or GitHub App, with device flow enabled, through which users link their own GitHub accounts so their reviews and merges go out as themselves. Empty (the default) leaves linking unavailable. Linking also needs `CRS_SECRET_KEY` in the server's environment; setting up the app and the secrets is described under [Linking your GitHub account](hosted_server.md#linking-your-github-account).
+- **GitHubOAuthScopes**: The OAuth scopes an OAuth App asks for, separated by spaces or commas. Defaults to `repo` (also when set to an empty string), which reviewing, replying and merging in private repositories need. A GitHub App ignores it: it is granted the permissions configured on the app.
 
 ## Editing the Config from a Client
 
@@ -79,6 +92,8 @@ Root level:
 - `SleepDuration` is not a positive number of minutes, or is greater than 1440 (24 hours).
 - A `Repos` entry is not in `owner/repo` form.
 - A `SectionSorting` value is not `newest_first` or `oldest_first`.
+- `UserActiveHours` or `UserRetentionDays` is negative.
+- `GitHubOAuthClientID` contains a space, or a `GitHubOAuthScopes` entry is not a scope name (lower-case letters, digits, `_` and `:`, e.g. `repo`, `read:org`).
 
 Per workflow:
 
@@ -148,7 +163,7 @@ Filters = ["FilterNotDraft"]   # optional, further narrows the section
 
 They take no `Repos`, `Teams`, or `PRState`. Instead of listing the open PRs of configured repositories, they ask GitHub search:
 
-- `MyReviewRequestsWorkflow` runs `review-requested:<you>` plus `team-review-requested:<org>/<team>` for every team you belong to, since the direct qualifier does not expand to team membership. Archived repos are excluded, matching github.com's own list. Teams past the first ten are skipped, to stay inside the search API's 30-requests-per-minute budget.
+- `MyReviewRequestsWorkflow` runs `review-requested:<you>` plus `team-review-requested:<org>/<team>` for every team you belong to, since the direct qualifier does not expand to team membership. Archived repos are excluded, matching github.com's own list. Teams past the first ten are skipped, to stay inside the search API's 30-requests-per-minute budget. The teams are the ones the server's token belongs to, so they are searched only when "you" is the token's own account: on a [hosted server](hosted_server.md) a user's review requests are the ones made of them by name.
 - `WaitingOnMeWorkflow` takes those same review requests plus `reviewed-by:<you>` and `commenter:<you>` as its candidates, then applies `FilterWaitingOnMe` (the same filter you can use in any other workflow) to keep only the PRs actually in your court.
 
 Search results carry no reviewer or branch data, so each candidate PR is then fetched individually — one API call per candidate, capped at 250 per cycle. That is more per-PR traffic than listing a repo, and the reason to prefer an explicit `Repos` list with `SyncReviewRequestsWorkflow` once you know exactly which repositories you care about.

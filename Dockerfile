@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build Go binary + plugin binaries
 # =============================================================================
-FROM golang:1.25 AS go-builder
+FROM golang:1.27 AS go-builder
 
 WORKDIR /src
 

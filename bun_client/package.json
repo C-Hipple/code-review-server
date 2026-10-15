@@ -15,7 +15,7 @@
         "dev:frontend": "NODE_ENV=development bun --filter frontend dev",
         "server": "bun server.ts",
         "stop-dev": "pkill -f 'bun run dev' || true; pkill -f 'bun run server.ts' || true; pkill -f 'vite' || true",
-        "build": "bun --filter frontend build && bun scripts/build.ts && bun build server.ts --compile --outfile crs-gui && bun scripts/codesign.ts",
+        "build": "bun --filter frontend build && bun scripts/build.ts && bun build server.ts --compile --outfile crs-gui",
         "lint": "bun --filter frontend lint && bun run lint:server",
         "lint:server": "bunx @biomejs/biome check --write *.ts scripts/*.ts || echo 'Install biome: bun add -D @biomejs/biome'",
         "format": "bunx prettier --write .",

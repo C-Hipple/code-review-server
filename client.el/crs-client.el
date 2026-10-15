@@ -1,4 +1,4 @@
-;;; crs-client.el --- JSON-RPC client for codereviewserver -*- lexical-binding: t; -*-
+;;; crs-client.el --- JSON-RPC client for crs -*- lexical-binding: t; -*-
 
 ;; Author: Chris Hipple
 ;; Version: 0.1.0
@@ -8,7 +8,9 @@
 
 ;;; Commentary:
 
-;; This package provides JSON-RPC client functionality for crs (codereviewserver).
+;; This package provides JSON-RPC client functionality for crs, the
+;; code-review-server binary (called codereviewserver before the module was
+;; renamed).
 ;; It allows starting the server process and making RPC calls to it.
 
 ;;; Code:

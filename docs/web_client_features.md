@@ -25,7 +25,7 @@ browser (React SPA)
 bun_client/server.ts           ← the bridge; owns the child process
     │  stdin/stdout, newline-delimited JSON-RPC 1.0
     ▼
-codereviewserver --server      (spawned as `crs --server`)
+crs --server                   (the server binary)
 ```
 
 **`server.ts`** — a Bun HTTP + WebSocket server (default port `5172`, override with
@@ -60,7 +60,7 @@ this pattern; if you don't, `server.ts` still serves from `frontend/dist`.
 
 You need the same three responsibilities, however you split them:
 
-- **Process ownership** — one long-lived `codereviewserver --server` child. Spawning
+- **Process ownership** — one long-lived `crs --server` child. Spawning
   one per request is wasteful (the server caches in SQLite and holds GitHub rate
   limit state) and racy.
 - **Request multiplexing** — the stdio pipe is shared; correlate by JSON-RPC `id`.

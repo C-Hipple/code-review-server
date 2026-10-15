@@ -2,6 +2,10 @@ module crs
 
 go 1.26.0
 
+// The extension's npm dependencies ship Go sources (flatted) that are not part
+// of this module.
+ignore ./chrome_extension/node_modules
+
 require (
 	github.com/google/go-github/v74 v74.0.0
 	github.com/mattn/go-sqlite3 v1.14.52

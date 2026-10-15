@@ -73,6 +73,10 @@ interface Symbol {
     declText: string;
 }
 
+// Sorted by name, since readdir's order is whatever the filesystem's is (APFS
+// lists the fixture's src/ as main.ts, greet.ts; CI's Linux runners happened
+// to list greet.ts first), and this order decides the order of the files in a
+// references answer and which declaration of a name wins.
 function sourceFiles(dir: string): string[] {
     const out: string[] = [];
     let entries: import('node:fs').Dirent[];
@@ -81,6 +85,7 @@ function sourceFiles(dir: string): string[] {
     } catch {
         return out;
     }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const e of entries) {
         if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
         const p = join(dir, e.name);

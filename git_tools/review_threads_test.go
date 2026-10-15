@@ -119,7 +119,7 @@ func TestGetReviewThreadsDoesNotOverwriteTheRESTRateLimitBudget(t *testing.T) {
 	})
 
 	// Stand in for a REST budget that is nearly spent.
-	globalRateLimitManager.UpdateFromHeaders(http.Header{
+	globalRateLimitManager.UpdateFromHeaders(RateResourceCore, http.Header{
 		"X-Ratelimit-Limit":     []string{"5000"},
 		"X-Ratelimit-Remaining": []string{"37"},
 	})
@@ -133,6 +133,11 @@ func TestGetReviewThreadsDoesNotOverwriteTheRESTRateLimitBudget(t *testing.T) {
 	if after.Remaining != before.Remaining {
 		t.Errorf("REST remaining went from %d to %d; the GraphQL budget leaked into it",
 			before.Remaining, after.Remaining)
+	}
+	// The reading lands on the GraphQL budget instead, even though the reply
+	// never said which budget it was.
+	if graphQL := globalRateLimitManager.GetStatusFor(RateResourceGraphQL); graphQL.Remaining != 4999 {
+		t.Errorf("GraphQL remaining = %d, want the 4999 the reply reported", graphQL.Remaining)
 	}
 	// The call is still counted and still queued behind the shared throttle.
 	if after.TotalRequests <= before.TotalRequests {

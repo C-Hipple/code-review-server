@@ -529,6 +529,7 @@ func hasUnfetchedRequirements(
 func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	client := git_tools.GetGithubClient()
 	apiCalls := &apiCallCounter{}
+	cacheAtStart := git_tools.GetHTTPCacheStats()
 
 	// Map to store fetched PRs: repo -> state -> PRs
 	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
@@ -648,11 +649,20 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		rlRemaining = rlStatus.Remaining
 		rlResetAt = rlStatus.ResetAt
 	}
+	// GetRateLimitFromAPI recorded every budget /rate_limit reports, GraphQL's
+	// among them; when it failed, this is the last reply's reading instead.
+	graphQL := git_tools.GetRateLimitStatusFor(git_tools.RateResourceGraphQL)
+	cache := git_tools.GetHTTPCacheStats()
 	slog.Info("GitHub rate limit post-cycle",
 		"remaining", rlRemaining,
 		"limit", rlLimit,
 		"used_this_cycle", apiCalls.total(),
 		"reset_at", rlResetAt,
+		// Requests GitHub answered 304 while the cycle ran: served from the
+		// response cache and not charged against the rate limit.
+		"not_modified_this_cycle", cache.NotModified-cacheAtStart.NotModified,
+		"graphql_remaining", graphQL.Remaining,
+		"graphql_limit", graphQL.Limit,
 	)
 
 	rlResetAtStr := ""
@@ -1278,9 +1288,9 @@ func fetchAuxDataForPR(client *github.Client,
 		}()
 	}
 
-	// 8. Reactions (GraphQL — REST gives per-emoji totals but not who reacted).
-	// Like review threads, only the review view reads these, so nothing else
-	// would fill the cache.
+	// 8. Reactions (who reacted, where the comments above only total up each
+	// emoji). Like review threads, only the review view reads these, so
+	// nothing else would fill the cache.
 	if req.Reactions {
 		wg.Add(1)
 		go func() {

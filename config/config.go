@@ -291,6 +291,46 @@ func (c Config) fileEntry(id string) (AIFeature, bool) {
 	return AIFeature{}, false
 }
 
+// The APIs a [GitHubAPI] key can send a lookup to. They live here, beside the
+// validation that checks them, because config cannot import git_tools
+// (git_tools reads config).
+const (
+	GitHubAPIREST    = "rest"
+	GitHubAPIGraphQL = "graphql"
+)
+
+// GitHubAPISettings is the [GitHubAPI] table: which of GitHub's two APIs
+// answers each lookup that both of them can answer. A key left unset means
+// REST. The server revalidates a REST reply rather than refetching it, so
+// asking again about data that hasn't changed costs nothing against the rate
+// limit; a GraphQL query is charged every time, but against a budget of its
+// own, and some lookups answer more completely there — each key says how.
+// git_tools.RouteFor is what reads it.
+type GitHubAPISettings struct {
+	// ReviewRequestHistory is every team and user ever asked to review a PR,
+	// behind the required-team chips on the review list. REST reads it from
+	// the PR's issue events, GraphQL from its timeline; both answer fully.
+	ReviewRequestHistory string `toml:"ReviewRequestHistory,omitempty"`
+	// Reactions is who reacted to each comment and review. REST spends a
+	// request per comment somebody reacted to, and has no endpoint for
+	// reactions on a review's own body; GraphQL answers both in one query.
+	Reactions string `toml:"Reactions,omitempty"`
+	// Mergeability is whether each PR on the review list merges cleanly. REST
+	// asks about one PR per request, GraphQL about fifty.
+	Mergeability string `toml:"Mergeability,omitempty"`
+}
+
+// Routes maps each [GitHubAPI] key to the API it names, "" for a key left
+// unset. Validation and git_tools.RouteFor both read the keys from here, so a
+// new lookup is added in one place.
+func (s GitHubAPISettings) Routes() map[string]string {
+	return map[string]string{
+		"ReviewRequestHistory": s.ReviewRequestHistory,
+		"Reactions":            s.Reactions,
+		"Mergeability":         s.Mergeability,
+	}
+}
+
 // Define your classes
 type Config struct {
 	Repos                []string // List of repositories in "owner/repo" format. Workflows can override this.
@@ -311,6 +351,8 @@ type Config struct {
 	// the entries the file has: ask AIFeatureSettings whether a feature is on.
 	AI         AISettings
 	AIFeatures []AIFeature
+	// GitHubAPI picks REST or GraphQL for the lookups both can answer.
+	GitHubAPI GitHubAPISettings
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.
 	legacy legacyLLMKeys
@@ -409,6 +451,7 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs          map[string]RepoConfig
 		AI                   AISettings
 		AIFeatures           []AIFeature
+		GitHubAPI            GitHubAPISettings
 		// The legacy keys; see legacyLLMKeys.
 		LegacyFileOrdering bool   `toml:"ExperimentalLLMFileOrdering"`
 		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
@@ -486,6 +529,7 @@ func parseConfig(data []byte) (*Config, error) {
 		RepoConfigs:          repoConfigs,
 		AI:                   intermediate_config.AI,
 		AIFeatures:           intermediate_config.AIFeatures,
+		GitHubAPI:            intermediate_config.GitHubAPI,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

@@ -20,6 +20,12 @@ func TestMain(m *testing.M) {
 	fetchInteractionSet = func(login string) (InteractionSet, error) {
 		return nil, errors.New("interaction search disabled in tests")
 	}
+	// The same goes for the routed lookups, which go to REST unless a test
+	// routes them to GraphQL: one that hasn't been pointed at a fake GitHub
+	// (withFakeREST) fails rather than reaching the real one.
+	newRESTClient = func() (*github.Client, error) {
+		return nil, errors.New("REST lookups disabled in tests")
+	}
 	os.Exit(m.Run())
 }
 

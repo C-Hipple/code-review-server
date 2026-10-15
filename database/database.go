@@ -464,8 +464,8 @@ func (db *DB) initSchema() error {
 	}
 
 	// Migration: Add the review_threads counter to APICallStats. Review-thread
-	// resolution is a GraphQL call, but it spends the same rate limit budget as
-	// the REST ones, so it belongs in the same accounting.
+	// resolution is a GraphQL call — charged to GraphQL's budget rather than
+	// REST's, but a call all the same — so it is counted alongside the others.
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='review_threads'").Scan(&count)
 	if err == nil && count == 0 {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN review_threads INTEGER NOT NULL DEFAULT 0")
@@ -476,7 +476,7 @@ func (db *DB) initSchema() error {
 
 	// Migration: Add the team_reviews counter to APICallStats. Same story as
 	// review_threads — the review-request history behind the required-team
-	// chips is a GraphQL call spending the same budget.
+	// chips is a fetch of its own.
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='team_reviews'").Scan(&count)
 	if err == nil && count == 0 {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN team_reviews INTEGER NOT NULL DEFAULT 0")
@@ -486,8 +486,8 @@ func (db *DB) initSchema() error {
 	}
 
 	// Migration: Add the reactions counter to APICallStats. Reactions are
-	// another GraphQL-only fetch (REST reports per-emoji totals but not who
-	// reacted), spending the same budget as review_threads and team_reviews.
+	// another fetch of their own (the comment lists report per-emoji totals but
+	// not who reacted), counted like review_threads and team_reviews.
 	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name='reactions'").Scan(&count)
 	if err == nil && count == 0 {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN reactions INTEGER NOT NULL DEFAULT 0")
@@ -1747,9 +1747,9 @@ func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
 	return err
 }
 
-// Who reacted to a comment is GraphQL-only too (REST reports per-emoji totals
-// but not the logins behind them), so reactions get their own cache rather than
-// being folded into the comment and review rows. Keeping them separate lets a
+// Who reacted to a comment is a fetch of its own (the comment lists report
+// per-emoji totals but not the logins behind them), so reactions get their own
+// cache rather than being folded into the comment and review rows. Keeping them separate lets a
 // thumbs-up refresh without rewriting a comment cache whose contents have not
 // changed.
 

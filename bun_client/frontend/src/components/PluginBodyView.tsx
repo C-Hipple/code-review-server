@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Markdown from 'react-markdown';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
+import Markdown, { type Components, type ExtraProps } from 'react-markdown';
 import type { PluginBody } from '../plugin_utils';
 
 interface PluginBodyViewProps {
@@ -51,6 +51,14 @@ th{background:var(--bg-tertiary);}
 img{max-width:100%;}
 </style></head><body>${html}</body></html>`;
 }
+
+function MarkdownLink({ node: _node, ...props }: ComponentProps<'a'> & ExtraProps) {
+    // A plugin's links point at docs, issues or the code it flagged — none of
+    // which should replace the review it is shown in.
+    return <a {...props} target="_blank" rel="noreferrer" />;
+}
+
+const MARKDOWN_COMPONENTS: Components = { a: MarkdownLink };
 
 /**
  * Renders a plugin's HTML body inside a sandboxed frame.
@@ -152,5 +160,5 @@ export default function PluginBodyView({ body, emptyLabel = 'No output' }: Plugi
         return <HtmlFrame html={body.body_content} />;
     }
 
-    return <Markdown>{body.body_content}</Markdown>;
+    return <Markdown components={MARKDOWN_COMPONENTS}>{body.body_content}</Markdown>;
 }

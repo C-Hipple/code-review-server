@@ -42,6 +42,16 @@ describe('PluginsPanel', () => {
         expect(html).toContain('No issues found.');
     });
 
+    test("opens a plugin's links in a new tab so the review stays put", () => {
+        const html = renderPanel({
+            security: markdown('See [the advisory](https://example.com/advisory).'),
+        });
+
+        expect(html).toContain('href="https://example.com/advisory"');
+        expect(html).toContain('target="_blank"');
+        expect(html).toContain('rel="noreferrer"');
+    });
+
     test('collapses every plugin when the output is over 300 lines in total', () => {
         const html = renderPanel({
             summarize: longOutput('Summary of the change', 200),

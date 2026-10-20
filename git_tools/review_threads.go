@@ -8,7 +8,9 @@ import (
 
 // GitHub's REST API does not report whether a review-comment thread has been
 // resolved — that lives only in GraphQL's `reviewThreads` connection. This file
-// fetches it so clients can show "resolved" alongside "outdated".
+// fetches it so clients can show "resolved" alongside "outdated". With nothing
+// on the REST side to answer it, it is not a Lookup RouteFor chooses an API
+// for (routing.go): it always goes to GraphQL.
 
 // ReviewThread is the resolution state of one review-comment thread, keyed back
 // to REST by the database IDs of the comments it contains.

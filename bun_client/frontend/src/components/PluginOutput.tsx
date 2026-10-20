@@ -1,14 +1,13 @@
-import { useState, useEffect } from 'react';
-import { rpcCall } from '../api';
+import { useEffect } from 'react';
 import { Button, Badge, Card, mapStatusToVariant, Theme, type StatusVariant } from '../design';
 import { usePluginCollapse } from '../hooks/usePluginCollapse';
+import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import {
     canRerunPlugin,
     pluginOutputLineCount,
     pluginRerunFailedMessage,
     resolvePluginBody,
     sortedAnnotations,
-    type PluginResult,
 } from '../plugin_utils';
 import PluginAnnotations from './PluginAnnotations';
 import PluginBodyView from './PluginBodyView';
@@ -24,10 +23,6 @@ interface PluginOutputProps {
     onToast: (message: string, variant?: StatusVariant) => void;
 }
 
-interface GetPluginOutputResponse {
-    output: Record<string, PluginResult>;
-}
-
 export default function PluginOutput({
     owner,
     repo,
@@ -37,14 +32,16 @@ export default function PluginOutput({
     onClose,
     onToast,
 }: PluginOutputProps) {
-    const [loading, setLoading] = useState(false);
-    const [pluginOutput, setPluginOutput] = useState<Record<string, PluginResult>>({});
-    const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
+    const {
+        outputs: pluginOutput,
+        loading,
+        executing: executingPlugins,
+        load: loadPluginOutput,
+        execute: executePlugin,
+    } = usePluginOutputs(owner, repo, number, (name, e) =>
+        onToast(pluginRerunFailedMessage(name, e), 'danger')
+    );
     const { isCollapsed, toggle } = usePluginCollapse(pluginOutput);
-
-    useEffect(() => {
-        loadPluginOutput();
-    }, [owner, repo, number]);
 
     useEffect(() => {
         if (!onClose) return;
@@ -56,49 +53,6 @@ export default function PluginOutput({
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
-
-    const loadPluginOutput = async () => {
-        setLoading(true);
-        try {
-            const response = await rpcCall<GetPluginOutputResponse>('RPCHandler.GetPluginOutput', [
-                {
-                    Owner: owner,
-                    Repo: repo,
-                    Number: number,
-                },
-            ]);
-            setPluginOutput(response.output || {});
-        } catch (e) {
-            console.error('Failed to load plugin output:', e);
-            setPluginOutput({});
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const executePlugin = async (pluginName: string) => {
-        setExecutingPlugins((prev: Set<string>) => new Set(prev).add(pluginName));
-        try {
-            await rpcCall('RPCHandler.RerunPlugins', [
-                {
-                    Owner: owner,
-                    Repo: repo,
-                    Number: number,
-                    Plugins: [pluginName],
-                },
-            ]);
-            await loadPluginOutput();
-        } catch (e) {
-            console.error('Failed to execute plugin:', e);
-            onToast(pluginRerunFailedMessage(pluginName, e), 'danger');
-        } finally {
-            setExecutingPlugins((prev: Set<string>) => {
-                const next = new Set(prev);
-                next.delete(pluginName);
-                return next;
-            });
-        }
-    };
 
     const pluginNames = Object.keys(pluginOutput);
 

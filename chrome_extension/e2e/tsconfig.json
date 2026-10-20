@@ -1,0 +1,20 @@
+{
+    // The specs and harness run under Playwright (Node) and the fake server
+    // under Bun; both read the extension's wire types from ../src/types.ts.
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "types": ["bun", "chrome"],
+        "strict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "skipLibCheck": true,
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "noEmit": true
+    },
+    "include": ["**/*.ts"],
+    "exclude": ["test-results", "playwright-report"]
+}

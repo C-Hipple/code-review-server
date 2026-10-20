@@ -96,6 +96,9 @@ interface State {
     diagramSource: string;
     aiRuns: Map<string, number>;
     aiDone: Set<string>;
+    // Plugin re-runs in flight: reads of the output left before each lands,
+    // keyed by PR and plugin.
+    pluginRuns: Map<string, number>;
     // What the Server Configuration tab edits: UpdateConfig merges each field
     // it is sent into this, the way the server merges an update into the file.
     config: Record<string, unknown>;
@@ -162,6 +165,7 @@ function freshState(): State {
         diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Map(),
         aiDone: new Set(),
+        pluginRuns: new Map(),
         config: freshConfig(),
         identityActions: false,
         linkAvailable: false,
@@ -425,6 +429,39 @@ function aiOutput(pr: PRFixture, feature = AI_FEATURE) {
         covers_digest: 'e2e-digest',
         updated_at: new Date().toISOString(),
     };
+}
+
+// A PR's plugin output, as GetPluginOutput serves it. A re-run deletes the
+// plugin's result, as the server does, so the plugin is missing from the
+// first read after it; it reads as pending for the next, then lands with a
+// new result.
+function pluginOutput(pr: PRFixture): Record<string, unknown> {
+    const prefix = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:`;
+    for (const [k, readsLeft] of state.pluginRuns) {
+        if (!k.startsWith(prefix)) continue;
+        const name = k.slice(prefix.length);
+        if (readsLeft === 0) {
+            state.pluginRuns.delete(k);
+            const content = `## Re-run\n\n${name} ran again.`;
+            pr.plugins[name] = {
+                result: content,
+                status: 'success',
+                body: { body_type: 'markdown', body_content: content },
+                annotations: [],
+            };
+            continue;
+        }
+        state.pluginRuns.set(k, readsLeft - 1);
+        if (readsLeft === 1) {
+            pr.plugins[name] = {
+                result: '',
+                status: 'pending',
+                body: { body_type: 'markdown', body_content: '' },
+                annotations: [],
+            };
+        }
+    }
+    return pr.plugins;
 }
 
 // Lines of a file in the fixture checkout, for GetHunkContext.
@@ -1136,10 +1173,15 @@ const handlers: Record<string, (args: any, peer: Peer) => unknown> = {
 
     'RPCHandler.ListPlugins': () => ({ plugins: ['summarize'] }),
 
-    'RPCHandler.GetPluginOutput': args => ({ output: findPR(args).plugins }),
+    'RPCHandler.GetPluginOutput': args => ({ output: pluginOutput(findPR(args)) }),
 
     'RPCHandler.RerunPlugins': args => {
-        findPR(args);
+        const pr = findPR(args);
+        const prefix = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:`;
+        for (const name of args.Plugins ?? []) {
+            delete pr.plugins[name];
+            state.pluginRuns.set(prefix + name, 2);
+        }
         return { okay: true };
     },
 

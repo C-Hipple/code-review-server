@@ -22,6 +22,7 @@ import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
 import { useBridgeSession } from '../hooks/useBridgeSession';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import { pluginRerunFailedMessage } from '../plugin_utils';
@@ -60,7 +61,6 @@ import { buildDiffTheme } from './review/diff_theme';
 import {
     slugify,
     type Comment,
-    type PluginResult,
     type PRAnnotation,
     type PRMetadata,
     type PRResponse,
@@ -102,8 +102,15 @@ export default function Review({
     const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
     const [reviews, setReviews] = useState<PRResponse['reviews']>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
-    const [pluginOutputs, setPluginOutputs] = useState<Record<string, PluginResult>>({});
-    const [executingPlugins, setExecutingPlugins] = useState<Set<string>>(new Set());
+    // Loaded when the PR opens, and polled while any plugin is running.
+    const {
+        outputs: pluginOutputs,
+        executing: executingPlugins,
+        load: loadPluginOutputs,
+        execute: executePlugin,
+    } = usePluginOutputs(owner, repo, number, (name, e) =>
+        showToast(pluginRerunFailedMessage(name, e), 'danger')
+    );
     const [loading, setLoading] = useState(false);
 
     // UI State
@@ -262,7 +269,6 @@ export default function Review({
 
     useEffect(() => {
         loadPR();
-        loadPluginOutputs();
         prKey.current = prRef;
         setOpenAIFeature(null);
         setLinkRefusal(null);
@@ -316,24 +322,6 @@ export default function Review({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    const loadPluginOutputs = async () => {
-        try {
-            const res = await rpcCall<{ output: Record<string, PluginResult> }>(
-                'RPCHandler.GetPluginOutput',
-                [
-                    {
-                        Owner: owner,
-                        Repo: repo,
-                        Number: number,
-                    },
-                ]
-            );
-            setPluginOutputs(res.output || {});
-        } catch (e) {
-            console.error('Failed to load plugin outputs:', e);
-        }
-    };
-
     // The AI features are optional: none are enabled by default, and an older
     // server has no AI RPCs at all. Either way the toolbar simply shows no AI
     // buttons.
@@ -381,30 +369,6 @@ export default function Review({
         openFeature: openAIFeature,
         onToast: showToast,
     });
-
-    const executePlugin = async (pluginName: string) => {
-        setExecutingPlugins((prev: Set<string>) => new Set(prev).add(pluginName));
-        try {
-            await rpcCall('RPCHandler.RerunPlugins', [
-                {
-                    Owner: owner,
-                    Repo: repo,
-                    Number: number,
-                    Plugins: [pluginName],
-                },
-            ]);
-            await loadPluginOutputs();
-        } catch (e) {
-            console.error('Failed to execute plugin:', e);
-            showToast(pluginRerunFailedMessage(pluginName, e), 'danger');
-        } finally {
-            setExecutingPlugins((prev: Set<string>) => {
-                const next = new Set(prev);
-                next.delete(pluginName);
-                return next;
-            });
-        }
-    };
 
     // Apply a PR response payload to component state.
     const applyPRResponse = (res: PRResponse) => {

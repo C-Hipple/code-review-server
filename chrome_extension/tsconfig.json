@@ -1,0 +1,25 @@
+{
+    // The extension's own code: browser globals and the chrome.* API only, so
+    // nothing Bun- or Node-specific can slip into what ships. Tests and the
+    // build script are checked by tsconfig.test.json.
+    "compilerOptions": {
+        "target": "ES2022",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react-jsx",
+        "types": ["chrome"],
+        "strict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noFallthroughCasesInSwitch": true,
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "noEmit": true
+    },
+    "include": ["src"],
+    "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "node_modules", "dist", "crs_native_host"]
+}

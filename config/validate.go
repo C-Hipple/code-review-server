@@ -4,6 +4,7 @@ import (
 	"crs/subprocess"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -82,6 +83,7 @@ func Validate(cfg *Config) []ValidationError {
 
 	problems = append(problems, validateLegacyLLM(cfg)...)
 	problems = append(problems, validatePlugins(cfg)...)
+	problems = append(problems, validateGitHubAPI(cfg)...)
 	return append(problems, validateAI(cfg)...)
 }
 
@@ -175,6 +177,29 @@ func validateWorkflowEntries(raws []RawWorkflow) []ValidationError {
 		}
 		if strings.TrimSpace(wf.SectionTitle) == "" {
 			problems = append(problems, workflowError(i, "SectionTitle", "is required"))
+		}
+	}
+	return problems
+}
+
+// validGitHubAPIs are the APIs a [GitHubAPI] key may name.
+var validGitHubAPIs = map[string]bool{GitHubAPIREST: true, GitHubAPIGraphQL: true}
+
+// validateGitHubAPI checks that each [GitHubAPI] key names an API. An unset key
+// is fine — it means REST — and so, at run time, is a misspelled one, which is
+// why it is worth catching here.
+func validateGitHubAPI(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	routes := cfg.GitHubAPI.Routes()
+	keys := make([]string, 0, len(routes))
+	for key := range routes {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		if api := routes[key]; api != "" && !validGitHubAPIs[api] {
+			problems = append(problems, rootError("GitHubAPI."+key,
+				"unknown API %q (expected \"rest\" or \"graphql\")", api))
 		}
 	}
 	return problems

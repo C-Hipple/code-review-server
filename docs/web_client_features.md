@@ -26,7 +26,7 @@ browser (React SPA)
 bun_client/server.ts           ← the bridge; owns the child process
     │  stdin/stdout, newline-delimited JSON-RPC 1.0
     ▼
-codereviewserver --server      (spawned as `crs --server`)
+crs --server                   (the server binary)
 ```
 
 With `CRS_REMOTE=host:port` set, the bridge connects to a shared `crs --listen`
@@ -68,7 +68,7 @@ this pattern; if you don't, `server.ts` still serves from `frontend/dist`.
 
 You need the same three responsibilities, however you split them:
 
-- **Process ownership** — one long-lived `codereviewserver --server` child. Spawning
+- **Process ownership** — one long-lived `crs --server` child. Spawning
   one per request is wasteful (the server caches in SQLite and holds GitHub rate
   limit state) and racy.
 - **Request multiplexing** — the stdio pipe is shared; correlate by JSON-RPC `id`.
@@ -461,8 +461,14 @@ Behavior worth reproducing:
   has never run and gets an **Execute** button; a `pending` one is in flight and gets
   neither; everything else gets **Re-run**. Unknown future statuses are treated as
   re-runnable rather than hidden.
-- **Re-run** uses `RerunPlugins` with a `Plugins: [name]` list, then re-polls
-  `GetPluginOutput`.
+- **Re-run** uses `RerunPlugins` with a `Plugins: [name]` list, then reads
+  `GetPluginOutput` again. The server deletes the old result before it accepts the
+  re-run and only marks the plugin `pending` once it gets going, so a re-run plugin
+  missing from the output is shown as `pending` rather than dropped.
+- **Polling** (`usePluginOutputs`) — while any plugin reads `pending`, both surfaces
+  read `GetPluginOutput` again every two seconds, one read at a time, until each
+  lands; only the latest read's reply is applied. Polling gives up after six minutes
+  of no change (the server stops a plugin after five).
 
 ### 3.10 Plugin annotations in the diff (`annotation_utils.ts`)
 
@@ -751,10 +757,11 @@ basics:
   for free and **must not** call GitHub itself. All three are zero when the server
   could not fetch them, which means "unknown", not "unresolved".
 - [`comments[].reactions` / `reviews[].reactions`](protocol.md#reactions) — the emoji
-  on a comment *and the logins behind each one*. REST reports only totals, and who
-  reacted is one REST call per comment, so the server reads it from GraphQL in a
-  single call per PR and folds it into the payload. Null or empty means "nobody
-  reacted, or the fetch didn't happen" — there is no separate "unknown".
+  on a comment *and the logins behind each one*, which the server fetches and folds
+  into the payload. `reviews[].reactions` is filled only when the server routes
+  reactions to GraphQL: REST, the default, can't see reactions on a review's own
+  body. Null or empty means "nobody reacted, or the fetch didn't happen" — there is
+  no separate "unknown".
 
 ---
 

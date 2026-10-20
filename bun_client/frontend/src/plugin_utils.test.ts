@@ -4,11 +4,15 @@ import {
     canRerunPlugin,
     collapsePluginsByDefault,
     COLLAPSE_PLUGINS_OVER_LINES,
+    isPluginPending,
+    pendingPluginsKey,
     pluginOutputLineCount,
     pluginRerunFailedMessage,
+    rerunsStillAwaited,
     resolvePluginBody,
     sortedAnnotations,
     totalAnnotationCount,
+    withAwaitedReruns,
 } from './plugin_utils';
 import type { PluginResult } from './plugin_utils';
 
@@ -171,6 +175,71 @@ describe('pluginRerunFailedMessage', () => {
                 goError('permission denied: RPCHandler.RerunPlugins requires an administrator')
             )
         ).toBe('Only an administrator of this server can rerun plugins.');
+    });
+});
+
+describe('isPluginPending', () => {
+    test('is true only while the plugin is running', () => {
+        expect(isPluginPending({ result: '', status: 'pending' })).toBe(true);
+        expect(isPluginPending({ result: '', status: 'PENDING' })).toBe(true);
+        expect(isPluginPending({ result: 'summary', status: 'success' })).toBe(false);
+        expect(isPluginPending({ result: '', status: 'deferred' })).toBe(false);
+        expect(isPluginPending(undefined)).toBe(false);
+    });
+});
+
+describe('withAwaitedReruns', () => {
+    const summary: PluginResult = { result: 'summary', status: 'success' };
+
+    test('shows a re-run plugin missing from the output as pending', () => {
+        expect(withAwaitedReruns({ lint: summary }, new Set(['summarize']))).toEqual({
+            lint: summary,
+            summarize: { result: '', status: 'pending' },
+        });
+    });
+
+    test('leaves a plugin the output already carries as it is', () => {
+        const outputs = { summarize: summary };
+        expect(withAwaitedReruns(outputs, new Set(['summarize']))).toBe(outputs);
+    });
+
+    test('returns the output itself when no re-run is awaited', () => {
+        const outputs = { summarize: summary };
+        expect(withAwaitedReruns(outputs, new Set())).toBe(outputs);
+    });
+});
+
+describe('rerunsStillAwaited', () => {
+    test('keeps awaiting a plugin that is missing or still pending', () => {
+        const still = rerunsStillAwaited(new Set(['summarize', 'lint']), {
+            lint: { result: '', status: 'pending' },
+        });
+        expect([...still].sort()).toEqual(['lint', 'summarize']);
+    });
+
+    test('stops awaiting a plugin once it has a result', () => {
+        const still = rerunsStillAwaited(new Set(['summarize', 'lint']), {
+            summarize: { result: 'summary', status: 'success' },
+            lint: { result: 'Error: boom', status: 'error' },
+        });
+        expect(still.size).toBe(0);
+    });
+});
+
+describe('pendingPluginsKey', () => {
+    test('names every pending plugin, in a stable order', () => {
+        expect(
+            pendingPluginsKey({
+                summarize: { result: '', status: 'pending' },
+                done: { result: 'x', status: 'success' },
+                lint: { result: '', status: 'pending' },
+            })
+        ).toBe('lint,summarize');
+    });
+
+    test('is empty when nothing is pending', () => {
+        expect(pendingPluginsKey({ done: { result: 'x', status: 'success' } })).toBe('');
+        expect(pendingPluginsKey({})).toBe('');
     });
 });
 

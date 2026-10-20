@@ -20,10 +20,11 @@ import (
 //   - the teams still listed on the PR object, which cost nothing;
 //   - the teams a previous cycle already recorded for this PR, which is why a
 //     team that approved yesterday is still shown (in green) today;
-//   - the PR's full review-request history from the timeline, the only source
-//     that can recover a team whose review was already satisfied before we
-//     first saw the PR. That one is a GraphQL call, so it is made once per PR
-//     — on first sight, when there is nothing cached to build on.
+//   - the PR's full review-request history, the only source that can recover
+//     a team whose review was already satisfied before we first saw the PR.
+//     That one is a request of its own (a page of issue events, or a GraphQL
+//     query — see git_tools.RouteFor), so it is made once per PR — on first
+//     sight, when there is nothing cached to build on.
 //
 // Returns a non-nil slice whenever it resolved anything, including the empty
 // slice for a PR with no required reviewers: persisting that empty answer is

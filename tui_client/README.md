@@ -15,7 +15,7 @@ A fast, keyboard-driven terminal interface for browsing and reviewing pull reque
 
 ### Prerequisites
 
-- The `codereviewserver` (aka `crs`) binary must be installed and in your `$PATH`
+- The `crs` binary (called `codereviewserver` before the module was renamed) must be installed and in your `$PATH`
 - Rust 1.70+ (for building from source)
 
 ### Build from Source
@@ -40,7 +40,7 @@ crs-tui
 crs-tui
 ```
 
-The client will automatically spawn the `codereviewserver --server` process and begin fetching reviews.
+The client will automatically spawn the `crs --server` process and begin fetching reviews.
 
 ### Navigation
 
@@ -79,7 +79,7 @@ The client will automatically spawn the `codereviewserver --server` process and 
 
 ### Core Modules
 
-- **`rpc.rs`**: Spawns the `codereviewserver` child process and manages JSON-RPC 1.0 communication over stdio
+- **`rpc.rs`**: Spawns the `crs` child process and manages JSON-RPC 1.0 communication over stdio
 - **`types.rs`**: Serde-serializable types matching the server's protocol (ReviewItem, PRMetadata, etc.)
 - **`app.rs`**: Application state machine with two views (Sections and PRDetail), keyboard handling, and business logic
 - **`ui.rs`**: Ratatui-based UI rendering with syntax highlighting for diffs

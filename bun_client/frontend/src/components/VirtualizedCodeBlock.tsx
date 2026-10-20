@@ -19,6 +19,14 @@ const VIRTUALIZE_THRESHOLD = 1500;
 // highlighting at the window edges is usually correct.
 const OVERSCAN = 40;
 
+// Jump-to-line scroll animation. The browser's native `behavior: 'smooth'`
+// scales its duration with distance, which crawls in large files, so we drive
+// the scroll ourselves: roughly a third of the native time, capped so a jump
+// across a huge file still lands quickly.
+const SCROLL_MIN_MS = 100;
+const SCROLL_MAX_MS = 350;
+const SCROLL_PX_PER_MS = 10;
+
 type RowNode = createElementProps['node'];
 type Stylesheet = { [key: string]: React.CSSProperties };
 
@@ -165,11 +173,28 @@ export default function VirtualizedCodeBlock({
     useEffect(() => {
         const el = scrollRef.current;
         if (!scrollToLine || !el) return;
+        let raf: number | null = null;
         const id = setTimeout(() => {
             const top = Math.max(0, (scrollToLine - 1) * CODE_LINE_HEIGHT - el.clientHeight / 2);
-            el.scrollTo({ top, behavior: 'smooth' });
+            const from = el.scrollTop;
+            const distance = top - from;
+            const duration = Math.min(
+                SCROLL_MAX_MS,
+                Math.max(SCROLL_MIN_MS, Math.abs(distance) / SCROLL_PX_PER_MS)
+            );
+            const start = performance.now();
+            const step = (now: number) => {
+                const t = Math.min(1, (now - start) / duration);
+                const eased = 1 - Math.pow(1 - t, 3);
+                el.scrollTop = from + distance * eased;
+                raf = t < 1 ? requestAnimationFrame(step) : null;
+            };
+            raf = requestAnimationFrame(step);
         }, 50);
-        return () => clearTimeout(id);
+        return () => {
+            clearTimeout(id);
+            if (raf !== null) cancelAnimationFrame(raf);
+        };
     }, [scrollToLine, content]);
 
     const fullRenderer = useCallback(

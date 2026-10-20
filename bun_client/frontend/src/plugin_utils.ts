@@ -119,6 +119,56 @@ export function pluginRerunFailedMessage(plugin: string, error: unknown): string
     return `Could not rerun ${plugin}: ${rpcErrorMessage(error)}`;
 }
 
+/** Whether a plugin is still running: its result is yet to land. */
+export function isPluginPending(plugin: PluginResult | undefined): boolean {
+    return (plugin?.status || '').toLowerCase() === 'pending';
+}
+
+/** How often a plugin output surface reads the output again while a plugin is pending. */
+export const PLUGIN_POLL_MS = 2000;
+
+/** Give up polling after this long; the server stops a plugin after five minutes. */
+export const MAX_PLUGIN_POLL_MS = 6 * 60 * 1000;
+
+/**
+ * The output to show while re-runs are awaited. A re-run deletes the plugin's
+ * stored result before the server gets round to marking it pending, so for a
+ * moment the plugin is missing from GetPluginOutput altogether; it reads as
+ * pending meanwhile rather than vanishing from the list.
+ */
+export function withAwaitedReruns(
+    outputs: Record<string, PluginResult>,
+    awaiting: ReadonlySet<string>
+): Record<string, PluginResult> {
+    const missing = [...awaiting].filter(name => !(name in outputs));
+    if (missing.length === 0) return outputs;
+    const merged = { ...outputs };
+    for (const name of missing) merged[name] = { result: '', status: 'pending' };
+    return merged;
+}
+
+/**
+ * The re-runs still awaited once `outputs` has arrived. The server deletes a
+ * plugin's result before it accepts the re-run, so any result read after that
+ * which isn't pending is the re-run's own.
+ */
+export function rerunsStillAwaited(
+    awaiting: ReadonlySet<string>,
+    outputs: Record<string, PluginResult>
+): Set<string> {
+    return new Set(
+        [...awaiting].filter(name => !(name in outputs) || isPluginPending(outputs[name]))
+    );
+}
+
+/** The plugins pending in `outputs`, as a stable key: empty when there are none. */
+export function pendingPluginsKey(outputs: Record<string, PluginResult>): string {
+    return Object.keys(outputs)
+        .filter(name => isPluginPending(outputs[name]))
+        .sort()
+        .join(',');
+}
+
 /** Total number of annotations across every plugin, for summary counts. */
 export function totalAnnotationCount(plugins: Record<string, PluginResult>): number {
     return Object.values(plugins).reduce((sum, p) => sum + (p.annotations?.length ?? 0), 0);

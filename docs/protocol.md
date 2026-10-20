@@ -14,7 +14,7 @@ All methods are exposed under the `RPCHandler` namespace (e.g., `RPCHandler.GetP
 
 Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle (a client of a hosted server connects to it instead; see [Remote Connections](#remote-connections)):
 
-1.  **Spawning**: The client should start the `codereviewserver` binary as a child process.
+1.  **Spawning**: The client should start the `crs` binary as a child process. A browser extension, which can't, has a native messaging host start it instead (see [Building Clients](building_clients.md)).
 2.  **Environment**: Ensure `CRS_GITHUB_TOKEN` is set in the environment if required.
 3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
 4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
@@ -494,7 +494,7 @@ AI annotations come from [`GetAIOutput`](#rpchandlergetaioutput).
 
 When `worktree_path` is provided, you can use it to quickly switch to the source code for that PR:
 
-- **Shell**: `cd $(codereviewserver get-path --owner octocat --repo hello --number 42)` or simply `cd <worktree_path>`
+- **Shell**: `cd $(crs get-path --owner octocat --repo hello --number 42)` or simply `cd <worktree_path>`
 - **Git Management**: The server manages these using `git worktree`. You can see all active worktrees with `git worktree list` inside the main repository.
 
 #### Rendered Comment Format
@@ -579,10 +579,15 @@ comment's position mapping, and it also decides whether a comment lands in
 
 Reactions are carried by comments (`comments`, `outdated_comments`) and by
 reviews, and they answer a question a reply count cannot: whether anyone
-acknowledged a comment at all. REST reports only per-emoji totals, and who
-reacted is a separate REST call *per comment*, so the server reads them from
-GraphQL's `reactionGroups` in one call per PR — again, **clients never call
-GitHub directly**.
+acknowledged a comment at all. GitHub's REST comment lists report only
+per-emoji totals, so by default the server asks REST who reacted to each comment
+whose totals aren't zero — and, because it revalidates what it fetched before,
+asking again costs nothing until something changes. REST has no endpoint for
+reactions on a review's own body, so on that default **`reviews[].reactions` is
+always empty**; a server configured with `Reactions = "graphql"` (see
+[GitHub API](configuration.md#github-api)) reads everything, review bodies
+included, from GraphQL's `reactionGroups` instead. Either way, **clients never
+call GitHub directly**.
 
 They are cached in SQLite (the `PRReactions` table) separately from the comment
 and review caches, because a reaction lands without changing either. The

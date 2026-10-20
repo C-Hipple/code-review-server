@@ -271,6 +271,21 @@ test.describe('PR list', () => {
         await expect(page.getByRole('heading', { name: 'Summary' })).toHaveCount(0);
     });
 
+    test('shows a re-run plugin pending, then its new output', async ({ page, backend }) => {
+        await page.goto('/?owner=acme&repo=widgets&number=42&view=plugins');
+        await expect(page.getByRole('heading', { name: 'Summary' })).toBeVisible();
+
+        await page.getByRole('button', { name: 'Re-run' }).click();
+        await expect(page.getByText('pending', { exact: true })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Summary' })).toHaveCount(0);
+
+        // Polled until it lands, with nothing reloaded by hand.
+        await expect(page.getByText('summarize ran again.')).toBeVisible();
+        await expect(page.getByText('pending', { exact: true })).toHaveCount(0);
+        const [rerun] = await backend.calls('RerunPlugins');
+        expect(rerun.params).toMatchObject({ Plugins: ['summarize'] });
+    });
+
     test('opens AI reports from a row', async ({ page }) => {
         await page.goto('/');
         await page

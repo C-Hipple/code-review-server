@@ -433,8 +433,14 @@ Behavior worth reproducing:
   has never run and gets an **Execute** button; a `pending` one is in flight and gets
   neither; everything else gets **Re-run**. Unknown future statuses are treated as
   re-runnable rather than hidden.
-- **Re-run** uses `RerunPlugins` with a `Plugins: [name]` list, then re-polls
-  `GetPluginOutput`.
+- **Re-run** uses `RerunPlugins` with a `Plugins: [name]` list, then reads
+  `GetPluginOutput` again. The server deletes the old result before it accepts the
+  re-run and only marks the plugin `pending` once it gets going, so a re-run plugin
+  missing from the output is shown as `pending` rather than dropped.
+- **Polling** (`usePluginOutputs`) — while any plugin reads `pending`, both surfaces
+  read `GetPluginOutput` again every two seconds, one read at a time, until each
+  lands; only the latest read's reply is applied. Polling gives up after six minutes
+  of no change (the server stops a plugin after five).
 
 ### 3.10 Plugin annotations in the diff (`annotation_utils.ts`)
 

@@ -3,9 +3,11 @@ package config
 import (
 	"crs/subprocess"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ValidationError describes one problem with a proposed configuration.
@@ -62,21 +64,105 @@ func Validate(cfg *Config) []ValidationError {
 		problems = append(problems, rootError("SleepDuration", "must be at most %d minutes (24 hours)", int(maxSleepDuration.Minutes())))
 	}
 
-	for i, repo := range cfg.Repos {
+	problems = append(problems, validateRepos(cfg.Repos)...)
+
+	// 0 is meaningful for both ("never"), so only a negative count is wrong.
+	if cfg.UserActiveHours < 0 {
+		problems = append(problems, rootError("UserActiveHours",
+			"must be 0 (run every user's workflows however long they have been idle) or a positive number of hours"))
+	}
+	if cfg.UserRetentionDays < 0 {
+		problems = append(problems, rootError("UserRetentionDays",
+			"must be 0 (never delete idle users) or a positive number of days"))
+	}
+
+	problems = append(problems, validateGitHubOAuth(cfg)...)
+
+	problems = append(problems, validateSectionSorting(cfg.SectionSorting)...)
+	problems = append(problems, validateWorkflowEntries(cfg.RawWorkflows)...)
+
+	problems = append(problems, validateLegacyLLM(cfg)...)
+	problems = append(problems, validatePlugins(cfg)...)
+	problems = append(problems, validateGitHubAPI(cfg)...)
+	return append(problems, validateAI(cfg)...)
+}
+
+// MaxUserWorkflows caps how many workflows a hosted server keeps for one user.
+// Each one is a GitHub fan-out every cycle on the server's shared token, and a
+// dashboard is a handful of sections; fifty is far past any real list.
+const MaxUserWorkflows = 50
+
+// ValidateUserSettings checks what a registered user sends a hosted server in
+// place of a config file — their workflows, fallback Repos and SectionSorting —
+// by the rules Validate applies to the same keys of the server's own file, plus
+// two of its own: at most MaxUserWorkflows workflows, and no control characters
+// in a workflow's name, which ends up inside an ownership key (OwnershipKey
+// joins login and name with one). Like Validate it leaves workflow types and
+// filters to workflows.ValidateWorkflows.
+func ValidateUserSettings(raws []RawWorkflow, repos []string, sorting map[string]string) []ValidationError {
+	problems := validateRepos(repos)
+	problems = append(problems, validateSectionSorting(sorting)...)
+	if len(raws) > MaxUserWorkflows {
+		problems = append(problems, rootError("Workflows", "has %d workflows; at most %d are allowed", len(raws), MaxUserWorkflows))
+	}
+	problems = append(problems, validateWorkflowEntries(raws)...)
+	for i, wf := range raws {
+		if strings.IndexFunc(wf.Name, unicode.IsControl) >= 0 {
+			problems = append(problems, workflowError(i, "Name", "must not contain control characters"))
+		}
+	}
+	return problems
+}
+
+func validateRepos(repos []string) []ValidationError {
+	var problems []ValidationError
+	for i, repo := range repos {
 		if err := ValidateRepoEntry(repo); err != nil {
 			problems = append(problems, rootError("Repos", "entry %d: %v", i, err))
 		}
 	}
+	return problems
+}
 
-	for section, sorting := range cfg.SectionSorting {
-		if !validSectionSorting[sorting] {
+func validateSectionSorting(sorting map[string]string) []ValidationError {
+	var problems []ValidationError
+	for section, method := range sorting {
+		if !validSectionSorting[method] {
 			problems = append(problems, rootError("SectionSorting",
-				"section %q has unknown sorting %q (expected \"newest_first\" or \"oldest_first\")", section, sorting))
+				"section %q has unknown sorting %q (expected \"newest_first\" or \"oldest_first\")", section, method))
 		}
 	}
+	return problems
+}
 
-	seenNames := make(map[string]int, len(cfg.RawWorkflows))
-	for i, wf := range cfg.RawWorkflows {
+// githubOAuthScope is one GitHub OAuth scope: "repo", "read:org",
+// "public_repo" and the like.
+var githubOAuthScope = regexp.MustCompile(`^[a-z0-9_:]+$`)
+
+// validateGitHubOAuth checks the keys GitHub account linking reads. Both are
+// sent to GitHub as they are, so a typo would surface only as GitHub refusing
+// every user's link.
+func validateGitHubOAuth(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	if strings.IndexFunc(cfg.GitHubOAuthClientID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		problems = append(problems, rootError("GitHubOAuthClientID",
+			"must be the app's client ID as GitHub shows it, without spaces"))
+	}
+	for _, scope := range strings.FieldsFunc(cfg.GitHubOAuthScopes, func(r rune) bool { return r == ' ' || r == ',' }) {
+		if !githubOAuthScope.MatchString(scope) {
+			problems = append(problems, rootError("GitHubOAuthScopes",
+				"%q is not a GitHub OAuth scope; list scopes such as \"repo\" separated by spaces", scope))
+		}
+	}
+	return problems
+}
+
+// validateWorkflowEntries checks the fields every workflow needs whatever its
+// type, and that no two share a name.
+func validateWorkflowEntries(raws []RawWorkflow) []ValidationError {
+	var problems []ValidationError
+	seenNames := make(map[string]int, len(raws))
+	for i, wf := range raws {
 		if strings.TrimSpace(wf.Name) == "" {
 			problems = append(problems, workflowError(i, "Name", "is required"))
 		} else if first, dup := seenNames[wf.Name]; dup {
@@ -93,11 +179,7 @@ func Validate(cfg *Config) []ValidationError {
 			problems = append(problems, workflowError(i, "SectionTitle", "is required"))
 		}
 	}
-
-	problems = append(problems, validateLegacyLLM(cfg)...)
-	problems = append(problems, validatePlugins(cfg)...)
-	problems = append(problems, validateGitHubAPI(cfg)...)
-	return append(problems, validateAI(cfg)...)
+	return problems
 }
 
 // validGitHubAPIs are the APIs a [GitHubAPI] key may name.

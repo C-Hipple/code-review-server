@@ -1,7 +1,7 @@
 // Boots the real Bun bridge (server.ts) against the fakes, for Playwright's
 // webServer to run:
 //
-//   bun e2e/harness/start_server.ts <port> <lsp: fake|none|real>
+//   bun e2e/harness/start_server.ts <port> <lsp: fake|none|real|remote>
 //
 // server.ts finds `crs`, `diff-lsp` and the per-language servers with
 // Bun.which, so the launcher builds a bin directory of shims for the fakes and
@@ -11,6 +11,11 @@
 //
 // "real" is the exception: the fake crs shim comes first, then the caller's
 // PATH, so the real diff-lsp and typescript-language-server are used.
+//
+// "remote" runs the bridge in remote mode instead: no language servers and no
+// crs on PATH at all, but a fake crs listening on TCP (the port after the
+// bridge's) that the bridge connects to with CRS_REMOTE, registering with the
+// fixture TOML in a HOME of its own.
 
 import {
     chmodSync,
@@ -23,12 +28,20 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { BUN_CLIENT_DIR, repoCopyFor, stateDirFor } from './config';
+import { REMOTE_USER_TOML } from '../fixtures/remote_user';
+import {
+    BUN_CLIENT_DIR,
+    REGISTRATION_KEY,
+    remoteCrsPortFor,
+    remoteHomeFor,
+    repoCopyFor,
+    stateDirFor,
+} from './config';
 
 const port = parseInt(process.argv[2] || '', 10);
 const lsp = process.argv[3] || 'fake';
-if (!port || !['fake', 'none', 'real'].includes(lsp)) {
-    console.error('usage: bun e2e/harness/start_server.ts <port> <fake|none|real>');
+if (!port || !['fake', 'none', 'real', 'remote'].includes(lsp)) {
+    console.error('usage: bun e2e/harness/start_server.ts <port> <fake|none|real|remote>');
     process.exit(2);
 }
 
@@ -52,7 +65,8 @@ function shim(name: string, script: string, ...args: string[]) {
     chmodSync(path, 0o755);
 }
 
-shim('crs', 'fake_crs.ts');
+// Remote mode must never spawn a crs, so it gets none to find.
+if (lsp !== 'remote') shim('crs', 'fake_crs.ts');
 if (lsp === 'fake') {
     shim('diff-lsp', 'fake_lsp.ts', 'diff');
     shim('typescript-language-server', 'fake_lsp.ts', 'file');
@@ -94,12 +108,51 @@ if (lsp === 'real') {
     }
 }
 
+// Remote mode's settings, which only the remote bridge may see: a developer's
+// own CRS_REMOTE would otherwise turn every bridge remote.
+const REMOTE_ENV = [
+    'CRS_REMOTE',
+    'CRS_REMOTE_TLS',
+    'CRS_REMOTE_TOKEN',
+    'CRS_LOGIN',
+    'CRS_REGISTRATION_KEY',
+    'CRS_ADMIN_TOKEN',
+];
+const inherited = { ...(process.env as Record<string, string>) };
+for (const name of REMOTE_ENV) delete inherited[name];
+
+let fakeCrs: ReturnType<typeof Bun.spawn> | null = null;
+if (lsp === 'remote') {
+    const home = remoteHomeFor(port);
+    mkdirSync(join(home, '.config'), { recursive: true });
+    writeFileSync(join(home, '.config/codereviewserver.toml'), REMOTE_USER_TOML);
+    const crsPort = remoteCrsPortFor(port);
+    const address = `127.0.0.1:${crsPort}`;
+    fakeCrs = Bun.spawn(
+        [process.execPath, resolve(import.meta.dirname, 'fake_crs.ts'), '--listen', address],
+        {
+            env: { ...inherited, CRS_REGISTRATION_KEY: REGISTRATION_KEY },
+            stdio: ['ignore', 'inherit', 'inherit'],
+        }
+    );
+    // The bridge connects as it starts; a refused first attempt would only
+    // put it in backoff.
+    await waitForListener(crsPort);
+    Object.assign(extraEnv, {
+        CRS_REMOTE: address,
+        CRS_REGISTRATION_KEY: REGISTRATION_KEY,
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, '.config'),
+        CRS_HOME: join(home, '.crs'),
+    });
+}
+
 console.log(`[e2e] bridge on :${port} (lsp=${lsp}), state in ${stateDir}`);
 
 // A child process rather than an import: Bun.which resolves against the PATH
 // the process started with, not a PATH assigned to process.env later.
 const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...inherited,
     ...extraEnv,
     PATH: path,
     CRS_PORT: String(port),
@@ -117,7 +170,29 @@ const server = Bun.spawn([process.execPath, 'server.ts'], {
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
         server.kill(signal);
+        fakeCrs?.kill(signal);
         process.exit(0);
     });
 }
-process.exit(await server.exited);
+const code = await server.exited;
+fakeCrs?.kill();
+process.exit(code);
+
+async function waitForListener(crsPort: number) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        try {
+            const socket = await Bun.connect({
+                hostname: '127.0.0.1',
+                port: crsPort,
+                socket: { data() {} },
+            });
+            socket.end();
+            return;
+        } catch {
+            await Bun.sleep(100);
+        }
+    }
+    console.error(`[e2e] the fake crs never listened on :${crsPort}`);
+    fakeCrs?.kill();
+    process.exit(1);
+}

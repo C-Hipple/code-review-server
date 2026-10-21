@@ -1,24 +1,313 @@
 # Code Review Server Protocol
 
-This document describes the JSON-RPC API exposed by the code review server. The server communicates over **stdio** using the JSON-RPC 1.0 protocol, making it suitable for integration with editors like Emacs.
+This document describes the JSON-RPC API exposed by the code review server. The server communicates over **stdio** using the JSON-RPC 1.0 protocol, making it suitable for integration with editors like Emacs. A [hosted server](hosted_server.md) serves the same methods to remote clients over **TCP** (see [Remote Connections](#remote-connections)).
 
 ## Transport
 
 - **Protocol**: JSON-RPC 1.0
-- **Transport**: Standard input/output (stdin/stdout)
-- **Encoding**: JSON
+- **Transport**: Standard input/output (stdin/stdout) with `-server`; TCP with `--listen host:port`
+- **Encoding**: JSON, one value after another (the server writes a newline after each reply)
 
 All methods are exposed under the `RPCHandler` namespace (e.g., `RPCHandler.GetPR`).
 
 ## Lifecycle and Process Management
 
-Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle:
+Since the server communicates over **stdin/stdout**, the client is responsible for managing the server's lifecycle (a client of a hosted server connects to it instead; see [Remote Connections](#remote-connections)):
 
 1.  **Spawning**: The client should start the `crs` binary as a child process. A browser extension, which can't, has a native messaging host start it instead (see [Building Clients](building_clients.md)).
 2.  **Environment**: Ensure `CRS_GITHUB_TOKEN` is set in the environment if required.
 3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
 4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
 5.  **Termination**: The server will terminate when its `stdin` is closed or when it receives an interrupt signal (SIGINT/SIGTERM).
+
+---
+
+## Remote Connections
+
+`crs --listen host:port` runs the workflows like `-server` and serves every method below to clients on other machines over TCP. The bytes on the wire are exactly the stdio ones, so a client frames them the same way. The server speaks plain TCP: TLS is terminated by a proxy in front of it (see [Hosted Server](hosted_server.md)).
+
+Each connection is its own session, and acts as one identity:
+
+- a **registered user** (their login): their own dashboard, drafts, feedback and workflows;
+- the **administrator token** (`$CRS_ADMIN_TOKEN`): the server's own identity, login `""` — the dashboard of the config file's workflows — and an administrator.
+
+The local stdio connection is the server's own identity and an administrator, and is never refused anything below.
+
+### Connect flow
+
+1. Open the connection.
+2. Call `RPCHandler.Authenticate` with the stored token, if there is one.
+3. If the reply says `known: false` (or there is no token), call `RPCHandler.RegisterUser` with the registration key, the login, the stored token (so a user deleted for inactivity gets the same token back) and the `Workflows`, `Repos`, `SectionPriority` and `SectionSorting` from the local config file — `crs -print-user-config` prints exactly those as JSON. Store the token it returns.
+4. On a `not authenticated:` error, or a dropped connection, reconnect and start again.
+
+Wait for `Authenticate` or `RegisterUser` to answer before sending anything else: calls on one connection run concurrently, and one read before the connection authenticated is refused. A connection that has not authenticated within 30 seconds is closed.
+
+### Errors
+
+Refusals are ordinary RPC errors. Clients match on the prefix:
+
+| Prefix | Meaning |
+|--------|---------|
+| `not authenticated:` | The connection has not authenticated, or its user has been deleted since (by an administrator, or after `UserRetentionDays` of inactivity). The full text is `not authenticated: <Method> needs an authenticated connection; call RPCHandler.Authenticate or RPCHandler.RegisterUser first`. Run the connect flow again. |
+| `permission denied:` | The method needs an administrator: `permission denied: <Method> requires an administrator`, where `<Method>` is the full name, e.g. `RPCHandler.GetConfig`. `GetPR`'s and `GetAdjacentPR`'s `SkipCache` is refused as `permission denied: SkipCache requires an administrator`. |
+| `refused: link-github:` | The write needs the user's own GitHub account, which is not linked — or its authorization expired or was revoked on GitHub, or can no longer be read by the server. Offer to [link the account](#linking-a-github-account) (`StartGitHubLink`) and retry the write once linked. The texts are `refused: link-github: link your GitHub account to submit reviews as yourself` and `refused: link-github: your GitHub authorization has expired or was revoked; link your account again` (or, after the server's `CRS_SECRET_KEY` changed, `refused: link-github: this server can no longer read your stored GitHub authorization; link your account again`). |
+| `drafts changed:` | `SubmitReview` only: some of the pending comments named in `ExpectedDraftIDs` no longer exist — already sent by another submit, or deleted with the user after inactivity — so nothing was submitted. Reload the PR. |
+| `refused:` (any other) | The server will not write to GitHub for this connection: without a linked account, `SubmitReview` and `MergePR` would go out under the server's own GitHub account, which a remote connection may only use where the server sets `AllowServerIdentityActions`, and this server cannot link accounts (or the connection is the administrator token's). Also the refusal of a write whose link stopped working — expired, revoked, or unreadable — while the server cannot link accounts (`refused: this server can no longer use your linked GitHub account, and cannot link one until its administrator restores GitHub account linking`); such a write never goes out as the server's account instead. Final — retrying does not help. |
+
+### Method policy
+
+Every method is classified in one table on the server (`server/policy.go`); a method missing from it is administrator-only.
+
+| Who | Methods |
+|-----|---------|
+| Anyone, before authenticating | `Hello`, `Authenticate`, `RegisterUser` |
+| An authenticated connection | `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`, `DeleteComment`, `SetFeedback`, `RemovePRComments`, `SubmitReview`, `MergePR`, `GetMyWorkflows`, `UpdateMyWorkflows`, `StartGitHubLink`, `GetGitHubLink`, `UnlinkGitHub`, `ListPlugins`, `GetPluginOutput`, `ListAIFeatures`, `RunAIFeature`, `GetAIOutput`, `GetRateLimitStatus`, `GetRateLimitHistory`, `GetHunkContext`, `GetImage` |
+| An administrator | `GetConfig`, `UpdateConfig`, `RerunPlugins`, `ListUsers`, `DeleteUser` |
+
+Within the methods an authenticated connection may call:
+
+- `SkipCache: true` on `GetPR` / `GetAdjacentPR` needs an administrator; `SyncPR` is how a user refreshes a PR.
+- `SubmitReview` and `MergePR` go out as the user's own GitHub account once it is [linked](#linking-a-github-account). Without a link they are refused (`refused: link-github:` where the server can link accounts, `refused:` otherwise) unless the server sets `AllowServerIdentityActions`; with it set they go out as the server's account, and `MergePR` then needs an administrator (`permission denied:`).
+- `StartGitHubLink`, `GetGitHubLink` and `UnlinkGitHub` answer the administrator token's session with `okay: false`: it is the server's own identity and has no account to link. So does the local stdio connection, which writes with the server's token.
+- `GetHunkContext` takes only a bare repository name as `Repo`.
+
+`Hello` answers before authenticating, with `Count: 0`.
+
+### `RPCHandler.Authenticate`
+
+Signs the connection in with a token `RegisterUser` issued, or with the administrator token. A token that matches nothing leaves the connection as it was.
+
+**Arguments** (`AuthenticateArgs`):
+| Field   | Type   | Required | Description |
+|---------|--------|----------|-------------|
+| `Token` | string | Yes      | The user's token (`crs_` and 64 lowercase hex digits), or `$CRS_ADMIN_TOKEN` |
+
+**Reply** (`AuthenticateReply`):
+| Field                   | Type   | Description |
+|-------------------------|--------|-------------|
+| `okay`                  | bool   | `true` when the connection is now authenticated |
+| `known`                 | bool   | `false` when the token belongs to no user — never registered here, or deleted since; register (again) |
+| `login`                 | string | The user's login, as registered; `""` for the administrator token |
+| `is_admin`              | bool   | Whether the connection is an administrator |
+| `message`               | string | Human-readable outcome |
+| `github_linked`         | bool   | Whether the user's own GitHub account is [linked](#linking-a-github-account), so their reviews and merges go out as them. `false` for the administrator token |
+| `github_link_available` | bool   | Whether this server can link GitHub accounts (`StartGitHubLink`). `false` for the administrator token |
+
+### `RPCHandler.RegisterUser`
+
+Registers a login with the workflows and settings from the client's config file — or, for a login already registered with the same token, replaces them — and signs the connection in as that user. The server keeps the workflows and builds the user's dashboard from them on the next workflow cycle.
+
+**Arguments** (`RegisterUserArgs`):
+| Field             | Type              | Required | Description |
+|-------------------|-------------------|----------|-------------|
+| `RegistrationKey` | string            | Yes      | Must equal the server's `$CRS_REGISTRATION_KEY`. Without that variable, registration is disabled |
+| `Login`           | string            | Yes      | GitHub login: letters, digits and single hyphens, at most 39 characters. Matched case-insensitively |
+| `Token`           | string            | No       | The token the client holds, if any. A registered login must present its own; a new login keeps a well-formed one (so a user deleted for inactivity gets the same token back) and gets a fresh one otherwise. The token of a user an administrator deleted is refused |
+| `Workflows`       | []Workflow        | No       | The [workflows](#workflow-object) from the config file, under their TOML keys. Validated as `UpdateConfig` validates the server's; at most 50, names unique and without control characters. `DesktopNotifications` is dropped. An empty `GithubUsername` stands for `Login` |
+| `Repos`           | []string          | No       | Fallback repositories for workflows that name none; the server's own `Repos` when empty |
+| `SectionPriority` | map[string]int    | No       | As in the config file, for the user's sections |
+| `SectionSorting`  | map[string]string | No       | As in the config file, for the user's sections |
+| `AdminToken`      | string            | No       | When it equals `$CRS_ADMIN_TOKEN`, the user becomes an administrator. Leaving it out later never demotes one |
+
+**Reply** (`RegisterUserReply`):
+| Field                   | Type              | Description |
+|-------------------------|-------------------|-------------|
+| `okay`                  | bool              | `true` when the user is registered and the connection signed in |
+| `created`               | bool              | `true` for a new registration, `false` when an existing one was updated |
+| `login`                 | string            | The login as registered (the case of the first registration) |
+| `token`                 | string            | The user's token. The server stores only its hash: this is the only place it is shown |
+| `is_admin`              | bool              | Whether the user is an administrator |
+| `message`               | string            | Human-readable outcome. For a login registered under another token it starts with `login already registered`; for a token an administrator revoked by deleting its user, with `token revoked` |
+| `errors`                | []ValidationError | Validation problems, as in [`UpdateConfig`](#validationerror-object); `workflow` indexes `Workflows` |
+| `github_linked`         | bool              | As in `Authenticate` |
+| `github_link_available` | bool              | As in `Authenticate` |
+
+A rejected registration — wrong key, invalid login, someone else's login, settings that fail validation — is `okay: false`, not an RPC error, and writes nothing.
+
+**Example Request**:
+```json
+{
+  "method": "RPCHandler.RegisterUser",
+  "params": [{
+    "RegistrationKey": "the-team-key",
+    "Login": "octocat",
+    "Token": "",
+    "Workflows": [
+      {"WorkflowType": "SyncReviewRequestsWorkflow", "Name": "review", "SectionTitle": "Needs Review", "Filters": ["FilterNotDraft"]}
+    ],
+    "Repos": ["octo-org/widgets"],
+    "SectionPriority": {"Needs Review": 1},
+    "SectionSorting": {}
+  }],
+  "id": 1
+}
+```
+
+### `RPCHandler.GetMyWorkflows`
+
+Returns the connection's user's stored workflows and settings, as they were registered or last updated.
+
+**Arguments** (`GetMyWorkflowsArgs`):
+```json
+{}
+```
+
+**Reply** (`GetMyWorkflowsReply`):
+| Field                   | Type               | Description |
+|-------------------------|--------------------|-------------|
+| `okay`                  | bool               | `true` when the connection's user was found |
+| `known`                 | bool               | `false` when the connection's login has no registration — the administrator token's session, whose workflows are the config file's (`GetConfig`) |
+| `login`                 | string             | The user's login |
+| `workflows`             | []Workflow         | The stored workflows, as sent |
+| `repos`                 | []string           | The user's fallback repositories |
+| `section_priority`      | map[string]int     | The user's section priorities |
+| `section_sorting`       | map[string]string  | The user's section sorting |
+| `workflow_types`        | []WorkflowTypeInfo | As in `GetConfig` |
+| `filters`               | []FilterInfo       | As in `GetConfig` |
+| `github_linked`         | bool               | As in `Authenticate` |
+| `github_link_available` | bool               | As in `Authenticate` |
+
+### `RPCHandler.UpdateMyWorkflows`
+
+Changes the connection's user's workflows and settings. Like `UpdateConfig` it is a partial update: a field left out (or `null`) keeps what is stored, and sending `Workflows` replaces the whole list. The result is validated whole, as `RegisterUser` validates it — taking `Repos` away can break a stored workflow that falls back to them — and nothing is written unless it passes.
+
+**Arguments** (`UpdateMyWorkflowsArgs`):
+| Field             | Type              | Required | Description |
+|-------------------|-------------------|----------|-------------|
+| `Workflows`       | []Workflow        | No       | Replaces the workflow list |
+| `Repos`           | []string          | No       | Replaces the fallback repositories |
+| `SectionPriority` | map[string]int    | No       | Replaces the section priorities |
+| `SectionSorting`  | map[string]string | No       | Replaces the section sorting |
+
+**Reply** (`UpdateMyWorkflowsReply`): the `GetMyWorkflows` reply, showing what is stored afterwards, plus:
+
+| Field     | Type              | Description |
+|-----------|-------------------|-------------|
+| `message` | string            | Human-readable outcome |
+| `errors`  | []ValidationError | Validation problems; `okay` is `false` and nothing was written when there are any |
+
+### `RPCHandler.ListUsers`
+
+Administrator only. Lists every registered user, by login.
+
+**Arguments** (`ListUsersArgs`):
+```json
+{}
+```
+
+**Reply** (`ListUsersReply`):
+| Field   | Type       | Description |
+|---------|------------|-------------|
+| `users` | []UserInfo | Every registered user |
+
+| `UserInfo` field | Type   | Description |
+|------------------|--------|-------------|
+| `login`          | string | The login as registered |
+| `is_admin`       | bool   | Whether the user is an administrator |
+| `created_at`     | string | When they registered (RFC 3339) |
+| `last_seen`      | string | When they were last active (RFC 3339); what `UserActiveHours` and `UserRetentionDays` go by |
+| `workflow_count` | int    | How many workflows they have |
+| `github_linked`  | bool   | Whether they have [linked](#linking-a-github-account) a GitHub account this server can use |
+| `github_login`   | string | The linked GitHub account's login; `""` when none. The token itself is never shown |
+
+### `RPCHandler.DeleteUser`
+
+Administrator only. Deletes a user with their workflows, drafts and feedback, as the retention sweep does. Their dashboard empties on the next workflow cycle. A GitHub link they have in progress is cancelled, and the token of one they linked is revoked on GitHub when the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` (the `message` says whether it was). A connection still signed in as them gets `not authenticated:` on its next call. Unlike the retention sweep, it also revokes their bearer token: a `RegisterUser` presenting it is refused (`okay: false`, the message starting `token revoked:`), so a client's automatic registration cannot take the login back. Whoever holds the login for real registers without the old token and gets a new one.
+
+**Arguments** (`DeleteUserArgs`):
+| Field   | Type   | Required | Description |
+|---------|--------|----------|-------------|
+| `Login` | string | Yes      | The user to delete, matched case-insensitively |
+
+**Reply** (`DeleteUserReply`):
+| Field     | Type   | Description |
+|-----------|--------|-------------|
+| `okay`    | bool   | `false` when no such user is registered |
+| `message` | string | Human-readable outcome |
+
+### Linking a GitHub account
+
+Everything a hosted server reads from GitHub goes through its own token, but GitHub records a review, a reply or a merge as whoever's token sends it. A user links their own GitHub account so that their `SubmitReview` and `MergePR` go out as them. Linking is optional: a user registers and browses without it. It is available when `github_link_available` is `true` in `Authenticate`, `RegisterUser` and `GetMyWorkflows` (the server has a `GitHubOAuthClientID` and a `CRS_SECRET_KEY`; see [Hosted Server](hosted_server.md#linking-your-github-account)).
+
+It uses GitHub's OAuth device flow:
+
+1. Call `StartGitHubLink`. Show the user `user_code` and `verification_uri` (`https://github.com/login/device`), ideally with a button that copies the code and opens the page.
+2. The user enters the code on GitHub while signed in to the GitHub account of their registered login, and authorizes the app. Meanwhile the server polls GitHub in the background.
+3. Poll `GetGitHubLink` every `interval` seconds until `status` is no longer `pending`. On `linked`, retry the write that was refused; on `expired`, `denied`, `mismatch` or `error`, show `message` and offer to start again.
+
+The server stores the token only once GitHub confirms it belongs to the registered login (case-insensitively), sealed with `CRS_SECRET_KEY`. It is never returned by any method. One link is in progress per user at a time: calling `StartGitHubLink` again, from any of the user's connections, returns the one in progress. A link in progress lives in the server's memory, so a restart drops it and the user starts again.
+
+`status` is one of:
+
+| Status | Meaning |
+|--------|---------|
+| `unavailable` | This server cannot link accounts (no `GitHubOAuthClientID`, or no valid `CRS_SECRET_KEY`), or the connection is the administrator token's or the local stdio one |
+| `unlinked` | No account is linked |
+| `pending` | A device flow is waiting for the user to enter `user_code` |
+| `linked` | An account is linked; `github_login` says which |
+| `expired` | The code expired before it was entered |
+| `denied` | The user declined the authorization on GitHub |
+| `mismatch` | GitHub says the authorization is for another account than the registered login; nothing was stored |
+| `error` | Anything else, explained in `message`: GitHub refused the app (for instance device flow is not enabled on it), the user was deleted meanwhile, or a stored link can no longer be read because the server's `CRS_SECRET_KEY` changed |
+
+`expired`, `denied`, `mismatch` and `error` are reported for ten minutes after the link ended, then `GetGitHubLink` reports what is stored again. Linking again while linked replaces the earlier link once the new one completes.
+
+A linked token GitHub stops accepting — revoked on github.com, or a GitHub App token expired past refreshing — is deleted by the first write that finds out, which is refused with `refused: link-github: your GitHub authorization has expired or was revoked; link your account again`; the pending comments stay where they were.
+
+### `RPCHandler.StartGitHubLink`
+
+Starts linking the connection's user's GitHub account, or returns the link already in progress, once GitHub has issued its code.
+
+**Arguments** (`StartGitHubLinkArgs`):
+```json
+{}
+```
+
+**Reply** (`StartGitHubLinkReply`):
+| Field              | Type   | Description |
+|--------------------|--------|-------------|
+| `okay`             | bool   | `true` when a link is waiting for the user (`status` is `pending`) |
+| `status`           | string | `pending`; `unavailable` when the server or the connection cannot link; `error` when GitHub did not issue a code, or too many links are in progress on the server |
+| `user_code`        | string | The code the user enters on GitHub, e.g. `WDJB-MJHT` |
+| `verification_uri` | string | Where they enter it: `https://github.com/login/device` |
+| `expires_at`       | string | When the code expires (RFC 3339), usually 15 minutes away |
+| `interval`         | int    | Seconds between polls GitHub asks for: how often `GetGitHubLink` is worth calling |
+| `message`          | string | Human-readable outcome; says what to do with the code, or why there is none |
+
+### `RPCHandler.GetGitHubLink`
+
+Reports the connection's user's link: one in progress, how the last one ended if it failed in the last ten minutes, or what is stored. It only reads; clients poll it while a link is pending.
+
+**Arguments** (`GetGitHubLinkArgs`):
+```json
+{}
+```
+
+**Reply** (`GetGitHubLinkReply`):
+| Field              | Type   | Description |
+|--------------------|--------|-------------|
+| `okay`             | bool   | `false` only when `status` is `unavailable` |
+| `status`           | string | One of the [statuses](#linking-a-github-account) |
+| `github_login`     | string | The linked account's login whenever one is linked — also while a new link is pending or after one failed; `""` otherwise |
+| `user_code`        | string | While `pending`, as in `StartGitHubLink` |
+| `verification_uri` | string | While `pending`, as in `StartGitHubLink` |
+| `expires_at`       | string | While `pending`, as in `StartGitHubLink` (RFC 3339) |
+| `message`          | string | Human-readable state |
+
+### `RPCHandler.UnlinkGitHub`
+
+Deletes the connection's user's stored GitHub credential and cancels a link in progress. When the server has `CRS_GITHUB_OAUTH_CLIENT_SECRET` the token is also revoked on GitHub (best effort); otherwise the `message` asks the user to revoke it on github.com. From then on the user's writes are refused as above, or go out as the server's account where `AllowServerIdentityActions` is set.
+
+**Arguments** (`UnlinkGitHubArgs`):
+```json
+{}
+```
+
+**Reply** (`UnlinkGitHubReply`):
+| Field     | Type   | Description |
+|-----------|--------|-------------|
+| `okay`    | bool   | `true` once nothing is linked (also when nothing was); `false` for the administrator token's connection and the local stdio one |
+| `message` | string | Human-readable outcome, including whether the token was revoked on GitHub |
 
 ---
 
@@ -36,8 +325,8 @@ A simple health check / test method.
 **Reply** (`HelloReply`):
 | Field     | Type   | Description                                      |
 |-----------|--------|--------------------------------------------------|
-| `Count`   | int    | Number of sections in the database               |
-| `Content` | string | Greeting message with cumulative count           |
+| `Count`   | int    | Number of the viewer's own sections (0 on a remote connection that has not authenticated) |
+| `Content` | string | Greeting message with that count                 |
 
 ---
 
@@ -143,7 +432,7 @@ with its own token instead, so every client renders the same images from disk.
 | Field          | Type   | Description                                                                 |
 |----------------|--------|-----------------------------------------------------------------------------|
 | `url`          | string | The image URL as it appears in the body — match on this to rewrite the tag  |
-| `path`         | string | Absolute path of the downloaded file, or `""` when it isn't cached yet      |
+| `path`         | string | Absolute path of the downloaded file on the server's machine, or `""` when it isn't cached yet. A client of a hosted server cannot open it, and asks [`GetImage`](#rpchandlergetimage) with `IncludeData` for the bytes instead |
 | `content_type` | string | MIME type of the cached file; empty alongside an empty `path`               |
 | `size`         | int64  | Size of the cached file in bytes                                            |
 | `cached`       | bool   | `true` when `path` points at a file that exists                             |
@@ -347,7 +636,7 @@ This is a read-only query as far as the caller is concerned: it never blocks on 
 | `Owner`     | string | Yes      | Repository owner (e.g., `"octocat"`) |
 | `Repo`      | string | Yes      | Repository name (e.g., `"hello"`)    |
 | `Number`    | int    | Yes      | Pull request number                  |
-| `SkipCache` | bool   | No       | If `true`, bypass the DB caches and fetch from GitHub |
+| `SkipCache` | bool   | No       | If `true`, bypass the DB caches and fetch from GitHub. Administrator only on a [remote connection](#remote-connections) |
 
 **Reply** (`GetPRReply`): [the PR payload](#the-pr-payload), with no extra fields.
 
@@ -363,7 +652,7 @@ Fetches the next or previous pull request relative to the given PR in the sorted
 | `Owner`    | string | Yes      | Repository owner of the **current** PR                   |
 | `Repo`     | string | Yes      | Repository name of the **current** PR                    |
 | `Number`   | int    | Yes      | Pull request number of the **current** PR                |
-| `SkipCache`| bool   | No       | If `true`, bypass cached data for the adjacent PR        |
+| `SkipCache`| bool   | No       | If `true`, bypass cached data for the adjacent PR. Administrator only on a [remote connection](#remote-connections) |
 | `Previous` | bool   | No       | If `true`, return the previous PR; if `false` (default), return the next PR |
 
 **Reply** (`GetAdjacentPRReply`): [the PR payload](#the-pr-payload), plus:
@@ -493,20 +782,29 @@ downloads them whenever it loads a PR's discussion — so this normally costs a
 and this call blocks for it, unlike the rest of the read path.
 
 **Args** (`GetImageArgs`):
-| Field | Type   | Required | Description                                        |
-|-------|--------|----------|----------------------------------------------------|
-| `URL` | string | Yes      | The image URL exactly as it appears in the body    |
+| Field         | Type   | Required | Description                                        |
+|---------------|--------|----------|----------------------------------------------------|
+| `URL`         | string | Yes      | The image URL exactly as it appears in the body    |
+| `IncludeData` | bool   | No       | Also send the image's bytes, as `data`. For a client of a [hosted server](#remote-connections), which cannot read the server's disk |
 
 **Reply** (`GetImageReply`):
 | Field          | Type   | Description                                                        |
 |----------------|--------|--------------------------------------------------------------------|
-| `okay`         | bool   | `true` when the image is on disk                                   |
+| `okay`         | bool   | `true` when the image is on disk — and, with `IncludeData`, its bytes are in `data` |
 | `url`          | string | The URL that was resolved                                          |
-| `path`         | string | Absolute path of the cached file                                   |
+| `path`         | string | Absolute path of the cached file, on the server's machine          |
 | `content_type` | string | MIME type of the cached file                                       |
 | `size`         | int64  | Size of the cached file in bytes                                   |
 | `cached`       | bool   | `false` when this call had to download the image                   |
 | `error`        | string | Why it could not be served, when `okay` is `false`                 |
+| `data`         | string | With `IncludeData`: the file's bytes, base64-encoded. Absent otherwise |
+
+`path` is only useful to a client on the server's machine — the local stdio
+client. A client of a hosted server sets `IncludeData` and renders `data`
+instead, with `content_type`. The bytes are sent for images up to 10 MiB (the
+whole reply is one JSON line); a bigger one, or one whose cached file vanished
+before it was read, comes back `okay: false` with the reason in `error` and the
+other fields filled in.
 
 A URL that isn't on `github.com` or `*.githubusercontent.com` comes back with
 `okay: false` rather than as an RPC error — the client should load it directly,
@@ -538,6 +836,29 @@ are safe to delete — they are re-downloaded on demand.
   "size": 26186,
   "cached": true,
   "error": ""
+}
+```
+
+**Example Request** (a remote client, asking for the bytes):
+```json
+{
+  "method": "RPCHandler.GetImage",
+  "params": [{ "URL": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af", "IncludeData": true }],
+  "id": 12
+}
+```
+
+**Example Reply**:
+```json
+{
+  "okay": true,
+  "url": "https://github.com/user-attachments/assets/9b506449-0b9b-4c14-90f7-775beb9e68af",
+  "path": "/srv/crs/.crs/images/c33e7f4874...458b.png",
+  "content_type": "image/png",
+  "size": 26186,
+  "cached": true,
+  "error": "",
+  "data": "iVBORw0KGgoAAAANSUhEUgAAB3EAAASp..."
 }
 ```
 
@@ -656,14 +977,21 @@ Submits a review to GitHub. This will:
 | `Number` | int    | Yes      | Pull request number                                      |
 | `Event`  | string | Yes      | Review event type: `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` |
 | `Body`   | string | No       | Top-level review body (optional)                         |
+| `ExpectedDraftIDs` | []int | No | The ids of the pending comments the client showed the reviewer as part of this review. When any of them no longer exists, nothing is submitted and the call fails with `drafts changed: ...`: reload the PR and let the reviewer look again. Leave it out (or `null`) to skip the check |
 
 **Reply** (`SubmitReviewReply`): [the PR payload](#the-pr-payload), with no extra fields.
+
+Submits of one user's review of one PR run one at a time: a second one — say, a client resending a submit whose connection dropped while the server was still posting the first — waits for the first to finish, and then finds the drafts it sent gone. With `ExpectedDraftIDs` it is refused (`drafts changed:`) rather than sending the body and verdict a second time. A client that loses its connection while a submit is in flight cannot tell whether it went through, and should reload the PR before offering to submit again.
+
+Locally, the review and its replies go to GitHub under the server's own token, so GitHub records them as that token's user. On a [remote connection](#remote-connections) they go out as the user's own GitHub account once it is [linked](#linking-a-github-account) — the replies too, through the same token; the refetch that builds the reply still reads with the server's token. Without a link the call is refused with `refused: link-github: ...` where the server can link accounts, or `refused: ...` where it cannot, unless the server sets `AllowServerIdentityActions`, which sends the review as the server's account. A refused submit touches nothing: every pending comment, empty ones included, stays where it was. Pending comments with no body are deleted once a submit has gone through.
 
 ---
 
 ### `RPCHandler.MergePR`
 
 Asks GitHub to merge the given pull request. The merge method defaults to **squash** when `MergeMethod` is omitted or empty; callers may override it with any value GitHub accepts (`"merge"`, `"squash"`, or `"rebase"`).
+
+Like `SubmitReview`, a merge from a [remote connection](#remote-connections) goes out as the user's own [linked](#linking-a-github-account) GitHub account, so GitHub applies that account's own merge rights. Without a link it is refused (`refused: link-github: ...` or `refused: ...`) unless the server sets `AllowServerIdentityActions`, and merging as the server's account then needs an administrator (`permission denied: ...`).
 
 The server passes through GitHub's response verbatim — clients should rely on the `merged` and `message` fields to determine whether the merge succeeded rather than inferring success from the absence of an error. A non-error response with `merged: false` (e.g. due to a protected branch, failing checks, or a dirty mergeable state) is still a meaningful answer from GitHub.
 
@@ -782,7 +1110,7 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 ### `RPCHandler.RerunPlugins`
 
-Clears cached plugin results for a pull request and runs the plugins again, bypassing the head-SHA cache check that normally makes a plugin skip a PR it has already seen.
+Clears cached plugin results for a pull request and runs the plugins again, bypassing the head-SHA cache check that normally makes a plugin skip a PR it has already seen. Administrator only on a [remote connection](#remote-connections).
 
 Execution happens in the background: the reply means the rerun was **accepted**, not that it finished. Poll `GetPluginOutput` for results — a plugin that is still running reports `pending`.
 
@@ -861,8 +1189,8 @@ Unless `Force` is set, a stored result that already covers the PR's current inpu
 **Reply** (`RunAIFeatureReply`):
 | Field     | Type            | Description                                                              |
 |-----------|-----------------|--------------------------------------------------------------------------|
-| `okay`    | bool            | `false` when the feature can't run: unknown, or not enabled              |
-| `outcome` | string          | `started`, `up-to-date`, `already-running`, `disabled` or `unknown-feature` |
+| `okay`    | bool            | `false` when the feature can't run: unknown, not enabled, or busy        |
+| `outcome` | string          | `started`, `up-to-date`, `already-running`, `disabled`, `unknown-feature`, or `busy` when the runs clients asked for are at the server's cap (eight at once); ask again shortly |
 | `message` | string          | Human-readable status                                                    |
 | `output`  | AIFeatureOutput | The feature's output right after the dispatch (`pending` when a run started); `null` for an unknown feature |
 
@@ -919,7 +1247,7 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 
 ### `RPCHandler.GetConfig`
 
-Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. The reply also carries the workflow type, filter and AI feature registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
+Returns the server's configuration file, re-read from disk so the client sees edits made outside the server. Administrator only on a [remote connection](#remote-connections); a user's own workflows are `GetMyWorkflows`. The reply also carries the workflow type, filter and AI feature registries, so a client can build its pickers from what this server actually supports instead of hard-coding the lists.
 
 **Arguments** (`GetConfigArgs`):
 ```json
@@ -961,6 +1289,8 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 | `Plugins`                     | []Plugin          | Configured plugins (see [Plugins](plugins.md#plugin-configuration-options)) |
 | `AI`                          | AISettings        | The `[AI]` table: `DefaultProvider`, `DefaultCommand`, `DefaultModel` |
 | `AIFeatures`                  | []AIFeature       | The `[[AIFeatures]]` entries the file has (see below)            |
+| `UserActiveHours`, `UserRetentionDays`, `AllowServerIdentityActions` | int, int, bool | The [hosted server](hosted_server.md)'s user settings, as in effect (a key the file leaves out shows its default) |
+| `GitHubOAuthClientID`, `GitHubOAuthScopes` | string, string | The app users [link their GitHub accounts](#linking-a-github-account) through, and the scopes an OAuth App asks for (`repo` by default). The secrets linking needs are environment variables and never shown |
 
 `Plugins`, `AI` and `AIFeatures` use the TOML key names as field names: a plugin is `Name`, `Command`, `IncludeDiff`, `IncludeHeaders`, `IncludeComments`, `IncludeBranch`, `OnlyOnDemand`, `Provider` and `Model`, and an AI feature entry is `ID`, `Enabled`, `Mode`, `Automatic`, `Provider`, `Command` and `Model` (see [AI Features](ai_features.md#enabling-a-feature)). `AIFeatures` holds only the entries in the file: a feature switched on by a legacy root-level key such as `ExperimentalLLMReviewEase` has none, and its `ai_features` entry says so instead.
 
@@ -1022,7 +1352,7 @@ Unlike `ListAIFeatures`, this describes what can be configured, not how the runn
 
 ### `RPCHandler.UpdateConfig`
 
-Writes a **partial** change to the configuration file and reloads the running config. Every argument is optional: a field that is omitted (or `null`) keeps whatever is on disk, as do settings the server doesn't model. Sending `Workflows` replaces the entire list, which is how a client adds, removes, or reorders entries.
+Writes a **partial** change to the configuration file and reloads the running config. Administrator only on a [remote connection](#remote-connections); a user changes their own workflows with `UpdateMyWorkflows`. Every argument is optional: a field that is omitted (or `null`) keeps whatever is on disk, as do settings the server doesn't model. Sending `Workflows` replaces the entire list, which is how a client adds, removes, or reorders entries.
 
 The new configuration is validated **before** anything is written. If it fails, the file is untouched and the reply comes back with `okay: false` and a populated `errors` list — a rejected configuration is not an RPC error, so clients can attach each message to the field that caused it.
 
@@ -1193,6 +1523,7 @@ Errors are returned in the standard JSON-RPC format. Common error scenarios:
 - GitHub API errors (rate limiting, authentication, network issues)
 - Database errors (local comment storage)
 - Invalid PR references (non-existent owner/repo/number)
+- On a remote connection, refusals prefixed `not authenticated:`, `permission denied:` or `refused:` (see [Remote Connections](#errors))
 
 ---
 

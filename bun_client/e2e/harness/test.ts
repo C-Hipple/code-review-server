@@ -21,6 +21,15 @@ import { stateDirFor } from './config';
 export interface RpcCall {
     method: string;
     params: Record<string, any>;
+    /** Remote bridge only: the policy error the fake answered the call with. */
+    refused?: string;
+}
+
+/** An Authenticate or RegisterUser the remote bridge's fake crs answered. */
+export interface AuthCall {
+    method: 'RPCHandler.Authenticate' | 'RPCHandler.RegisterUser';
+    params: Record<string, any>;
+    reply: Record<string, any>;
 }
 
 class Backend {
@@ -62,6 +71,14 @@ class Backend {
         return this.rpc('E2E.Release', { method: `RPCHandler.${method}` });
     }
 
+    /**
+     * Remote bridge: carry out the next call to `method`, then hang up on the
+     * bridge instead of answering, as a connection lost mid-call would.
+     */
+    dropNext(method: string) {
+        return this.rpc('E2E.DropNext', { method: `RPCHandler.${method}` });
+    }
+
     setSyncUpdated(updated: boolean) {
         return this.rpc('E2E.SetSyncUpdated', { updated });
     }
@@ -78,6 +95,69 @@ class Backend {
     /** Turn change-diagram on or off, optionally serving `mermaid` as its diagram. */
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });
+    }
+
+    /**
+     * Remote bridge: every Authenticate / RegisterUser the fake answered since
+     * it started, oldest first. E2E.Reset doesn't clear it.
+     */
+    async authLog(): Promise<AuthCall[]> {
+        const { calls } = await this.rpc<{ calls: AuthCall[] }>('E2E.AuthLog');
+        return calls;
+    }
+
+    /**
+     * Remote bridge: run a workflow cycle, which builds every registered
+     * user's dashboard. Until one runs — after every reset, and after a
+     * user registers — a user's dashboard is empty, as on the real server.
+     */
+    runCycle() {
+        return this.rpc('E2E.RunCycle');
+    }
+
+    /**
+     * Remote bridge: let the server link GitHub accounts (off after every
+     * reset), handing out `interval` seconds between polls (1 unless set).
+     */
+    setGitHubLinkAvailable(available: boolean, interval?: number) {
+        return this.rpc('E2E.SetGitHubLinkAvailable', { available, interval });
+    }
+
+    /** Remote bridge: end `login`'s pending GitHub link as GitHub would. */
+    endGitHubLink(
+        login: string,
+        outcome: 'linked' | 'denied' | 'expired' | 'mismatch' | 'error',
+        extra: { GitHubLogin?: string; Message?: string } = {}
+    ) {
+        return this.rpc('E2E.EndGitHubLink', { Login: login, Outcome: outcome, ...extra });
+    }
+
+    /** Remote bridge: link `login`'s GitHub account without a device flow. */
+    linkGitHub(login: string) {
+        return this.rpc('E2E.LinkGitHub', { Login: login });
+    }
+
+    /** Remote bridge: revoke `login`'s link on GitHub, or make it unreadable to the server. */
+    breakGitHubLink(login: string, how: 'revoked' | 'unreadable') {
+        return this.rpc('E2E.BreakGitHubLink', { Login: login, How: how });
+    }
+
+    /** Remote bridge: `login`'s link flow (with its user code) and stored link. */
+    gitHubLink(login: string) {
+        return this.rpc<{
+            flow: { status: string; user_code: string; message: string } | null;
+            link: { githubLogin: string; linkedAt: string } | null;
+        }>('E2E.GitHubLink', { Login: login });
+    }
+
+    /** Replace a PR's description, until the next reset. */
+    setPRBody(pr: { owner: string; repo: string; number: number }, body: string) {
+        return this.rpc('E2E.SetPRBody', {
+            Owner: pr.owner,
+            Repo: pr.repo,
+            Number: pr.number,
+            Body: body,
+        });
     }
 }
 
@@ -173,6 +253,9 @@ export const test = base.extend<{ backend: Backend; lsp: LspLog }>({
 export { expect };
 
 export const PR42 = { owner: 'acme', repo: 'widgets', number: 42 } as const;
+
+/** The screenshot the fake crs serves from its image cache (GetImage). */
+export const SCREENSHOT_URL = 'https://github.com/user-attachments/assets/e2e-screenshot';
 
 /** Open the review view for a PR straight from its deep link. */
 export async function openReview(

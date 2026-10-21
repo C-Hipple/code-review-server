@@ -3,6 +3,7 @@ package main
 import (
 	"crs/ai"
 	"crs/config"
+	"crs/database"
 	"crs/git_tools"
 	"crs/logger"
 	"crs/server"
@@ -13,9 +14,11 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func main() {
@@ -26,10 +29,12 @@ func main() {
 	oneOff := flag.Bool("oneoff", false, "Pass oneoff to only run once")
 	serverFlag := flag.Bool("server", false, "Run as an RPC server")
 	testFlag := flag.Bool("test", false, "Run in test mode")
-	listPRs := flag.Bool("list-prs", false, "List all PRs from the database")
-	listSections := flag.Bool("list-sections", false, "List all sections from the database")
+	listPRs := flag.Bool("list-prs", false, "List all PRs from the database, every user's dashboard included")
+	listSections := flag.Bool("list-sections", false, "List all sections from the database, every user's included")
 	getPRFlag := flag.String("pr", "", "Get cached details for a specific PR (format: owner/repo/number)")
 	printDefaultConfig := flag.Bool("print-default-config", false, "Print the built-in default configuration and exit")
+	printUserConfig := flag.Bool("print-user-config", false, "Print what registering with a hosted server sends from the config file (its Workflows, Repos, SectionPriority and SectionSorting) as JSON and exit")
+	listenAddr := flag.String("listen", "", "Run the workflows and serve remote clients over TCP on host:port, instead of one client over stdio")
 	flag.Parse()
 
 	// Printing the defaults is what someone does before they have a config, a
@@ -37,6 +42,22 @@ func main() {
 	if *printDefaultConfig {
 		fmt.Print(config.DefaultConfigTOML)
 		return
+	}
+	// Likewise the payload a client registers with: it runs on the client's
+	// machine, which may have no database or token at all.
+	if *printUserConfig {
+		out, err := config.UserConfigJSON()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+		return
+	}
+
+	if *listenAddr != "" && (*serverFlag || *oneOff) {
+		fmt.Fprintln(os.Stderr, "error: -listen cannot be combined with -server or -oneoff")
+		os.Exit(1)
 	}
 
 	// Lets a config that never names a GithubUsername still know who "me" is.
@@ -51,7 +72,7 @@ func main() {
 	defer config.C().DB.Close()
 
 	if *testFlag {
-		content, err := server.GetFullPRResponse("C-Hipple", "gtdbot", 9, false, nil)
+		content, err := server.GetFullPRResponse("", "C-Hipple", "gtdbot", 9, false, nil)
 		if err != nil {
 			slog.Error("Error getting PR response", "error", err)
 			os.Exit(1)
@@ -91,7 +112,10 @@ func main() {
 
 	cfg := config.C()
 	logConfigProblems(&cfg)
-	workflows_list := workflows.MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
+	// The config's workflows and those of the users active now; the manager
+	// rebuilds the set every cycle, so this one only seeds the sections and
+	// the first (or only, under -oneoff) cycle.
+	workflows_list := workflows.RunSet(cfg, time.Now())
 	ms := workflows.NewManagerService(
 		workflows_list,
 		*oneOff,
@@ -99,13 +123,18 @@ func main() {
 	)
 	ms.Initialize()
 
-	if *serverFlag {
+	if *serverFlag || *listenAddr != "" {
 		// Compute plugin results and the automatic AI features off the back of
 		// the workflow cycle that added or refreshed a PR, so opening a review
-		// finds them already cached. Only registered in server mode: a
-		// workflow-only process exits when its cycle ends and would kill the
-		// hooks mid-run.
+		// finds them already cached. Only registered when serving clients
+		// (-server or -listen): a workflow-only process exits when its cycle
+		// ends and would kill the hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
+		// Revoke the linked GitHub tokens of the users retention deletes.
+		// Registering it is also what turns retention on: a process that
+		// could not revoke them — -oneoff, or a workflow-only run against a
+		// hosted server's database — sweeps nobody.
+		workflows.SetUsersDeletedHook(server.ForgetDeletedUsers)
 
 		go func() {
 			slog.Info("Starting pprof server", "addr", "localhost:6061")
@@ -114,9 +143,31 @@ func main() {
 			}
 		}()
 		go ms.Run()
+		if *listenAddr != "" {
+			logListenSecrets()
+			server.LogGitHubLinkSetup()
+			if err := server.Listen(*listenAddr); err != nil {
+				slog.Error("Error serving remote clients", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 		server.RunServer()
 	} else {
 		ms.Run()
+	}
+}
+
+// logListenSecrets says at startup which of the hosted server's two secrets
+// are set, since each one missing quietly switches something off: without
+// CRS_REGISTRATION_KEY nobody can register, and without CRS_ADMIN_TOKEN nobody
+// can authenticate as the server's own identity. Never the values.
+func logListenSecrets() {
+	if os.Getenv("CRS_REGISTRATION_KEY") == "" {
+		slog.Warn("CRS_REGISTRATION_KEY is not set: registration is disabled, so only users already registered can connect")
+	}
+	if os.Getenv("CRS_ADMIN_TOKEN") == "" {
+		slog.Info("CRS_ADMIN_TOKEN is not set: no connection can authenticate as the server's administrator, only users registered as one")
 	}
 }
 
@@ -142,23 +193,35 @@ func logConfigProblems(cfg *config.Config) {
 	}
 }
 
+// runListPRs lists every dashboard's PRs: the server's own, then each user's
+// that has sections. The USER column only appears once there are users, so a
+// server only its owner uses lists exactly what it always has.
 func runListPRs() error {
-	renderer := server.NewOrgRenderer(config.C().DB)
-	items, err := renderer.GetAllReviewItems()
+	db := config.C().DB
+	sections, err := db.GetAllSections()
 	if err != nil {
 		return err
 	}
+	owners, showUser := dashboardOwners(sections)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SECTION\tSTATUS\tREPO\t#\tAUTHOR\tTITLE")
-	for _, item := range items {
-		fmt.Fprintf(w, "%s\t%s\t%s/%s\t%d\t%s\t%s\n",
-			item.Section, item.Status, item.Owner, item.Repo,
-			item.Number, item.Author, item.Title)
+	fmt.Fprintln(w, userColumn(showUser, "USER")+"SECTION\tSTATUS\tREPO\t#\tAUTHOR\tTITLE")
+	for _, owner := range owners {
+		items, err := server.NewOrgRenderer(db, owner).GetAllReviewItems()
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			fmt.Fprintf(w, "%s%s\t%s\t%s/%s\t%d\t%s\t%s\n",
+				userColumn(showUser, owner), item.Section, item.Status, item.Owner, item.Repo,
+				item.Number, item.Author, item.Title)
+		}
 	}
 	return w.Flush()
 }
 
+// runListSections lists every section in the database, with a USER column
+// once there are users' sections to tell apart (see runListPRs).
 func runListSections() error {
 	db := config.C().DB
 	sections, err := db.GetAllSections()
@@ -176,12 +239,37 @@ func runListSections() error {
 		countBySection[item.SectionID]++
 	}
 
+	_, showUser := dashboardOwners(sections)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SECTION\tPRIORITY\tITEMS")
+	fmt.Fprintln(w, userColumn(showUser, "USER")+"SECTION\tPRIORITY\tITEMS")
 	for _, section := range sections {
-		fmt.Fprintf(w, "%s\t%d\t%d\n", section.SectionName, section.Priority, countBySection[section.ID])
+		fmt.Fprintf(w, "%s%s\t%d\t%d\n", userColumn(showUser, section.UserLogin),
+			section.SectionName, section.Priority, countBySection[section.ID])
 	}
 	return w.Flush()
+}
+
+// dashboardOwners lists whose dashboards sections belong to, in GetAllSections'
+// order — the server's own ("") first — and reports whether any is a user's.
+func dashboardOwners(sections []*database.Section) (owners []string, anyUser bool) {
+	for _, section := range sections {
+		if !slices.Contains(owners, section.UserLogin) {
+			owners = append(owners, section.UserLogin)
+		}
+		if section.UserLogin != "" {
+			anyUser = true
+		}
+	}
+	return owners, anyUser
+}
+
+// userColumn is a row's USER cell and its separator when the column is shown,
+// and nothing when it is not. The server's own rows leave the cell empty.
+func userColumn(show bool, value string) string {
+	if !show {
+		return ""
+	}
+	return value + "\t"
 }
 
 func runGetPR(prArg string) error {
@@ -196,11 +284,12 @@ func runGetPR(prArg string) error {
 		return fmt.Errorf("invalid PR number %q: %w", numStr, err)
 	}
 
-	details, err := server.GetPRDetails(owner, repo, number, false)
+	// The server's own drafts, as local mode has always shown.
+	details, err := server.GetPRDetails("", owner, repo, number, false)
 	if err != nil {
 		return err
 	}
-	content, err := server.GetFullPRResponse(owner, repo, number, false, details)
+	content, err := server.GetFullPRResponse("", owner, repo, number, false, details)
 	if err != nil {
 		return err
 	}

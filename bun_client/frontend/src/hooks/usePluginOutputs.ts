@@ -29,9 +29,15 @@ export interface PluginOutputs {
  * first automatic run has a result to hand back right away. While any plugin
  * is pending the output is read again every two seconds, one read at a time,
  * until each has landed — or until a plugin has been pending for longer than
- * the server lets one run.
+ * the server lets one run. A re-run the server refuses is handed to
+ * `onRerunFailed`, for the surface to say so.
  */
-export function usePluginOutputs(owner: string, repo: string, number: number): PluginOutputs {
+export function usePluginOutputs(
+    owner: string,
+    repo: string,
+    number: number,
+    onRerunFailed?: (name: string, error: unknown) => void
+): PluginOutputs {
     const pr = `${owner}/${repo}#${number}`;
     // The output as the server last served it, and the re-runs it doesn't
     // show the result of yet.
@@ -120,6 +126,7 @@ export function usePluginOutputs(owner: string, repo: string, number: number): P
             await read(true);
         } catch (e) {
             console.error('Failed to execute plugin:', e);
+            onRerunFailed?.(name, e);
         } finally {
             if (prRef.current === startedFor) {
                 setExecuting(prev => {

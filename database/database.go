@@ -1,8 +1,11 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,8 +19,18 @@ type DB struct {
 	conn *sql.DB
 }
 
+// ErrNotFound is returned by the methods that act on one row on someone's
+// behalf — editing a draft comment, touching a user — when no row matches.
+// For the per-user rows that includes a row that exists but belongs to another
+// user: the caller learns nothing about rows that aren't theirs.
+var ErrNotFound = errors.New("not found")
+
+// Section is one heading of a dashboard. UserLogin is the user whose dashboard
+// it belongs to; "" is the server's own, which is what local mode and the
+// workflows in the server's config file write to.
 type Section struct {
 	ID          int64
+	UserLogin   string
 	SectionName string
 	Priority    int
 }
@@ -37,6 +50,7 @@ type Item struct {
 
 type LocalComment struct {
 	ID        int64
+	UserLogin string // the user drafting it; "" for the server's own identity
 	Owner     string // GitHub owner/org
 	Repo      string // GitHub repository name
 	Number    int    // PR number
@@ -84,13 +98,165 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
-func (db *DB) initSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS sections (
+// sectionsColumns is the shape of the sections table, shared by the schema a
+// fresh database is created with and the rebuild that migrates an older one,
+// so the two cannot drift apart. Section names are unique per user rather than
+// across the database: two users may both have a "Needs Review".
+const sectionsColumns = `
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_login TEXT NOT NULL DEFAULT '',
 		section_name TEXT NOT NULL,
 		priority INTEGER DEFAULT 0,
-		UNIQUE(section_name)
+		UNIQUE(user_login, section_name)`
+
+// feedbackColumns is the shape of the Feedback table, shared the same way.
+// Each user keeps their own feedback on a PR.
+const feedbackColumns = `
+		id INTEGER PRIMARY KEY,
+		user_login TEXT NOT NULL DEFAULT '',
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		number INTEGER NOT NULL,
+		body TEXT,
+		UNIQUE(user_login, owner, repo, number)`
+
+// prCacheTable is one of the caches of what GitHub says about a PR — its diff,
+// comments, reviews, CI and the rest — and the shape it is created with.
+type prCacheTable struct {
+	name string
+	// columns is the table's definition, shared by the schema a fresh
+	// database is created with and the rebuild that migrates an older one.
+	columns string
+	// data lists its columns besides owner, repo and pr_number, which the
+	// migration copies across.
+	data string
+}
+
+// prCacheTables are keyed by the PR's owner as well as its repository's name
+// and number. They used to be keyed by the short name alone, which two
+// owners' repositories can share — orgA/api and orgB/api — and which on a
+// hosted server any user can make the server fetch for a repository of their
+// own (a fork of the same name, one PR in it, a SyncPR): its diff, head and
+// comments were then served for the other owner's PR of the same number.
+var prCacheTables = []prCacheTable{
+	{"PullRequests", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		latest_sha TEXT NOT NULL,
+		base_sha TEXT NOT NULL DEFAULT '',
+		body TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number, latest_sha)`, "latest_sha, base_sha, body"},
+	{"PRComments", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		comments_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "comments_json"},
+	{"RequestedReviewers", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reviewers_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reviewers_json"},
+	{"PRReviews", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reviews_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reviews_json"},
+	{"PRCommits", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		commits_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "commits_json"},
+	{"PRReviewThreads", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		threads_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "threads_json"},
+	{"PRReactions", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		reactions_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number)`, "reactions_json"},
+	{"PRTeamReviews", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		teams_json TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number)`, "teams_json, updated_at"},
+	// Whether each PR merges cleanly, as GitHub last answered for head_sha
+	// (see RecordPRMergeability).
+	{"PRMergeability", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		head_sha TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT '',
+		UNIQUE(owner, repo, pr_number)`, "head_sha, state"},
+	{"CIStatus", `
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		sha TEXT NOT NULL,
+		status_json TEXT NOT NULL,
+		UNIQUE(owner, repo, pr_number, sha)`, "sha, status_json"},
+}
+
+// prCacheOwner is the owner a short-name cache row is migrated under: the one
+// owner the database knows a PR of that repository name and number under —
+// from the caches that were always keyed by owner — or "" when it knows none,
+// or more than one, and cannot tell whose the row is.
+const prCacheOwner = `COALESCE((
+	SELECT CASE WHEN COUNT(DISTINCT k.owner) = 1 THEN MIN(k.owner) END FROM (
+		SELECT owner, repo, pr_number FROM PRMetadataCache
+		UNION SELECT owner, repo, pr_number FROM PluginResults
+		UNION SELECT owner, repo, pr_number FROM AIResults
+		UNION SELECT owner, repo, pr_number FROM Worktrees
+	) k WHERE k.repo = %[1]s.repo AND k.pr_number = %[1]s.pr_number AND k.owner != ''
+), '')`
+
+// migratePRCacheOwners rebuilds each PR cache that predates its owner column,
+// filing every row under its PR's owner where the database can tell it
+// (prCacheOwner) and dropping the rest: a cache row nobody can vouch for is
+// fetched again rather than served for the wrong PR. Each table checks for the
+// column first, so running this against a migrated database does nothing.
+func (db *DB) migratePRCacheOwners() error {
+	for _, t := range prCacheTables {
+		migrated, err := db.hasColumn(t.name, "owner")
+		if err != nil {
+			return err
+		}
+		if migrated {
+			continue
+		}
+		data := t.data
+		if t.name == "PullRequests" {
+			data = "latest_sha, COALESCE(base_sha, ''), body"
+		}
+		if err := db.rebuildTable(t.name, t.columns,
+			"owner, repo, pr_number, "+t.data,
+			fmt.Sprintf(prCacheOwner, t.name)+", repo, pr_number, "+data); err != nil {
+			return fmt.Errorf("rebuilding %s: %w", t.name, err)
+		}
+		res, err := db.conn.Exec("DELETE FROM " + t.name + " WHERE owner = ''")
+		if err != nil {
+			return err
+		}
+		dropped, _ := res.RowsAffected()
+		slog.Info("Migrated a PR cache to keys with the PR's owner", "table", t.name, "dropped_rows_of_unknown_owner", dropped)
+	}
+	return nil
+}
+
+func (db *DB) initSchema() error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS sections (` + sectionsColumns + `
 	);
 
 	CREATE TABLE IF NOT EXISTS items (
@@ -115,92 +281,49 @@ func (db *DB) initSchema() error {
 			filename TEXT NOT NULL,
 			position INTEGER NOT NULL,
 			body TEXT,
-			reply_to_id INTEGER
+			reply_to_id INTEGER,
+			user_login TEXT NOT NULL DEFAULT ''
 		);
 
-		CREATE TABLE IF NOT EXISTS Feedback (
-			id INTEGER PRIMARY KEY,
-			owner TEXT NOT NULL,
-			repo TEXT NOT NULL,
-			number INTEGER NOT NULL,
-			body TEXT,
-			UNIQUE(owner, repo, number)
-		);
-
-	CREATE TABLE IF NOT EXISTS PullRequests (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		latest_sha TEXT NOT NULL,
-		body TEXT NOT NULL,
-		UNIQUE(pr_number, repo, latest_sha)
+	CREATE TABLE IF NOT EXISTS Feedback (` + feedbackColumns + `
 	);
 
-	CREATE TABLE IF NOT EXISTS PRComments (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		comments_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
+	-- The users a hosted server keeps dashboards for (see users.go). login is
+	-- case-insensitive, like a GitHub login; the token itself is never stored,
+	-- only its hash. The JSON columns are the user's own SectionPriority,
+	-- SectionSorting and fallback Repos, the per-user counterparts of the
+	-- config file's keys. github_token is the user's own GitHub credential,
+	-- sealed by the server (github_credentials.go); NULL until they link one.
+	CREATE TABLE IF NOT EXISTS users (
+		login TEXT PRIMARY KEY COLLATE NOCASE,
+		token_hash TEXT NOT NULL UNIQUE,
+		section_priority TEXT NOT NULL DEFAULT '{}',
+		section_sorting TEXT NOT NULL DEFAULT '{}',
+		repos TEXT NOT NULL DEFAULT '[]',
+		github_token TEXT,
+		is_admin INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE TABLE IF NOT EXISTS RequestedReviewers (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reviewers_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
+	-- The bearer tokens of users an administrator deleted (DeleteUser), by
+	-- hash. RegisterUser refuses them, so a client still holding one — a
+	-- squatter's, reconnecting — cannot claim the login again with it. The
+	-- retention sweep revokes none: a user it deletes gets their token back.
+	CREATE TABLE IF NOT EXISTS revoked_tokens (
+		token_hash TEXT PRIMARY KEY,
+		login TEXT NOT NULL,
+		revoked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE TABLE IF NOT EXISTS PRReviews (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reviews_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRCommits (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		commits_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRReviewThreads (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		threads_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRReactions (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		reactions_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS PRTeamReviews (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		teams_json TEXT NOT NULL,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(pr_number, repo)
-	);
-
-	-- Whether each PR merges cleanly, as GitHub last answered for head_sha (see
-	-- RecordPRMergeability). Additive, like AIResults.
-	CREATE TABLE IF NOT EXISTS PRMergeability (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		head_sha TEXT NOT NULL DEFAULT '',
-		state TEXT NOT NULL DEFAULT '',
-		UNIQUE(pr_number, repo)
-	);
-
-	CREATE TABLE IF NOT EXISTS CIStatus (
-		pr_number INTEGER NOT NULL,
-		repo TEXT NOT NULL,
-		sha TEXT NOT NULL,
-		status_json TEXT NOT NULL,
-		UNIQUE(pr_number, repo, sha)
+	-- Each user's workflows, one config.RawWorkflow as JSON per row, in the
+	-- order the user listed them.
+	CREATE TABLE IF NOT EXISTS user_workflows (
+		user_login TEXT NOT NULL COLLATE NOCASE REFERENCES users(login) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		workflow_json TEXT NOT NULL,
+		PRIMARY KEY (user_login, name)
 	);
 
 	CREATE TABLE IF NOT EXISTS PRMetadataCache (
@@ -264,12 +387,8 @@ func (db *DB) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_items_section ON items(section_id);
 	CREATE INDEX IF NOT EXISTS idx_items_identifier ON items(identifier);
-	CREATE INDEX IF NOT EXISTS idx_pullrequests_lookup ON PullRequests(pr_number, repo, latest_sha);
-	CREATE INDEX IF NOT EXISTS idx_prcomments_lookup ON PRComments(pr_number, repo);
-	CREATE INDEX IF NOT EXISTS idx_prcommits_lookup ON PRCommits(pr_number, repo);
 	CREATE INDEX IF NOT EXISTS idx_localcomments_pr ON LocalComment(owner, repo, number);
 	CREATE INDEX IF NOT EXISTS idx_plugin_results_pr ON PluginResults(owner, repo, pr_number);
-	CREATE INDEX IF NOT EXISTS idx_prreviews_lookup ON PRReviews(pr_number, repo);
 
 	CREATE TABLE IF NOT EXISTS WorkflowCycleLog (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,6 +434,14 @@ func (db *DB) initSchema() error {
 	_, err := db.conn.Exec(schema)
 	if err != nil {
 		return err
+	}
+	// Created here rather than in the schema block so their shape has one
+	// definition (prCacheTables); an older database keeps its tables until
+	// migratePRCacheOwners rebuilds them.
+	for _, t := range prCacheTables {
+		if _, err := db.conn.Exec("CREATE TABLE IF NOT EXISTS " + t.name + " (" + t.columns + "\n\t)"); err != nil {
+			return err
+		}
 	}
 
 	// Migration: Add PR columns to LocalComment table if they don't exist
@@ -547,7 +674,208 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	// Migration: per-user dashboards. Unlike the migrations above, a failure
+	// here fails NewDB: every query on these tables names user_login, so a
+	// database left without it would not work at all. Each step rolls back on
+	// failure, leaving the database as the previous version wrote it.
+	if err := db.migratePerUserColumns(); err != nil {
+		return fmt.Errorf("migrating to per-user dashboards: %w", err)
+	}
+	// Likewise: every query on the PR caches names owner.
+	if err := db.migratePRCacheOwners(); err != nil {
+		return fmt.Errorf("migrating the PR caches to keys with the PR's owner: %w", err)
+	}
+
 	return nil
+}
+
+// migratePerUserColumns gives sections, Feedback and LocalComment the
+// user_login column that says whose dashboard a row belongs to. Every existing
+// row becomes the server's own, the empty login, which is the only identity
+// there was.
+//
+// sections and Feedback also widen their UNIQUE constraint to include it,
+// which SQLite can only do by rebuilding the table. LocalComment has no
+// constraint to widen, so it just gains the column. Each step checks for the
+// column first, so running this against a migrated database does nothing.
+func (db *DB) migratePerUserColumns() error {
+	migrated, err := db.hasColumn("sections", "user_login")
+	if err != nil {
+		return err
+	}
+	if !migrated {
+		if err := db.rebuildTable("sections", sectionsColumns,
+			"id, user_login, section_name, priority",
+			"id, '', section_name, priority"); err != nil {
+			return fmt.Errorf("rebuilding sections: %w", err)
+		}
+		slog.Info("Migrated sections to per-user dashboards")
+	}
+
+	migrated, err = db.hasColumn("Feedback", "user_login")
+	if err != nil {
+		return err
+	}
+	if !migrated {
+		if err := db.rebuildTable("Feedback", feedbackColumns,
+			"id, user_login, owner, repo, number, body",
+			"id, '', owner, repo, number, body"); err != nil {
+			return fmt.Errorf("rebuilding Feedback: %w", err)
+		}
+		slog.Info("Migrated Feedback to per-user dashboards")
+	}
+
+	migrated, err = db.hasColumn("LocalComment", "user_login")
+	if err != nil {
+		return err
+	}
+	if !migrated {
+		if _, err := db.conn.Exec("ALTER TABLE LocalComment ADD COLUMN user_login TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("adding user_login to LocalComment: %w", err)
+		}
+	}
+	// Indexed here rather than in the schema block, for the same reason as the
+	// WorkflowActionLog indexes: on an unmigrated table the column doesn't
+	// exist yet when the schema block runs.
+	if _, err := db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_localcomments_user_pr ON LocalComment(user_login, owner, repo, number)"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// hasColumn reports whether table has the named column.
+func (db *DB) hasColumn(table, column string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&count)
+	return count > 0, err
+}
+
+// rebuildTable gives table a new shape by SQLite's recipe for the changes
+// ALTER TABLE cannot make (https://www.sqlite.org/lang_altertable.html#otheralter):
+// create the new table, copy every row across, drop the old one and rename the
+// new one into its place, in one transaction. columns is the new table's
+// definition; insertColumns lists the new table's columns the copy fills and
+// selectExprs the expressions, read from the old table, that fill them. The
+// copy carries ids across, so anything that refers to a row by id still finds
+// it. The rebuild does not carry over indexes of the table's own beyond its
+// constraints; none of the tables rebuilt today needs one, and the old ones
+// go with the old table.
+//
+// Foreign keys are switched off for the rebuild, on the one connection it runs
+// on. With them on, dropping sections deletes every row of items through its
+// ON DELETE CASCADE. The pragma is a no-op inside a transaction, so it is set
+// before BEGIN and restored after COMMIT, and the connection is pinned so the
+// pragma and the transaction are guaranteed to share it. foreign_key_check
+// stands in for the enforcement that was off: a rebuild that leaves a
+// reference dangling is rolled back.
+func (db *DB) rebuildTable(table, columns, insertColumns, selectExprs string) error {
+	ctx := context.Background()
+	conn, err := db.conn.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return err
+	}
+	rebuildErr := rebuildTableOn(ctx, conn, table, columns, insertColumns, selectExprs)
+	// Back on before the connection returns to the pool, whatever happened:
+	// every other query relies on the cascade. Should this fail, NewDB fails
+	// with it and closes the pool, connection included.
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return errors.Join(rebuildErr, fmt.Errorf("re-enabling foreign keys: %w", err))
+	}
+	return rebuildErr
+}
+
+// rebuildTableOn is rebuildTable's transaction, run on a connection that has
+// foreign keys off.
+func rebuildTableOn(ctx context.Context, conn *sql.Conn, table, columns, insertColumns, selectExprs string) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Violations that predate the rebuild — rows a database written with
+	// foreign keys off left dangling — are not the rebuild's doing, and
+	// refusing to start over them would strand the database. Only new ones
+	// fail it.
+	violationsBefore, err := countForeignKeyViolations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if violationsBefore > 0 {
+		slog.Warn("Database already had dangling foreign keys before the rebuild", "table", table, "violations", violationsBefore)
+	}
+
+	// AUTOINCREMENT promises an id is never reused, which it keeps by
+	// remembering the highest id the table has ever had. The copy only
+	// teaches the new table the highest id it holds now, so carry the old
+	// mark across: otherwise a deleted section's id could come back.
+	var highWater int64
+	var hasSequence int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").Scan(&hasSequence); err != nil {
+		return err
+	}
+	if hasSequence > 0 {
+		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) FROM sqlite_sequence WHERE name = ?", table).Scan(&highWater); err != nil {
+			return err
+		}
+	}
+
+	newTable := table + "_rebuild"
+	statements := []string{
+		"CREATE TABLE " + newTable + " (" + columns + ")",
+		"INSERT INTO " + newTable + " (" + insertColumns + ") SELECT " + selectExprs + " FROM " + table,
+		"DROP TABLE " + table,
+		"ALTER TABLE " + newTable + " RENAME TO " + table,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+
+	if highWater > 0 {
+		res, err := tx.ExecContext(ctx, "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?", highWater, table)
+		if err != nil {
+			return err
+		}
+		// No row when the copy carried no rows across.
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", table, highWater); err != nil {
+				return err
+			}
+		}
+	}
+
+	violationsAfter, err := countForeignKeyViolations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if violationsAfter > violationsBefore {
+		return fmt.Errorf("rebuild left %d foreign key references dangling", violationsAfter-violationsBefore)
+	}
+	return tx.Commit()
+}
+
+// countForeignKeyViolations counts the rows PRAGMA foreign_key_check reports:
+// one per row whose reference matches no parent row.
+func countForeignKeyViolations(ctx context.Context, tx *sql.Tx) (int, error) {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	return count, rows.Err()
 }
 
 func (db *DB) AddWorktree(prNumber int, repo, owner, path, branch string) error {
@@ -740,17 +1068,16 @@ func (db *DB) UpsertReviewEase(prNumber int, repo, sha, ease string) error {
 	return err
 }
 
-func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, error) {
-	var section Section
-	err := db.conn.QueryRow(
-		"SELECT id, section_name, priority FROM sections WHERE section_name = ?",
-		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.Priority)
+// GetOrCreateSection returns user's section of that name, creating it with
+// the given priority if it doesn't exist and updating its priority if that
+// has changed.
+func (db *DB) GetOrCreateSection(user, sectionName string, priority int) (*Section, error) {
+	section, err := db.GetSection(user, sectionName)
 
 	if err == sql.ErrNoRows {
 		result, err := db.conn.Exec(
-			"INSERT INTO sections (section_name, priority) VALUES (?, ?)",
-			sectionName, priority,
+			"INSERT INTO sections (user_login, section_name, priority) VALUES (?, ?, ?)",
+			user, sectionName, priority,
 		)
 		if err != nil {
 			return nil, err
@@ -759,13 +1086,13 @@ func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, er
 		if err != nil {
 			return nil, err
 		}
-		slog.Info("Created new section", "section", sectionName, "id", id)
-		section = Section{
+		slog.Info("Created new section", "user", user, "section", sectionName, "id", id)
+		return &Section{
 			ID:          id,
+			UserLogin:   user,
 			SectionName: sectionName,
 			Priority:    priority,
-		}
-		return &section, nil
+		}, nil
 	} else if err != nil {
 		return nil, err
 	}
@@ -774,21 +1101,23 @@ func (db *DB) GetOrCreateSection(sectionName string, priority int) (*Section, er
 	if section.Priority != priority {
 		_, err := db.conn.Exec("UPDATE sections SET priority = ? WHERE id = ?", priority, section.ID)
 		if err != nil {
-			slog.Warn("Failed to update section priority", "section", sectionName, "error", err)
+			slog.Warn("Failed to update section priority", "user", user, "section", sectionName, "error", err)
 		} else {
 			section.Priority = priority
 		}
 	}
 
-	return &section, nil
+	return section, nil
 }
 
-func (db *DB) GetSection(sectionName string) (*Section, error) {
+// GetSection returns user's section of that name, or sql.ErrNoRows when they
+// have none.
+func (db *DB) GetSection(user, sectionName string) (*Section, error) {
 	var section Section
 	err := db.conn.QueryRow(
-		"SELECT id, section_name, priority FROM sections WHERE section_name = ?",
-		sectionName,
-	).Scan(&section.ID, &section.SectionName, &section.Priority)
+		"SELECT id, user_login, section_name, priority FROM sections WHERE user_login = ? AND section_name = ?",
+		user, sectionName,
+	).Scan(&section.ID, &section.UserLogin, &section.SectionName, &section.Priority)
 
 	if err != nil {
 		return nil, err
@@ -796,8 +1125,24 @@ func (db *DB) GetSection(sectionName string) (*Section, error) {
 	return &section, nil
 }
 
+// GetSectionsForUser returns the sections of one user's dashboard, in display
+// order: priority, then name.
+func (db *DB) GetSectionsForUser(user string) ([]*Section, error) {
+	return db.querySections(
+		"SELECT id, user_login, section_name, priority FROM sections WHERE user_login = ? ORDER BY priority ASC, section_name ASC",
+		user,
+	)
+}
+
+// GetAllSections returns every section in the database, every user's, grouped
+// by user and in display order within each. It is for whole-database tooling;
+// anything showing a dashboard wants GetSectionsForUser.
 func (db *DB) GetAllSections() ([]*Section, error) {
-	rows, err := db.conn.Query("SELECT id, section_name, priority FROM sections ORDER BY priority ASC, section_name ASC")
+	return db.querySections("SELECT id, user_login, section_name, priority FROM sections ORDER BY user_login ASC, priority ASC, section_name ASC")
+}
+
+func (db *DB) querySections(query string, args ...any) ([]*Section, error) {
+	rows, err := db.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -806,7 +1151,7 @@ func (db *DB) GetAllSections() ([]*Section, error) {
 	var sections []*Section
 	for rows.Next() {
 		var section Section
-		if err := rows.Scan(&section.ID, &section.SectionName, &section.Priority); err != nil {
+		if err := rows.Scan(&section.ID, &section.UserLogin, &section.SectionName, &section.Priority); err != nil {
 			return nil, err
 		}
 		sections = append(sections, &section)
@@ -951,12 +1296,21 @@ func (db *DB) RemoveWorkflowFromItem(sectionID int64, identifier, workflowName s
 	return tx.Commit()
 }
 
+// SectionRef names a section the way workflows address one: by the user whose
+// dashboard it is on and its name. Section ids would not do, since a section a
+// workflow is about to write into may not have been created yet.
+type SectionRef struct {
+	User string
+	Name string
+}
+
 // ReleaseStaleWorkflowOwnership strips ownership entries that the running
-// configuration no longer backs. ownedSections maps each configured workflow
-// name to the section that workflow writes into; an entry survives only if the
-// workflow is still configured AND still writes into the section the item lives
-// in. Anything else is a leftover from a workflow that was deleted from the
-// config or re-pointed at a different section.
+// configuration no longer backs. owned maps each live workflow's ownership key
+// (the entries items.workflows holds) to the section that workflow writes
+// into; an entry survives only if its key is in the map AND the item lives in
+// that section — the same user's section of the same name. Anything else is a
+// leftover from a workflow that was deleted from the config, re-pointed at a
+// different section, or belonged to a user who is gone.
 //
 // Without this, such an item is immortal: its owning workflow never runs again,
 // so nothing ever expires it (the TTL sweep in ProcessPRsDB only looks at
@@ -965,10 +1319,15 @@ func (db *DB) RemoveWorkflowFromItem(sectionID int64, identifier, workflowName s
 // name in the list also pins items in sections that are still live, since the
 // list stays non-empty after the surviving workflows release their claims.
 //
+// spareServer leaves the items on the server's own dashboard (user "") as they
+// are, whatever owned says: what a caller passes when the config file has no
+// workflows, which may as well be a config that lost them as one that never
+// had any.
+//
 // Returns the number of items whose ownership list changed. Callers must not
 // pass an empty map when the configuration merely failed to load: that releases
 // every item in the database.
-func (db *DB) ReleaseStaleWorkflowOwnership(ownedSections map[string]string) (int64, error) {
+func (db *DB) ReleaseStaleWorkflowOwnership(owned map[string]SectionRef, spareServer bool) (int64, error) {
 	type ownershipUpdate struct {
 		id        int64
 		workflows string
@@ -978,10 +1337,12 @@ func (db *DB) ReleaseStaleWorkflowOwnership(ownedSections map[string]string) (in
 	// updates run: SQLite does not want a write transaction opened underneath an
 	// open read.
 	collect := func() ([]ownershipUpdate, error) {
-		rows, err := db.conn.Query(
-			`SELECT i.id, COALESCE(i.workflows, '[]'), s.section_name
-			 FROM items i JOIN sections s ON s.id = i.section_id`,
-		)
+		query := `SELECT i.id, COALESCE(i.workflows, '[]'), s.user_login, s.section_name
+			 FROM items i JOIN sections s ON s.id = i.section_id`
+		if spareServer {
+			query += ` WHERE s.user_login != ''`
+		}
+		rows, err := db.conn.Query(query)
 		if err != nil {
 			return nil, err
 		}
@@ -990,14 +1351,15 @@ func (db *DB) ReleaseStaleWorkflowOwnership(ownedSections map[string]string) (in
 		updates := []ownershipUpdate{}
 		for rows.Next() {
 			var id int64
-			var workflowsJSON, sectionName string
-			if err := rows.Scan(&id, &workflowsJSON, &sectionName); err != nil {
+			var workflowsJSON string
+			var lives SectionRef
+			if err := rows.Scan(&id, &workflowsJSON, &lives.User, &lives.Name); err != nil {
 				return nil, err
 			}
 			owners := decodeWorkflowList(workflowsJSON)
 			kept := make([]string, 0, len(owners))
 			for _, owner := range owners {
-				if section, configured := ownedSections[owner]; configured && section == sectionName {
+				if section, configured := owned[owner]; configured && section == lives {
 					kept = append(kept, owner)
 				}
 			}
@@ -1042,19 +1404,29 @@ func (db *DB) ReleaseStaleWorkflowOwnership(ownedSections map[string]string) (in
 }
 
 // DeleteEmptySectionsNotIn deletes every section that holds no items and is not
-// named in keep. Sections outlive the config otherwise: nothing removes the row
-// when a workflow is deleted, and the renderer reads every section in the
-// database, so a retired section keeps rendering as an empty heading. Configured
+// in keep. Sections outlive the config otherwise: nothing removes the row when
+// a workflow is deleted, and the renderer reads every section of a dashboard,
+// so a retired section keeps rendering as an empty heading. Configured
 // sections are kept even when empty, since GetOrCreateSection would recreate
 // them on the next cycle anyway.
-func (db *DB) DeleteEmptySectionsNotIn(keep []string) (int64, error) {
+//
+// A keep entry spares only that user's section of that name: another user's
+// empty section of the same name is retired all the same. spareServer spares
+// every section of the server's own dashboard, as for
+// ReleaseStaleWorkflowOwnership.
+func (db *DB) DeleteEmptySectionsNotIn(keep []SectionRef, spareServer bool) (int64, error) {
+	// One statement, so an item written between finding a section empty and
+	// deleting it cannot be taken down by the ON DELETE CASCADE.
 	query := "DELETE FROM sections WHERE id NOT IN (SELECT section_id FROM items)"
+	if spareServer {
+		query += " AND user_login != ''"
+	}
 	args := []any{}
 	if len(keep) > 0 {
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
-		query += " AND section_name NOT IN (" + placeholders + ")"
-		for _, name := range keep {
-			args = append(args, name)
+		placeholders := strings.TrimSuffix(strings.Repeat("(?, ?),", len(keep)), ",")
+		query += " AND (user_login, section_name) NOT IN (VALUES " + placeholders + ")"
+		for _, ref := range keep {
+			args = append(args, ref.User, ref.Name)
 		}
 	}
 	res, err := db.conn.Exec(query, args...)
@@ -1110,32 +1482,36 @@ func (db *DB) GetItem(sectionID int64, identifier string) (*Item, error) {
 }
 
 func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
-	rows, err := db.conn.Query(
+	return db.queryItems(
 		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP), COALESCE(workflows, '[]') FROM items WHERE section_id = ? ORDER BY id",
 		sectionID,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []*Item
-	for rows.Next() {
-		var item Item
-		var createdAtStr string
-		if err := rows.Scan(&item.ID, &item.SectionID, &item.Identifier, &item.Status, &item.Title, &item.DetailsJSON, &item.Tags, &item.TTL, &createdAtStr, &item.Workflows); err != nil {
-			return nil, err
-		}
-		item.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
-		items = append(items, &item)
-	}
-	return items, rows.Err()
 }
 
+// GetAllItems returns every item in the database, every user's. It is for
+// whole-database tooling; anything showing a dashboard wants GetItemsForUser.
 func (db *DB) GetAllItems() ([]*Item, error) {
-	rows, err := db.conn.Query(
+	return db.queryItems(
 		"SELECT id, section_id, identifier, status, title, details_json, tags, ttl, COALESCE(created_at, CURRENT_TIMESTAMP), COALESCE(workflows, '[]') FROM items ORDER BY section_id, id",
 	)
+}
+
+// GetItemsForUser returns the items in one user's sections, ordered like
+// GetAllItems.
+func (db *DB) GetItemsForUser(user string) ([]*Item, error) {
+	return db.queryItems(
+		`SELECT i.id, i.section_id, i.identifier, i.status, i.title, i.details_json, i.tags, i.ttl, COALESCE(i.created_at, CURRENT_TIMESTAMP), COALESCE(i.workflows, '[]')
+		 FROM items i JOIN sections s ON s.id = i.section_id
+		 WHERE s.user_login = ?
+		 ORDER BY i.section_id, i.id`,
+		user,
+	)
+}
+
+// queryItems runs a query selecting the item columns GetAllItems does, in its
+// order, and scans the rows.
+func (db *DB) queryItems(query string, args ...any) ([]*Item, error) {
+	rows, err := db.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1221,8 +1597,14 @@ func (db *DB) DeleteItemsNotInList(sectionID int64, identifiers []string) error 
 	return err
 }
 
-func (db *DB) InsertLocalComment(owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) (LocalComment, error) {
-	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (owner, repo, number, filename, position, body, reply_to_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+// Local comments are draft review comments, kept here until the review is
+// submitted. They are one user's drafts: the methods acting on a PR's drafts
+// or on a single draft take the user acting, and touch only that user's rows.
+// GetAllLocalComments and DeleteAllLocalComments are whole-database tooling.
+
+// InsertLocalComment stores a new draft comment of user's.
+func (db *DB) InsertLocalComment(user, owner, repo string, number int, filename string, position int64, body *string, replyToID *int64) (LocalComment, error) {
+	stmt, err := db.conn.Prepare("INSERT INTO LocalComment (user_login, owner, repo, number, filename, position, body, reply_to_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		slog.Error("Failed to prepare statement", "error", err)
 		return LocalComment{}, err
@@ -1230,7 +1612,7 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 	defer stmt.Close()
 
 	// Execute the insertion
-	res, err := stmt.Exec(owner, repo, number, filename, position, body, replyToID)
+	res, err := stmt.Exec(user, owner, repo, number, filename, position, body, replyToID)
 	if err != nil {
 		slog.Error("Failed to execute insertion", "error", err)
 		return LocalComment{}, err
@@ -1243,14 +1625,16 @@ func (db *DB) InsertLocalComment(owner, repo string, number int, filename string
 		return LocalComment{}, err
 	}
 	return LocalComment{
-		ID: id, Owner: owner, Repo: repo, Number: number, Filename: filename, Position: position, Body: body, ReplyToID: replyToID,
+		ID: id, UserLogin: user, Owner: owner, Repo: repo, Number: number, Filename: filename, Position: position, Body: body, ReplyToID: replyToID,
 	}, nil
 }
 
-func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error {
+// InsertFeedback stores user's feedback on a PR, replacing any they left
+// before.
+func (db *DB) InsertFeedback(user, owner, repo string, number int, body *string) error {
 	stmt, err := db.conn.Prepare(
-		`INSERT INTO Feedback (owner, repo, number, body) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(owner, repo, number) DO UPDATE SET
+		`INSERT INTO Feedback (user_login, owner, repo, number, body) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(user_login, owner, repo, number) DO UPDATE SET
 			body = excluded.body`,
 	)
 	if err != nil {
@@ -1259,7 +1643,7 @@ func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(owner, repo, number, body)
+	_, err = stmt.Exec(user, owner, repo, number, body)
 	if err != nil {
 		slog.Error("Failed to execute feedback insertion", "error", err)
 		return err
@@ -1267,11 +1651,12 @@ func (db *DB) InsertFeedback(owner, repo string, number int, body *string) error
 	return nil
 }
 
-func (db *DB) GetFeedback(owner, repo string, number int) (string, error) {
+// GetFeedback returns user's feedback on a PR, or "" when they have left none.
+func (db *DB) GetFeedback(user, owner, repo string, number int) (string, error) {
 	var body string
 	err := db.conn.QueryRow(
-		`SELECT body FROM Feedback WHERE owner = ? AND repo = ? AND number = ?`,
-		owner, repo, number,
+		`SELECT COALESCE(body, '') FROM Feedback WHERE user_login = ? AND owner = ? AND repo = ? AND number = ?`,
+		user, owner, repo, number,
 	).Scan(&body)
 	if err == sql.ErrNoRows {
 		return "", nil
@@ -1282,26 +1667,22 @@ func (db *DB) GetFeedback(owner, repo string, number int) (string, error) {
 	return body, nil
 }
 
+// GetAllLocalComments returns every draft in the database, every user's. It is
+// for whole-database tooling.
 func (db *DB) GetAllLocalComments() ([]LocalComment, error) {
-	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var comments []LocalComment
-	for rows.Next() {
-		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
-			return nil, err
-		}
-		comments = append(comments, comment)
-	}
-	return comments, rows.Err()
+	return db.queryLocalComments("SELECT id, user_login, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment")
 }
 
-func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComment, error) {
-	rows, err := db.conn.Query("SELECT id, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+// GetLocalCommentsForPR returns user's drafts on a PR.
+func (db *DB) GetLocalCommentsForPR(user, owner, repo string, number int) ([]LocalComment, error) {
+	return db.queryLocalComments(
+		"SELECT id, user_login, owner, repo, number, filename, position, body, reply_to_id FROM LocalComment WHERE user_login = ? AND owner = ? AND repo = ? AND number = ? ORDER BY id",
+		user, owner, repo, number,
+	)
+}
+
+func (db *DB) queryLocalComments(query string, args ...any) ([]LocalComment, error) {
+	rows, err := db.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1310,7 +1691,7 @@ func (db *DB) GetLocalCommentsForPR(owner, repo string, number int) ([]LocalComm
 	var comments []LocalComment
 	for rows.Next() {
 		var comment LocalComment
-		if err := rows.Scan(&comment.ID, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
+		if err := rows.Scan(&comment.ID, &comment.UserLogin, &comment.Owner, &comment.Repo, &comment.Number, &comment.Filename, &comment.Position, &comment.Body, &comment.ReplyToID); err != nil {
 			return nil, err
 		}
 		comments = append(comments, comment)
@@ -1323,22 +1704,46 @@ func (db *DB) DeleteAllLocalComments() error {
 	return err
 }
 
-func (db *DB) DeleteLocalCommentsForPR(owner, repo string, number int) error {
-	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE owner = ? AND repo = ? AND number = ?", owner, repo, number)
+// DeleteLocalCommentsForPR discards user's drafts on a PR.
+func (db *DB) DeleteLocalCommentsForPR(user, owner, repo string, number int) error {
+	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE user_login = ? AND owner = ? AND repo = ? AND number = ?", user, owner, repo, number)
 	return err
 }
 
-func (db *DB) UpdateLocalComment(id int64, body string) error {
-	_, err := db.conn.Exec("UPDATE LocalComment SET body = ? WHERE id = ?", body, id)
-	return err
+// UpdateLocalComment replaces the body of one of user's drafts. It returns
+// ErrNotFound, changing nothing, when no draft of user's has that id —
+// including when the id is another user's: the id comes from the client, and
+// must not let one user edit another's drafts.
+func (db *DB) UpdateLocalComment(user string, id int64, body string) error {
+	res, err := db.conn.Exec("UPDATE LocalComment SET body = ? WHERE id = ? AND user_login = ?", body, id, user)
+	return requireOneRow(res, err)
 }
 
-func (db *DB) DeleteLocalComment(id int64) error {
-	_, err := db.conn.Exec("DELETE FROM LocalComment WHERE id = ?", id)
-	return err
+// DeleteLocalComment discards one of user's drafts, with UpdateLocalComment's
+// ErrNotFound for an id that isn't theirs.
+func (db *DB) DeleteLocalComment(user string, id int64) error {
+	res, err := db.conn.Exec("DELETE FROM LocalComment WHERE id = ? AND user_login = ?", id, user)
+	return requireOneRow(res, err)
 }
 
-func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) {
+// requireOneRow turns a write that matched no row into ErrNotFound.
+func requireOneRow(res sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetPullRequest returns the cached diff of owner/repo#prNumber and the head
+// SHA it is for.
+func (db *DB) GetPullRequest(owner, repo string, prNumber int) (string, string, error) {
 	var body string
 	var sha string
 	// A PR accumulates one row per head SHA it has ever had (the UNIQUE key
@@ -1347,8 +1752,8 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 	// stale) one. Without this, a bare LIMIT 1 could hand back an old SHA's diff
 	// or an empty placeholder row.
 	err := db.conn.QueryRow(
-		"SELECT body, latest_sha FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
-		prNumber, repo,
+		"SELECT body, latest_sha FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ? ORDER BY rowid DESC LIMIT 1",
+		owner, repo, prNumber,
 	).Scan(&body, &sha)
 
 	if err == sql.ErrNoRows {
@@ -1361,10 +1766,10 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 }
 
 // GetPullRequestSHAs returns both the head and base SHAs for a cached PR.
-func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA string, err error) {
+func (db *DB) GetPullRequestSHAs(owner, repo string, prNumber int) (headSHA, baseSHA string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT latest_sha, COALESCE(base_sha, '') FROM PullRequests WHERE pr_number = ? AND repo = ? ORDER BY rowid DESC LIMIT 1",
-		prNumber, repo,
+		"SELECT latest_sha, base_sha FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ? ORDER BY rowid DESC LIMIT 1",
+		owner, repo, prNumber,
 	).Scan(&headSHA, &baseSHA)
 
 	if err == sql.ErrNoRows {
@@ -1373,28 +1778,28 @@ func (db *DB) GetPullRequestSHAs(prNumber int, repo string) (headSHA, baseSHA st
 	return
 }
 
-func (db *DB) UpsertPullRequest(prNumber int, repo, latestSha, baseSha, body string) error {
+func (db *DB) UpsertPullRequest(owner, repo string, prNumber int, latestSha, baseSha, body string) error {
 	// Never overwrite a cached diff with an empty body. The workflow writes a
 	// SHA-only placeholder row (empty body) for PRs whose section doesn't need
 	// the diff, purely so CI/SHA lookups work. Clobbering the real diff with ""
 	// here would silently poison the cache and force a miss on the next review
 	// open, so keep the existing body when the incoming one is empty.
 	_, err := db.conn.Exec(
-		`INSERT INTO PullRequests (pr_number, repo, latest_sha, base_sha, body)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo, latest_sha) DO UPDATE SET
+		`INSERT INTO PullRequests (owner, repo, pr_number, latest_sha, base_sha, body)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number, latest_sha) DO UPDATE SET
 			body = CASE WHEN excluded.body != '' THEN excluded.body ELSE body END,
 			base_sha = excluded.base_sha`,
-		prNumber, repo, latestSha, baseSha, body,
+		owner, repo, prNumber, latestSha, baseSha, body,
 	)
 	return err
 }
 
-func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRComments(owner, repo string, prNumber int) (string, error) {
 	var commentsJSON string
 	err := db.conn.QueryRow(
-		"SELECT comments_json FROM PRComments WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT comments_json FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&commentsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1406,21 +1811,21 @@ func (db *DB) GetPRComments(prNumber int, repo string) (string, error) {
 	return commentsJSON, nil
 }
 
-func (db *DB) UpsertPRComments(prNumber int, repo, commentsJSON string) error {
+func (db *DB) UpsertPRComments(owner, repo string, prNumber int, commentsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRComments (pr_number, repo, comments_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRComments (owner, repo, pr_number, comments_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			comments_json = excluded.comments_json`,
-		prNumber, repo, commentsJSON,
+		owner, repo, prNumber, commentsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRComments(prNumber int, repo string) error {
+func (db *DB) DeletePRComments(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRComments WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1431,13 +1836,13 @@ func (db *DB) DeletePRComments(prNumber int, repo string) error {
 // add up to the total GitHub's pull request list shows beside a PR. SQLite does
 // the counting, so totalling every PR on the review list never decodes their
 // comment JSON in Go. A PR with no cached comments returns an empty map.
-func (db *DB) GetPRCommentCountsByAuthor(prNumber int, repo string) (map[string]int, error) {
+func (db *DB) GetPRCommentCountsByAuthor(owner, repo string, prNumber int) (map[string]int, error) {
 	rows, err := db.conn.Query(
 		`SELECT COALESCE(json_extract(c.value, '$.user.login'), ''), COUNT(*)
 		 FROM PRComments p, json_each(p.comments_json) c
-		 WHERE p.pr_number = ? AND p.repo = ? AND c.type = 'object'
+		 WHERE p.owner = ? AND p.repo = ? AND p.pr_number = ? AND c.type = 'object'
 		 GROUP BY 1`,
-		prNumber, repo,
+		owner, repo, prNumber,
 	)
 	if err != nil {
 		return nil, err
@@ -1456,19 +1861,19 @@ func (db *DB) GetPRCommentCountsByAuthor(prNumber int, repo string) (map[string]
 	return counts, rows.Err()
 }
 
-func (db *DB) DeletePullRequests(prNumber int, repo string) error {
+func (db *DB) DeletePullRequests(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PullRequests WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
 
-func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
+func (db *DB) GetRequestedReviewers(owner, repo string, prNumber int) (string, error) {
 	var reviewersJSON string
 	err := db.conn.QueryRow(
-		"SELECT reviewers_json FROM RequestedReviewers WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reviewers_json FROM RequestedReviewers WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reviewersJSON)
 
 	if err == sql.ErrNoRows {
@@ -1480,22 +1885,22 @@ func (db *DB) GetRequestedReviewers(prNumber int, repo string) (string, error) {
 	return reviewersJSON, nil
 }
 
-func (db *DB) UpsertRequestedReviewers(prNumber int, repo, reviewersJSON string) error {
+func (db *DB) UpsertRequestedReviewers(owner, repo string, prNumber int, reviewersJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO RequestedReviewers (pr_number, repo, reviewers_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO RequestedReviewers (owner, repo, pr_number, reviewers_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reviewers_json = excluded.reviewers_json`,
-		prNumber, repo, reviewersJSON,
+		owner, repo, prNumber, reviewersJSON,
 	)
 	return err
 }
 
-func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error) {
+func (db *DB) GetCIStatus(owner, repo string, prNumber int, sha string) (string, error) {
 	var statusJSON string
 	err := db.conn.QueryRow(
-		"SELECT status_json FROM CIStatus WHERE pr_number = ? AND repo = ? AND sha = ?",
-		prNumber, repo, sha,
+		"SELECT status_json FROM CIStatus WHERE owner = ? AND repo = ? AND pr_number = ? AND sha = ?",
+		owner, repo, prNumber, sha,
 	).Scan(&statusJSON)
 
 	if err == sql.ErrNoRows {
@@ -1507,13 +1912,13 @@ func (db *DB) GetCIStatus(prNumber int, repo string, sha string) (string, error)
 	return statusJSON, nil
 }
 
-func (db *DB) UpsertCIStatus(prNumber int, repo, sha, statusJSON string) error {
+func (db *DB) UpsertCIStatus(owner, repo string, prNumber int, sha, statusJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO CIStatus (pr_number, repo, sha, status_json)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo, sha) DO UPDATE SET
+		`INSERT INTO CIStatus (owner, repo, pr_number, sha, status_json)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number, sha) DO UPDATE SET
 			status_json = excluded.status_json`,
-		prNumber, repo, sha, statusJSON,
+		owner, repo, prNumber, sha, statusJSON,
 	)
 	return err
 }
@@ -1639,11 +2044,11 @@ func (db *DB) Begin() (*sql.Tx, error) {
 	return db.conn.Begin()
 }
 
-func (db *DB) GetPRReviews(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReviews(owner, repo string, prNumber int) (string, error) {
 	var reviewsJSON string
 	err := db.conn.QueryRow(
-		"SELECT reviews_json FROM PRReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reviews_json FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reviewsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1655,30 +2060,30 @@ func (db *DB) GetPRReviews(prNumber int, repo string) (string, error) {
 	return reviewsJSON, nil
 }
 
-func (db *DB) UpsertPRReviews(prNumber int, repo, reviewsJSON string) error {
+func (db *DB) UpsertPRReviews(owner, repo string, prNumber int, reviewsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReviews (pr_number, repo, reviews_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReviews (owner, repo, pr_number, reviews_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reviews_json = excluded.reviews_json`,
-		prNumber, repo, reviewsJSON,
+		owner, repo, prNumber, reviewsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReviews(prNumber int, repo string) error {
+func (db *DB) DeletePRReviews(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
 
-func (db *DB) GetPRCommits(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRCommits(owner, repo string, prNumber int) (string, error) {
 	var commitsJSON string
 	err := db.conn.QueryRow(
-		"SELECT commits_json FROM PRCommits WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT commits_json FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&commitsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1690,21 +2095,21 @@ func (db *DB) GetPRCommits(prNumber int, repo string) (string, error) {
 	return commitsJSON, nil
 }
 
-func (db *DB) UpsertPRCommits(prNumber int, repo, commitsJSON string) error {
+func (db *DB) UpsertPRCommits(owner, repo string, prNumber int, commitsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRCommits (pr_number, repo, commits_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRCommits (owner, repo, pr_number, commits_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			commits_json = excluded.commits_json`,
-		prNumber, repo, commitsJSON,
+		owner, repo, prNumber, commitsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRCommits(prNumber int, repo string) error {
+func (db *DB) DeletePRCommits(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRCommits WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1712,11 +2117,11 @@ func (db *DB) DeletePRCommits(prNumber int, repo string) error {
 // Review-thread resolution state comes from GitHub's GraphQL API (the REST API
 // does not expose it), so it gets its own cache alongside the other PR caches.
 
-func (db *DB) GetPRReviewThreads(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReviewThreads(owner, repo string, prNumber int) (string, error) {
 	var threadsJSON string
 	err := db.conn.QueryRow(
-		"SELECT threads_json FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT threads_json FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&threadsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1728,21 +2133,21 @@ func (db *DB) GetPRReviewThreads(prNumber int, repo string) (string, error) {
 	return threadsJSON, nil
 }
 
-func (db *DB) UpsertPRReviewThreads(prNumber int, repo, threadsJSON string) error {
+func (db *DB) UpsertPRReviewThreads(owner, repo string, prNumber int, threadsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReviewThreads (pr_number, repo, threads_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReviewThreads (owner, repo, pr_number, threads_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			threads_json = excluded.threads_json`,
-		prNumber, repo, threadsJSON,
+		owner, repo, prNumber, threadsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
+func (db *DB) DeletePRReviewThreads(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReviewThreads WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1753,11 +2158,11 @@ func (db *DB) DeletePRReviewThreads(prNumber int, repo string) error {
 // thumbs-up refresh without rewriting a comment cache whose contents have not
 // changed.
 
-func (db *DB) GetPRReactions(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRReactions(owner, repo string, prNumber int) (string, error) {
 	var reactionsJSON string
 	err := db.conn.QueryRow(
-		"SELECT reactions_json FROM PRReactions WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT reactions_json FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&reactionsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1769,21 +2174,21 @@ func (db *DB) GetPRReactions(prNumber int, repo string) (string, error) {
 	return reactionsJSON, nil
 }
 
-func (db *DB) UpsertPRReactions(prNumber int, repo, reactionsJSON string) error {
+func (db *DB) UpsertPRReactions(owner, repo string, prNumber int, reactionsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRReactions (pr_number, repo, reactions_json)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRReactions (owner, repo, pr_number, reactions_json)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			reactions_json = excluded.reactions_json`,
-		prNumber, repo, reactionsJSON,
+		owner, repo, prNumber, reactionsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRReactions(prNumber int, repo string) error {
+func (db *DB) DeletePRReactions(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRReactions WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1793,11 +2198,11 @@ func (db *DB) DeletePRReactions(prNumber int, repo string) error {
 // had its teams resolved" and "this PR has no required teams" (which caches as
 // "[]") is what stops the workflow re-asking GitHub for the request history on
 // every cycle.
-func (db *DB) GetPRTeamReviews(prNumber int, repo string) (string, error) {
+func (db *DB) GetPRTeamReviews(owner, repo string, prNumber int) (string, error) {
 	var teamsJSON string
 	err := db.conn.QueryRow(
-		"SELECT teams_json FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT teams_json FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&teamsJSON)
 
 	if err == sql.ErrNoRows {
@@ -1809,22 +2214,22 @@ func (db *DB) GetPRTeamReviews(prNumber int, repo string) (string, error) {
 	return teamsJSON, nil
 }
 
-func (db *DB) UpsertPRTeamReviews(prNumber int, repo, teamsJSON string) error {
+func (db *DB) UpsertPRTeamReviews(owner, repo string, prNumber int, teamsJSON string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRTeamReviews (pr_number, repo, teams_json, updated_at)
-		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRTeamReviews (owner, repo, pr_number, teams_json, updated_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			teams_json = excluded.teams_json,
 			updated_at = CURRENT_TIMESTAMP`,
-		prNumber, repo, teamsJSON,
+		owner, repo, prNumber, teamsJSON,
 	)
 	return err
 }
 
-func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
+func (db *DB) DeletePRTeamReviews(owner, repo string, prNumber int) error {
 	_, err := db.conn.Exec(
-		"DELETE FROM PRTeamReviews WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"DELETE FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	)
 	return err
 }
@@ -1842,28 +2247,28 @@ func (db *DB) DeletePRTeamReviews(prNumber int, repo string) error {
 // for this code is still the best there is, so the review list doesn't lose a
 // conflict every time someone merges elsewhere. "unknown" for a new head
 // replaces it, because the old answer was about other code.
-func (db *DB) RecordPRMergeability(prNumber int, repo, headSHA, state string) error {
+func (db *DB) RecordPRMergeability(owner, repo string, prNumber int, headSHA, state string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO PRMergeability (pr_number, repo, head_sha, state)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(pr_number, repo) DO UPDATE SET
+		`INSERT INTO PRMergeability (owner, repo, pr_number, head_sha, state)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(owner, repo, pr_number) DO UPDATE SET
 			state = CASE
 				WHEN excluded.state = 'unknown' AND excluded.head_sha = PRMergeability.head_sha
 				THEN PRMergeability.state
 				ELSE excluded.state
 			END,
 			head_sha = excluded.head_sha`,
-		prNumber, repo, headSHA, state,
+		owner, repo, prNumber, headSHA, state,
 	)
 	return err
 }
 
 // GetPRMergeability returns the mergeability recorded for a PR and the head SHA
 // it was recorded for, or two empty strings when none has been.
-func (db *DB) GetPRMergeability(prNumber int, repo string) (state, headSHA string, err error) {
+func (db *DB) GetPRMergeability(owner, repo string, prNumber int) (state, headSHA string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT state, head_sha FROM PRMergeability WHERE pr_number = ? AND repo = ?",
-		prNumber, repo,
+		"SELECT state, head_sha FROM PRMergeability WHERE owner = ? AND repo = ? AND pr_number = ?",
+		owner, repo, prNumber,
 	).Scan(&state, &headSHA)
 	if err == sql.ErrNoRows {
 		return "", "", nil

@@ -206,3 +206,42 @@ func TestGetRateLimitHistoryOverJSONRPC(t *testing.T) {
 		t.Errorf("unexpected point values: %#v", point)
 	}
 }
+
+// What tells a polling period from a webhook-driven one: each cycle's kind,
+// and what went out on the wire since the cycle before.
+func TestGetRateLimitHistoryReportsModeAndTraffic(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	now := time.Now().UTC().Truncate(time.Second)
+
+	seedCycle(t, db, now.Add(-30*time.Minute), 40, 4800, 5000) // from before modes were recorded
+	if _, err := db.Exec(
+		`INSERT INTO APICallStats (recorded_at, pr_list, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at,
+			mode, requests, not_modified, search_requests, graphql_requests, webhook_deliveries, webhook_api_calls, graphql_remaining, graphql_limit)
+		 VALUES (?, 1, 1, 4790, 5000, '', 'webhook', 20, 5, 2, 3, 12, 4, 4990, 5000)`,
+		now.Add(-20*time.Minute).Format("2006-01-02 15:04:05"),
+	); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	h := &RPCHandler{}
+	reply := &GetRateLimitHistoryReply{}
+	if err := h.GetRateLimitHistory(&GetRateLimitHistoryArgs{HoursBack: 1}, reply); err != nil {
+		t.Fatalf("GetRateLimitHistory: %v", err)
+	}
+	if len(reply.Points) != 2 {
+		t.Fatalf("expected 2 points, got %d", len(reply.Points))
+	}
+	old, hooked := reply.Points[0], reply.Points[1]
+	if old.Mode != "" || old.Requests != -1 || old.GraphQLLimit != -1 {
+		t.Errorf("a pre-migration cycle should read as unknown: %+v", old)
+	}
+	if hooked.Mode != "webhook" || hooked.Requests != 20 || hooked.NotModified != 5 || hooked.SearchRequests != 2 ||
+		hooked.GraphQLRequests != 3 || hooked.WebhookDeliveries != 12 || hooked.WebhookAPICalls != 4 ||
+		hooked.GraphQLRemaining != 4990 || hooked.GraphQLLimit != 5000 {
+		t.Errorf("webhook cycle = %+v", hooked)
+	}
+	if hooked.RequestsPerMinute != 2 {
+		t.Errorf("RequestsPerMinute = %v, want 20 requests over 10 minutes", hooked.RequestsPerMinute)
+	}
+}

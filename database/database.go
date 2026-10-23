@@ -306,7 +306,16 @@ func (db *DB) initSchema() error {
 		review_threads INTEGER NOT NULL DEFAULT 0,
 		team_reviews INTEGER NOT NULL DEFAULT 0,
 		reactions INTEGER NOT NULL DEFAULT 0,
-		total INTEGER NOT NULL DEFAULT 0
+		total INTEGER NOT NULL DEFAULT 0,
+		mode TEXT NOT NULL DEFAULT '',
+		requests INTEGER NOT NULL DEFAULT -1,
+		not_modified INTEGER NOT NULL DEFAULT -1,
+		search_requests INTEGER NOT NULL DEFAULT -1,
+		graphql_requests INTEGER NOT NULL DEFAULT -1,
+		webhook_deliveries INTEGER NOT NULL DEFAULT 0,
+		webhook_api_calls INTEGER NOT NULL DEFAULT 0,
+		graphql_remaining INTEGER NOT NULL DEFAULT -1,
+		graphql_limit INTEGER NOT NULL DEFAULT -1
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_apicallstats_recorded ON APICallStats(recorded_at);
@@ -493,6 +502,32 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN reactions INTEGER NOT NULL DEFAULT 0")
 		if err != nil {
 			slog.Warn("Error adding reactions column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: what a cycle's row says beyond its per-type counts — which
+	// kind of cycle it was, and what went out on the wire since the row before
+	// (see APICallStatsRow). -1 marks a row written before these existed.
+	apiCallStatsColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"mode", "ALTER TABLE APICallStats ADD COLUMN mode TEXT NOT NULL DEFAULT ''"},
+		{"requests", "ALTER TABLE APICallStats ADD COLUMN requests INTEGER NOT NULL DEFAULT -1"},
+		{"not_modified", "ALTER TABLE APICallStats ADD COLUMN not_modified INTEGER NOT NULL DEFAULT -1"},
+		{"search_requests", "ALTER TABLE APICallStats ADD COLUMN search_requests INTEGER NOT NULL DEFAULT -1"},
+		{"graphql_requests", "ALTER TABLE APICallStats ADD COLUMN graphql_requests INTEGER NOT NULL DEFAULT -1"},
+		{"webhook_deliveries", "ALTER TABLE APICallStats ADD COLUMN webhook_deliveries INTEGER NOT NULL DEFAULT 0"},
+		{"webhook_api_calls", "ALTER TABLE APICallStats ADD COLUMN webhook_api_calls INTEGER NOT NULL DEFAULT 0"},
+		{"graphql_remaining", "ALTER TABLE APICallStats ADD COLUMN graphql_remaining INTEGER NOT NULL DEFAULT -1"},
+		{"graphql_limit", "ALTER TABLE APICallStats ADD COLUMN graphql_limit INTEGER NOT NULL DEFAULT -1"},
+	}
+	for _, col := range apiCallStatsColumns {
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('APICallStats') WHERE name=?", col.name).Scan(&count)
+		if err == nil && count == 0 {
+			if _, err = db.conn.Exec(col.ddl); err != nil {
+				slog.Warn("Error adding column to APICallStats", "column", col.name, "error", err)
+			}
 		}
 	}
 
@@ -1945,15 +1980,36 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 }
 
 // LogAPICallStats persists per-type GitHub API call counts and post-cycle rate limit
-// status for a completed workflow cycle.
+// status for a completed workflow cycle, with nothing known about its traffic
+// (see InsertAPICallStats).
 func (db *DB) LogAPICallStats(prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, reactions int64, rateLimitRemaining, rateLimitLimit int, rateLimitResetAt string) error {
-	total := prList + prSpecific + comments + issueComments + ciStatus + diff + reviews + combinedStatus + checkRuns + commits + reviewThreads + teamReviews + reactions
+	return db.InsertAPICallStats(APICallStatsRow{
+		PRList: prList, PRSpecific: prSpecific, Comments: comments, IssueComments: issueComments,
+		CIStatus: ciStatus, Diff: diff, Reviews: reviews, CombinedStatus: combinedStatus,
+		CheckRuns: checkRuns, Commits: commits, ReviewThreads: reviewThreads,
+		TeamReviews: teamReviews, Reactions: reactions,
+		RateLimitRemaining: rateLimitRemaining, RateLimitLimit: rateLimitLimit, RateLimitResetAt: rateLimitResetAt,
+		Requests: -1, NotModified: -1, SearchRequests: -1, GraphQLRequests: -1,
+		GraphQLRemaining: -1, GraphQLLimit: -1,
+	})
+}
+
+// InsertAPICallStats records a completed cycle. Total is worked out from the
+// per-type counts; ID and RecordedAt are the database's to fill in.
+func (db *DB) InsertAPICallStats(r APICallStatsRow) error {
+	total := r.PRList + r.PRSpecific + r.Comments + r.IssueComments + r.CIStatus + r.Diff + r.Reviews +
+		r.CombinedStatus + r.CheckRuns + r.Commits + r.ReviewThreads + r.TeamReviews + r.Reactions
 	_, err := db.conn.Exec(
 		`INSERT INTO APICallStats
-			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, team_reviews, reactions, total, rate_limit_remaining, rate_limit_limit, rate_limit_reset_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		prList, prSpecific, comments, issueComments, ciStatus, diff, reviews, combinedStatus, checkRuns, commits, reviewThreads, teamReviews, reactions, total,
-		rateLimitRemaining, rateLimitLimit, rateLimitResetAt,
+			(pr_list, pr_specific, comments, issue_comments, ci_status, diff, reviews, combined_status, check_runs, commits, review_threads, team_reviews, reactions, total,
+			 rate_limit_remaining, rate_limit_limit, rate_limit_reset_at,
+			 mode, requests, not_modified, search_requests, graphql_requests, webhook_deliveries, webhook_api_calls, graphql_remaining, graphql_limit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.PRList, r.PRSpecific, r.Comments, r.IssueComments, r.CIStatus, r.Diff, r.Reviews, r.CombinedStatus,
+		r.CheckRuns, r.Commits, r.ReviewThreads, r.TeamReviews, r.Reactions, total,
+		r.RateLimitRemaining, r.RateLimitLimit, r.RateLimitResetAt,
+		r.Mode, r.Requests, r.NotModified, r.SearchRequests, r.GraphQLRequests, r.WebhookDeliveries, r.WebhookAPICalls,
+		r.GraphQLRemaining, r.GraphQLLimit,
 	)
 	return err
 }

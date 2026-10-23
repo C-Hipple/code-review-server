@@ -76,6 +76,18 @@ Deliveries are applied to every PR the server holds: one a section lists, or one
 
 A delivery never *starts* one of a PR's lists (its reviews, comments, review threads or a commit's CI): a list holding only the one review a delivery mentions would look complete. A PR with nothing cached is left to the next cycle.
 
+## Sections Follow Deliveries
+
+A delivery can change which sections a PR belongs in, not only what its rows say: submitting a review clears your review request, which takes the PR out of *Review Requested*; an author's reply to your thread puts it into *Waiting on me*; converting a PR to a draft takes it out of a `FilterNotDraft` section. Rather than wait for the next cycle's listing, after each delivery the server checks the PR against every workflow again, from the caches the delivery just updated:
+
+- **Added** to a section whose workflow it now matches,
+- **rewritten** — details included — in one it still matches,
+- **dropped** from one it no longer matches; a row no workflow claims any more is removed.
+
+What "matches" means is what the workflow's own run would decide: for a repository-list workflow, the PR's repository and state and its filters; for *Review Requested*, a review request to you or one of your teams, then its filters; for *Waiting on me*, its filters. A project-list workflow's PRs are whatever its Jira epic links, which a PR can't tell, so there a delivery can only drop a PR its filters now reject.
+
+This happens only while webhooks are trusted for the PR — not during a cycle that refreshes everything — and only when its caches hold its current head, so it never asks GitHub for anything. A delivery with no PR in it (a conversation comment, a check run, a commit status) is judged against the PR as the last listing or delivery showed it. If a cycle is writing sections when a delivery lands, the check waits for it to finish, so a cycle working from an older listing can't undo it. A burst of deliveries about one PR — a push sets off a check run delivery per check — is checked once.
+
 ## When the Server Still Polls
 
 Every PR is still polled, as without webhooks:
@@ -91,8 +103,35 @@ A cycle that refreshes everything logs `Refreshing every PR ...`; one that leave
 
 - **Reactions.** GitHub has no webhook for them, so who reacted to what is refreshed when the PR is next fetched in full: after a push, at the periodic full refresh, or when you sync the PR from a client.
 - **Mergeability after the base branch moves**, unless *Pushes* is ticked: without it, a PR's conflict flag is re-checked only when its own head moves or at the full refresh.
-- **The details text of a review-list row** (the org-mode body the Emacs client shows) is rebuilt on the next cycle, from the caches; a delivery updates the row's status, title and tags straight away.
+- **The details text of a review-list row** (the org-mode body the Emacs client shows) for a PR whose sections can't be re-checked from a delivery — a project-list workflow's, or one while webhooks aren't trusted — is rebuilt on the next cycle; a delivery still updates the row's status, title and tags straight away.
 - **CI lines on a review-list row** come from the commit's check runs and statuses rather than the Actions runs on the PR's branch, so `FilterCIPassing` / `FilterCIFailing` judge a webhook-covered PR by those too.
+
+## Measuring What It Saves
+
+Each cycle writes one row to the `APICallStats` table in `~/.crs/codereviewserver.db`, also served by the `GetRateLimitHistory` RPC. Besides what the cycle itself fetched, by type (`pr_list`, `reviews`, `check_runs`, ... and their sum, `total`), a row records:
+
+| Column | Meaning |
+| --- | --- |
+| `mode` | `polling` (webhooks off, or nothing listening), `full_refresh` (webhooks on, but this cycle fetched every PR: the first after the listener came up, or the periodic one) or `webhook`. Empty on rows from before it was recorded. |
+| `requests` | REST requests the server sent GitHub since the previous row, counted on the wire: the cycle's own — including the ones `total` has no type for, such as the waiting-on-me filters' lookups, mergeability and searches — plus everything webhook deliveries and the review view asked for in between. |
+| `not_modified` | How many of those GitHub answered `304 Not Modified`, which it doesn't charge for. `requests - not_modified` is what was charged. |
+| `search_requests`, `graphql_requests` | The same, for the search and GraphQL budgets. |
+| `webhook_deliveries`, `webhook_api_calls` | Deliveries applied since the previous row, and the API calls applying them took. |
+| `rate_limit_remaining`, `graphql_remaining` | Each budget left after the cycle, from GitHub's `/rate_limit`. |
+
+So comparing the two modes is a query, with each row's `requests` covering the time since the row before:
+
+```sql
+SELECT mode, COUNT(*) AS cycles, SUM(requests) AS requests,
+       SUM(requests - not_modified) AS charged, SUM(graphql_requests) AS graphql
+FROM APICallStats
+WHERE requests >= 0
+GROUP BY mode;
+```
+
+Two things to keep in mind: the budget is shared with anything else using the same token, which `rate_limit_remaining` sees but `requests` doesn't; and the review view's cache misses count in whichever mode they happen in.
+
+The log carries the same, per cycle: `GitHub API calls this cycle mode=...`, `GitHub rate limit post-cycle mode=... requests_since_last_cycle=...`, and, with webhooks, `Webhook activity since the last cycle` (deliveries applied, ignored and rejected, refetches, API calls, section rows added and dropped). Each delivery that changes something logs `Webhook delivery updated a PR`, `Fetched a PR in full after a webhook delivery`, or `Webhook put a PR into a section` / `took a PR out of a section`, and every request to GitHub is logged as `GitHub API Call`. Set `CRS_LOG_FILE` and `CRS_LOG_FORMAT=json` to have it in a file one JSON object per line (see [Command-Line Interface](cli.md#logging)).
 
 ## Security
 

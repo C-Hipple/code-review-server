@@ -121,6 +121,7 @@ func syncWebhookListener(cfg config.Config) {
 		l.server.Close()
 		slog.Info("Stopped listening for GitHub webhooks; every PR is polled again", "addr", l.addr)
 		l.server, l.addr, l.since = nil, "", time.Time{}
+		activeCoverage.Store(nil)
 	}
 	if want == "" {
 		if strings.TrimSpace(cfg.Webhooks.ListenAddress) != "" && !l.warnedNoSecret {
@@ -145,7 +146,10 @@ func syncWebhookListener(cfg config.Config) {
 		IdleTimeout:       2 * time.Minute,
 	}
 	l.server, l.addr, l.since = srv, want, time.Now()
-	webhookWorkerOnce.Do(func() { go runWebhookWorker() })
+	webhookWorkerOnce.Do(func() {
+		go runWebhookWorker()
+		go runReevaluations()
+	})
 	git_tools.SetPRStateSource(webhookPRState{})
 	go func() {
 		err := srv.Serve(ln)
@@ -157,6 +161,7 @@ func syncWebhookListener(cfg config.Config) {
 		defer l.mu.Unlock()
 		if l.server == srv {
 			l.server, l.addr, l.since = nil, "", time.Time{}
+			activeCoverage.Store(nil)
 		}
 	}()
 
@@ -191,11 +196,13 @@ func serveWebhook(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookPayload)
 	payload, err := github.ValidatePayload(r, []byte(secret))
 	if tooLarge := (*http.MaxBytesError)(nil); errors.As(err, &tooLarge) {
+		webhookActivity.rejected.Add(1)
 		slog.Warn("Rejected a webhook delivery over the size limit", "delivery", deliveryID, "limit", tooLarge.Limit)
 		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if err != nil {
+		webhookActivity.rejected.Add(1)
 		slog.Warn("Rejected a webhook delivery that failed signature validation", "delivery", deliveryID, "remote", r.RemoteAddr, "error", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
@@ -214,6 +221,7 @@ func serveWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	event, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
+		webhookActivity.rejected.Add(1)
 		slog.Warn("Failed to parse webhook delivery", "event", eventType, "delivery", deliveryID, "error", err)
 		http.Error(w, "malformed payload", http.StatusBadRequest)
 		return
@@ -223,6 +231,7 @@ func serveWebhook(w http.ResponseWriter, r *http.Request) {
 	case webhookQueue <- webhookDelivery{eventType: eventType, id: deliveryID, event: event}:
 		w.WriteHeader(http.StatusAccepted)
 	default:
+		webhookActivity.rejected.Add(1)
 		slog.Error("Webhook queue is full; dropping a delivery GitHub can redeliver", "event", eventType, "delivery", deliveryID)
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 	}
@@ -276,14 +285,17 @@ func (c *webhookCoverage) covers(owner, repo string) bool {
 	return c.owners[owner] || c.repos[owner+"/"+repo]
 }
 
-// cycleCoverage is the coverage the running cycle leaves to webhooks, or nil
-// while the cycle polls every PR (or none is running).
-var cycleCoverage atomic.Pointer[webhookCoverage]
+// activeCoverage is the coverage webhooks are trusted for right now, or nil
+// while they aren't: nothing is listening, nothing has caught up since the
+// listener came up, or a cycle is refreshing every PR. It is set when a
+// webhook cycle begins or a full refresh completes, and holds between cycles,
+// so a delivery applied then can be acted on as a webhook cycle would.
+var activeCoverage atomic.Pointer[webhookCoverage]
 
-// webhookHandles reports whether the running cycle leaves the PR's updates to
-// webhooks rather than fetching them.
+// webhookHandles reports whether the PR's updates are left to webhooks rather
+// than fetched: its repository is covered and webhooks are trusted.
 func webhookHandles(key PRKey) bool {
-	return cycleCoverage.Load().covers(key.Owner, key.Repo)
+	return activeCoverage.Load().covers(key.Owner, key.Repo)
 }
 
 // lastFullRefresh is when the last cycle that polled every PR, while the
@@ -293,15 +305,16 @@ var lastFullRefresh struct {
 	at time.Time
 }
 
-// beginWebhookCycle decides whether the cycle starting now leaves covered PRs
-// to webhooks, and returns that decision. It doesn't when nothing is
-// listening, when nothing has caught up since the listener came up, or when
-// the periodic full refresh is due — each of those cycles polls every PR.
-func beginWebhookCycle(cfg config.Config, now time.Time) bool {
-	cycleCoverage.Store(nil)
+// beginWebhookCycle decides what kind of cycle is starting now and returns it
+// as a database.CycleMode*. It leaves covered PRs to webhooks unless nothing is
+// listening (polling), or nothing has caught up since the listener came up or
+// the periodic full refresh is due (a full refresh) — both of which fetch
+// every PR.
+func beginWebhookCycle(cfg config.Config, now time.Time) string {
+	activeCoverage.Store(nil)
 	since, listening := webhooksListeningSince()
 	if !listening || !cfg.WebhooksConfigured() {
-		return false
+		return database.CycleModePolling
 	}
 	lastFullRefresh.mu.Lock()
 	last := lastFullRefresh.at
@@ -309,33 +322,35 @@ func beginWebhookCycle(cfg config.Config, now time.Time) bool {
 	switch {
 	case last.Before(since):
 		slog.Info("Refreshing every PR to catch up on anything that changed before webhooks were being received")
-		return false
+		return database.CycleModeFullRefresh
 	case now.Sub(last) >= cfg.WebhookFullRefreshInterval():
 		slog.Info("Refreshing every PR, as webhooks' periodic full refresh", "last", last.Format(time.RFC3339))
-		return false
+		return database.CycleModeFullRefresh
 	}
 	repos := cfg.WebhookRepos()
-	cycleCoverage.Store(newWebhookCoverage(repos))
+	activeCoverage.Store(newWebhookCoverage(repos))
 	slog.Info("Webhook cycle: PRs in covered repositories are listed but not re-fetched", "repos", repos)
-	return true
+	return database.CycleModeWebhook
 }
 
-// endWebhookCycle closes the cycle beginWebhookCycle opened. A polling cycle
-// that started while the listener was up, and refreshed everything it meant
-// to, is the full refresh webhook cycles count from.
-func endWebhookCycle(start time.Time, webhookMode, complete bool) {
-	cycleCoverage.Store(nil)
-	if webhookMode || !complete {
+// endWebhookCycle closes the cycle beginWebhookCycle opened. A webhook cycle
+// leaves webhooks trusted. A full refresh that started while the listener was
+// up, and refreshed everything it meant to, is what webhook cycles count from,
+// so it starts trusting them; one that didn't finish leaves them untrusted
+// until one does.
+func endWebhookCycle(cfg config.Config, start time.Time, mode string, complete bool) {
+	if mode == database.CycleModeWebhook {
 		return
 	}
 	since, listening := webhooksListeningSince()
-	if !listening || start.Before(since) {
+	if mode == database.CycleModePolling || !complete || !listening || start.Before(since) {
 		return
 	}
 	lastFullRefresh.mu.Lock()
 	lastFullRefresh.at = start
 	lastFullRefresh.mu.Unlock()
-	pruneMergeabilityMemory(start)
+	activeCoverage.Store(newWebhookCoverage(cfg.WebhookRepos()))
+	pruneWebhookMemory(start)
 }
 
 // Whether a PR merges cleanly changes when its base branch moves, which says
@@ -385,10 +400,11 @@ func mergeabilityCurrent(db *database.DB, ref git_tools.PRRef, pr *github.PullRe
 	return true
 }
 
-// pruneMergeabilityMemory forgets what a full refresh starting at start made
+// pruneWebhookMemory forgets what a full refresh starting at start made
 // irrelevant: it re-asks about every PR, so earlier pushes no longer matter,
-// and a PR it didn't ask about is no longer listed.
-func pruneMergeabilityMemory(start time.Time) {
+// and a PR it didn't ask about — or list — is no longer listed.
+func pruneWebhookMemory(start time.Time) {
+	pruneRememberedPRs(start)
 	for _, m := range []*sync.Map{&baseMoves, &mergeabilityCheckedAt} {
 		m.Range(func(k, v any) bool {
 			if v.(time.Time).Before(start) {

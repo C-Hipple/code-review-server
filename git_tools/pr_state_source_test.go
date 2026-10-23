@@ -1,6 +1,7 @@
 package git_tools
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -71,3 +72,42 @@ func numbers(prs []*github.PullRequest) []int {
 	}
 	return out
 }
+
+// Every request sent is counted against the budget it spends, retries
+// included, below every caller.
+func TestRequestCountsCountEveryRequestByBudget(t *testing.T) {
+	calls := 0
+	next := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		status := http.StatusOK
+		if r.URL.Path == "/limited" && calls == 1 {
+			// A 429 the transport retries after the Retry-After it names.
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"0"}},
+				Body: http.NoBody, Request: r}, nil
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{}, Body: http.NoBody, Request: r}, nil
+	})
+	rest := &rateLimitedRoundTripper{next: next, manager: globalRateLimitManager, resourceFor: restRateResource}
+	graphQL := &rateLimitedRoundTripper{next: next, manager: globalRateLimitManager, resourceFor: graphQLRateResource}
+
+	before := GetRequestCounts()
+	for _, c := range []struct {
+		rt   http.RoundTripper
+		path string
+	}{{rest, "/limited"}, {rest, "/repos/acme/widgets/pulls"}, {rest, "/search/issues"}, {graphQL, "/graphql"}} {
+		req, _ := http.NewRequest(http.MethodGet, "https://api.github.com"+c.path, nil)
+		resp, err := c.rt.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("%s: %v", c.path, err)
+		}
+		resp.Body.Close()
+	}
+	got := GetRequestCounts().Sub(before)
+	if got.Core != 3 || got.Search != 1 || got.GraphQL != 1 {
+		t.Errorf("counts = %+v, want core 3 (one a retry), search 1, graphql 1", got)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

@@ -32,6 +32,8 @@ import (
 var refetchPR = func(key PRKey, pr *github.PullRequest, detail string) {
 	apiCalls := &apiCallCounter{}
 	fetchAuxDataForPR(git_tools.GetGithubClient(), apiCalls, webhookWorkflowName, key, warmRequirement(AuxDataRequirement{}), pr)
+	webhookActivity.refetches.Add(1)
+	webhookActivity.apiCalls.Add(apiCalls.total())
 	slog.Info("Fetched a PR in full after a webhook delivery", "pr", key.Number, "repo", key.Repo, "event", detail, "api_calls", apiCalls.total())
 	notifyPRsUpdated([]PRKey{key})
 }
@@ -40,29 +42,61 @@ var refetchPR = func(key PRKey, pr *github.PullRequest, detail string) {
 // stand in for GitHub.
 var fetchReviewThreads = git_tools.GetReviewThreads
 
-// applyWebhookEvent applies one delivery to the caches of the PRs it is about.
+// heldPR is a PR a delivery was about that we hold, with the PR as the delivery
+// describes it — nil for a delivery that carries no PR object (a comment on
+// the conversation, a check run, a commit status).
+type heldPR struct {
+	key PRKey
+	pr  *github.PullRequest
+}
+
+// applyWebhookEvent applies one delivery to the caches of the PRs it is about,
+// then has each of them checked against the workflows again: what changed may
+// move it into a section or out of one (see webhook_membership.go).
 func applyWebhookEvent(d webhookDelivery) {
 	db := config.C().DB
 	if db == nil {
 		return
 	}
+	var held []heldPR
+	reevaluate := true
 	switch e := d.event.(type) {
 	case *github.PullRequestEvent:
-		applyPullRequestEvent(db, d, e)
+		held = applyPullRequestEvent(db, d, e)
 	case *github.PullRequestReviewEvent:
-		applyReviewEvent(db, d, e)
+		held = applyReviewEvent(db, d, e)
 	case *github.PullRequestReviewCommentEvent:
-		applyReviewCommentEvent(db, d, e)
+		held = applyReviewCommentEvent(db, d, e)
 	case *github.PullRequestReviewThreadEvent:
-		applyReviewThreadEvent(db, d, e)
+		held = applyReviewThreadEvent(db, d, e)
+		// No filter reads whether a thread is resolved.
+		reevaluate = false
 	case *github.IssueCommentEvent:
-		applyIssueCommentEvent(db, d, e)
+		held = applyIssueCommentEvent(db, d, e)
 	case *github.CheckRunEvent:
-		applyCheckRunEvent(db, d, e)
+		held = applyCheckRunEvent(db, d, e)
 	case *github.StatusEvent:
-		applyStatusEvent(db, d, e)
+		held = applyStatusEvent(db, d, e)
 	case *github.PushEvent:
-		applyPushEvent(e)
+		if applyPushEvent(e) {
+			webhookActivity.applied.Add(1)
+		} else {
+			webhookActivity.ignored.Add(1)
+		}
+		return
+	}
+	if len(held) == 0 {
+		webhookActivity.ignored.Add(1)
+		return
+	}
+	webhookActivity.applied.Add(1)
+	for _, h := range held {
+		if h.pr != nil {
+			rememberPR(h.key, h.pr)
+		}
+		if reevaluate {
+			scheduleReevaluation(h.key, h.pr)
+		}
 	}
 }
 
@@ -107,6 +141,8 @@ func logWebhookWrite(key PRKey, sha string, written []string, detail string) {
 	if len(written) == 0 {
 		return
 	}
+	slog.Info("Webhook delivery updated a PR", "event", detail,
+		"pr", fmt.Sprintf("%s/%s#%d", key.Owner, key.Repo, key.Number), "fields", strings.Join(written, ","))
 	logWorkflowAction(database.WorkflowAction{
 		WorkflowName:  webhookWorkflowName,
 		Action:        database.WorkflowActionCacheWrite,
@@ -138,14 +174,14 @@ func refetchIfHeadMoved(db *database.DB, key PRKey, pr *github.PullRequest, deta
 	return true
 }
 
-func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullRequestEvent) {
+func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullRequestEvent) []heldPR {
 	pr := e.GetPullRequest()
 	if pr == nil {
-		return
+		return nil
 	}
 	key, ok := trackedPR(db, e.GetRepo(), pr.GetNumber())
 	if !ok {
-		return
+		return nil
 	}
 	detail := d.describe(e.GetAction())
 
@@ -165,6 +201,7 @@ func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullReq
 	}
 	recordPayloadMergeability(db, key, pr)
 	updateItemSummaries(db, key, pr)
+	return []heldPR{{key: key, pr: pr}}
 }
 
 // refreshFromPRPayload rewrites what the PR object alone determines: who is
@@ -240,34 +277,52 @@ func updateItemSummaries(db *database.DB, key PRKey, pr *github.PullRequest) {
 	}
 }
 
-func applyReviewEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewEvent) {
+func applyReviewEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewEvent) []heldPR {
 	pr, review := e.GetPullRequest(), e.GetReview()
 	if pr == nil || review == nil || review.ID == nil {
-		return
+		return nil
 	}
 	key, ok := trackedPR(db, e.GetRepo(), pr.GetNumber())
 	if !ok {
-		return
+		return nil
 	}
+	// Submitting a review clears the reviewer's own review request — that is
+	// what "Re-request review" puts back — so the PR leaves their review
+	// queue. Applied here too in case the delivery's PR predates it.
+	if e.GetAction() == "submitted" {
+		pr.RequestedReviewers = withoutReviewer(pr.RequestedReviewers, review.GetUser().GetLogin())
+	}
+	held := []heldPR{{key: key, pr: pr}}
 	detail := d.describe(e.GetAction())
 	if refetchIfHeadMoved(db, key, pr, detail) {
-		return
+		return held
 	}
 
 	unlock := lockPR(key)
 	defer unlock()
 	reviews, ok := loadCachedReviews(db, key)
 	if !ok {
-		return
+		return held
 	}
 	if err := cacheReviews(db, key, upsertReview(reviews, review)); err != nil {
 		slog.Error("Failed to cache PR reviews from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
-		return
+		return held
 	}
 	// A review clears its author's review request, approves or blocks the PR,
 	// and may settle a required team: everything that reads the reviews.
 	written := append([]string{"reviews"}, refreshFromPRPayload(db, key, pr)...)
 	logWebhookWrite(key, pr.GetHead().GetSHA(), written, detail)
+	return held
+}
+
+// withoutReviewer is reviewers less login's personal review request.
+func withoutReviewer(reviewers []*github.User, login string) []*github.User {
+	if login == "" {
+		return reviewers
+	}
+	return slices.DeleteFunc(slices.Clone(reviewers), func(u *github.User) bool {
+		return u != nil && strings.EqualFold(u.GetLogin(), login)
+	})
 }
 
 // upsertReview puts review into reviews in place of the version with its ID,
@@ -291,19 +346,20 @@ func upsertReview(reviews []*github.PullRequestReview, review *github.PullReques
 	return append(reviews, normalized)
 }
 
-func applyReviewCommentEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewCommentEvent) {
+func applyReviewCommentEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewCommentEvent) []heldPR {
 	pr, comment := e.GetPullRequest(), e.GetComment()
 	if pr == nil || comment == nil || comment.ID == nil {
-		return
+		return nil
 	}
 	key, ok := trackedPR(db, e.GetRepo(), pr.GetNumber())
 	if !ok {
-		return
+		return nil
 	}
+	held := []heldPR{{key: key, pr: pr}}
 	action := e.GetAction()
 	detail := d.describe(action)
 	if refetchIfHeadMoved(db, key, pr, detail) {
-		return
+		return held
 	}
 
 	unlock := lockPR(key)
@@ -326,6 +382,7 @@ func applyReviewCommentEvent(db *database.DB, d webhookDelivery, e *github.PullR
 		written = append(written, "review_threads")
 	}
 	logWebhookWrite(key, pr.GetHead().GetSHA(), written, detail)
+	return held
 }
 
 // patchCachedComments applies a created, edited or deleted comment to the
@@ -432,6 +489,7 @@ func cacheReviewThreads(db *database.DB, key PRKey, threads []git_tools.ReviewTh
 // reporting whether they landed.
 func refreshReviewThreads(db *database.DB, key PRKey) bool {
 	threads, err := fetchReviewThreads(key.Owner, key.Repo, key.Number)
+	webhookActivity.apiCalls.Add(1)
 	if err != nil {
 		slog.Warn("Failed to fetch review threads after a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 		return false
@@ -440,26 +498,27 @@ func refreshReviewThreads(db *database.DB, key PRKey) bool {
 	return cacheReviewThreads(db, key, threads)
 }
 
-func applyReviewThreadEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewThreadEvent) {
+func applyReviewThreadEvent(db *database.DB, d webhookDelivery, e *github.PullRequestReviewThreadEvent) []heldPR {
 	pr, thread := e.GetPullRequest(), e.GetThread()
 	action := e.GetAction()
 	if pr == nil || thread == nil || (action != "resolved" && action != "unresolved") {
-		return
+		return nil
 	}
 	key, ok := trackedPR(db, e.GetRepo(), pr.GetNumber())
 	if !ok {
-		return
+		return nil
 	}
+	held := []heldPR{{key: key, pr: pr}}
 	detail := d.describe(action)
 	if refetchIfHeadMoved(db, key, pr, detail) {
-		return
+		return held
 	}
 
 	unlock := lockPR(key)
 	defer unlock()
 	threads, ok := loadCachedReviewThreads(db, key)
 	if !ok {
-		return
+		return held
 	}
 	resolved := action == "resolved"
 	resolvedBy := ""
@@ -506,30 +565,32 @@ func applyReviewThreadEvent(db *database.DB, d webhookDelivery, e *github.PullRe
 	if cacheReviewThreads(db, key, threads) {
 		logWebhookWrite(key, pr.GetHead().GetSHA(), []string{"review_threads"}, detail)
 	}
+	return held
 }
 
-func applyIssueCommentEvent(db *database.DB, d webhookDelivery, e *github.IssueCommentEvent) {
+func applyIssueCommentEvent(db *database.DB, d webhookDelivery, e *github.IssueCommentEvent) []heldPR {
 	issue, comment := e.GetIssue(), e.GetComment()
 	// The same event reports comments on issues; only a PR's conversation
 	// comments matter here.
 	if issue == nil || !issue.IsPullRequest() || comment == nil || comment.ID == nil {
-		return
+		return nil
 	}
 	key, ok := trackedPR(db, e.GetRepo(), issue.GetNumber())
 	if !ok {
-		return
+		return nil
 	}
 	unlock := lockPR(key)
 	written := patchCachedComments(db, key, e.GetAction(), convertIssueToPRComment(comment))
 	unlock()
 	logWebhookWrite(key, "", written, d.describe(e.GetAction()))
+	return []heldPR{{key: key}}
 }
 
-func applyCheckRunEvent(db *database.DB, d webhookDelivery, e *github.CheckRunEvent) {
+func applyCheckRunEvent(db *database.DB, d webhookDelivery, e *github.CheckRunEvent) []heldPR {
 	run := e.GetCheckRun()
 	sha := run.GetHeadSHA()
 	if run == nil || run.ID == nil || sha == "" {
-		return
+		return nil
 	}
 	repo := e.GetRepo()
 	// The run names the PRs it ran for, except a fork's: those are found by
@@ -543,29 +604,35 @@ func applyCheckRunEvent(db *database.DB, d webhookDelivery, e *github.CheckRunEv
 	}
 	numbers = append(numbers, prNumbersForSHA(db, repo, sha)...)
 	detail := d.describe(e.GetAction())
+	var held []heldPR
 	for _, number := range uniqueInts(numbers) {
 		if key, ok := trackedPR(db, repo, number); ok {
 			patchCachedCI(db, key, sha, detail, func(status *github.CombinedStatus, checkRuns *github.ListCheckRunsResults) (*github.CombinedStatus, *github.ListCheckRunsResults) {
 				return status, upsertCheckRun(checkRuns, run)
 			})
+			held = append(held, heldPR{key: key})
 		}
 	}
+	return held
 }
 
-func applyStatusEvent(db *database.DB, d webhookDelivery, e *github.StatusEvent) {
+func applyStatusEvent(db *database.DB, d webhookDelivery, e *github.StatusEvent) []heldPR {
 	sha := e.GetSHA()
 	if sha == "" || e.GetContext() == "" {
-		return
+		return nil
 	}
 	repo := e.GetRepo()
 	detail := d.describe(e.GetState())
+	var held []heldPR
 	for _, number := range prNumbersForSHA(db, repo, sha) {
 		if key, ok := trackedPR(db, repo, number); ok {
 			patchCachedCI(db, key, sha, detail, func(status *github.CombinedStatus, checkRuns *github.ListCheckRunsResults) (*github.CombinedStatus, *github.ListCheckRunsResults) {
 				return upsertStatus(status, e), checkRuns
 			})
+			held = append(held, heldPR{key: key})
 		}
 	}
+	return held
 }
 
 // prNumbersForSHA finds the PRs in repo whose cached head has been sha.
@@ -732,12 +799,13 @@ func patchMetadataCI(db *database.DB, key PRKey, status *github.CombinedStatus, 
 }
 
 // applyPushEvent notes a push to a branch, which every PR merging into it may
-// now conflict with (see mergeabilityCurrent). A push to a PR's own branch
-// arrives as that PR's synchronize too, and is handled there.
-func applyPushEvent(e *github.PushEvent) {
+// now conflict with (see mergeabilityCurrent), and reports whether it noted
+// one. A push to a PR's own branch arrives as that PR's synchronize too, and is
+// handled there.
+func applyPushEvent(e *github.PushEvent) bool {
 	branch, ok := strings.CutPrefix(e.GetRef(), "refs/heads/")
 	if !ok || e.GetDeleted() {
-		return
+		return false
 	}
 	repo := e.GetRepo()
 	owner := repo.GetOwner().GetLogin()
@@ -745,7 +813,8 @@ func applyPushEvent(e *github.PushEvent) {
 		owner, _, _ = strings.Cut(repo.GetFullName(), "/")
 	}
 	if owner == "" || repo.GetName() == "" {
-		return
+		return false
 	}
 	recordBaseMoved(owner, repo.GetName(), branch, time.Now())
+	return true
 }

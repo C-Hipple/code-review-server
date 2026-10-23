@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/database"
 	"crs/git_tools"
 	"net/http"
 	"net/http/httptest"
@@ -93,7 +94,7 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	trackItem(t, env.db, key)
 	env.db.RecordPRMergeability(1, whRepo, "head1", git_tools.MergeabilityMergeable)
 	markMergeabilityChecked(git_tools.PRRef{Owner: whOwner, Repo: whRepo, Number: 1}, time.Now())
-	t.Cleanup(func() { pruneMergeabilityMemory(time.Now().Add(time.Hour)) })
+	t.Cleanup(func() { pruneWebhookMemory(time.Now().Add(time.Hour)) })
 	ms := NewManagerService(MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, ""), false, cfg.SleepDuration)
 	// Mergeability lookups are made through their own seam, which the
 	// package's tests keep away from GitHub; count them there instead.
@@ -147,5 +148,28 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	}
 	if details, _ := item.GetDetails(); !strings.Contains(strings.Join(details, "\n"), "Approved By:") {
 		t.Errorf("item details not rebuilt: %v", details)
+	}
+
+	// Each cycle's row says which kind it was and what went out on the wire,
+	// which is what comparing the two modes comes down to.
+	rows, err := env.db.GetAPICallStatsSince(time.Now().Add(-time.Hour))
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("APICallStats rows = %d, %v", len(rows), err)
+	}
+	pollingRow, webhookRow := rows[0], rows[1]
+	if pollingRow.Mode != database.CycleModePolling || webhookRow.Mode != database.CycleModeWebhook {
+		t.Errorf("modes = %q, %q", pollingRow.Mode, webhookRow.Mode)
+	}
+	// The PR list and /rate_limit, nothing else.
+	if webhookRow.Requests != 2 {
+		t.Errorf("webhook cycle row: requests = %d, want 2", webhookRow.Requests)
+	}
+	if pollingRow.Requests <= webhookRow.Requests {
+		t.Errorf("polling row: requests = %d, not more than the webhook cycle's %d", pollingRow.Requests, webhookRow.Requests)
+	}
+	// The per-type counts miss calls the wire count sees: the polling cycle's
+	// Actions-runs and comments fallbacks while rendering the row.
+	if pollingRow.Requests <= pollingRow.Total {
+		t.Errorf("polling row: requests %d should exceed the per-type total %d", pollingRow.Requests, pollingRow.Total)
 	}
 }

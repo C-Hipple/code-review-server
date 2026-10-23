@@ -47,6 +47,10 @@ func newWebhookTestEnv(t *testing.T) *webhookTestEnv {
 			Repos:         []string{whOwner + "/" + whRepo},
 		},
 	})
+	// Deliveries remember the PRs they carry, process-wide.
+	forgetRememberedPRs := func() { pruneRememberedPRs(time.Now().Add(time.Hour)) }
+	forgetRememberedPRs()
+	t.Cleanup(forgetRememberedPRs)
 	oldRefetch, oldThreads := refetchPR, fetchReviewThreads
 	refetchPR = func(key PRKey, _ *github.PullRequest, _ string) { env.refetched = append(env.refetched, key) }
 	fetchReviewThreads = func(owner, repo string, number int) ([]git_tools.ReviewThread, error) {
@@ -130,8 +134,8 @@ func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 // entries.
 func withCycleCoverage(t *testing.T, entries ...string) {
 	t.Helper()
-	cycleCoverage.Store(newWebhookCoverage(entries))
-	t.Cleanup(func() { cycleCoverage.Store(nil) })
+	activeCoverage.Store(newWebhookCoverage(entries))
+	t.Cleanup(func() { activeCoverage.Store(nil) })
 }
 
 // fakeListening makes webhooksListeningSince report a listener up since since,
@@ -151,7 +155,7 @@ func fakeListening(t *testing.T, since time.Time) {
 		lastFullRefresh.mu.Lock()
 		lastFullRefresh.at = time.Time{}
 		lastFullRefresh.mu.Unlock()
-		cycleCoverage.Store(nil)
+		activeCoverage.Store(nil)
 	})
 }
 
@@ -199,38 +203,45 @@ func TestWebhookCoverage(t *testing.T) {
 }
 
 func TestWebhookCycleNeedsAListenerAndAFullRefreshFirst(t *testing.T) {
-	env := newWebhookTestEnv(t)
-	_ = env
+	newWebhookTestEnv(t)
 	cfg := config.C()
 	now := time.Now()
 
-	if beginWebhookCycle(cfg, now) {
-		t.Fatal("webhook cycle with nothing listening")
+	if mode := beginWebhookCycle(cfg, now); mode != database.CycleModePolling {
+		t.Fatalf("mode = %q with nothing listening, want polling", mode)
 	}
 
 	fakeListening(t, now.Add(-time.Minute))
-	if beginWebhookCycle(cfg, now) {
-		t.Fatal("the first cycle after the listener came up must refresh everything")
+	if mode := beginWebhookCycle(cfg, now); mode != database.CycleModeFullRefresh {
+		t.Fatalf("mode = %q for the first cycle after the listener came up, want a full refresh", mode)
 	}
 	if webhookHandles(whKey(1)) {
 		t.Fatal("a refresh-everything cycle left a PR to webhooks")
 	}
 
 	// An incomplete refresh doesn't count.
-	endWebhookCycle(now, false, false)
-	if beginWebhookCycle(cfg, now.Add(time.Minute)) {
-		t.Fatal("an incomplete full refresh was built on")
+	endWebhookCycle(cfg, now, database.CycleModeFullRefresh, false)
+	if webhookHandles(whKey(1)) {
+		t.Fatal("an incomplete full refresh started trusting webhooks")
+	}
+	if mode := beginWebhookCycle(cfg, now.Add(time.Minute)); mode != database.CycleModeFullRefresh {
+		t.Fatalf("mode = %q after an incomplete full refresh", mode)
 	}
 
 	// A refresh that started before the listener doesn't either.
-	endWebhookCycle(now.Add(-2*time.Minute), false, true)
-	if beginWebhookCycle(cfg, now.Add(time.Minute)) {
-		t.Fatal("a full refresh from before the listener came up was built on")
+	endWebhookCycle(cfg, now.Add(-2*time.Minute), database.CycleModeFullRefresh, true)
+	if mode := beginWebhookCycle(cfg, now.Add(time.Minute)); mode != database.CycleModeFullRefresh {
+		t.Fatalf("mode = %q after a full refresh from before the listener came up", mode)
 	}
 
-	endWebhookCycle(now, false, true)
-	if !beginWebhookCycle(cfg, now.Add(time.Minute)) {
-		t.Fatal("expected a webhook cycle once a full refresh completed")
+	// A complete one starts trusting webhooks straight away, before the next
+	// cycle: deliveries in between are acted on.
+	endWebhookCycle(cfg, now, database.CycleModeFullRefresh, true)
+	if !webhookHandles(whKey(1)) {
+		t.Fatal("not trusting webhooks after a complete full refresh")
+	}
+	if mode := beginWebhookCycle(cfg, now.Add(time.Minute)); mode != database.CycleModeWebhook {
+		t.Fatalf("mode = %q once a full refresh completed, want webhook", mode)
 	}
 	if !webhookHandles(whKey(1)) {
 		t.Error("webhook cycle doesn't cover acme/widgets")
@@ -238,14 +249,18 @@ func TestWebhookCycleNeedsAListenerAndAFullRefreshFirst(t *testing.T) {
 	if webhookHandles(PRKey{Owner: "other", Repo: "repo", Number: 1}) {
 		t.Error("webhook cycle covers a repository [Webhooks] doesn't name")
 	}
-	endWebhookCycle(now.Add(time.Minute), true, true)
-	if webhookHandles(whKey(1)) {
-		t.Error("coverage outlived its cycle")
+	endWebhookCycle(cfg, now.Add(time.Minute), database.CycleModeWebhook, true)
+	if !webhookHandles(whKey(1)) {
+		t.Error("webhooks stopped being trusted between webhook cycles")
 	}
 
-	// And the periodic refresh comes round again.
-	if beginWebhookCycle(cfg, now.Add(config.DefaultWebhookFullRefresh)) {
-		t.Error("expected the periodic full refresh once the interval passed")
+	// The periodic refresh comes round again, and stops trusting them while
+	// it runs.
+	if mode := beginWebhookCycle(cfg, now.Add(config.DefaultWebhookFullRefresh)); mode != database.CycleModeFullRefresh {
+		t.Errorf("mode = %q once the interval passed, want a full refresh", mode)
+	}
+	if webhookHandles(whKey(1)) {
+		t.Error("a periodic full refresh left a PR to webhooks")
 	}
 }
 
@@ -873,7 +888,7 @@ func TestMergeabilityStandsUntilTheHeadOrBaseMoves(t *testing.T) {
 	env := newWebhookTestEnv(t)
 	ref := git_tools.PRRef{Owner: whOwner, Repo: whRepo, Number: 1}
 	pr := whPR(1, "head1")
-	t.Cleanup(func() { pruneMergeabilityMemory(time.Now().Add(time.Hour)) })
+	t.Cleanup(func() { pruneWebhookMemory(time.Now().Add(time.Hour)) })
 
 	if mergeabilityCurrent(env.db, ref, pr) {
 		t.Fatal("current with nothing recorded")
@@ -904,7 +919,7 @@ func TestMergeabilityStandsUntilTheHeadOrBaseMoves(t *testing.T) {
 
 func TestRecordMergeabilityAsksOnlyAboutStaleAnswersInAWebhookCycle(t *testing.T) {
 	env := newWebhookTestEnv(t)
-	t.Cleanup(func() { pruneMergeabilityMemory(time.Now().Add(time.Hour)) })
+	t.Cleanup(func() { pruneWebhookMemory(time.Now().Add(time.Hour)) })
 	var asked []int
 	old := lookupMergeability
 	lookupMergeability = func(refs []git_tools.PRRef) (map[git_tools.PRRef]git_tools.Mergeability, error) {

@@ -70,8 +70,9 @@ func (c *apiCallCounter) total() int64 {
 		c.Reactions.Load()
 }
 
-func (c *apiCallCounter) log() {
+func (c *apiCallCounter) log(mode string) {
 	slog.Info("GitHub API calls this cycle",
+		"mode", mode,
 		"pr_list", c.PRList.Load(),
 		"pr_specific", c.PRSpecific.Load(),
 		"comments", c.Comments.Load(),
@@ -200,53 +201,61 @@ func ListenChanges(channel chan FileChanges, wg *sync.WaitGroup) {
 func ApplyChanges(channel chan SerializedFileChange, wg *sync.WaitGroup) {
 	changeCount := 0
 	for deserializedChange := range channel {
-		db := config.C().DB
-
-		if config.C().AutoWorktree {
-			handleWorktreeChange(db, deserializedChange)
-		}
-
-		switch deserializedChange.FileChange.ChangeType {
-		case "Addition", "Update":
-			_, err := db.UpsertItemWithWorkflow(
-				deserializedChange.FileChange.SectionID,
-				deserializedChange.FileChange.Identifier,
-				deserializedChange.FileChange.Status,
-				deserializedChange.FileChange.Title,
-				deserializedChange.FileChange.Details,
-				deserializedChange.FileChange.Tags,
-				deserializedChange.FileChange.TTL,
-				deserializedChange.FileChange.WorkflowName,
-			)
-			if err != nil {
-				slog.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
-			} else {
-				logItemAction(deserializedChange.FileChange,
-					[]string{"status", "title", "details", "tags", "workflows"}, "")
-			}
-			if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
-				notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
-			}
-		case "Delete":
-			// "Delete" now means "this workflow no longer claims this item".
-			// The row stays in place; PruneOrphanedItems removes anything
-			// left with no remaining owners after the cycle completes.
-			err := db.RemoveWorkflowFromItem(
-				deserializedChange.FileChange.SectionID,
-				deserializedChange.FileChange.Identifier,
-				deserializedChange.FileChange.WorkflowName,
-			)
-			if err != nil {
-				slog.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
-			} else {
-				logItemAction(deserializedChange.FileChange, []string{"workflows"},
-					"workflow released ownership; item pruned if no owners remain")
-			}
-		}
+		applyChange(deserializedChange, "")
 		changeCount++
 		wg.Done()
 	}
 	slog.Info(fmt.Sprintf("Completed processing all DCR changes (%d total)", changeCount))
+}
+
+// applyChange writes one item change to the DB. detail, when set, is recorded
+// with it in the action log.
+func applyChange(deserializedChange SerializedFileChange, detail string) {
+	db := config.C().DB
+
+	if config.C().AutoWorktree {
+		handleWorktreeChange(db, deserializedChange)
+	}
+
+	switch deserializedChange.FileChange.ChangeType {
+	case "Addition", "Update":
+		_, err := db.UpsertItemWithWorkflow(
+			deserializedChange.FileChange.SectionID,
+			deserializedChange.FileChange.Identifier,
+			deserializedChange.FileChange.Status,
+			deserializedChange.FileChange.Title,
+			deserializedChange.FileChange.Details,
+			deserializedChange.FileChange.Tags,
+			deserializedChange.FileChange.TTL,
+			deserializedChange.FileChange.WorkflowName,
+		)
+		if err != nil {
+			slog.Error("Error upserting item", "error", err, "identifier", deserializedChange.FileChange.Identifier)
+		} else {
+			logItemAction(deserializedChange.FileChange,
+				[]string{"status", "title", "details", "tags", "workflows"}, detail)
+		}
+		if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
+			notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)
+		}
+	case "Delete":
+		// "Delete" now means "this workflow no longer claims this item".
+		// The row stays in place; PruneOrphanedItems removes anything
+		// left with no remaining owners after the cycle completes.
+		err := db.RemoveWorkflowFromItem(
+			deserializedChange.FileChange.SectionID,
+			deserializedChange.FileChange.Identifier,
+			deserializedChange.FileChange.WorkflowName,
+		)
+		if err != nil {
+			slog.Error("Error releasing workflow ownership", "error", err, "identifier", deserializedChange.FileChange.Identifier, "workflow", deserializedChange.FileChange.WorkflowName)
+		} else {
+			if detail == "" {
+				detail = "workflow released ownership; item pruned if no owners remain"
+			}
+			logItemAction(deserializedChange.FileChange, []string{"workflows"}, detail)
+		}
+	}
 }
 
 // logItemAction records an item write (Addition / Update / Delete) in
@@ -537,9 +546,9 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	// workflow ran to the end, which a refresh-everything cycle must for the
 	// webhook cycles after it to build on it.
 	cycleStart := time.Now()
-	webhookMode := beginWebhookCycle(config.C(), cycleStart)
+	mode := beginWebhookCycle(config.C(), cycleStart)
 	var incomplete atomic.Bool
-	defer func() { endWebhookCycle(cycleStart, webhookMode, !incomplete.Load()) }()
+	defer func() { endWebhookCycle(config.C(), cycleStart, mode, !incomplete.Load()) }()
 
 	// Map to store fetched PRs: repo -> state -> PRs
 	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
@@ -652,7 +661,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	} else {
 		slog.Info("Completed RunOnce Waitgroup")
 	}
-	apiCalls.log()
+	apiCalls.log(mode)
 
 	// Fetch authoritative rate limit status from GitHub's /rate_limit endpoint.
 	rlLimit, rlRemaining, rlResetAt, rlErr := git_tools.GetRateLimitFromAPI(client)
@@ -667,7 +676,13 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	// among them; when it failed, this is the last reply's reading instead.
 	graphQL := git_tools.GetRateLimitStatusFor(git_tools.RateResourceGraphQL)
 	cache := git_tools.GetHTTPCacheStats()
+	// Everything sent GitHub since the last row, on the wire: this cycle's
+	// calls, including those apiCalls has no type for, and whatever webhook
+	// deliveries and the review view asked for since the cycle before.
+	traffic := takeTrafficSinceLastRow()
+	activity := takeWebhookActivity()
 	slog.Info("GitHub rate limit post-cycle",
+		"mode", mode,
 		"remaining", rlRemaining,
 		"limit", rlLimit,
 		"used_this_cycle", apiCalls.total(),
@@ -677,7 +692,12 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		"not_modified_this_cycle", cache.NotModified-cacheAtStart.NotModified,
 		"graphql_remaining", graphQL.Remaining,
 		"graphql_limit", graphQL.Limit,
+		"requests_since_last_cycle", traffic.Core,
+		"not_modified_since_last_cycle", traffic.NotModified,
+		"search_requests_since_last_cycle", traffic.Search,
+		"graphql_requests_since_last_cycle", traffic.GraphQL,
 	)
+	logWebhookActivity(mode, activity)
 
 	rlResetAtStr := ""
 	if !rlResetAt.IsZero() {
@@ -685,24 +705,33 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	}
 
 	db := config.C().DB
-	if err := db.LogAPICallStats(
-		apiCalls.PRList.Load(),
-		apiCalls.PRSpecific.Load(),
-		apiCalls.Comments.Load(),
-		apiCalls.IssueComments.Load(),
-		apiCalls.CIStatus.Load(),
-		apiCalls.Diff.Load(),
-		apiCalls.Reviews.Load(),
-		apiCalls.CombinedStatus.Load(),
-		apiCalls.CheckRuns.Load(),
-		apiCalls.Commits.Load(),
-		apiCalls.ReviewThreads.Load(),
-		apiCalls.TeamReviews.Load(),
-		apiCalls.Reactions.Load(),
-		rlRemaining,
-		rlLimit,
-		rlResetAtStr,
-	); err != nil {
+	if err := db.InsertAPICallStats(database.APICallStatsRow{
+		PRList:             apiCalls.PRList.Load(),
+		PRSpecific:         apiCalls.PRSpecific.Load(),
+		Comments:           apiCalls.Comments.Load(),
+		IssueComments:      apiCalls.IssueComments.Load(),
+		CIStatus:           apiCalls.CIStatus.Load(),
+		Diff:               apiCalls.Diff.Load(),
+		Reviews:            apiCalls.Reviews.Load(),
+		CombinedStatus:     apiCalls.CombinedStatus.Load(),
+		CheckRuns:          apiCalls.CheckRuns.Load(),
+		Commits:            apiCalls.Commits.Load(),
+		ReviewThreads:      apiCalls.ReviewThreads.Load(),
+		TeamReviews:        apiCalls.TeamReviews.Load(),
+		Reactions:          apiCalls.Reactions.Load(),
+		RateLimitRemaining: rlRemaining,
+		RateLimitLimit:     rlLimit,
+		RateLimitResetAt:   rlResetAtStr,
+		Mode:               mode,
+		Requests:           traffic.Core,
+		NotModified:        traffic.NotModified,
+		SearchRequests:     traffic.Search,
+		GraphQLRequests:    traffic.GraphQL,
+		WebhookDeliveries:  activity.Applied,
+		WebhookAPICalls:    activity.APICalls,
+		GraphQLRemaining:   graphQL.Remaining,
+		GraphQLLimit:       graphQL.Limit,
+	}); err != nil {
 		slog.Error("Failed to save API call stats to database", "error", err)
 	}
 }
@@ -765,6 +794,7 @@ func (ms *ManagerService) Run() {
 			// Only the process running the sync listens for webhooks: it is
 			// the one whose cycles can leave PRs to them. A --oneoff run
 			// never gets here, and polls everything.
+			setActiveWorkflows(ms.Workflows)
 			syncWebhookListener(config.C())
 
 			// Throttle: skip this cycle if the last completed cycle was within half the sleep interval.
@@ -788,6 +818,9 @@ func (ms *ManagerService) Run() {
 			}
 
 			slog.Info("Cycle", "count", cycle_count, "sleepTime", ms.sleepTime)
+			// A webhook delivery's re-evaluation of which sections a PR is in
+			// waits for the cycle to have written its own (see membershipMu).
+			membershipMu.Lock()
 			var cycle_wg sync.WaitGroup
 			cycle_wg.Add(1)
 			ms.workflow_chan = make(chan FileChanges)
@@ -805,6 +838,7 @@ func (ms *ManagerService) Run() {
 			pruneOrphanedItems()
 			pruneRetiredSections()
 			pruneWorkflowActionLog()
+			membershipMu.Unlock()
 
 			// Log cycle completion so the throttle check works on next server start.
 			if err := db.LogWorkflowCycle(); err != nil {
@@ -974,6 +1008,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				}
 				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
 				prObjects[key] = pr
+				rememberPR(key, pr)
 				if !slices.Contains(prWorkflows[key], wf.GetName()) {
 					prWorkflows[key] = append(prWorkflows[key], wf.GetName())
 				}

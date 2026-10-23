@@ -286,6 +286,57 @@ type RateLimitManager struct {
 	totalRequests    atomic.Int64
 	throttledCount   atomic.Int64
 	rateLimitedCount atomic.Int64
+
+	// sent counts what actually went out to GitHub — a retry after a 429 is
+	// another request — by the budget each spends. See GetRequestCounts.
+	sentCore, sentSearch, sentGraphQL atomic.Int64
+}
+
+// countSent records one request sent to GitHub against resource.
+func (m *RateLimitManager) countSent(resource string) {
+	switch resource {
+	case RateResourceSearch:
+		m.sentSearch.Add(1)
+	case RateResourceGraphQL:
+		m.sentGraphQL.Add(1)
+	default:
+		m.sentCore.Add(1)
+	}
+}
+
+// RequestCounts is every request this process has sent GitHub since it
+// started, by the budget each spends. Counted on the wire, below every caller,
+// so nothing is missed: workflow cycles, webhook deliveries, filters and the
+// review view's cache misses alike.
+type RequestCounts struct {
+	Core    int64
+	Search  int64
+	GraphQL int64
+	// NotModified is how many of the Core requests GitHub answered 304, which
+	// it doesn't charge against the rate limit.
+	NotModified int64
+}
+
+// GetRequestCounts returns the running totals; subtract two readings for what
+// was sent between them.
+func GetRequestCounts() RequestCounts {
+	m := globalRateLimitManager
+	return RequestCounts{
+		Core:        m.sentCore.Load(),
+		Search:      m.sentSearch.Load(),
+		GraphQL:     m.sentGraphQL.Load(),
+		NotModified: globalResponseCache.notModified.Load(),
+	}
+}
+
+// Sub is what was sent between an earlier reading and r.
+func (r RequestCounts) Sub(earlier RequestCounts) RequestCounts {
+	return RequestCounts{
+		Core:        r.Core - earlier.Core,
+		Search:      r.Search - earlier.Search,
+		GraphQL:     r.GraphQL - earlier.GraphQL,
+		NotModified: r.NotModified - earlier.NotModified,
+	}
 }
 
 // NewRateLimitManager creates a new rate limit manager with sensible defaults
@@ -507,6 +558,7 @@ func (r *rateLimitedRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	var resp *http.Response
 	var err error
 	for attempt := 0; attempt <= r.manager.maxRetries; attempt++ {
+		r.manager.countSent(resource)
 		resp, err = r.next.RoundTrip(req)
 		if err != nil {
 			return nil, err

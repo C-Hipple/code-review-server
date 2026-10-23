@@ -283,6 +283,7 @@ func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo stri
 			continue
 		}
 		key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
+		rememberPR(key, pr)
 		req := auxReq
 		// In a webhook cycle a covered PR is read from its caches when they
 		// are current, and otherwise fetched in full so that they will be (see

@@ -100,3 +100,35 @@ func TestGetAPICallStatsSinceReadsLoggedCycle(t *testing.T) {
 		t.Errorf("ResetAt = %q", got.RateLimitResetAt)
 	}
 }
+
+func TestInsertAPICallStatsRoundTripsTraffic(t *testing.T) {
+	db := newTestDB(t)
+	want := APICallStatsRow{
+		PRList: 1, Reviews: 2, RateLimitRemaining: 4000, RateLimitLimit: 5000, RateLimitResetAt: "2026-10-23T12:00:00Z",
+		Mode: CycleModeWebhook, Requests: 9, NotModified: 4, SearchRequests: 1, GraphQLRequests: 2,
+		WebhookDeliveries: 30, WebhookAPICalls: 6, GraphQLRemaining: 4900, GraphQLLimit: 5000,
+	}
+	if err := db.InsertAPICallStats(want); err != nil {
+		t.Fatalf("InsertAPICallStats: %v", err)
+	}
+	if err := db.LogAPICallStats(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4000, 5000, ""); err != nil {
+		t.Fatalf("LogAPICallStats: %v", err)
+	}
+
+	rows, err := db.GetAPICallStatsSince(time.Now().UTC().Add(-time.Hour))
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %d, %v", len(rows), err)
+	}
+	got := rows[0]
+	if got.Total != 3 {
+		t.Errorf("Total = %d, want the per-type counts summed", got.Total)
+	}
+	got.ID, got.RecordedAt, got.Total = 0, time.Time{}, 0
+	if got != want {
+		t.Errorf("round trip:\n got %+v\nwant %+v", got, want)
+	}
+	// The old entry point records traffic as unknown, not as none.
+	if legacy := rows[1]; legacy.Mode != "" || legacy.Requests != -1 || legacy.GraphQLLimit != -1 {
+		t.Errorf("LogAPICallStats row = %+v", legacy)
+	}
+}

@@ -483,7 +483,7 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 	}
 }
 
-func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) {
+func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) error {
 	// Helper which times the workflow run command.
 	slog.Info("Starting Workflow", "workflow", workflow.GetName())
 	start := time.Now()
@@ -493,6 +493,7 @@ func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullReques
 		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
 	}
 	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
+	return err
 }
 
 // hasUnfetchedRequirements returns true if any PR data required by the workflow was
@@ -530,6 +531,15 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	client := git_tools.GetGithubClient()
 	apiCalls := &apiCallCounter{}
 	cacheAtStart := git_tools.GetHTTPCacheStats()
+
+	// With webhooks on, most cycles leave the PRs they cover to webhook
+	// deliveries; the rest refresh every PR. complete says whether every
+	// workflow ran to the end, which a refresh-everything cycle must for the
+	// webhook cycles after it to build on it.
+	cycleStart := time.Now()
+	webhookMode := beginWebhookCycle(config.C(), cycleStart)
+	var incomplete atomic.Bool
+	defer func() { endWebhookCycle(cycleStart, webhookMode, !incomplete.Load()) }()
 
 	// Map to store fetched PRs: repo -> state -> PRs
 	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
@@ -608,6 +618,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		// Running section-matching against an empty list would delete all DB items.
 		if hasUnfetchedRequirements(workflow, repoStatePRs, specificPRs) {
 			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
+			incomplete.Store(true)
 			continue
 		}
 
@@ -630,11 +641,14 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		wg.Add(1)
 		go func(workflow Workflow, prs []*github.PullRequest) {
 			defer wg.Done()
-			ms.runWorkflow(workflow, prs, ms.workflow_chan, file_change_wg)
+			if err := ms.runWorkflow(workflow, prs, ms.workflow_chan, file_change_wg); err != nil {
+				incomplete.Store(true)
+			}
 		}(workflow, workflowPRs)
 	}
 	if waitTimeout(&wg, 240*time.Second) {
 		slog.Error("RunOnce waitgroup timed out waiting for workflows")
+		incomplete.Store(true)
 	} else {
 		slog.Info("Completed RunOnce Waitgroup")
 	}
@@ -748,6 +762,10 @@ func (ms *ManagerService) Run() {
 				ms.sleepTime = cfg.SleepDuration
 				ms.Initialize()
 			}
+			// Only the process running the sync listens for webhooks: it is
+			// the one whose cycles can leave PRs to them. A --oneoff run
+			// never gets here, and polls everything.
+			syncWebhookListener(config.C())
 
 			// Throttle: skip this cycle if the last completed cycle was within half the sleep interval.
 			// This prevents hammering the GitHub API when the server is restarted frequently.
@@ -985,7 +1003,14 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		}
 	}
 
-	warmed := applyCacheWarmRequirements(config.C().DB, prObjects, prRequirements)
+	db := config.C().DB
+	warmed := applyCacheWarmRequirements(db, prObjects, prRequirements)
+	// In a webhook cycle, covered PRs whose caches are current are read from
+	// them instead of fetched; the rest of the covered ones are fetched in full.
+	fromCache, warmed := planWebhookRefresh(db, prObjects, prRequirements, warmed)
+	for key, req := range fromCache {
+		store.Set(key, loadCachedAuxData(db, key, prObjects[key], req))
+	}
 
 	// Fetch aux data in parallel, but bounded (see prefetchConcurrency).
 	var wg sync.WaitGroup
@@ -1003,12 +1028,13 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			auxData := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
+			fillCachedCIStatus(db, key, auxData)
 			store.Set(key, auxData)
 		}(key, auxReq, prObjects[key], strings.Join(prWorkflows[key], ","))
 	}
 	wg.Wait()
 
-	slog.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements))
+	slog.Info("Pre-fetched auxiliary data", "pr_count", len(prRequirements), "from_webhook_caches", len(fromCache))
 	notifyPRsUpdated(warmed)
 	return store
 }
@@ -1056,24 +1082,29 @@ func applyCacheWarmRequirements(db *database.DB,
 		if !prNeedsCacheWarm(db, key, pr) {
 			continue
 		}
-		req := prRequirements[key]
-		req.Diff = true
-		req.Commits = true
-		req.Reviews = true
-		req.Comments = true
-		// Resolution state is only ever read by the review view, so nothing else
-		// would populate it; without warming it here the first person to open the
-		// PR pays for the GraphQL call.
-		req.ReviewThreads = true
-		// Same story for who reacted to each comment.
-		req.Reactions = true
-		// A draft or closed PR is skipped by the open-PR rule in prefetchAuxData,
-		// so without this it would never get its required teams resolved at all.
-		req.Teams = true
-		prRequirements[key] = req
+		prRequirements[key] = warmRequirement(prRequirements[key])
 		warmed = append(warmed, key)
 	}
 	return warmed
+}
+
+// warmRequirement adds to req every field the cache warm fetches: everything
+// GetPRDetails reads.
+func warmRequirement(req AuxDataRequirement) AuxDataRequirement {
+	req.Diff = true
+	req.Commits = true
+	req.Reviews = true
+	req.Comments = true
+	// Resolution state is only ever read by the review view, so nothing else
+	// would populate it; without warming it here the first person to open the
+	// PR pays for the GraphQL call.
+	req.ReviewThreads = true
+	// Same story for who reacted to each comment.
+	req.Reactions = true
+	// A draft or closed PR is skipped by the open-PR rule in prefetchAuxData,
+	// so without this it would never get its required teams resolved at all.
+	req.Teams = true
+	return req
 }
 
 // prNeedsCacheWarm reports whether we should proactively warm the caches for a
@@ -1128,6 +1159,11 @@ func fetchAuxDataForPR(client *github.Client,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
 
 	auxData := &PRAuxData{}
+
+	// Held from the first fetch until the caches are written, so a webhook
+	// delivery about this PR lands on top of what the fetch read rather than
+	// being overwritten by it (see lockPR).
+	defer lockPR(key)()
 
 	req = applyAuxImplications(req)
 
@@ -1380,89 +1416,46 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 
 	// 3. Reviews (stored in same JSON format as server.ReviewJSON)
 	if reviews != nil {
-		type reviewJSON struct {
-			ID          int64     `json:"id"`
-			User        string    `json:"user"`
-			Body        string    `json:"body"`
-			State       string    `json:"state"`
-			SubmittedAt time.Time `json:"submitted_at"`
-			HTMLURL     string    `json:"html_url"`
-		}
-		// Start from an empty (non-nil) slice so a PR with no reviews caches as
-		// "[]" rather than "null". Readers unmarshal "null" back into a nil
-		// slice, which is indistinguishable from "not loaded yet".
-		rvs := []reviewJSON{}
-		for _, r := range reviews {
-			var submittedAt time.Time
-			if r.SubmittedAt != nil {
-				submittedAt = r.SubmittedAt.Time
-			}
-			rvs = append(rvs, reviewJSON{
-				ID:          r.GetID(),
-				User:        r.User.GetLogin(),
-				Body:        r.GetBody(),
-				State:       r.GetState(),
-				SubmittedAt: submittedAt,
-				HTMLURL:     r.GetHTMLURL(),
-			})
-		}
-		if j, err := json.Marshal(rvs); err == nil {
-			if err := db.UpsertPRReviews(key.Number, key.Repo, string(j)); err != nil {
-				slog.Error("Failed to cache PR reviews", "pr", key.Number, "repo", key.Repo, "error", err)
-			} else {
-				written = append(written, "reviews")
-			}
+		if err := cacheReviews(db, key, reviews); err != nil {
+			slog.Error("Failed to cache PR reviews", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			written = append(written, "reviews")
 		}
 	}
 
 	// 4. CI Status (commit status + check runs, same format as server.CombinedPRStatus)
-	if combinedStatus != nil || checkRuns != nil {
-		combined := struct {
-			Status    *github.CombinedStatus       `json:"status"`
-			CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
-		}{Status: combinedStatus, CheckRuns: checkRuns}
-		if j, err := json.Marshal(combined); err == nil && auxData.HeadSHA != "" {
-			if err := db.UpsertCIStatus(key.Number, key.Repo, auxData.HeadSHA, string(j)); err != nil {
-				slog.Error("Failed to cache CI status", "pr", key.Number, "repo", key.Repo, "error", err)
-			} else {
-				written = append(written, "ci_status")
-			}
+	if (combinedStatus != nil || checkRuns != nil) && auxData.HeadSHA != "" {
+		if err := cacheCI(db, key, auxData.HeadSHA, combinedStatus, checkRuns); err != nil {
+			slog.Error("Failed to cache CI status", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			written = append(written, "ci_status")
 		}
 	}
 
 	// 5. Requested Reviewers (from PR object, no extra API call needed)
 	if pr != nil {
-		reviewers := &github.Reviewers{
-			Users: pr.RequestedReviewers,
-			Teams: pr.RequestedTeams,
-		}
-		if j, err := json.Marshal(reviewers); err == nil {
-			if err := db.UpsertRequestedReviewers(key.Number, key.Repo, string(j)); err != nil {
-				slog.Error("Failed to cache requested reviewers", "pr", key.Number, "repo", key.Repo, "error", err)
-			} else {
-				written = append(written, "requested_reviewers")
-			}
+		if err := cacheRequestedReviewers(db, key, pr); err != nil {
+			slog.Error("Failed to cache requested reviewers", "pr", key.Number, "repo", key.Repo, "error", err)
+		} else {
+			written = append(written, "requested_reviewers")
 		}
 	}
 
 	// 6. Commits (stored in same JSON format as server.CommitJSON)
 	if commits != nil {
-		type commitJSON struct {
-			SHA     string `json:"sha"`
-			Message string `json:"message"`
-			Author  string `json:"author"`
-			Date    string `json:"date"`
-			URL     string `json:"url"`
-		}
-		var cms []commitJSON
+		var cms []cachedCommit
 		for _, c := range commits {
-			cms = append(cms, commitJSON{
+			commit := cachedCommit{
 				SHA:     c.GetSHA(),
 				Message: c.Commit.GetMessage(),
 				Author:  c.Commit.Author.GetName(),
 				Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
 				URL:     c.GetHTMLURL(),
-			})
+			}
+			if committed := c.Commit.GetCommitter().GetDate(); !committed.IsZero() {
+				commit.CommittedAt = committed.Format(time.RFC3339)
+			}
+			cms = append(cms, commit)
 		}
 		if j, err := json.Marshal(cms); err == nil {
 			if err := db.UpsertPRCommits(key.Number, key.Repo, string(j)); err != nil {
@@ -1529,6 +1522,87 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 		FieldsWritten: written,
 		Detail:        describeAuxRequest(auxData, written),
 	})
+}
+
+// cachedReview is a review as the PRReviews cache stores it — the JSON shape
+// server.ReviewJSON reads.
+type cachedReview struct {
+	ID          int64     `json:"id"`
+	User        string    `json:"user"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	HTMLURL     string    `json:"html_url"`
+}
+
+// cachedCommit is a commit as the PRCommits cache stores it — the JSON shape
+// server.CommitJSON reads, plus CommittedAt, which only the workflow layer
+// reads (see latestCachedCommitTime). Date is when the commit was authored,
+// which a rebase leaves alone; CommittedAt moves with it.
+type cachedCommit struct {
+	SHA         string `json:"sha"`
+	Message     string `json:"message"`
+	Author      string `json:"author"`
+	Date        string `json:"date"`
+	URL         string `json:"url"`
+	CommittedAt string `json:"committed_at,omitempty"`
+}
+
+// cachedCIRow is a commit's CI as the CIStatus cache stores it — the JSON shape
+// server.CombinedPRStatus reads.
+type cachedCIRow struct {
+	Status    *github.CombinedStatus       `json:"status"`
+	CheckRuns *github.ListCheckRunsResults `json:"check_runs"`
+}
+
+// cacheReviews writes a PR's whole review list to the PRReviews cache.
+func cacheReviews(db *database.DB, key PRKey, reviews []*github.PullRequestReview) error {
+	// Start from an empty (non-nil) slice so a PR with no reviews caches as
+	// "[]" rather than "null". Readers unmarshal "null" back into a nil
+	// slice, which is indistinguishable from "not loaded yet".
+	rvs := []cachedReview{}
+	for _, r := range reviews {
+		var submittedAt time.Time
+		if r.SubmittedAt != nil {
+			submittedAt = r.SubmittedAt.Time
+		}
+		rvs = append(rvs, cachedReview{
+			ID:          r.GetID(),
+			User:        r.User.GetLogin(),
+			Body:        r.GetBody(),
+			State:       r.GetState(),
+			SubmittedAt: submittedAt,
+			HTMLURL:     r.GetHTMLURL(),
+		})
+	}
+	j, err := json.Marshal(rvs)
+	if err != nil {
+		return err
+	}
+	return db.UpsertPRReviews(key.Number, key.Repo, string(j))
+}
+
+// cacheCI writes a commit's statuses and check runs to the CIStatus cache.
+func cacheCI(db *database.DB, key PRKey, sha string, status *github.CombinedStatus, checkRuns *github.ListCheckRunsResults) error {
+	j, err := json.Marshal(cachedCIRow{Status: status, CheckRuns: checkRuns})
+	if err != nil {
+		return err
+	}
+	return db.UpsertCIStatus(key.Number, key.Repo, sha, string(j))
+}
+
+// cacheRequestedReviewers writes who the PR object says is still asked to
+// review it to the RequestedReviewers cache.
+func cacheRequestedReviewers(db *database.DB, key PRKey, pr *github.PullRequest) error {
+	reviewers := &github.Reviewers{
+		Users: pr.RequestedReviewers,
+		Teams: pr.RequestedTeams,
+	}
+	j, err := json.Marshal(reviewers)
+	if err != nil {
+		return err
+	}
+	return db.UpsertRequestedReviewers(key.Number, key.Repo, string(j))
 }
 
 // describeAuxRequest notes anything worth knowing about a cache write beyond
@@ -1609,42 +1683,7 @@ func buildAndCacheMetadata(db *database.DB, key PRKey,
 		}
 	}
 
-	// CI Status string (matches GetPRDetails format)
-	var ciStatus string
-	var ciFailures []string
-	if combinedStatus != nil || checkRuns != nil {
-		total := 0
-		success := 0
-		overallState := "success"
-		if combinedStatus != nil {
-			if combinedStatus.GetState() != "success" && combinedStatus.GetState() != "" {
-				overallState = combinedStatus.GetState()
-			}
-			total += combinedStatus.GetTotalCount()
-			for _, s := range combinedStatus.Statuses {
-				if s.GetState() == "success" {
-					success++
-				} else if s.GetState() == "failure" {
-					ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
-				}
-			}
-		}
-		if checkRuns != nil {
-			total += checkRuns.GetTotal()
-			for _, cr := range checkRuns.CheckRuns {
-				if cr.GetConclusion() == "success" {
-					success++
-				} else if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
-					overallState = "failure"
-					ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
-				}
-			}
-		}
-		if total == 0 && overallState == "success" {
-			overallState = "pending"
-		}
-		ciStatus = fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total)
-	}
+	ciStatus, ciFailures := ciSummary(combinedStatus, checkRuns)
 
 	milestone := ""
 	if pr.Milestone != nil {
@@ -1734,4 +1773,45 @@ func buildAndCacheMetadata(db *database.DB, key PRKey,
 	}
 
 	return metadataWritten
+}
+
+// ciSummary is the metadata's CI status line — "failure (3/5 checks passed)",
+// the format GetPRDetails writes — and the checks that failed. Both are empty
+// when there is nothing to summarize.
+func ciSummary(combinedStatus *github.CombinedStatus, checkRuns *github.ListCheckRunsResults) (string, []string) {
+	if combinedStatus == nil && checkRuns == nil {
+		return "", nil
+	}
+	var ciFailures []string
+	total := 0
+	success := 0
+	overallState := "success"
+	if combinedStatus != nil {
+		if combinedStatus.GetState() != "success" && combinedStatus.GetState() != "" {
+			overallState = combinedStatus.GetState()
+		}
+		total += combinedStatus.GetTotalCount()
+		for _, s := range combinedStatus.Statuses {
+			if s.GetState() == "success" {
+				success++
+			} else if s.GetState() == "failure" {
+				ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", s.GetContext(), s.GetDescription()))
+			}
+		}
+	}
+	if checkRuns != nil {
+		total += checkRuns.GetTotal()
+		for _, cr := range checkRuns.CheckRuns {
+			if cr.GetConclusion() == "success" {
+				success++
+			} else if cr.GetConclusion() != "" && cr.GetConclusion() != "neutral" && cr.GetConclusion() != "skipped" {
+				overallState = "failure"
+				ciFailures = append(ciFailures, fmt.Sprintf("%s: %s", cr.GetName(), cr.GetConclusion()))
+			}
+		}
+	}
+	if total == 0 && overallState == "success" {
+		overallState = "pending"
+	}
+	return fmt.Sprintf("%s (%d/%d checks passed)", overallState, success, total), ciFailures
 }

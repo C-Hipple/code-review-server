@@ -1077,7 +1077,7 @@ func ProcessWorkflowRuns(runs []*github.WorkflowRun) []*github.WorkflowRun {
 func FilterCIPassing(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
-		info := GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+		info := ciStatusForPR(pr)
 		if info.OverallStatus == "DONE" {
 			filtered = append(filtered, pr)
 		}
@@ -1088,7 +1088,7 @@ func FilterCIPassing(prs []*github.PullRequest) []*github.PullRequest {
 func FilterCIFailing(prs []*github.PullRequest) []*github.PullRequest {
 	filtered := []*github.PullRequest{}
 	for _, pr := range prs {
-		info := GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+		info := ciStatusForPR(pr)
 		if info.OverallStatus == "TODO" {
 			filtered = append(filtered, pr)
 		}
@@ -1401,9 +1401,58 @@ func latestCommitTime(commits []*github.RepositoryCommit) time.Time {
 	return latest
 }
 
+// PRStateSource answers questions the filters would otherwise ask GitHub, from
+// data this process already holds. The workflows layer registers one while
+// GitHub webhooks keep that data current (workflows/webhooks.go); git_tools
+// can't read those caches itself, since workflows imports it. ok=false sends
+// the caller to GitHub as before.
+type PRStateSource interface {
+	InteractionState(owner, repo string, pr *github.PullRequest) (state InteractionState, ok bool)
+	CIStatus(pr *github.PullRequest) (info CIStatusInfo, ok bool)
+}
+
+var prStateSource struct {
+	sync.RWMutex
+	source PRStateSource
+}
+
+// SetPRStateSource registers the source GetInteractionState and the CI filters
+// consult before asking GitHub. nil clears it.
+func SetPRStateSource(source PRStateSource) {
+	prStateSource.Lock()
+	defer prStateSource.Unlock()
+	prStateSource.source = source
+}
+
+func currentPRStateSource() PRStateSource {
+	prStateSource.RLock()
+	defer prStateSource.RUnlock()
+	return prStateSource.source
+}
+
+// ciStatusForPR is the PR's CI standing for the CI filters: from the registered
+// PRStateSource when it can answer, otherwise from the Actions runs on the
+// PR's branch.
+func ciStatusForPR(pr *github.PullRequest) CIStatusInfo {
+	if source := currentPRStateSource(); source != nil {
+		if info, ok := source.CIStatus(pr); ok {
+			return info
+		}
+	}
+	return GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+}
+
 func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
 	if pr == nil || pr.Number == nil {
 		return InteractionState{}
+	}
+
+	// Ahead of GlobalCache: a source that can answer has data at least as
+	// fresh as anything memoized there.
+	if source := currentPRStateSource(); source != nil {
+		if state, ok := source.InteractionState(owner, repo, pr); ok {
+			return state
+		}
 	}
 
 	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *pr.Number)

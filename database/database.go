@@ -827,13 +827,9 @@ func (db *DB) UpsertItemWithWorkflow(sectionID int64, identifier, status, title 
 		return nil, err
 	}
 
-	tagsStr := ""
-	if len(tags) > 0 {
-		tagsBytes, err := json.Marshal(tags)
-		if err != nil {
-			return nil, err
-		}
-		tagsStr = string(tagsBytes)
+	tagsStr, err := encodeTags(tags)
+	if err != nil {
+		return nil, err
 	}
 
 	tx, err := db.conn.Begin()
@@ -1190,6 +1186,48 @@ func (db *DB) GetItemCount() (int, error) {
 	return count, err
 }
 
+// encodeTags is how an item's tags are stored: a JSON array, or "" for none.
+func encodeTags(tags []string) (string, error) {
+	if len(tags) == 0 {
+		return "", nil
+	}
+	tagsBytes, err := json.Marshal(tags)
+	if err != nil {
+		return "", err
+	}
+	return string(tagsBytes), nil
+}
+
+// HasItem reports whether any section lists the item. Identifiers are matched
+// without regard to case, since GitHub doesn't treat owner and repo names as
+// case-sensitive either.
+func (db *DB) HasItem(identifier string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		"SELECT COUNT(*) FROM items WHERE identifier = ? COLLATE NOCASE",
+		identifier,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// UpdateItemSummary rewrites the status, title and tags of every row listing
+// the item, in whichever sections it is in, leaving its details and workflow
+// ownership alone. It returns how many rows it changed.
+func (db *DB) UpdateItemSummary(identifier, status, title string, tags []string) (int64, error) {
+	tagsStr, err := encodeTags(tags)
+	if err != nil {
+		return 0, err
+	}
+	result, err := db.conn.Exec(
+		"UPDATE items SET status = ?, title = ?, tags = ? WHERE identifier = ? COLLATE NOCASE",
+		status, title, tagsStr, identifier,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (db *DB) DeleteItemByIdentifier(identifier string) error {
 	_, err := db.conn.Exec(
 		"DELETE FROM items WHERE identifier = ?",
@@ -1358,6 +1396,29 @@ func (db *DB) GetPullRequest(prNumber int, repo string) (string, string, error) 
 		return "", "", err
 	}
 	return body, sha, nil
+}
+
+// FindPRNumbersBySHA returns the PRs in repo that have ever had sha as their
+// head, by the rows cached for them. It is how a commit status, which names a
+// commit but no PR, is traced back to the PRs it reports on.
+func (db *DB) FindPRNumbersBySHA(repo, sha string) ([]int, error) {
+	rows, err := db.conn.Query(
+		"SELECT DISTINCT pr_number FROM PullRequests WHERE repo = ? AND latest_sha = ? ORDER BY pr_number",
+		repo, sha,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var numbers []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		numbers = append(numbers, n)
+	}
+	return numbers, rows.Err()
 }
 
 // GetPullRequestSHAs returns both the head and base SHAs for a cached PR.

@@ -3,6 +3,7 @@ package config
 import (
 	"crs/subprocess"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -97,7 +98,55 @@ func Validate(cfg *Config) []ValidationError {
 	problems = append(problems, validateLegacyLLM(cfg)...)
 	problems = append(problems, validatePlugins(cfg)...)
 	problems = append(problems, validateGitHubAPI(cfg)...)
+	problems = append(problems, validateWebhooks(cfg)...)
 	return append(problems, validateAI(cfg)...)
+}
+
+// validateWebhooks checks the [Webhooks] table. A table that asks for webhooks
+// but can't have them — no secret, an address that won't parse — still runs:
+// the server just keeps polling. That fallback is silent apart from a log line,
+// which is why it is worth catching here.
+func validateWebhooks(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	w := cfg.Webhooks
+	if addr := strings.TrimSpace(w.ListenAddress); addr != "" {
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			problems = append(problems, rootError("Webhooks.ListenAddress",
+				"%q is not host:port (e.g. \":8790\", or \"127.0.0.1:8790\" behind a tunnel)", w.ListenAddress))
+		}
+		if cfg.WebhookSecret() == "" {
+			problems = append(problems, rootError("Webhooks.Secret",
+				"needs the secret the GitHub webhook was created with: set Secret here or export %s. Without it deliveries can't be verified, so the server keeps polling",
+				WebhookSecretEnv))
+		}
+	}
+	if p := strings.TrimSpace(w.Path); p != "" && !strings.HasPrefix(p, "/") {
+		problems = append(problems, rootError("Webhooks.Path", "must start with \"/\", e.g. %q", DefaultWebhookPath))
+	}
+	for i, repo := range w.Repos {
+		if err := validateWebhookRepo(repo); err != nil {
+			problems = append(problems, rootError("Webhooks.Repos", "entry %d: %v", i, err))
+		}
+	}
+	if w.FullRefreshInterval < 0 {
+		problems = append(problems, rootError("Webhooks.FullRefreshInterval",
+			"must be a positive number of minutes, or 0 for the default (%d)", int(DefaultWebhookFullRefresh.Minutes())))
+	}
+	return problems
+}
+
+// validateWebhookRepo accepts what a [Webhooks] Repos entry may be: a
+// repository, or every repository of an owner ("owner/*").
+func validateWebhookRepo(entry string) error {
+	owner, repo, _ := strings.Cut(strings.TrimSpace(entry), "/")
+	wildcardOwner := strings.Contains(owner, "*")
+	if !wildcardOwner && repo == "*" && owner != "" {
+		return nil
+	}
+	if wildcardOwner || strings.Contains(repo, "*") || ValidateRepoEntry(entry) != nil {
+		return fmt.Errorf("%q is not \"owner/repo\" or \"owner/*\"", entry)
+	}
+	return nil
 }
 
 // validGitHubAPIs are the APIs a [GitHubAPI] key may name.

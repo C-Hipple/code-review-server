@@ -1471,6 +1471,30 @@ type RateLimitHistoryPoint struct {
 	// first point, which has no predecessor to measure against.
 	GapMinutes     float64 `json:"gap_minutes"`
 	CallsPerMinute float64 `json:"calls_per_minute"`
+
+	// Mode is the kind of cycle — "polling", "full_refresh" or "webhook" (see
+	// database.CycleMode*), empty for cycles from before it was recorded.
+	Mode string `json:"mode"`
+	// Requests, NotModified, SearchRequests and GraphQLRequests are what the
+	// server sent GitHub since the previous cycle, counted on the wire — the
+	// cycle's own calls, including those the per-type counts miss, plus
+	// webhook deliveries' and the review view's in between. NotModified are
+	// the Requests GitHub answered 304 and didn't charge for. RequestsPerMinute
+	// is Requests spread over GapMinutes. All -1 for cycles from before they
+	// were recorded.
+	Requests          int64   `json:"requests"`
+	NotModified       int64   `json:"not_modified"`
+	SearchRequests    int64   `json:"search_requests"`
+	GraphQLRequests   int64   `json:"graphql_requests"`
+	RequestsPerMinute float64 `json:"requests_per_minute"`
+	// WebhookDeliveries and WebhookAPICalls are the webhook deliveries applied
+	// since the previous cycle and the API calls applying them took.
+	WebhookDeliveries int64 `json:"webhook_deliveries"`
+	WebhookAPICalls   int64 `json:"webhook_api_calls"`
+	// GraphQLRemaining and GraphQLLimit are the GraphQL budget after the
+	// cycle, -1 when unknown.
+	GraphQLRemaining int `json:"graphql_remaining"`
+	GraphQLLimit     int `json:"graphql_limit"`
 }
 
 type GetRateLimitHistoryReply struct {
@@ -1526,6 +1550,16 @@ func (h *RPCHandler) GetRateLimitHistory(args *GetRateLimitHistoryArgs, reply *G
 			Remaining:      row.RateLimitRemaining,
 			Limit:          row.RateLimitLimit,
 			ResetAt:        row.RateLimitResetAt,
+
+			Mode:              row.Mode,
+			Requests:          row.Requests,
+			NotModified:       row.NotModified,
+			SearchRequests:    row.SearchRequests,
+			GraphQLRequests:   row.GraphQLRequests,
+			WebhookDeliveries: row.WebhookDeliveries,
+			WebhookAPICalls:   row.WebhookAPICalls,
+			GraphQLRemaining:  row.GraphQLRemaining,
+			GraphQLLimit:      row.GraphQLLimit,
 		}
 		// A cycle that recorded no usable budget reading is reported as
 		// unknown, not as an exhausted one: pre-migration rows already carry
@@ -1534,11 +1568,18 @@ func (h *RPCHandler) GetRateLimitHistory(args *GetRateLimitHistoryArgs, reply *G
 			point.Remaining = -1
 			point.Limit = -1
 		}
+		if point.GraphQLLimit <= 0 {
+			point.GraphQLRemaining = -1
+			point.GraphQLLimit = -1
+		}
 		if !prev.IsZero() && !row.RecordedAt.IsZero() {
 			gap := row.RecordedAt.Sub(prev).Minutes()
 			if gap > 0 {
 				point.GapMinutes = gap
 				point.CallsPerMinute = float64(row.Total) / gap
+				if row.Requests >= 0 {
+					point.RequestsPerMinute = float64(row.Requests) / gap
+				}
 			}
 		}
 		if !row.RecordedAt.IsZero() {

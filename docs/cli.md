@@ -131,3 +131,19 @@ crs -oneoff              # Run workflows once only
 ```
 
 See [Configuration](configuration.md) for more details on server modes.
+
+## Logging
+
+The server logs to stderr, which each client sends somewhere different: the bun web client to the terminal running it, Emacs to the `*crs-client-stderr*` buffer, the Chrome extension to `~/.crs/native_host.log`. Three environment variables give the log a form and a place of its own, for a script or an agent to read:
+
+| Variable | Effect |
+| --- | --- |
+| `CRS_LOG_FILE` | Also append the log to this file (a leading `~/` is your home directory). A file over 64 MB is moved aside to `<file>.1` when the server next starts. Several servers — one per client — can share the file. |
+| `CRS_LOG_FORMAT` | `text` (the default: `DATE::TIME - LEVEL - message key=value ...`) or `json`, one object per line with `time`, `level`, `msg` and the line's keys. |
+| `CRS_LOG_LEVEL` | `debug`, `info` (the default), `warn` or `error`. |
+
+```bash
+CRS_LOG_FILE=~/.crs/crs.log CRS_LOG_FORMAT=json crs -server
+```
+
+Every request the server sends GitHub is logged at `info` as `GitHub API Call`, and every cycle ends with `GitHub API calls this cycle` and `GitHub rate limit post-cycle`. See [GitHub Webhooks](webhooks.md#measuring-what-it-saves) for what those report and how to compare polling with webhooks.

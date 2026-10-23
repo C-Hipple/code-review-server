@@ -273,20 +273,36 @@ func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo stri
 		store = NewAuxDataStore()
 		SetCurrentAuxDataStore(store)
 	}
+	db := config.C().DB
 	apiCalls := &apiCallCounter{}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, prefetchConcurrency)
+	fromCache := 0
 	for _, pr := range prs {
 		if pr == nil || pr.Number == nil {
 			continue
+		}
+		key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
+		rememberPR(key, pr)
+		req := auxReq
+		// In a webhook cycle a covered PR is read from its caches when they
+		// are current, and otherwise fetched in full so that they will be (see
+		// planWebhookRefresh, which does the same for the manager's prefetch).
+		if webhookHandles(key) {
+			if cacheServes(db, key, pr) {
+				store.MergeSet(key, loadCachedAuxData(db, key, pr, req))
+				fromCache++
+				continue
+			}
+			req = warmRequirement(req)
 		}
 		wg.Add(1)
 		go func(pr *github.PullRequest) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			key := PRKey{Owner: owner, Repo: repo, Number: *pr.Number}
-			data := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
+			data := fetchAuxDataForPR(client, apiCalls, workflowName, key, req, pr)
+			fillCachedCIStatus(db, key, data)
 			// MergeSet, not Set: auxReq may be a subset of the fields another
 			// pass already stored for this PR (e.g. the manager pre-fetched
 			// its diff), and those must survive.
@@ -294,7 +310,7 @@ func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo stri
 		}(pr)
 	}
 	wg.Wait()
-	slog.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs))
+	slog.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs), "from_webhook_caches", fromCache)
 }
 
 // prefetchAuxForFilteredPRs groups prs — which may span several repos — by

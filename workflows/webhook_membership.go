@@ -213,31 +213,29 @@ func pruneRememberedPRs(before time.Time) {
 	})
 }
 
-// reevaluations is the PRs waiting to be re-evaluated, each with the PR object
-// to judge it by (nil to use the remembered one). Deliveries arrive in bursts —
-// a push sets off a check run delivery per check — so a PR waiting already is
-// re-evaluated once.
+// reevaluations is the PRs waiting to be re-evaluated. Deliveries arrive in
+// bursts — a push sets off a check run delivery per check — so a PR waiting
+// already is re-evaluated once.
 var reevaluations struct {
 	mu      sync.Mutex
-	pending map[PRKey]*github.PullRequest
+	pending map[PRKey]struct{}
 }
 
 // reevaluationWake tells runReevaluations there is work.
 var reevaluationWake = make(chan struct{}, 1)
 
-// scheduleReevaluation queues key to be checked against the workflows again,
-// if webhooks are trusted for it.
-func scheduleReevaluation(key PRKey, pr *github.PullRequest) {
-	if !webhookHandles(key) {
-		return
-	}
+// scheduleReevaluation queues key to be checked against the workflows again.
+// Whether webhooks are trusted for it is decided when the check runs, not now:
+// a delivery that lands while a cycle refreshes everything — when they aren't
+// — is checked once that cycle has finished and they are again. Without that,
+// a server set to refresh everything every cycle would lose every delivery
+// that arrived mid-cycle.
+func scheduleReevaluation(key PRKey) {
 	reevaluations.mu.Lock()
 	if reevaluations.pending == nil {
-		reevaluations.pending = map[PRKey]*github.PullRequest{}
+		reevaluations.pending = map[PRKey]struct{}{}
 	}
-	if pr != nil || reevaluations.pending[key] == nil {
-		reevaluations.pending[key] = pr
-	}
+	reevaluations.pending[key] = struct{}{}
 	reevaluations.mu.Unlock()
 	select {
 	case reevaluationWake <- struct{}{}:
@@ -262,15 +260,14 @@ func drainReevaluations() {
 	reevaluations.pending = nil
 	reevaluations.mu.Unlock()
 
+	// Each PR is judged as most recently seen — by this delivery, a later one,
+	// or the listing of a cycle that ran while it waited — so a check that
+	// waited out a cycle can't put back what the cycle's newer listing changed.
 	db := config.C().DB
-	for key, pr := range pending {
-		if pr == nil {
-			pr = rememberedPRFor(key)
+	for key := range pending {
+		if pr := rememberedPRFor(key); pr != nil {
+			reevaluateMembershipSafely(db, key, pr)
 		}
-		if pr == nil {
-			continue
-		}
-		reevaluateMembershipSafely(db, key, pr)
 	}
 }
 

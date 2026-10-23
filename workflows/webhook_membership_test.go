@@ -291,3 +291,82 @@ func TestProjectListMembershipOnlyDrops(t *testing.T) {
 		t.Errorf("membership = %v for a PR its filters reject", got)
 	}
 }
+
+// Webhooks as a supplement to polling: with FullRefreshInterval no longer than
+// SleepDuration, every cycle refreshes everything, and deliveries only keep
+// things current in between — including the ones that land mid-cycle.
+func TestFullRefreshEveryCycleStillActsOnDeliveries(t *testing.T) {
+	wf := reviewRequestedWorkflow()
+	env := membershipEnv(t, wf)
+	cfg := config.C()
+	cfg.SleepDuration = 10 * time.Minute
+	cfg.Webhooks.FullRefreshInterval = 10
+	config.SetC(cfg)
+	seedCachedPR(t, env.db, whKey(1), "head1")
+	listIn(t, env.db, wf, 1)
+
+	fakeListening(t, time.Now().Add(-time.Hour))
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			// Cycles start at least SleepDuration apart: age the last one
+			// rather than move the clock, which deliveries are stamped by.
+			lastFullRefresh.mu.Lock()
+			lastFullRefresh.at = lastFullRefresh.at.Add(-(cfg.SleepDuration + 30*time.Second))
+			lastFullRefresh.mu.Unlock()
+		}
+		cycleStart := time.Now()
+		membershipMu.Lock() // as ManagerService.Run holds it for a cycle
+		if mode := beginWebhookCycle(cfg, cycleStart); mode != database.CycleModeFullRefresh {
+			t.Fatalf("cycle %d mode = %q, want a full refresh every cycle", i, mode)
+		}
+		if i == 1 {
+			// A review submitted while the cycle runs, when webhooks aren't
+			// trusted: the caches take it now, the sections once it ends.
+			applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
+				Action:      github.Ptr("submitted"),
+				Review:      &github.PullRequestReview{ID: github.Ptr(int64(9)), User: &github.User{Login: github.Ptr("me")}, State: github.Ptr("approved")},
+				PullRequest: requestedOfMe(whPR(1, "head1")),
+				Repo:        whRepository(),
+			}})
+			if got := cachedReviewsOf(t, env.db, whKey(1)); len(got) != 1 {
+				t.Fatalf("mid-cycle delivery didn't reach the caches: %+v", got)
+			}
+		}
+		endWebhookCycle(cfg, cycleStart, database.CycleModeFullRefresh, true)
+		membershipMu.Unlock()
+		if i == 1 {
+			drainReevaluations()
+			if listedIn(t, env.db, wf, 1) {
+				t.Fatal("a review submitted mid-cycle didn't take the PR out once the cycle finished")
+			}
+		}
+	}
+}
+
+// A check that waited out a cycle judges the PR as the cycle last listed it,
+// not as the delivery that queued it described it.
+func TestReevaluationJudgesByTheNewestPRSeen(t *testing.T) {
+	wf := reviewRequestedWorkflow()
+	env := membershipEnv(t, wf)
+	key := whKey(1)
+	seedCachedPR(t, env.db, key, "head1")
+	listIn(t, env.db, wf, 1)
+
+	// The delivery lands while a cycle runs, so its check waits; meanwhile the
+	// cycle lists the PR re-requested — whose own delivery never arrived.
+	membershipMu.Lock()
+	removed := whPR(1, "head1")
+	removed.UpdatedAt = &github.Timestamp{Time: time.Unix(100, 0)}
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
+		Action: github.Ptr("review_request_removed"), PullRequest: removed, Repo: whRepository(),
+	}})
+	rerequested := requestedOfMe(whPR(1, "head1"))
+	rerequested.UpdatedAt = &github.Timestamp{Time: time.Unix(200, 0)}
+	rememberPR(key, rerequested)
+	membershipMu.Unlock()
+
+	drainReevaluations()
+	if !listedIn(t, env.db, wf, 1) {
+		t.Error("an older delivery's PR undid the newer listing")
+	}
+}

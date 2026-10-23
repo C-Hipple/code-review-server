@@ -37,7 +37,7 @@ export CRS_WEBHOOK_SECRET="the secret you give GitHub below"
 | `Secret` | The webhook's secret. Leave it out of the file and export `CRS_WEBHOOK_SECRET` instead (the file's value wins when both are set). Required: unsigned deliveries are never accepted, so without a secret nothing listens. |
 | `Path` | The URL path GitHub posts to. Default `/github/webhook`. |
 | `Repos` | The repositories whose webhooks deliver here: `owner/repo`, or `owner/*` for an organization webhook. Only PRs in these are left to webhooks; any other PR is still polled. Default: every repository the config already names — the root `Repos` and each workflow's own. The search-driven workflows (`WaitingOnMeWorkflow`, `MyReviewRequestsWorkflow`) name none, so a config made only of them needs `Repos` set. |
-| `FullRefreshInterval` | Minutes between cycles that refresh every PR as if webhooks were off, to catch up on any delivery that never arrived. Default 360 (six hours). |
+| `FullRefreshInterval` | Minutes between cycles that refresh every PR as if webhooks were off, to catch up on any delivery that never arrived. Default 360 (six hours). Set it to `SleepDuration` or less and every cycle refreshes everything, with webhooks only filling in between — see [Rolling It Out](#rolling-it-out). |
 
 The table is re-read every cycle, so adding, changing or removing it takes effect on the next sync, without a restart.
 
@@ -59,6 +59,23 @@ In the repository's (or organization's) **Settings → Webhooks → Add webhook*
     - Pushes
 
 GitHub sends a ping when the webhook is created; the server logs `GitHub webhook ping received`.
+
+### Rolling It Out
+
+Webhooks can start as a supplement to polling rather than a replacement for it. With `FullRefreshInterval` no longer than `SleepDuration`, every cycle refreshes every PR exactly as without webhooks, and deliveries keep the caches and sections current between cycles:
+
+```toml
+SleepDuration = 10
+
+[Webhooks]
+ListenAddress = "127.0.0.1:8790"
+Repos = ["my-org/*"]
+FullRefreshInterval = 10   # every cycle refreshes everything
+```
+
+A review, comment, CI result or review request then shows up within seconds rather than at the next cycle, and anything a delivery gets wrong or misses — one lost while the laptop slept, two arriving out of order — is put right by that next cycle, no more than `SleepDuration` later. It saves no API calls: every row in `APICallStats` reads `mode = full_refresh`, and `webhook_api_calls` is what the deliveries added on top (a push's full fetch, which the next cycle then finds already done, and a new review thread's lookup).
+
+Once the deliveries have proved reliable — the log's `Webhook delivery updated a PR` and `Webhook ... section` lines agree with what you see on GitHub — raise `FullRefreshInterval` (to an hour, then the default six) to start saving calls, and compare the modes in `APICallStats` (see [Measuring What It Saves](#measuring-what-it-saves)).
 
 ## What Each Delivery Updates
 
@@ -86,7 +103,7 @@ A delivery can change which sections a PR belongs in, not only what its rows say
 
 What "matches" means is what the workflow's own run would decide: for a repository-list workflow, the PR's repository and state and its filters; for *Review Requested*, a review request to you or one of your teams, then its filters; for *Waiting on me*, its filters. A project-list workflow's PRs are whatever its Jira epic links, which a PR can't tell, so there a delivery can only drop a PR its filters now reject.
 
-This happens only while webhooks are trusted for the PR — not during a cycle that refreshes everything — and only when its caches hold its current head, so it never asks GitHub for anything. A delivery with no PR in it (a conversation comment, a check run, a commit status) is judged against the PR as the last listing or delivery showed it. If a cycle is writing sections when a delivery lands, the check waits for it to finish, so a cycle working from an older listing can't undo it. A burst of deliveries about one PR — a push sets off a check run delivery per check — is checked once.
+This happens only while webhooks are trusted for the PR, and only when its caches hold its current head, so it never asks GitHub for anything. A delivery that lands while a cycle is refreshing everything is checked as soon as that cycle finishes. A delivery with no PR in it (a conversation comment, a check run, a commit status) is judged against the PR as the last listing or delivery showed it. If a cycle is writing sections when a delivery lands, the check waits for it to finish, so a cycle working from an older listing can't undo it. A burst of deliveries about one PR — a push sets off a check run delivery per check — is checked once.
 
 ## When the Server Still Polls
 

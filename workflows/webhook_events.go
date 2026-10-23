@@ -95,7 +95,7 @@ func applyWebhookEvent(d webhookDelivery) {
 			rememberPR(h.key, h.pr)
 		}
 		if reevaluate {
-			scheduleReevaluation(h.key, h.pr)
+			scheduleReevaluation(h.key)
 		}
 	}
 }

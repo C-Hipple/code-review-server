@@ -86,7 +86,9 @@ SectionTitle = "Needs My Team's Review"
 # ListenAddress = "127.0.0.1:8790"  # where deliveries arrive, e.g. behind a tunnel
 # Repos = ["my-org/*"]              # whose webhooks deliver here; default: the repos above
 # Secret = "..."                    # or export CRS_WEBHOOK_SECRET
-# FullRefreshInterval = 360         # minutes between refresh-everything cycles
+# FullRefreshInterval = 360         # minutes between refresh-everything cycles;
+#                                   # = SleepDuration to keep polling every cycle and
+#                                   # use webhooks only for updates in between
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

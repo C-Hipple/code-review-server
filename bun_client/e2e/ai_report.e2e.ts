@@ -320,9 +320,15 @@ test.describe('Change diagram image', () => {
         );
         const viewBox = await dialog.locator('.mermaid-canvas svg').getAttribute('viewBox');
         const [, , width, height] = viewBox!.split(/[\s,]+/).map(Number);
-        const background = await page.evaluate(() =>
-            getComputedStyle(document.documentElement).getPropertyValue('--bg-primary').trim()
-        );
+        // As #rrggbb, however the stylesheet spells it: the minifier may
+        // shorten #ffffff to #fff.
+        const background = await page.evaluate(() => {
+            const ctx = new OffscreenCanvas(1, 1).getContext('2d')!;
+            ctx.fillStyle = getComputedStyle(document.documentElement)
+                .getPropertyValue('--bg-primary')
+                .trim();
+            return ctx.fillStyle;
+        });
 
         // Named for the PR: the diagram at twice its size, on the app's
         // background, with the legend below it.
@@ -331,7 +337,7 @@ test.describe('Change diagram image', () => {
         const saved = await readPng(page, readFileSync(await download.path()), [ADDED, CHANGED]);
         expect(saved.width).toBeGreaterThanOrEqual(2 * width);
         expect(saved.height).toBeGreaterThan(2 * height);
-        expect(saved.corner).toBe(background.toLowerCase());
+        expect(saved.corner).toBe(background);
         // The nodes were drawn, not just the legend.
         expect(saved.counts[ADDED]).toBeGreaterThan(5000);
         expect(saved.counts[CHANGED]).toBeGreaterThan(2000);

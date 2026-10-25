@@ -6,6 +6,8 @@ If you want to build a new client (e.g. for VS Code, Vim, or a TUI), you should 
 
 The server binary `crs` (installed by `go install ./...`; `codereviewserver` before the module was renamed) should be spawned as a child process by your client. Your client send requests to the server's `stdin` and reads responses from `stdout`.
 
+To hear from the server without polling it, call `RPCHandler.Subscribe`: the server then sends a `Server.Heartbeat` notification every interval (and any other event it pushes) on the same `stdout`. Tell a notification from a response by its `method`, and treat a run of missed heartbeats as the server being gone. See [Server Notifications](protocol.md#server-notifications).
+
 If you are building a **web** client, [Web Client Features](web_client_features.md) inventories everything the shipped `bun_client` does — the HTTP/WebSocket bridge that fronts the stdio server, the full feature list, which protocol methods it uses (and which it doesn't), and the gotchas worth knowing before you reimplement diff parsing or comment positions.
 
 A **browser extension** can't spawn a process, so it has to go through a [native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) host, which the browser launches and which spawns the server. The [Chrome extension](clients.md#chrome-extension)'s host, `chrome_extension/crs_native_host`, is a standalone Go program (standard library only) that any Chromium-based extension can reuse: register it with `install.sh --extension-id <your ID>` (the manifest it writes allows that one ID), open one port with `chrome.runtime.connectNative('com.c_hipple.crs')`, and that port is one server, stopped when the port closes. The contract on the port:

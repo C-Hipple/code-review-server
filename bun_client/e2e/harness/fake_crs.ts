@@ -64,6 +64,9 @@ interface State {
     // What the Server Configuration tab edits: UpdateConfig merges each field
     // it is sent into this, the way the server merges an update into the file.
     config: Record<string, unknown>;
+    // Heartbeats stop while this is set (E2E.SetHeartbeat), as if the server
+    // had hung.
+    heartbeatPaused: boolean;
 }
 
 const CONFIG_PATH = '/tmp/crs-e2e/codereviewserver.toml';
@@ -118,10 +121,27 @@ function freshState(): State {
         aiDone: new Set(),
         pluginRuns: new Map(),
         config: freshConfig(),
+        heartbeatPaused: false,
     };
 }
 
 let state = freshState();
+
+// Server.Heartbeat notifications, once the bridge subscribes. They outlive
+// E2E.Reset: the bridge subscribes once, at startup.
+const STARTED_AT = new Date().toISOString();
+let heartbeatSeq = 0;
+let heartbeatInterval = 10;
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+function heartbeat() {
+    return {
+        seq: heartbeatSeq,
+        time: new Date().toISOString(),
+        started_at: STARTED_AT,
+        interval_seconds: heartbeatInterval,
+    };
+}
 
 const key = (owner: string, repo: string, number: number) => `${owner}/${repo}#${number}`;
 
@@ -639,6 +659,22 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { output: Object.fromEntries(features.map(f => [f.id, aiOutput(pr, f)])) };
     },
 
+    'RPCHandler.Subscribe': args => {
+        heartbeatInterval = Number(args.IntervalSeconds) > 0 ? Number(args.IntervalSeconds) : 10;
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(() => {
+            if (state.heartbeatPaused) return;
+            heartbeatSeq++;
+            notify('Server.Heartbeat', heartbeat());
+        }, heartbeatInterval * 1000);
+        return heartbeat();
+    },
+
+    'RPCHandler.Unsubscribe': () => {
+        clearInterval(heartbeatTimer);
+        return { okay: true };
+    },
+
     // --- Test control surface -------------------------------------------------
 
     'E2E.Reset': () => {
@@ -686,6 +722,12 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { okay: true };
     },
 
+    // Stop or resume heartbeats.
+    'E2E.SetHeartbeat': args => {
+        state.heartbeatPaused = !args.beating;
+        return { okay: true };
+    },
+
     // Turn change-diagram on or off, optionally serving other Mermaid source.
     'E2E.SetDiagram': args => {
         state.diagramEnabled = !!args.enabled;
@@ -696,6 +738,11 @@ const handlers: Record<string, (args: any) => unknown> = {
 
 function respond(id: Request['id'], result: unknown, error: string | null) {
     process.stdout.write(`${JSON.stringify({ id, result: error ? null : result, error })}\n`);
+}
+
+// A JSON-RPC notification, as the server writes one between replies.
+function notify(method: string, params: unknown) {
+    process.stdout.write(`${JSON.stringify({ method, params: [params], id: null })}\n`);
 }
 
 function handle(req: Request) {

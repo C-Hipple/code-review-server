@@ -104,6 +104,8 @@ const env: Record<string, string> = {
     PATH: path,
     CRS_PORT: String(port),
     CRS_E2E_STATE_DIR: stateDir,
+    // Fast heartbeats, so a spec sees one go missing within seconds.
+    CRS_HEARTBEAT_SECONDS: '1',
 };
 // The dev-mode Vite proxy would shadow the built frontend.
 delete env.NODE_ENV;

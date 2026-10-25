@@ -5,8 +5,10 @@ import PluginOutput from './components/PluginOutput';
 import AIOutput from './components/AIOutput';
 import ConfigManager from './components/ConfigManager';
 import RateLimitHistory from './components/RateLimitHistory';
+import ServerStatus from './components/ServerStatus';
 import { rpcCall } from './api';
 import { useIsMobile } from './hooks/useMediaQuery';
+import { useServerHeartbeat } from './hooks/useServerHeartbeat';
 import {
     Modal,
     Select,
@@ -57,6 +59,7 @@ function App() {
     const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
+    const serverHeartbeat = useServerHeartbeat();
     // Transient toast notification; keyed by id so a new message restarts the
     // timer. Held here rather than in the view that raised it so work that
     // finishes in the background — a review submit — can still report after
@@ -316,6 +319,7 @@ function App() {
                             {isMobile ? '☰ List' : '← Back to List'}
                         </button>
                     )}
+                    <ServerStatus {...serverHeartbeat} compact={isMobile} />
                     <button
                         onClick={() => setShowPrefs(true)}
                         style={{

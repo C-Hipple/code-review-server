@@ -80,6 +80,7 @@ Root level:
 - A `Repos` entry is not in `owner/repo` form.
 - A `SectionSorting` value is not `newest_first` or `oldest_first`.
 - A `[GitHubAPI]` key names something other than `rest` or `graphql` (see [GitHub API](#github-api)).
+- `[Webhooks]` sets a `ListenAddress` that isn't `host:port`, or sets one with no secret — neither `Secret` nor `CRS_WEBHOOK_SECRET` — to verify deliveries with; its `Path` doesn't start with `/`; a `Repos` entry is neither `owner/repo` nor `owner/*`; or `FullRefreshInterval` is negative (see [GitHub Webhooks](webhooks.md)).
 
 Per workflow:
 
@@ -377,6 +378,17 @@ Mergeability = "graphql"  # long review lists in busy repos: fifty PRs a request
 Review-thread resolution (the *Resolved* badges) always uses GraphQL, since REST doesn't report it.
 
 The REST replies are kept in memory (up to 64 MB), so the cache starts empty when the server does. After every cycle the `GitHub rate limit post-cycle` log line reports `not_modified_this_cycle` — how many requests GitHub answered 304 — and the GraphQL budget left (`graphql_remaining`) next to the REST one.
+
+## GitHub Webhooks
+
+The optional `[Webhooks]` table has GitHub push PR updates to the server rather than each cycle re-fetching every PR to find out what changed: cycles then list PRs and fetch in full only the new ones and the ones pushed to. Without it every PR is polled as before. See [GitHub Webhooks](webhooks.md) for setting it up.
+
+```toml
+[Webhooks]
+ListenAddress = "127.0.0.1:8790"   # where GitHub's deliveries arrive (behind a tunnel)
+Repos = ["my-org/*"]               # whose webhooks deliver here; default: the repos this config names
+# Secret = "..."                   # or export CRS_WEBHOOK_SECRET
+```
 
 ## Example Config
 

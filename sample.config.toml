@@ -79,6 +79,17 @@ SectionTitle = "Needs My Team's Review"
 # Reactions = "graphql"     # REST can't see reactions on a review's own body
 # Mergeability = "graphql"  # fifty PRs a request instead of one each
 
+# GitHub webhooks (see docs/webhooks.md): GitHub pushes PR updates instead of
+# every cycle re-fetching every PR. Cycles then list PRs and fetch in full only
+# new ones and ones pushed to. Leave the table out to keep polling.
+# [Webhooks]
+# ListenAddress = "127.0.0.1:8790"  # where deliveries arrive, e.g. behind a tunnel
+# Repos = ["my-org/*"]              # whose webhooks deliver here; default: the repos above
+# Secret = "..."                    # or export CRS_WEBHOOK_SECRET
+# FullRefreshInterval = 360         # minutes between refresh-everything cycles;
+#                                   # = SleepDuration to keep polling every cycle and
+#                                   # use webhooks only for updates in between
+
 # Plugins allow extending the server with custom checks
 [[Plugins]]
 Name = "Security Check"

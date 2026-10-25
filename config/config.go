@@ -331,6 +331,111 @@ func (s GitHubAPISettings) Routes() map[string]string {
 	}
 }
 
+// WebhookSettings is the [Webhooks] table: GitHub webhook deliveries the server
+// accepts in place of re-fetching every PR it lists on every cycle. With it set
+// up, a cycle lists PRs and fully fetches the ones it is adding (or whose head
+// moved), while reviews, comments, CI and the rest arrive by webhook. Without a
+// ListenAddress — or without a secret to verify deliveries with — nothing
+// listens and every PR is polled, exactly as if the table weren't there.
+type WebhookSettings struct {
+	// ListenAddress is where the server listens for deliveries, as host:port —
+	// ":8790" on every interface, "127.0.0.1:8790" behind a tunnel or proxy.
+	ListenAddress string `toml:"ListenAddress,omitempty"`
+	// Path is the URL path GitHub posts to; empty means DefaultWebhookPath.
+	Path string `toml:"Path,omitempty"`
+	// Secret is the secret the GitHub webhook was created with. Leave it out
+	// to keep it out of the file and export WebhookSecretEnv instead.
+	Secret string `toml:"Secret,omitempty"`
+	// Repos are the repositories whose webhooks deliver here: "owner/repo", or
+	// "owner/*" for an organization webhook. Only PRs in these are left to
+	// webhooks; any other PR is still polled. Empty means the repositories the
+	// config already lists (see WebhookRepos).
+	Repos []string `toml:"Repos,omitempty"`
+	// FullRefreshInterval is how many minutes may pass between cycles that
+	// refresh every PR as if webhooks were off, to catch up on deliveries that
+	// never arrived. Zero means DefaultWebhookFullRefresh.
+	FullRefreshInterval int `toml:"FullRefreshInterval,omitempty"`
+}
+
+const (
+	// DefaultWebhookPath is the URL path deliveries are posted to when
+	// [Webhooks] doesn't set Path.
+	DefaultWebhookPath = "/github/webhook"
+	// WebhookSecretEnv supplies the webhook secret when [Webhooks] leaves
+	// Secret out.
+	WebhookSecretEnv = "CRS_WEBHOOK_SECRET"
+	// DefaultWebhookFullRefresh is how often a webhook-driven server still
+	// refreshes every PR when [Webhooks] doesn't set FullRefreshInterval.
+	DefaultWebhookFullRefresh = 6 * time.Hour
+)
+
+// WebhookSecret is the secret deliveries are verified with: [Webhooks] Secret,
+// or the WebhookSecretEnv environment variable when the file leaves it out.
+func (c Config) WebhookSecret() string {
+	if s := strings.TrimSpace(c.Webhooks.Secret); s != "" {
+		return s
+	}
+	return strings.TrimSpace(os.Getenv(WebhookSecretEnv))
+}
+
+// WebhooksConfigured reports whether the config asks for webhooks and gives
+// what they need to work: an address to listen on and a secret. Unsigned
+// deliveries are never accepted, so without a secret the server polls.
+func (c Config) WebhooksConfigured() bool {
+	return strings.TrimSpace(c.Webhooks.ListenAddress) != "" && c.WebhookSecret() != ""
+}
+
+// WebhookPath is the URL path GitHub posts deliveries to.
+func (c Config) WebhookPath() string {
+	if p := strings.TrimSpace(c.Webhooks.Path); p != "" {
+		return p
+	}
+	return DefaultWebhookPath
+}
+
+// WebhookFullRefreshInterval is how long a webhook-driven server goes between
+// cycles that refresh every PR regardless.
+func (c Config) WebhookFullRefreshInterval() time.Duration {
+	if c.Webhooks.FullRefreshInterval > 0 {
+		return time.Duration(c.Webhooks.FullRefreshInterval) * time.Minute
+	}
+	return DefaultWebhookFullRefresh
+}
+
+// WebhookRepos is the repositories whose PRs are left to webhooks, as
+// "owner/repo" or "owner/*": [Webhooks] Repos when set, otherwise every
+// repository the config names — the root Repos and each workflow's own. The
+// search-driven workflows name none, so a config made only of them covers
+// nothing until Repos is set.
+func (c Config) WebhookRepos() []string {
+	var entries []string
+	if len(c.Webhooks.Repos) > 0 {
+		entries = c.Webhooks.Repos
+	} else {
+		entries = append(entries, c.Repos...)
+		for _, wf := range c.RawWorkflows {
+			entries = append(entries, wf.Repos...)
+			switch {
+			case strings.Contains(wf.Repo, "/"):
+				entries = append(entries, wf.Repo)
+			case wf.Owner != "" && wf.Repo != "":
+				entries = append(entries, wf.Owner+"/"+wf.Repo)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	var repos []string
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || seen[strings.ToLower(entry)] {
+			continue
+		}
+		seen[strings.ToLower(entry)] = true
+		repos = append(repos, entry)
+	}
+	return repos
+}
+
 // Define your classes
 type Config struct {
 	Repos                []string // List of repositories in "owner/repo" format. Workflows can override this.
@@ -353,6 +458,9 @@ type Config struct {
 	AIFeatures []AIFeature
 	// GitHubAPI picks REST or GraphQL for the lookups both can answer.
 	GitHubAPI GitHubAPISettings
+	// Webhooks lets GitHub push PR updates instead of every cycle polling for
+	// them; empty, it leaves polling as it was.
+	Webhooks WebhookSettings
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.
 	legacy legacyLLMKeys
@@ -452,6 +560,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AI                   AISettings
 		AIFeatures           []AIFeature
 		GitHubAPI            GitHubAPISettings
+		Webhooks             WebhookSettings
 		// The legacy keys; see legacyLLMKeys.
 		LegacyFileOrdering bool   `toml:"ExperimentalLLMFileOrdering"`
 		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
@@ -530,6 +639,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AI:                   intermediate_config.AI,
 		AIFeatures:           intermediate_config.AIFeatures,
 		GitHubAPI:            intermediate_config.GitHubAPI,
+		Webhooks:             intermediate_config.Webhooks,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

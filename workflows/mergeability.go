@@ -33,11 +33,21 @@ func recordMergeability(db *database.DB, prs []*github.PullRequest) {
 	if db == nil {
 		return
 	}
+	// Taken before GitHub is asked, so a push that lands while it answers
+	// counts as newer than the answer.
+	askedAt := time.Now()
 	answers := map[git_tools.PRRef]git_tools.Mergeability{}
 	var ask []git_tools.PRRef
+	current := 0
 	for _, pr := range prs {
 		ref, ok := openPRRef(pr)
 		if !ok {
+			continue
+		}
+		// In a webhook cycle the answer on record stands until the PR's head
+		// or base branch moves (see mergeabilityCurrent).
+		if webhookHandles(PRKey{Owner: ref.Owner, Repo: ref.Repo, Number: ref.Number}) && mergeabilityCurrent(db, ref, pr) {
+			current++
 			continue
 		}
 		if state := git_tools.RESTMergeability(pr); state != git_tools.MergeabilityUnknown {
@@ -59,9 +69,13 @@ func recordMergeability(db *database.DB, prs []*github.PullRequest) {
 		}
 		if err := db.RecordPRMergeability(ref.Number, ref.Repo, answer.HeadSHA, answer.State); err != nil {
 			slog.Error("Failed to cache PR mergeability", "pr", ref.Number, "repo", ref.Repo, "error", err)
+			continue
+		}
+		if answer.State != git_tools.MergeabilityUnknown {
+			markMergeabilityChecked(ref, askedAt)
 		}
 	}
-	slog.Debug("Recorded PR mergeability", "prs", len(answers), "looked_up", len(ask), "conflicting", conflicting)
+	slog.Debug("Recorded PR mergeability", "prs", len(answers), "looked_up", len(ask), "conflicting", conflicting, "still_current", current)
 }
 
 // lookupMergeabilityWithRetry looks refs up, then asks once more, after

@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"strings"
 	"sync"
 )
 
@@ -11,7 +12,18 @@ type PRKey struct {
 	Number int
 }
 
-// AuxDataStore holds pre-fetched auxiliary data for PRs
+// folded is key with its owner and repository lower-cased. GitHub tells
+// neither apart by case, and one PR reaches the maps keyed by PRKey in more
+// than one spelling: a cycle keys it by its repository as the config spells
+// it, the filters and webhook deliveries by GitHub's own spelling, from the
+// PR. A map that must find the one entry under either keys by this, as the DB
+// caches fold theirs.
+func (key PRKey) folded() PRKey {
+	return PRKey{Owner: strings.ToLower(key.Owner), Repo: strings.ToLower(key.Repo), Number: key.Number}
+}
+
+// AuxDataStore holds pre-fetched auxiliary data for PRs, whatever the case of
+// the key it is stored or asked for under (PRKey.folded).
 type AuxDataStore struct {
 	mu   sync.RWMutex
 	data map[PRKey]*PRAuxData
@@ -28,7 +40,7 @@ func NewAuxDataStore() *AuxDataStore {
 func (s *AuxDataStore) Get(key PRKey) (*PRAuxData, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	data, ok := s.data[key]
+	data, ok := s.data[key.folded()]
 	return data, ok
 }
 
@@ -36,7 +48,7 @@ func (s *AuxDataStore) Get(key PRKey) (*PRAuxData, bool) {
 func (s *AuxDataStore) Set(key PRKey, data *PRAuxData) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data[key] = data
+	s.data[key.folded()] = data
 }
 
 // MergeSet stores data for key, backfilling any fields data doesn't carry
@@ -47,6 +59,7 @@ func (s *AuxDataStore) MergeSet(key PRKey, data *PRAuxData) {
 	if data == nil {
 		return
 	}
+	key = key.folded()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old := s.data[key]; old != nil {

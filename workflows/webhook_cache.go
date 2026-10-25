@@ -24,13 +24,15 @@ import (
 // prLocks serializes the writes to one PR's caches between a cycle's fetch
 // and a webhook delivery. A fetch holds the lock from its first request until
 // its writes land, so a delivery that arrives meanwhile patches the fetched
-// data instead of being overwritten by an older read of it.
-var prLocks sync.Map // PRKey -> *sync.Mutex
+// data instead of being overwritten by an older read of it. Keyed by the
+// folded key: the fetch knows the PR by the config's spelling, the delivery by
+// GitHub's, and both must take the same lock.
+var prLocks sync.Map // folded PRKey -> *sync.Mutex
 
 // lockPR locks key's caches and returns the unlock. Not reentrant: nothing
 // holding it may call fetchAuxDataForPR, which takes it too.
 func lockPR(key PRKey) func() {
-	v, _ := prLocks.LoadOrStore(key, &sync.Mutex{})
+	v, _ := prLocks.LoadOrStore(key.folded(), &sync.Mutex{})
 	mu := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock

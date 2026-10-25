@@ -23,7 +23,10 @@ const (
 // types it wrote at that moment.
 //
 // The Repo field follows the cache-key convention used by every other cache
-// table: the short repo name ("code-review-server"), not "owner/repo".
+// table: the short repo name ("code-review-server"), not "owner/repo". Owner
+// and Repo are stored and matched lower-cased, like the caches' keys
+// (foldOwnerRepo), so a cycle's rows and a webhook delivery's for one PR are
+// read back together whatever spelling each was written under.
 type WorkflowAction struct {
 	ID            int64
 	WorkflowName  string
@@ -83,6 +86,7 @@ func (db *DB) LogWorkflowAction(action WorkflowAction) (int64, error) {
 	if createdAt.IsZero() {
 		createdAt = time.Now()
 	}
+	action.Owner, action.Repo = foldOwnerRepo(action.Owner, action.Repo)
 	res, err := db.conn.Exec(
 		`INSERT INTO WorkflowActionLog
 			(workflow_name, action, owner, repo, pr_number, sha, fields_written, section_name, detail, created_at)
@@ -101,6 +105,7 @@ func (db *DB) LogWorkflowAction(action WorkflowAction) (int64, error) {
 // action's outcome is only fully known after the row was written (e.g. more
 // fields landed for the same PR in the same pass).
 func (db *DB) UpdateWorkflowAction(id int64, action WorkflowAction) error {
+	action.Owner, action.Repo = foldOwnerRepo(action.Owner, action.Repo)
 	_, err := db.conn.Exec(
 		`UPDATE WorkflowActionLog
 		 SET workflow_name = ?, action = ?, owner = ?, repo = ?, pr_number = ?,
@@ -121,6 +126,7 @@ func (db *DB) DeleteWorkflowAction(id int64) error {
 // DeleteWorkflowActionsForPR removes every log row for one PR and returns how
 // many were deleted.
 func (db *DB) DeleteWorkflowActionsForPR(owner, repo string, prNumber int) (int64, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	res, err := db.conn.Exec(
 		"DELETE FROM WorkflowActionLog WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -164,6 +170,7 @@ func (db *DB) GetLatestWorkflowAction(owner, repo string, prNumber int) (*Workfl
 // answers the question the cache miss log actually asks: when did a workflow
 // last write the thing we just missed?
 func (db *DB) GetLatestWorkflowActionWithField(owner, repo string, prNumber int, field string) (*WorkflowAction, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	if field == "" {
 		return nil, nil
 	}
@@ -198,6 +205,7 @@ func (db *DB) GetLatestWorkflowActionWithField(owner, repo string, prNumber int,
 // GetWorkflowActions returns a PR's log rows, newest first. A limit <= 0 means
 // no limit.
 func (db *DB) GetWorkflowActions(owner, repo string, prNumber int, limit int) ([]WorkflowAction, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	query := `SELECT id, workflow_name, action, owner, repo, pr_number, sha, fields_written, section_name, detail, created_at
 		 FROM WorkflowActionLog
 		 WHERE owner = ? AND repo = ? AND pr_number = ?

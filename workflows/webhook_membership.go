@@ -199,16 +199,25 @@ func followedWorkflows(db *database.DB, snapshot []Workflow) []Workflow {
 }
 
 // storedUserSections maps the ownership key of every registered user's stored
-// workflow to the section it writes into.
+// workflow to the section it writes into. It runs for every round of
+// re-evaluation, so a stored workflow that doesn't decode is passed over
+// quietly: no run set holds it, and the cycles log it.
 func storedUserSections(db *database.DB) (map[string]database.SectionRef, error) {
-	dashboards, err := loadUserDashboards(db)
+	users, err := db.ListUsers()
+	if err != nil {
+		return nil, err
+	}
+	stored, err := db.GetAllUserWorkflows()
 	if err != nil {
 		return nil, err
 	}
 	sections := map[string]database.SectionRef{}
-	for _, d := range dashboards {
-		for _, wf := range d.workflows {
-			sections[config.OwnershipKey(d.user.Login, wf.Name)] = database.SectionRef{User: d.user.Login, Name: wf.SectionTitle}
+	for _, u := range users {
+		// Rows are keyed by the login as the user registered it, which is
+		// the case ListUsers returns and RunSet builds workflows under.
+		for _, row := range stored[u.Login] {
+			raw, _ := DecodeUserWorkflow(row)
+			sections[config.OwnershipKey(u.Login, row.Name)] = database.SectionRef{User: u.Login, Name: raw.SectionTitle}
 		}
 	}
 	return sections, nil

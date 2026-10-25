@@ -132,20 +132,20 @@ func TestTeamReviewRequests(t *testing.T) {
 	pr.RequestedTeams = []*github.Team{{Slug: github.Ptr("core")}}
 
 	git_tools.GlobalCache.Set("my_team_refs", []string{"Acme/Core"}, time.Minute)
-	if got := reviewRequestedOf(pr, "me"); got != memberYes {
+	if got := reviewRequestedOf(pr, "me", true); got != memberYes {
 		t.Errorf("my team's request: %v", got)
 	}
 	git_tools.GlobalCache.Set("my_team_refs", []string{"acme/other"}, time.Minute)
-	if got := reviewRequestedOf(pr, "me"); got != memberNo {
+	if got := reviewRequestedOf(pr, "me", true); got != memberNo {
 		t.Errorf("another team's request: %v", got)
 	}
-	if got := reviewRequestedOf(whPR(1, "head1"), "me"); got != memberNo {
+	if got := reviewRequestedOf(whPR(1, "head1"), "me", true); got != memberNo {
 		t.Errorf("no request at all: %v", got)
 	}
 
 	// Without knowing my teams, a team request can't be judged.
 	t.Setenv("CRS_GITHUB_TOKEN", "")
-	if got := reviewRequestedOf(pr, "me"); got != memberUnknown {
+	if got := reviewRequestedOf(pr, "me", true); got != memberUnknown {
 		t.Errorf("unknown teams: %v", got)
 	}
 }

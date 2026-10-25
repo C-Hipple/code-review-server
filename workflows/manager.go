@@ -794,7 +794,9 @@ func (ms *ManagerService) Run() {
 			ms.Initialize()
 			// Only the process running the sync listens for webhooks: it is
 			// the one whose cycles can leave PRs to them. A --oneoff run
-			// never gets here, and polls everything.
+			// never gets here, and polls everything. Deliveries re-check
+			// sections against this cycle's run set, every active user's
+			// dashboard included, once Initialize has created its sections.
 			setActiveWorkflows(ms.Workflows)
 			syncWebhookListener(cfg)
 

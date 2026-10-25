@@ -1753,19 +1753,17 @@ func (db *DB) HasItem(identifier string) (bool, error) {
 }
 
 // UpdateItemSummary rewrites the status, title and tags of every row listing
-// the item in user's sections, whichever of them it is in, leaving its details
-// and workflow ownership alone — and every other user's rows untouched. It
-// returns how many rows it changed.
-func (db *DB) UpdateItemSummary(user, identifier, status, title string, tags []string) (int64, error) {
+// the item, in whichever sections it is in — every user's dashboard alike, as
+// the three are the PR's own — leaving its details and workflow ownership
+// alone. It returns how many rows it changed.
+func (db *DB) UpdateItemSummary(identifier, status, title string, tags []string) (int64, error) {
 	tagsStr, err := encodeTags(tags)
 	if err != nil {
 		return 0, err
 	}
 	result, err := db.conn.Exec(
-		`UPDATE items SET status = ?, title = ?, tags = ?
-		 WHERE identifier = ? COLLATE NOCASE
-		   AND section_id IN (SELECT id FROM sections WHERE user_login = ?)`,
-		status, title, tagsStr, identifier, user,
+		"UPDATE items SET status = ?, title = ?, tags = ? WHERE identifier = ? COLLATE NOCASE",
+		status, title, tagsStr, identifier,
 	)
 	if err != nil {
 		return 0, err

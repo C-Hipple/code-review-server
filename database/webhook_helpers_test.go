@@ -40,7 +40,8 @@ func TestUpdateItemSummaryRewritesEverySectionsRow(t *testing.T) {
 			t.Fatalf("seed item: %v", err)
 		}
 	}
-	// Another user's row for the same PR, in a section of the same name.
+	// Another user's row for the same PR, in a section of the same name: the
+	// status, title and tags are the PR's, the same on every dashboard.
 	theirs, err := db.GetOrCreateSection("alice", "Mine", 1)
 	if err != nil {
 		t.Fatalf("section: %v", err)
@@ -49,10 +50,11 @@ func TestUpdateItemSummaryRewritesEverySectionsRow(t *testing.T) {
 		t.Fatalf("seed item: %v", err)
 	}
 
-	n, err := db.UpdateItemSummary("", identifier, "DONE", "New title", []string{"widgets", "merged"})
-	if err != nil || n != 2 {
-		t.Fatalf("UpdateItemSummary = %d, %v; want 2 rows", n, err)
+	n, err := db.UpdateItemSummary(identifier, "DONE", "New title", []string{"widgets", "merged"})
+	if err != nil || n != 3 {
+		t.Fatalf("UpdateItemSummary = %d, %v; want 3 rows", n, err)
 	}
+	ids = append(ids, theirs.ID)
 	for _, id := range ids {
 		item, err := db.GetItem(id, identifier)
 		if err != nil {
@@ -71,9 +73,6 @@ func TestUpdateItemSummaryRewritesEverySectionsRow(t *testing.T) {
 		if len(item.GetWorkflows()) != 1 {
 			t.Errorf("ownership changed: %v", item.GetWorkflows())
 		}
-	}
-	if item, err := db.GetItem(theirs.ID, identifier); err != nil || item.Status != "TODO" || item.Title != "Old title" {
-		t.Errorf("another user's row changed: %+v, %v", item, err)
 	}
 }
 

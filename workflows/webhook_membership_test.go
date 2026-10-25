@@ -371,62 +371,6 @@ func TestReevaluationJudgesByTheNewestPRSeen(t *testing.T) {
 	}
 }
 
-// On a hosted server deliveries rewrite the server's own dashboard only: a
-// user's same-named section, listing the same PR, is left to that user's
-// cycles — its membership and its row alike.
-func TestDeliveriesRewriteOnlyTheServersOwnDashboard(t *testing.T) {
-	wf := reviewRequestedWorkflow()
-	// Alice's workflow collides with the server's in name and section, and
-	// even judges by the same login, so only whose dashboard it fills sets it
-	// apart.
-	alice := reviewRequestedWorkflow()
-	alice.User = "alice"
-	env := membershipEnv(t, wf, alice)
-	seedCachedPR(t, env.db, whKey(1), "head1")
-	listIn(t, env.db, wf, 1)
-	listIn(t, env.db, alice, 1)
-	aliceRow := func() *database.Item {
-		t.Helper()
-		section, _ := env.db.GetSection("alice", alice.SectionTitle)
-		item, err := env.db.GetItem(section.ID, "acme/widgets-1")
-		if err != nil || item == nil {
-			t.Fatalf("alice's row is gone: %v", err)
-		}
-		return item
-	}
-
-	renamed := requestedOfMe(whPR(1, "head1"))
-	renamed.Title = github.Ptr("Renamed widgets")
-	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
-		Action: github.Ptr("edited"), PullRequest: renamed, Repo: whRepository(),
-	}})
-	drainReevaluations()
-	section, _ := env.db.GetSection("", wf.SectionTitle)
-	if item, _ := env.db.GetItem(section.ID, "acme/widgets-1"); item == nil || !strings.Contains(item.Title, "Renamed widgets") {
-		t.Errorf("the server's row wasn't renamed: %+v", item)
-	}
-	if item := aliceRow(); item.Title != "Add widgets" {
-		t.Errorf("alice's row was rewritten: %+v", item)
-	}
-
-	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
-		Action:      github.Ptr("submitted"),
-		Review:      &github.PullRequestReview{ID: github.Ptr(int64(9)), User: &github.User{Login: github.Ptr("me")}, State: github.Ptr("approved")},
-		PullRequest: requestedOfMe(whPR(1, "head1")),
-		Repo:        whRepository(),
-	}})
-	drainReevaluations()
-	if listedIn(t, env.db, wf, 1) {
-		t.Error("the server's Review Requested still lists the PR after the review")
-	}
-	if !listedIn(t, env.db, alice, 1) {
-		t.Error("a delivery took the PR out of alice's section")
-	}
-	if details, _ := aliceRow().GetDetails(); !slices.Equal(details, []string{"old"}) {
-		t.Errorf("alice's row details were rewritten: %v", details)
-	}
-}
-
 // canonicalRepository is acme/widgets as GitHub spells it, and so as its
 // deliveries and its PR objects name it: the config names it "acme/widgets".
 func canonicalRepository() *github.Repository {

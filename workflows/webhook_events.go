@@ -263,10 +263,17 @@ func recordPayloadMergeability(db *database.DB, key PRKey, pr *github.PullReques
 	}
 }
 
-// updateItemSummaries brings the PR's rows on the server's own review list —
-// in every section of it listing the PR — up to date with its status, title
+// updateItemSummaries brings the PR's rows on the review list — in every
+// section listing it, on every dashboard — up to date with its status, title
 // and tags, which is what the list shows. Their details follow on the next
-// cycle. Users' dashboards are left to their workflows' cycles.
+// cycle, or the re-check that follows the delivery.
+//
+// Every dashboard's rows, an idle user's included: the three are the PR's own
+// (PRToOrgBridge reads them off the PR alone), the same whichever workflow
+// listed it, so rewriting them changes no dashboard's membership — only how
+// current it reads. An idle user's dashboard otherwise waits for their next
+// cycle, which would write the same text; a deleted user's rows, which go when
+// the next cycle ends, are only ever rewritten here, never created.
 func updateItemSummaries(db *database.DB, key PRKey, pr *github.PullRequest) {
 	// PRToOrgBridge dereferences these.
 	if pr.Number == nil || pr.Title == nil || pr.State == nil || pr.Draft == nil ||
@@ -274,7 +281,7 @@ func updateItemSummaries(db *database.DB, key PRKey, pr *github.PullRequest) {
 		return
 	}
 	bridge := PRToOrgBridge{PR: pr}
-	if _, err := db.UpdateItemSummary("", bridge.Identifier(), bridge.GetStatus(), bridge.Title(), bridge.GetTags()); err != nil {
+	if _, err := db.UpdateItemSummary(bridge.Identifier(), bridge.GetStatus(), bridge.Title(), bridge.GetTags()); err != nil {
 		slog.Error("Failed to update review list rows from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 	}
 }
@@ -290,7 +297,11 @@ func applyReviewEvent(db *database.DB, d webhookDelivery, e *github.PullRequestR
 	}
 	// Submitting a review clears the reviewer's own review request — that is
 	// what "Re-request review" puts back — so the PR leaves their review
-	// queue. Applied here too in case the delivery's PR predates it.
+	// queue. Applied here too in case the delivery's PR predates it. The
+	// reviewer is whoever GitHub says submitted it: on a hosted server, a user
+	// whose review went out under their own linked account, so the PR leaves
+	// that user's queue — and only theirs — when the re-check that follows
+	// judges each dashboard by its own login.
 	if e.GetAction() == "submitted" {
 		pr.RequestedReviewers = withoutReviewer(pr.RequestedReviewers, review.GetUser().GetLogin())
 	}

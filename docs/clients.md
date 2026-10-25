@@ -2,6 +2,8 @@
 
 Code Review Server ships with a web client, an Emacs client, a TUI client, and a Chrome extension, but you can build your own using the [Protocol](protocol.md).
 
+Each client runs its own server by default. The web and Emacs clients can instead connect to a server a team shares — see [Connecting to a shared server](#connecting-to-a-shared-server).
+
 ## Web Client (bun)
 
 The web client is packaged with bun, and has a bun backend with a react frontend. If you build and run the bun backend, you'll get a working webserver on `localhost:3000` which lists all of your PRs.
@@ -225,3 +227,98 @@ Press the toolbar button or `Alt+Shift+R`:
 The panel follows the system's light or dark setting. It can call only a fixed list of read-and-run methods (`GetAllReviews`, `GetPR`, `SyncPR`, the plugin and AI feature RPCs, `Hello`), so it can't submit reviews, merge, comment or change the config.
 
 On a pull request's Files changed tab the content script lays the stored [file-ordering](ai_features.md#file-ordering) result over GitHub's own page, reordering the per-file diffs and the file tree to match it; files the report doesn't name stay where GitHub put them.
+
+## Connecting to a shared server
+
+By default a client runs its own `crs` (`crs --server`, over stdio) with your GitHub token. A team can instead run one server, `crs --listen host:port` (see [Hosted Server](hosted_server.md)), that the web and Emacs clients connect to over TCP. Each user gets a dashboard of their own, built from the workflows in their own `codereviewserver.toml`; the GitHub token, the caches and the plugin and AI runs are the server's.
+
+### How a client connects
+
+A connection starts unauthenticated, so the client opens each one with the connect flow (the methods are in the [Protocol](protocol.md)):
+
+1. `RPCHandler.Authenticate {Token}` with your stored token, if there is one.
+2. If the server doesn't know the token — you never registered there, or it removed you after a stretch of inactivity — or there is none, `RPCHandler.RegisterUser` with the server's registration key, your GitHub login, and the `Workflows`, `Repos`, `SectionPriority` and `SectionSorting` of your local `codereviewserver.toml`. Your stored token goes along, so a returning user gets the same one back. The token in the reply is saved, readable by you only.
+
+Requests made meanwhile wait for it. One the server refuses as `not authenticated:` runs the flow again and is retried once, and a dropped connection fails the requests in flight before the client reconnects. The server still carries out a request whose connection has gone, so a review submit lost that way may have been posted: both clients say its outcome is unknown and reload the PR rather than offer to submit it again. A submit names the pending comments the client showed (`ExpectedDraftIDs`), so one sent again after the first went through — or after the server deleted your drafts with your account — posts nothing and is refused with `drafts changed:`.
+
+Your workflows are sent when the server registers you — the first time, and again whenever it has forgotten you. In between, the server runs the copy it has: editing your local file doesn't change it (`RPCHandler.UpdateMyWorkflows` does). The server builds your dashboard from them on its next workflow cycle, so right after registering it is empty for up to the server's `SleepDuration`; the client passes on the server's word on it (the bridge logs it under `[Remote]`; Emacs says it when it connects).
+
+The token is a password for the server that issued it, so it is kept per server: in `$CRS_HOME/remote_tokens/<host>_<port>` (`~/.crs/remote_tokens/crs.internal.example.com_443`), named after the address you connect to — lower-cased, with any character other than a letter, digit, `.` or `-` written `_` — and only ever sent there. Pointing a client at another server registers you there afresh rather than handing it this one's token. Both clients keep it there, so they connect to a server as the same user. To use a token from another machine, copy that server's file across (or set `CRS_REMOTE_TOKEN`): registering a login the server already knows needs the token it was registered with. The same server reached under two names (`localhost` and `127.0.0.1`, say) has two files.
+
+### What is different on a shared server
+
+- **Admin-only actions.** Only the server's administrators can view or change its configuration or rerun plugins. The web client's Server Configuration tab says so instead of showing the editor, and a refused rerun says so in a toast. An administrator connects with the server's admin token as their token and sees the server's own dashboard.
+- **Writes go out as you, once you link your GitHub account.** Everything the server reads from GitHub — the dashboard, diffs, comments, CI — goes through its own token. A review you submit, with its replies (and a merge, from a client that merges), goes out as your own GitHub account once you have [linked it](#linking-your-github-account). Until then it goes out as the server's account if its administrator allows that (`AllowServerIdentityActions`; merging that way also takes an administrator), and is otherwise refused: with `refused: link-github:` where the server can link accounts, which the client answers by offering to link, or with a plain `refused:` where it can't, which is final — submit the review on GitHub instead. Either way your draft and pending comments are kept.
+- **Paths on the server's host.** Anything that reads a file by its path works only where the same path exists on your machine: the language-server features of the web client (diff-lsp, and go-to-definition in the code viewer), the code viewer's file list, and opening a file from an Emacs review. Hunk expansion and everything else served over RPC work as usual.
+- **Screenshots.** The web client asks the server for the bytes of each image it cached (`GetImage` with `IncludeData`), so screenshots render as they do locally, private repositories included. The Emacs client still opens the server's cached file by its path, so on another machine it leaves the image to `shr`, which can fetch a public repository's attachments but not a private one's.
+- **Team chips.** Which required-review teams the list marks as yours is worked out for the account whose token the server holds, not for you.
+
+### Linking your GitHub account
+
+Where the server's administrator has set linking up ([Hosted Server](hosted_server.md#linking-your-github-account)), you link your account once, through GitHub's device flow: the client shows a one-time code such as `WDJB-MJHT`, you enter it at <https://github.com/login/device> signed in to GitHub as the login you registered with, and authorize the app. Linking is optional — you can browse and draft without it — and the server keeps the link, so every client connected with your token posts as you. A link ends in one of:
+
+| Outcome | Meaning |
+|---------|---------|
+| linked | Your reviews now go to GitHub as you. |
+| denied | You declined the authorization on GitHub; nothing was linked. Try again. |
+| expired | The code (good for about fifteen minutes) wasn't entered in time. Try again for a new one. |
+| mismatch | GitHub authorized a different account than the login you registered with, so nothing was stored. Sign in to GitHub as that login and try again. |
+| error | Something else went wrong — GitHub refused the app, or the server could not store the link; the client shows the server's reason. Try again. |
+| unavailable | This server can't link accounts (no OAuth app or secret key configured), or you are connected with the admin token, which is the server's own identity. Ask its administrator. |
+
+Unlinking deletes the stored token (and revokes it on GitHub, where the server is set up to); your reviews are refused again until you link, or go out as the server's account where it allows that. If GitHub stops accepting your token — you revoked it, or it expired — the next submit is refused with `refused: link-github:` and you link again.
+
+### Web client
+
+Set these before `bun start` (or the compiled `crs-gui`):
+
+| Variable | Meaning |
+|----------|---------|
+| `CRS_REMOTE` | `host:port` of the shared server. Unset, the bridge spawns `crs --server` as always. |
+| `CRS_REMOTE_TLS` | `1` to speak TLS, to the proxy terminating it in front of the server. A private CA can be trusted with `NODE_EXTRA_CA_CERTS`. |
+| `CRS_REGISTRATION_KEY` | The server's registration key, from its administrator. Needed only to register. |
+| `CRS_LOGIN` | Your GitHub login. Defaults to the root `GithubUsername` of your `codereviewserver.toml`. |
+| `CRS_REMOTE_TOKEN` | Your token, used instead of the token file. |
+| `CRS_HOME` | Where the token files live (`$CRS_HOME/remote_tokens/<host>_<port>`, default `~/.crs`). |
+| `XDG_CONFIG_HOME` | Where `codereviewserver.toml` is read from (default `~/.config`). |
+
+```bash
+export CRS_REMOTE=crs.internal.example.com:443 CRS_REMOTE_TLS=1
+export CRS_REGISTRATION_KEY=...   # the first time only
+cd bun_client && bun start
+```
+
+The bridge logs the connect flow under `[Remote]`, including what to set when something it needs is missing. While the server is unreachable it retries with a growing delay (up to 30 seconds), and requests made between attempts fail at once with the reason rather than hang.
+
+Connected to a shared server, the header shows who you are signed in as, with a dot for your GitHub link — green linked, amber not linked yet, grey when the server can't link accounts. Until the bridge has signed in — the server is unreachable, or refused to register you — it says "not connected" in red, with the reason, and it catches up on its own once the bridge connects. It opens the **Account** tab of Preferences, which says which server and login you are on (and whether you are an administrator), and where your GitHub link stands, with **Link GitHub account** or **Unlink** (which asks first). Linking opens a dialog with GitHub's code, a Copy button and a link to the page to enter it on; it waits for GitHub and says how the link ended. Closing it stops the waiting but not the link, and opening it again shows the same code.
+
+A submit refused with `refused: link-github:` opens the same dialog, saying why the review wasn't submitted, with your draft kept; once linked, **Submit again** sends it. A plain `refused:` says so in a toast and leaves the draft in place to take to GitHub. A submit whose connection dropped before the server answered says it may or may not have gone out and reloads the PR, without reopening the submit dialog: check the PR before submitting again. The submit dialog's preview names the login you are signed in as, since the server's configuration, where a local client reads `GithubUsername`, is for its administrators.
+
+### Emacs client
+
+```elisp
+(setq crs-remote-address "crs.internal.example.com:443"
+      crs-remote-tls t
+      crs-remote-registration-key "...")  ; the first time only
+```
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `crs-remote-address` | `nil` | `"host:port"` of the shared server; `nil` runs `crs -server` locally as always. |
+| `crs-remote-tls` | `nil` | Speak TLS (`open-network-stream` with `:type 'tls`). |
+| `crs-remote-token-directory` | `$CRS_HOME/remote_tokens` | Where the tokens are kept, one file per server (`<host>_<port>`). `CRS_REMOTE_TOKEN` wins when set. |
+| `crs-remote-login` | `nil` | Your GitHub login; `nil` means `CRS_LOGIN`, else the root `GithubUsername` of your `codereviewserver.toml`. |
+| `crs-remote-registration-key` | `nil` | The registration key; `nil` means `CRS_REGISTRATION_KEY`. |
+| `crs-remote-user-config-command` | `("crs" "-print-user-config")` | Prints what registering sends, read from your `codereviewserver.toml`, as JSON. Point it at any command printing the same object if `crs` isn't installed here. |
+
+`crs-start-server` connects instead of spawning, and the commands that start the server do the same. When the connection drops, the requests it owed get an error and the next command reconnects; one already sent gets an error beginning `connection lost:`, since the server may still have carried it out. A review submit lost that way says it may or may not have gone out and reloads the PR's buffer, rather than reading as not submitted. A submit names the pending comments the review buffer shows (`ExpectedDraftIDs`), and one refused because some are gone (`drafts changed:`) says so and reloads the PR too; either way your feedback is kept. A connect flow that fails says what to set in the `*Warnings*` buffer.
+
+Connecting says who you are signed in as, and reminds you to link your GitHub account while it isn't. Three commands handle the link:
+
+| Command | What it does |
+|---------|--------------|
+| `crs-link-github` | Asks the server for a code and shows it in a `*crs GitHub link*` buffer, copies it to the kill ring, and opens GitHub's code page with `browse-url` (unless `crs-link-github-browse` is `nil`). It then polls until GitHub answers and reports the outcome in the echo area. Run again while a code is waiting, it shows the same code. |
+| `crs-unlink-github` | Unlinks your account, after asking. |
+| `crs-github-link-status` | Says whether you are linked, and as which GitHub account. |
+
+A submit refused with `refused: link-github:` says to run `crs-link-github`; your feedback and pending comments are kept, so submit again once linked.

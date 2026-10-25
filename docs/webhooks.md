@@ -150,6 +150,10 @@ Two things to keep in mind: the budget is shared with anything else using the sa
 
 The log carries the same, per cycle: `GitHub API calls this cycle mode=...`, `GitHub rate limit post-cycle mode=... requests_since_last_cycle=...`, and, with webhooks, `Webhook activity since the last cycle` (deliveries applied, ignored and rejected, refetches, API calls, section rows added and dropped). Each delivery that changes something logs `Webhook delivery updated a PR`, `Fetched a PR in full after a webhook delivery`, or `Webhook put a PR into a section` / `took a PR out of a section`, and every request to GitHub is logged as `GitHub API Call`. Set `CRS_LOG_FILE` and `CRS_LOG_FORMAT=json` to have it in a file one JSON object per line (see [Command-Line Interface](cli.md#logging)).
 
+## On a Hosted Server
+
+On a [hosted server](hosted_server.md#github-webhooks) the server's `[Webhooks]` table serves everyone. The PR caches are shared, so deliveries keep every user's review view current, and a webhook cycle reads the PRs it covers from the caches for every dashboard's workflows alike. [Sections follow deliveries](#sections-follow-deliveries) on the server's own dashboard — its config file's workflows; a user's dashboard follows the cycles, its rows' status, title and tags included. `Repos` defaults to the repositories the server's config names, so PRs a user's workflows list elsewhere are polled; an organization webhook (`owner/*`) covers them.
+
 ## Security
 
 A delivery is acted on only if its `X-Hub-Signature-256` (or the older `X-Hub-Signature`) matches the secret; anything else is answered `401` and logged. Deliveries are capped at GitHub's own limit of 25 MB, acknowledged straight away, and applied one at a time in the order they arrived; if a backlog builds up, the server answers `503` so GitHub records the delivery as failed and it can be redelivered from the webhook's *Recent Deliveries* page.

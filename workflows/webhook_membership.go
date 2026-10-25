@@ -146,12 +146,13 @@ func reviewRequestedOf(pr *github.PullRequest, login string) membership {
 	return memberNo
 }
 
-// activeWorkflows is the manager's current workflows, as of its last config
-// load.
+// activeWorkflows is the manager's current workflows on the server's own
+// dashboard — the config file's — as of its last config load. A user's
+// dashboard on a hosted server follows their workflows' cycles.
 var activeWorkflows atomic.Pointer[[]Workflow]
 
 func setActiveWorkflows(workflows []Workflow) {
-	snapshot := slices.Clone(workflows)
+	snapshot := slices.DeleteFunc(slices.Clone(workflows), func(wf Workflow) bool { return wf.GetUser() != "" })
 	activeWorkflows.Store(&snapshot)
 }
 
@@ -318,12 +319,13 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 		if verdict == memberUnknown {
 			continue
 		}
-		section, err := db.GetSection(wf.GetOrgSectionName())
+		section, err := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
 		if err != nil || section == nil {
 			continue
 		}
+		claim := ownershipKey(wf)
 		item, _ := db.GetItem(section.ID, identifier)
-		listed := item != nil && slices.Contains(item.GetWorkflows(), wf.GetName())
+		listed := item != nil && slices.Contains(item.GetWorkflows(), claim)
 
 		switch {
 		case verdict == memberNo && listed:
@@ -334,7 +336,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 				Title:        item.Title,
 				SectionID:    section.ID,
 				SectionName:  section.SectionName,
-				WorkflowName: wf.GetName(),
+				WorkflowName: claim,
 				HeadSHA:      pr.GetHead().GetSHA(),
 			}}, "webhook: no longer matches the workflow")
 			webhookActivity.sectionDrops.Add(1)
@@ -342,7 +344,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 			slog.Info("Webhook took a PR out of a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName())
 
 		case verdict == memberYes:
-			change := SyncTODOToSectionDB(db, wf.GetName(), pr, section, member.includesDiff())
+			change := SyncTODOToSectionDB(db, claim, pr, section, member.includesDiff())
 			if change.ChangeType == "No Change" {
 				continue
 			}

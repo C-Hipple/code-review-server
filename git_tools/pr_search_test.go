@@ -12,9 +12,10 @@ import (
 // was asked for.
 func stubSearch(t *testing.T, results map[string][]PRRef, err error) *[]string {
 	t.Helper()
-	oldSearch, oldTeams := searchPRRefs, myTeamRefs
-	t.Cleanup(func() { searchPRRefs, myTeamRefs = oldSearch, oldTeams })
+	oldSearch, oldTeams, oldLogin := searchPRRefs, myTeamRefs, tokenLogin
+	t.Cleanup(func() { searchPRRefs, myTeamRefs, tokenLogin = oldSearch, oldTeams, oldLogin })
 	myTeamRefs = func() []string { return nil }
+	tokenLogin = func() string { return "" }
 
 	queries := []string{}
 	searchPRRefs = func(query string) ([]PRRef, error) {
@@ -93,6 +94,34 @@ func TestReviewRequestedRefsUnionsAndDedupes(t *testing.T) {
 	}
 	if refs[0] != shared {
 		t.Errorf("expected search order to be preserved, got %v", refs)
+	}
+}
+
+// The token lists only its own account's teams. Its account's review
+// requests include them; anyone else's — a hosted server's user — include
+// only the requests made of them by name, never the token's teams.
+func TestReviewRequestedRefsSearchTheTokensTeamsOnlyForItsAccount(t *testing.T) {
+	login := testLogin(t)
+	queries := stubSearch(t, nil, nil)
+	myTeamRefs = func() []string { return []string{"acme/platform"} }
+	tokenLogin = func() string { return strings.ToUpper(login) }
+
+	if _, err := ReviewRequestedRefs(login); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{
+		fmt.Sprintf("is:pr is:open archived:false review-requested:%s", login),
+		"is:pr is:open archived:false team-review-requested:acme/platform",
+	}; strings.Join(*queries, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the token's account searched %q, want %q", *queries, want)
+	}
+
+	*queries = nil
+	if _, err := ReviewRequestedRefs("alice-" + login); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("is:pr is:open archived:false review-requested:alice-%s", login); len(*queries) != 1 || (*queries)[0] != want {
+		t.Errorf("another login searched %q, want only %q", *queries, want)
 	}
 }
 

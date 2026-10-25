@@ -138,7 +138,7 @@ func loadCachedTeamReviews(key PRKey) ([]git_tools.TeamReviewStatus, bool) {
 	if db == nil {
 		return nil, false
 	}
-	raw, err := db.GetPRTeamReviews(key.Number, key.Repo)
+	raw, err := db.GetPRTeamReviews(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		slog.Warn("Failed to read cached team reviews", "pr", key.Number, "repo", key.Repo, "error", err)
 		return nil, false

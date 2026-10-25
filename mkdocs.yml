@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - Clients: clients.md
   - Configuration: configuration.md
+  - Hosted Server: hosted_server.md
   - GitHub Webhooks: webhooks.md
   - Filters: filters.md
   - Plugins: plugins.md

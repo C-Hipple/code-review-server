@@ -204,7 +204,7 @@ func TestGetPRReviewsCachedEmptyIsNotNil(t *testing.T) {
 	// spellings must come back as an empty, non-nil slice so callers can tell
 	// "this PR has no reviews" from "reviews were never loaded".
 	for _, cached := range []string{"null", "[]"} {
-		if err := db.UpsertPRReviews(30306, repo, cached); err != nil {
+		if err := db.UpsertPRReviews(owner, repo, 30306, cached); err != nil {
 			t.Fatalf("seeding %q: %v", cached, err)
 		}
 		reviews, err := GetPRReviews(owner, repo, 30306, false)

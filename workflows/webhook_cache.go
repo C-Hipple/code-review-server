@@ -53,15 +53,15 @@ func cacheServes(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 	if sha == "" {
 		return false
 	}
-	diff, cachedSHA, err := db.GetPullRequest(key.Number, key.Repo)
+	diff, cachedSHA, err := db.GetPullRequest(key.Owner, key.Repo, key.Number)
 	if err != nil || cachedSHA != sha || diff == "" {
 		return false
 	}
 	for _, read := range []func() (string, error){
-		func() (string, error) { return db.GetPRComments(key.Number, key.Repo) },
-		func() (string, error) { return db.GetPRReviews(key.Number, key.Repo) },
-		func() (string, error) { return db.GetPRCommits(key.Number, key.Repo) },
-		func() (string, error) { return db.GetCIStatus(key.Number, key.Repo, sha) },
+		func() (string, error) { return db.GetPRComments(key.Owner, key.Repo, key.Number) },
+		func() (string, error) { return db.GetPRReviews(key.Owner, key.Repo, key.Number) },
+		func() (string, error) { return db.GetPRCommits(key.Owner, key.Repo, key.Number) },
+		func() (string, error) { return db.GetCIStatus(key.Owner, key.Repo, key.Number, sha) },
 		func() (string, error) { return db.GetPRMetadataCache(key.Owner, key.Repo, key.Number) },
 	} {
 		if row, err := read(); err != nil || row == "" {
@@ -143,7 +143,7 @@ func loadCachedAuxData(db *database.DB, key PRKey, pr *github.PullRequest, req A
 	}
 
 	if req.Diff {
-		if diff, sha, err := db.GetPullRequest(key.Number, key.Repo); err == nil && diff != "" && sha == aux.HeadSHA {
+		if diff, sha, err := db.GetPullRequest(key.Owner, key.Repo, key.Number); err == nil && diff != "" && sha == aux.HeadSHA {
 			aux.Diff = diff
 			aux.DiffLines = []string{"*** Diff\n", diff}
 		}
@@ -161,7 +161,7 @@ func loadCachedAuxData(db *database.DB, key PRKey, pr *github.PullRequest, req A
 // conversation comments together, as the PRComments cache keeps them. ok is
 // false when nothing is cached.
 func loadCachedComments(db *database.DB, key PRKey) ([]*github.PullRequestComment, bool) {
-	raw, err := db.GetPRComments(key.Number, key.Repo)
+	raw, err := db.GetPRComments(key.Owner, key.Repo, key.Number)
 	if err != nil || raw == "" {
 		return nil, false
 	}
@@ -207,7 +207,7 @@ func sortCommentsByCreation(comments []*github.PullRequestComment) {
 // them in. ok is false when nothing is cached; a PR with no reviews is an
 // empty, non-nil slice.
 func loadCachedReviews(db *database.DB, key PRKey) ([]*github.PullRequestReview, bool) {
-	raw, err := db.GetPRReviews(key.Number, key.Repo)
+	raw, err := db.GetPRReviews(key.Owner, key.Repo, key.Number)
 	if err != nil || raw == "" {
 		return nil, false
 	}
@@ -239,7 +239,7 @@ func loadCachedCI(db *database.DB, key PRKey, sha string) (*github.CombinedStatu
 	if sha == "" {
 		return nil, nil, false
 	}
-	raw, err := db.GetCIStatus(key.Number, key.Repo, sha)
+	raw, err := db.GetCIStatus(key.Owner, key.Repo, key.Number, sha)
 	if err != nil || raw == "" {
 		return nil, nil, false
 	}
@@ -254,7 +254,7 @@ func loadCachedCI(db *database.DB, key PRKey, sha string) (*github.CombinedStatu
 // loadCachedReviewThreads reads the PR's review threads. ok is false when
 // nothing is cached.
 func loadCachedReviewThreads(db *database.DB, key PRKey) ([]git_tools.ReviewThread, bool) {
-	raw, err := db.GetPRReviewThreads(key.Number, key.Repo)
+	raw, err := db.GetPRReviewThreads(key.Owner, key.Repo, key.Number)
 	if err != nil || raw == "" {
 		return nil, false
 	}
@@ -273,7 +273,7 @@ func loadCachedReviewThreads(db *database.DB, key PRKey) ([]git_tools.ReviewThre
 // authored or committed — GetInteractionState's LastCommitTime, from the
 // cache. ok is false when nothing is cached.
 func latestCachedCommitTime(db *database.DB, key PRKey) (time.Time, bool) {
-	raw, err := db.GetPRCommits(key.Number, key.Repo)
+	raw, err := db.GetPRCommits(key.Owner, key.Repo, key.Number)
 	if err != nil || raw == "" {
 		return time.Time{}, false
 	}
@@ -353,7 +353,7 @@ func ciStatusInfo(status *github.CombinedStatus, checkRuns *github.ListCheckRuns
 // is covered, and only from caches that hold the PR's current head.
 type webhookPRState struct{}
 
-func (webhookPRState) InteractionState(owner, repo string, pr *github.PullRequest) (git_tools.InteractionState, bool) {
+func (webhookPRState) InteractionState(owner, repo, login string, pr *github.PullRequest) (git_tools.InteractionState, bool) {
 	key := PRKey{Owner: owner, Repo: repo, Number: pr.GetNumber()}
 	db := config.C().DB
 	if !webhookHandles(key) || !cacheServes(db, key, pr) {
@@ -380,8 +380,9 @@ func (webhookPRState) InteractionState(owner, repo string, pr *github.PullReques
 			reviewComments = append(reviewComments, c)
 		}
 	}
-	// The same login GetInteractionState compares against.
-	state := git_tools.CalculateInteractionState(config.C().GithubUsername, pr, reviews, reviewComments, conversation)
+	// The caches say nothing about any one login, so they answer for
+	// whichever is asking, as GetInteractionState's own fetch does.
+	state := git_tools.CalculateInteractionState(login, pr, reviews, reviewComments, conversation)
 	state.LastCommitTime = lastCommit
 	return state, true
 }

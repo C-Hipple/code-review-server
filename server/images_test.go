@@ -1,7 +1,11 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +153,105 @@ func TestGetImageRefusesAnythingOffGitHub(t *testing.T) {
 		if reply.Okay || reply.Error == "" {
 			t.Errorf("GetImage(%q) reply = %+v, want okay:false with a reason", url, reply)
 		}
+	}
+}
+
+func TestGetImageSendsTheBytesWhenAsked(t *testing.T) {
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("CRS_GITHUB_TOKEN", "")
+
+	url := "https://github.com/user-attachments/assets/cached"
+	seedImage(t, url, []byte("png-bytes"))
+
+	handler := &RPCHandler{}
+	reply := &GetImageReply{}
+	if err := handler.GetImage(&GetImageArgs{URL: url, IncludeData: true}, reply); err != nil {
+		t.Fatalf("GetImage() error = %v", err)
+	}
+	if !reply.Okay || reply.Error != "" {
+		t.Fatalf("reply = %+v, want okay with no error", reply)
+	}
+	if string(reply.Data) != "png-bytes" {
+		t.Errorf("reply.Data = %q, want the cached bytes", reply.Data)
+	}
+	if reply.ContentType != "image/png" || reply.Size != int64(len("png-bytes")) {
+		t.Errorf("reply = %+v, want the cached file's type and size alongside its bytes", reply)
+	}
+
+	// On the wire the bytes are base64, under "data".
+	encoded, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"data":"` + base64.StdEncoding.EncodeToString([]byte("png-bytes")) + `"`; !strings.Contains(string(encoded), want) {
+		t.Errorf("encoded reply %s does not carry %s", encoded, want)
+	}
+}
+
+func TestGetImageLeavesTheBytesOutUnlessAsked(t *testing.T) {
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("CRS_GITHUB_TOKEN", "")
+
+	url := "https://github.com/user-attachments/assets/cached"
+	seedImage(t, url, []byte("png-bytes"))
+
+	reply := &GetImageReply{}
+	if err := (&RPCHandler{}).GetImage(&GetImageArgs{URL: url}, reply); err != nil {
+		t.Fatalf("GetImage() error = %v", err)
+	}
+	if !reply.Okay || reply.Data != nil {
+		t.Errorf("reply = %+v, want okay with no data", reply)
+	}
+	// A local client's reply is what it always was: a path, no "data" key.
+	encoded, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"data"`) {
+		t.Errorf("encoded reply %s carries data nobody asked for", encoded)
+	}
+}
+
+func TestGetImageRefusesToSendAnImageOverTheCap(t *testing.T) {
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("CRS_GITHUB_TOKEN", "")
+
+	url := "https://github.com/user-attachments/assets/huge"
+	path := seedImage(t, url, make([]byte, maxImageDataBytes+1))
+
+	reply := &GetImageReply{}
+	if err := (&RPCHandler{}).GetImage(&GetImageArgs{URL: url, IncludeData: true}, reply); err != nil {
+		t.Fatalf("GetImage() returned an RPC error: %v", err)
+	}
+	if reply.Okay || reply.Data != nil {
+		t.Errorf("reply okay=%v with %d bytes, want okay:false and no data", reply.Okay, len(reply.Data))
+	}
+	if !strings.Contains(reply.Error, "10 MiB") {
+		t.Errorf("reply.Error = %q, want it to name the cap", reply.Error)
+	}
+	// The rest still says what the image is and where the server keeps it.
+	if reply.Path != path || reply.Size != maxImageDataBytes+1 {
+		t.Errorf("reply path=%q size=%d, want %q and %d", reply.Path, reply.Size, path, maxImageDataBytes+1)
+	}
+
+	// Exactly at the cap is fine.
+	atCap := "https://github.com/user-attachments/assets/at-cap"
+	seedImage(t, atCap, make([]byte, maxImageDataBytes))
+	reply = &GetImageReply{}
+	if err := (&RPCHandler{}).GetImage(&GetImageArgs{URL: atCap, IncludeData: true}, reply); err != nil {
+		t.Fatalf("GetImage() error = %v", err)
+	}
+	if !reply.Okay || len(reply.Data) != maxImageDataBytes {
+		t.Errorf("reply okay=%v with %d bytes, want okay with all %d", reply.Okay, len(reply.Data), maxImageDataBytes)
+	}
+}
+
+func TestGetImageSaysSoWhenTheCachedFileVanishes(t *testing.T) {
+	data, err := readImageData(filepath.Join(t.TempDir(), "gone.png"))
+	if err == nil || data != nil {
+		t.Fatalf("readImageData() = %d bytes, %v; want an error", len(data), err)
+	}
+	if !strings.Contains(err.Error(), "could not read the cached image") {
+		t.Errorf("error = %q, want it to say the cached image could not be read", err)
 	}
 }

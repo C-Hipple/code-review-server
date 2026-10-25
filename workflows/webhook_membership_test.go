@@ -34,7 +34,7 @@ func membershipEnv(t *testing.T, workflows ...Workflow) *webhookTestEnv {
 		takeWebhookActivity()
 	})
 	for _, wf := range workflows {
-		if _, err := env.db.GetOrCreateSection(wf.GetOrgSectionName(), 1); err != nil {
+		if _, err := env.db.GetOrCreateSection(wf.GetUser(), wf.GetOrgSectionName(), 1); err != nil {
 			t.Fatalf("section: %v", err)
 		}
 	}
@@ -44,8 +44,8 @@ func membershipEnv(t *testing.T, workflows ...Workflow) *webhookTestEnv {
 // listIn puts PR #number in wf's section, owned by wf, as a cycle would.
 func listIn(t *testing.T, db *database.DB, wf Workflow, number int) {
 	t.Helper()
-	section, _ := db.GetSection(wf.GetOrgSectionName())
-	if _, err := db.UpsertItemWithWorkflow(section.ID, "acme/widgets-"+itoa(number), "TODO", "Add widgets", []string{"old"}, []string{whRepo}, 0, wf.GetName()); err != nil {
+	section, _ := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
+	if _, err := db.UpsertItemWithWorkflow(section.ID, "acme/widgets-"+itoa(number), "TODO", "Add widgets", []string{"old"}, []string{whRepo}, 0, ownershipKey(wf)); err != nil {
 		t.Fatalf("list: %v", err)
 	}
 }
@@ -53,9 +53,9 @@ func listIn(t *testing.T, db *database.DB, wf Workflow, number int) {
 // listedIn reports whether wf's section lists PR #number on wf's behalf.
 func listedIn(t *testing.T, db *database.DB, wf Workflow, number int) bool {
 	t.Helper()
-	section, _ := db.GetSection(wf.GetOrgSectionName())
+	section, _ := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
 	item, err := db.GetItem(section.ID, "acme/widgets-"+itoa(number))
-	return err == nil && item != nil && slices.Contains(item.GetWorkflows(), wf.GetName())
+	return err == nil && item != nil && slices.Contains(item.GetWorkflows(), ownershipKey(wf))
 }
 
 func reviewRequestedWorkflow() SearchWorkflow {
@@ -88,11 +88,11 @@ func TestSubmittingAReviewTakesThePROutOfReviewRequested(t *testing.T) {
 	if listedIn(t, env.db, wf, 1) {
 		t.Fatal("the PR is still in Review Requested after I reviewed it")
 	}
-	section, _ := env.db.GetSection(wf.SectionTitle)
+	section, _ := env.db.GetSection("", wf.SectionTitle)
 	if item, _ := env.db.GetItem(section.ID, "acme/widgets-1"); item != nil {
 		t.Error("the row was left behind with no workflow claiming it")
 	}
-	if raw, _ := env.db.GetRequestedReviewers(1, whRepo); strings.Contains(raw, `"me"`) {
+	if raw, _ := env.db.GetRequestedReviewers(whOwner, whRepo, 1); strings.Contains(raw, `"me"`) {
 		t.Errorf("requested reviewers still list me: %s", raw)
 	}
 	if a := takeWebhookActivity(); a.SectionDrops != 1 || a.Applied != 1 {
@@ -116,7 +116,7 @@ func TestAReviewRequestPutsThePRIntoReviewRequested(t *testing.T) {
 	if !listedIn(t, env.db, wf, 1) {
 		t.Fatal("a PR requesting my review didn't join Review Requested")
 	}
-	section, _ := env.db.GetSection(wf.SectionTitle)
+	section, _ := env.db.GetSection("", wf.SectionTitle)
 	item, _ := env.db.GetItem(section.ID, "acme/widgets-1")
 	if details, _ := item.GetDetails(); !strings.Contains(strings.Join(details, "\n"), "Requested Reviewers: me") {
 		t.Errorf("row details not built from the caches: %v", details)
@@ -368,5 +368,61 @@ func TestReevaluationJudgesByTheNewestPRSeen(t *testing.T) {
 	drainReevaluations()
 	if !listedIn(t, env.db, wf, 1) {
 		t.Error("an older delivery's PR undid the newer listing")
+	}
+}
+
+// On a hosted server deliveries rewrite the server's own dashboard only: a
+// user's same-named section, listing the same PR, is left to that user's
+// cycles — its membership and its row alike.
+func TestDeliveriesRewriteOnlyTheServersOwnDashboard(t *testing.T) {
+	wf := reviewRequestedWorkflow()
+	// Alice's workflow collides with the server's in name and section, and
+	// even judges by the same login, so only whose dashboard it fills sets it
+	// apart.
+	alice := reviewRequestedWorkflow()
+	alice.User = "alice"
+	env := membershipEnv(t, wf, alice)
+	seedCachedPR(t, env.db, whKey(1), "head1")
+	listIn(t, env.db, wf, 1)
+	listIn(t, env.db, alice, 1)
+	aliceRow := func() *database.Item {
+		t.Helper()
+		section, _ := env.db.GetSection("alice", alice.SectionTitle)
+		item, err := env.db.GetItem(section.ID, "acme/widgets-1")
+		if err != nil || item == nil {
+			t.Fatalf("alice's row is gone: %v", err)
+		}
+		return item
+	}
+
+	renamed := requestedOfMe(whPR(1, "head1"))
+	renamed.Title = github.Ptr("Renamed widgets")
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
+		Action: github.Ptr("edited"), PullRequest: renamed, Repo: whRepository(),
+	}})
+	drainReevaluations()
+	section, _ := env.db.GetSection("", wf.SectionTitle)
+	if item, _ := env.db.GetItem(section.ID, "acme/widgets-1"); item == nil || !strings.Contains(item.Title, "Renamed widgets") {
+		t.Errorf("the server's row wasn't renamed: %+v", item)
+	}
+	if item := aliceRow(); item.Title != "Add widgets" {
+		t.Errorf("alice's row was rewritten: %+v", item)
+	}
+
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
+		Action:      github.Ptr("submitted"),
+		Review:      &github.PullRequestReview{ID: github.Ptr(int64(9)), User: &github.User{Login: github.Ptr("me")}, State: github.Ptr("approved")},
+		PullRequest: requestedOfMe(whPR(1, "head1")),
+		Repo:        whRepository(),
+	}})
+	drainReevaluations()
+	if listedIn(t, env.db, wf, 1) {
+		t.Error("the server's Review Requested still lists the PR after the review")
+	}
+	if !listedIn(t, env.db, alice, 1) {
+		t.Error("a delivery took the PR out of alice's section")
+	}
+	if details, _ := aliceRow().GetDetails(); !slices.Equal(details, []string{"old"}) {
+		t.Errorf("alice's row details were rewritten: %v", details)
 	}
 }

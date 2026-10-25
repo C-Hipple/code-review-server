@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
-import { Button, Badge, Card, mapStatusToVariant, Theme } from '../design';
+import { Button, Badge, Card, mapStatusToVariant, Theme, type StatusVariant } from '../design';
 import { usePluginCollapse } from '../hooks/usePluginCollapse';
 import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import {
     canRerunPlugin,
     pluginOutputLineCount,
+    pluginRerunFailedMessage,
     resolvePluginBody,
     sortedAnnotations,
 } from '../plugin_utils';
@@ -19,6 +20,7 @@ interface PluginOutputProps {
     theme: Theme;
     onThemeChange: (theme: Theme) => void;
     onClose?: () => void;
+    onToast: (message: string, variant?: StatusVariant) => void;
 }
 
 export default function PluginOutput({
@@ -28,6 +30,7 @@ export default function PluginOutput({
     theme: _theme,
     onThemeChange: _onThemeChange,
     onClose,
+    onToast,
 }: PluginOutputProps) {
     const {
         outputs: pluginOutput,
@@ -35,7 +38,9 @@ export default function PluginOutput({
         executing: executingPlugins,
         load: loadPluginOutput,
         execute: executePlugin,
-    } = usePluginOutputs(owner, repo, number);
+    } = usePluginOutputs(owner, repo, number, (name, e) =>
+        onToast(pluginRerunFailedMessage(name, e), 'danger')
+    );
     const { isCollapsed, toggle } = usePluginCollapse(pluginOutput);
 
     useEffect(() => {

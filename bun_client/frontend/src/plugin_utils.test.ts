@@ -7,6 +7,7 @@ import {
     isPluginPending,
     pendingPluginsKey,
     pluginOutputLineCount,
+    pluginRerunFailedMessage,
     rerunsStillAwaited,
     resolvePluginBody,
     sortedAnnotations,
@@ -154,6 +155,26 @@ describe('canRerunPlugin', () => {
 
     test('treats a missing status as not re-runnable', () => {
         expect(canRerunPlugin({ result: '', status: '' })).toBe(false);
+    });
+});
+
+describe('pluginRerunFailedMessage', () => {
+    // What rpcCall throws: the Go error string, JSON-encoded.
+    const goError = (message: string) => new Error(JSON.stringify(message));
+
+    test('passes the error on', () => {
+        expect(pluginRerunFailedMessage('summarize', goError('PR not found'))).toBe(
+            'Could not rerun summarize: PR not found'
+        );
+    });
+
+    test('says a shared server keeps reruns to its administrators', () => {
+        expect(
+            pluginRerunFailedMessage(
+                'summarize',
+                goError('permission denied: RPCHandler.RerunPlugins requires an administrator')
+            )
+        ).toBe('Only an administrator of this server can rerun plugins.');
     });
 });
 

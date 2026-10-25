@@ -60,7 +60,7 @@ func matchNoneFilter([]*github.PullRequest) []*github.PullRequest {
 
 func seedItem(t *testing.T, db *database.DB, sectionName, identifier, workflowName string) *database.Section {
 	t.Helper()
-	section, err := db.GetOrCreateSection(sectionName, 0)
+	section, err := db.GetOrCreateSection("", sectionName, 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection(%q): %v", sectionName, err)
 	}
@@ -73,7 +73,7 @@ func seedItem(t *testing.T, db *database.DB, sectionName, identifier, workflowNa
 
 func itemInSection(t *testing.T, db *database.DB, sectionName, identifier string) *database.Item {
 	t.Helper()
-	section, err := db.GetSection(sectionName)
+	section, err := db.GetSection("", sectionName)
 	if err != nil {
 		return nil
 	}

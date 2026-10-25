@@ -50,11 +50,11 @@ func TestMarkPluginDeferredKeepsAResultForTheSameHead(t *testing.T) {
 
 func TestSectionsHoldingItem(t *testing.T) {
 	db := newTestDB(t)
-	team, err := db.GetOrCreateSection("Team", 0)
+	team, err := db.GetOrCreateSection("", "Team", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine, err := db.GetOrCreateSection("Mine", 0)
+	mine, err := db.GetOrCreateSection("", "Mine", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

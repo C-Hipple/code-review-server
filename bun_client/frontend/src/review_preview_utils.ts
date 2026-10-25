@@ -1,3 +1,4 @@
+import { rpcDraftsChanged, rpcErrorMessage, rpcRefusal } from './api';
 import type { ParsedLine } from './diff_utils';
 import { groupIntoThreads } from './discussion_utils';
 import type { Comment } from './components/review/types';
@@ -179,4 +180,45 @@ export function reviewSubmittedMessage(event: string, pr: string, failedReplies 
             ? '1 reply could not be posted and is'
             : `${failedReplies} replies could not be posted and are`;
     return `${done}, but ${replies} still pending — see console for details`;
+}
+
+/**
+ * The toast a failed submit shows. A shared server that won't post under its
+ * own GitHub account refuses the submit outright, and would refuse a retry
+ * just the same, so that case says where the review can go instead. One that
+ * needs the reviewer's own GitHub account linked first says so: the review
+ * view offers the link itself, so this is for a submit that lands after the
+ * reviewer has moved on.
+ */
+export function reviewNotSubmittedMessage(pr: string, error: unknown): string {
+    if (rpcDraftsChanged(error)) {
+        return `Review on ${pr} was not submitted: some of its pending comments are gone — already submitted, or removed with your account after a stretch of inactivity. Check what is pending on the PR, then submit again.`;
+    }
+    const refusal = rpcRefusal(error);
+    if (refusal?.kind === 'link-github') {
+        return `Review on ${pr} was not submitted: ${refusal.detail}. Your draft is kept — link your account from the account button at the top right, then submit it again.`;
+    }
+    if (refusal?.kind === 'refused') {
+        return `Review on ${pr} was not submitted: this server won't post reviews under its GitHub account. Your draft is kept — submit the review on GitHub instead.`;
+    }
+    return `Review on ${pr} was not submitted: ${rpcErrorMessage(error)}`;
+}
+
+/**
+ * The toast for a submit whose connection to the shared server dropped before
+ * the server answered. The server carries on with a call whose client has
+ * gone, so the review may well have been posted: this says the outcome is
+ * unknown rather than offering the draft back for a second post.
+ */
+export function reviewOutcomeUnknownMessage(pr: string): string {
+    return `Lost the connection to the server while submitting the review on ${pr}: it may or may not have gone out. Check the PR before submitting again.`;
+}
+
+/**
+ * The ids of the pending comments a submit was previewed with, which the
+ * server checks are all still there before it posts anything
+ * (SubmitReview's ExpectedDraftIDs).
+ */
+export function expectedDraftIDs(previews: PendingCommentPreview[]): number[] {
+    return previews.map(p => Number(p.comment.id)).filter(id => Number.isSafeInteger(id) && id > 0);
 }

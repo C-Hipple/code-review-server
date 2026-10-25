@@ -119,7 +119,7 @@ func TestExplain(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, tt.pr.GetNumber())
+			key := git_tools.InteractionStateCacheKey(login, owner, repo, tt.pr.GetNumber())
 			git_tools.GlobalCache.Set(key, tt.state, time.Hour)
 
 			match, reason := explain(tt.pr, login, tt.interacted)

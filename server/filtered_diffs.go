@@ -100,7 +100,7 @@ func GetFilteredDiff(owner, repo string, number int, filterID string) (filteredd
 		return filtereddiff.Result{}, fmt.Errorf("unknown diff filter %q", filterID)
 	}
 	db := config.C().DB
-	in, fullDiff, err := filteredDiffInputs(db, repo, number)
+	in, fullDiff, err := filteredDiffInputs(db, owner, repo, number)
 	return filteredDiff(db, owner, repo, number, f, in, fullDiff, err), nil
 }
 
@@ -154,26 +154,26 @@ func filteredDiff(db *database.DB, owner, repo string, number int, f filtereddif
 // filteredDiffInputs reads what the filters judge from — the PR's head and its
 // cached reviews, comments and commits, plus who the reviewer is — and the
 // PR's cached full diff.
-func filteredDiffInputs(db *database.DB, repo string, number int) (filtereddiff.Inputs, string, error) {
+func filteredDiffInputs(db *database.DB, owner, repo string, number int) (filtereddiff.Inputs, string, error) {
 	if db == nil {
 		return filtereddiff.Inputs{}, "", errors.New("the server has no database")
 	}
-	fullDiff, head, err := db.GetPullRequest(number, repo)
+	fullDiff, head, err := db.GetPullRequest(owner, repo, number)
 	if err != nil {
 		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's head commit: %w", err)
 	}
 	if head == "" {
 		return filtereddiff.Inputs{}, "", errors.New("the PR's head commit isn't cached yet; open or sync the PR first")
 	}
-	reviews, err := db.GetPRReviews(number, repo)
+	reviews, err := db.GetPRReviews(owner, repo, number)
 	if err != nil {
 		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's reviews: %w", err)
 	}
-	comments, err := db.GetPRComments(number, repo)
+	comments, err := db.GetPRComments(owner, repo, number)
 	if err != nil {
 		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's comments: %w", err)
 	}
-	commits, err := db.GetPRCommits(number, repo)
+	commits, err := db.GetPRCommits(owner, repo, number)
 	if err != nil {
 		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's commits: %w", err)
 	}
@@ -404,7 +404,7 @@ func warmFilteredDiffs(owner, repo string, number int) {
 	if db == nil {
 		return
 	}
-	in, fullDiff, err := filteredDiffInputs(db, repo, number)
+	in, fullDiff, err := filteredDiffInputs(db, owner, repo, number)
 	if err != nil {
 		// Nothing to warm from yet: the PR's caches aren't there.
 		slog.Debug("Not warming filtered diffs", "repo", repo, "pr", number, "reason", err)

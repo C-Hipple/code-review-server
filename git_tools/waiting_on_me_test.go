@@ -2,7 +2,6 @@ package git_tools
 
 import (
 	"crs/config"
-	"fmt"
 	"testing"
 	"time"
 
@@ -167,7 +166,7 @@ func TestFilterWaitingOnMe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.pr != nil {
 				// Prime cache
-				cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *tt.pr.Number)
+				cacheKey := InteractionStateCacheKey(myLogin, owner, repo, *tt.pr.Number)
 				GlobalCache.Set(cacheKey, tt.state, 1*time.Hour)
 			}
 
@@ -209,7 +208,7 @@ func TestFilterWaitingOnMeUsernameCaseInsensitive(t *testing.T) {
 
 	// Fresh request: no prior interaction, so the only reason to include is the
 	// requested-reviewer check, which must match case-insensitively.
-	cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, number)
+	cacheKey := InteractionStateCacheKey("MyUser", owner, repo, number)
 	GlobalCache.Set(cacheKey, InteractionState{}, 1*time.Hour)
 
 	result := FilterWaitingOnMe([]*github.PullRequest{pr})
@@ -261,8 +260,8 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Basic times calculation",
 			pr:   &github.PullRequest{},
 			reviews: []*github.PullRequestReview{
-				makeReview(myLogin, now.Add(-30 * time.Minute)),
-				makeReview(other, now.Add(-45 * time.Minute)),
+				makeReview(myLogin, now.Add(-30*time.Minute)),
+				makeReview(other, now.Add(-45*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastMeTime:     now.Add(-30 * time.Minute),
@@ -273,8 +272,8 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Threaded review comments - reply by other",
 			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(1, myLogin, now.Add(-20 * time.Minute), 0),
-				makeComment(2, other, now.Add(-10 * time.Minute), 1),
+				makeComment(1, myLogin, now.Add(-20*time.Minute), 0),
+				makeComment(2, other, now.Add(-10*time.Minute), 1),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-20 * time.Minute),
@@ -286,9 +285,9 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Threaded review comments - replied back by me",
 			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(1, myLogin, now.Add(-20 * time.Minute), 0),
-				makeComment(2, other, now.Add(-10 * time.Minute), 1),
-				makeComment(3, myLogin, now.Add(-5 * time.Minute), 1),
+				makeComment(1, myLogin, now.Add(-20*time.Minute), 0),
+				makeComment(2, other, now.Add(-10*time.Minute), 1),
+				makeComment(3, myLogin, now.Add(-5*time.Minute), 1),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-5 * time.Minute),
@@ -300,8 +299,8 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Issue comments - reply by other",
 			pr:   &github.PullRequest{},
 			issueComments: []*github.IssueComment{
-				makeIssueComment(myLogin, now.Add(-20 * time.Minute)),
-				makeIssueComment(other, now.Add(-10 * time.Minute)),
+				makeIssueComment(myLogin, now.Add(-20*time.Minute)),
+				makeIssueComment(other, now.Add(-10*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-20 * time.Minute),
@@ -313,8 +312,8 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Issue comments - I replied last",
 			pr:   &github.PullRequest{},
 			issueComments: []*github.IssueComment{
-				makeIssueComment(other, now.Add(-20 * time.Minute)),
-				makeIssueComment(myLogin, now.Add(-10 * time.Minute)),
+				makeIssueComment(other, now.Add(-20*time.Minute)),
+				makeIssueComment(myLogin, now.Add(-10*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-10 * time.Minute),
@@ -326,7 +325,7 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Issue comments - only others, I never participated",
 			pr:   &github.PullRequest{},
 			issueComments: []*github.IssueComment{
-				makeIssueComment(other, now.Add(-10 * time.Minute)),
+				makeIssueComment(other, now.Add(-10*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastOthersTime:         now.Add(-10 * time.Minute),
@@ -337,8 +336,8 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Review comment thread where I did not participate",
 			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(10, other, now.Add(-20 * time.Minute), 0),
-				makeComment(11, "third", now.Add(-10 * time.Minute), 10),
+				makeComment(10, other, now.Add(-20*time.Minute), 0),
+				makeComment(11, "third", now.Add(-10*time.Minute), 10),
 			},
 			expectedState: InteractionState{
 				LastOthersTime:         now.Add(-10 * time.Minute),
@@ -349,11 +348,11 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Multiple review comment threads - one resolved, one not",
 			pr:   &github.PullRequest{},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(20, myLogin, now.Add(-30 * time.Minute), 0),
-				makeComment(21, other, now.Add(-25 * time.Minute), 20),
-				makeComment(22, myLogin, now.Add(-20 * time.Minute), 20),
-				makeComment(23, myLogin, now.Add(-15 * time.Minute), 0),
-				makeComment(24, other, now.Add(-10 * time.Minute), 23),
+				makeComment(20, myLogin, now.Add(-30*time.Minute), 0),
+				makeComment(21, other, now.Add(-25*time.Minute), 20),
+				makeComment(22, myLogin, now.Add(-20*time.Minute), 20),
+				makeComment(23, myLogin, now.Add(-15*time.Minute), 0),
+				makeComment(24, other, now.Add(-10*time.Minute), 23),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-15 * time.Minute),
@@ -365,17 +364,17 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Mixed sources - all resolved",
 			pr:   &github.PullRequest{},
 			reviews: []*github.PullRequestReview{
-				makeReview(other, now.Add(-40 * time.Minute)),
-				makeReview(myLogin, now.Add(-35 * time.Minute)),
+				makeReview(other, now.Add(-40*time.Minute)),
+				makeReview(myLogin, now.Add(-35*time.Minute)),
 			},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(30, myLogin, now.Add(-30 * time.Minute), 0),
-				makeComment(31, other, now.Add(-25 * time.Minute), 30),
-				makeComment(32, myLogin, now.Add(-20 * time.Minute), 30),
+				makeComment(30, myLogin, now.Add(-30*time.Minute), 0),
+				makeComment(31, other, now.Add(-25*time.Minute), 30),
+				makeComment(32, myLogin, now.Add(-20*time.Minute), 30),
 			},
 			issueComments: []*github.IssueComment{
-				makeIssueComment(other, now.Add(-15 * time.Minute)),
-				makeIssueComment(myLogin, now.Add(-10 * time.Minute)),
+				makeIssueComment(other, now.Add(-15*time.Minute)),
+				makeIssueComment(myLogin, now.Add(-10*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-10 * time.Minute),
@@ -387,16 +386,16 @@ func TestCalculateInteractionState(t *testing.T) {
 			name: "Mixed sources - issue comment unresolved",
 			pr:   &github.PullRequest{},
 			reviews: []*github.PullRequestReview{
-				makeReview(myLogin, now.Add(-40 * time.Minute)),
+				makeReview(myLogin, now.Add(-40*time.Minute)),
 			},
 			reviewComments: []*github.PullRequestComment{
-				makeComment(40, myLogin, now.Add(-30 * time.Minute), 0),
-				makeComment(41, other, now.Add(-25 * time.Minute), 40),
-				makeComment(42, myLogin, now.Add(-20 * time.Minute), 40),
+				makeComment(40, myLogin, now.Add(-30*time.Minute), 0),
+				makeComment(41, other, now.Add(-25*time.Minute), 40),
+				makeComment(42, myLogin, now.Add(-20*time.Minute), 40),
 			},
 			issueComments: []*github.IssueComment{
-				makeIssueComment(myLogin, now.Add(-15 * time.Minute)),
-				makeIssueComment(other, now.Add(-10 * time.Minute)),
+				makeIssueComment(myLogin, now.Add(-15*time.Minute)),
+				makeIssueComment(other, now.Add(-10*time.Minute)),
 			},
 			expectedState: InteractionState{
 				LastMeTime:             now.Add(-15 * time.Minute),
@@ -795,7 +794,7 @@ func TestFilterWaitingOnMeApprovalEndsThreads(t *testing.T) {
 			if !state.HasUnrespondedComments {
 				t.Fatalf("expected the author's reply to leave my thread unresponded, got %+v", state)
 			}
-			cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, tt.number)
+			cacheKey := InteractionStateCacheKey(myLogin, owner, repo, tt.number)
 			GlobalCache.Set(cacheKey, state, 1*time.Hour)
 
 			included := len(FilterWaitingOnMe([]*github.PullRequest{pr})) > 0
@@ -963,7 +962,7 @@ func TestFilterWaitingOnAuthor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.pr != nil {
-				cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, *tt.pr.Number)
+				cacheKey := InteractionStateCacheKey("myself", owner, repo, *tt.pr.Number)
 				GlobalCache.Set(cacheKey, tt.state, 1*time.Hour)
 			}
 

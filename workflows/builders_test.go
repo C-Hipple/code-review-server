@@ -9,10 +9,10 @@ import (
 
 func TestBuildFiltersList(t *testing.T) {
 	tests := []struct {
-		name           string
-		rawWorkflow    config.RawWorkflow
-		expectedCount  int
-		wantErr        bool
+		name          string
+		rawWorkflow   config.RawWorkflow
+		expectedCount int
+		wantErr       bool
 	}{
 		{
 			name: "Empty filters",
@@ -444,9 +444,9 @@ func TestMatchWorkflows_SkipsInvalid(t *testing.T) {
 	repos := []string{"owner/repo"}
 
 	tests := []struct {
-		name            string
-		rawWorkflows    []config.RawWorkflow
-		expectedCount   int
+		name          string
+		rawWorkflows  []config.RawWorkflow
+		expectedCount int
 	}{
 		{
 			name: "unknown WorkflowType is skipped",

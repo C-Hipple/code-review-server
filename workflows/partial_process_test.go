@@ -22,7 +22,7 @@ func processHoldingPR8(t *testing.T, process func(string, []*github.PullRequest,
 	seedReprocessAuxData(t, "acme", "widgets", 7)
 	fakeMergeabilityLookup(t, answerAll(git_tools.MergeabilityMergeable))
 
-	section, err := db.GetOrCreateSection("Project", 0)
+	section, err := db.GetOrCreateSection("", "Project", 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}

@@ -1,7 +1,11 @@
 package server
 
 import (
+	"crs/config"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -238,7 +242,7 @@ func TestSplitFileLines(t *testing.T) {
 func TestGetHunkContextFromALocalClone(t *testing.T) {
 	db := aiTestSetup(t, nil)
 	shas := gitRepo(t, "gadgets", map[string]string{"main.go": "package main\n\nfunc main() {\n}\n"})
-	if err := db.UpsertPullRequest(7, "gadgets", shas[0], "", ""); err != nil {
+	if err := db.UpsertPullRequest("octocat", "gadgets", 7, shas[0], "", ""); err != nil {
 		t.Fatal(err)
 	}
 	h := &RPCHandler{}
@@ -305,6 +309,80 @@ func TestGetHunkContextValidation(t *testing.T) {
 				t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// hunkContextRepo commits files to a git repository under a fresh
+// RepoLocation, where GetHunkContext reads them, and caches the commit as the
+// head of PR acme/widgets#7. It returns the commit's SHA.
+func hunkContextRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	db := setupTestDB(t)
+	location := t.TempDir()
+	config.SetC(config.Config{DB: db, RepoLocation: location})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	dir := filepath.Join(location, "widgets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "files")
+	sha := git("rev-parse", "HEAD")
+	if err := db.UpsertPullRequest("acme", "widgets", 7, sha, sha, "diff"); err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+// An anchor past the end of the file — a client's diff newer than the cached
+// head, or a made-up line — has nothing before it to show. It used to slice
+// past the end of the file and panic, which on a hosted server took every
+// user's connection down with it.
+func TestGetHunkContextAnchorPastEndOfFile(t *testing.T) {
+	hunkContextRepo(t, map[string]string{"f.go": "one\ntwo\nthree\n"})
+	h := &RPCHandler{}
+
+	for _, anchor := range []int{500, 30} {
+		for _, direction := range []string{"before", "after"} {
+			reply := GetHunkContextReply{}
+			args := &GetHunkContextArgs{Owner: "acme", Repo: "widgets", Number: 7, Filename: "f.go", Side: "new",
+				AnchorLine: anchor, Direction: direction, Count: 20}
+			if err := h.GetHunkContext(args, &reply); err != nil {
+				t.Fatalf("anchor %d %s: %v", anchor, direction, err)
+			}
+			if len(reply.Lines) != 0 || reply.StartLine != 0 || reply.EndLine != 0 {
+				t.Errorf("anchor %d %s: got lines %q (%d-%d), want none", anchor, direction, reply.Lines, reply.StartLine, reply.EndLine)
+			}
+		}
+	}
+
+	// Lines before an anchor just past the end are the file's last ones.
+	reply := GetHunkContextReply{}
+	args := &GetHunkContextArgs{Owner: "acme", Repo: "widgets", Number: 7, Filename: "f.go", Side: "new",
+		AnchorLine: 6, Direction: "before", Count: 3, NewStart: 6, OrigStart: 6}
+	if err := h.GetHunkContext(args, &reply); err != nil {
+		t.Fatal(err)
+	}
+	// splitFileLines doesn't count the file's final newline as a line, so the
+	// last three lines before an anchor past the end are 1 to 3.
+	if strings.Join(reply.Lines, "|") != "three" || reply.StartLine != 3 || reply.EndLine != 3 {
+		t.Errorf("before line 6: got %q (%d-%d)", reply.Lines, reply.StartLine, reply.EndLine)
 	}
 }
 

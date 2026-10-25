@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
-import { getConfig, updateConfig } from '../api';
+import { adminOnlyMessage, getConfig, rpcRefusal, updateConfig } from '../api';
 import {
     cleanDraft,
     draftFromConfig,
@@ -70,6 +70,8 @@ export default function ConfigManager() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [loadError, setLoadError] = useState('');
+    // A shared server keeps its configuration to its administrators.
+    const [adminOnly, setAdminOnly] = useState(false);
     const [serverProblems, setServerProblems] = useState<ConfigValidationError[]>([]);
     const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
     // Validation messages stay hidden until the first save attempt, so a
@@ -84,6 +86,7 @@ export default function ConfigManager() {
     const load = useCallback(async () => {
         setLoading(true);
         setLoadError('');
+        setAdminOnly(false);
         try {
             const reply = await getConfig();
             const loaded = draftFromConfig(reply.config);
@@ -98,7 +101,11 @@ export default function ConfigManager() {
             setShowProblems(false);
             setStatus(reply.okay ? null : { kind: 'error', text: reply.message });
         } catch (e: unknown) {
-            setLoadError(errorMessage(e));
+            if (rpcRefusal(e)?.kind === 'permission-denied') {
+                setAdminOnly(true);
+            } else {
+                setLoadError(errorMessage(e));
+            }
         } finally {
             setLoading(false);
         }
@@ -304,7 +311,13 @@ export default function ConfigManager() {
                 text: `${reply.message}. Workflow changes take effect on the next sync; plugin and AI feature changes apply from their next run.`,
             });
         } catch (e: unknown) {
-            setStatus({ kind: 'error', text: errorMessage(e) });
+            setStatus({
+                kind: 'error',
+                text:
+                    rpcRefusal(e)?.kind === 'permission-denied'
+                        ? adminOnlyMessage('change its configuration')
+                        : errorMessage(e),
+            });
         } finally {
             setSaving(false);
         }
@@ -312,6 +325,21 @@ export default function ConfigManager() {
 
     if (loading) {
         return <div style={{ color: colors.textSecondary }}>Loading configuration…</div>;
+    }
+    // Asking again won't change the answer, so there's no Retry here.
+    if (adminOnly) {
+        return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.sm }}>
+                <div style={{ color: colors.textPrimary }}>
+                    {adminOnlyMessage('view or change its configuration')}
+                </div>
+                <div style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
+                    This client is connected to a shared server. Your dashboard&apos;s workflows
+                    come from the <code>codereviewserver.toml</code> on your own machine, which the
+                    client sends when it registers you with the server.
+                </div>
+            </div>
+        );
     }
     if (loadError || !draft) {
         return (

@@ -7,7 +7,9 @@ import ConfigManager from './components/ConfigManager';
 import DeviceQRCode from './components/DeviceQRCode';
 import RateLimitHistory from './components/RateLimitHistory';
 import ServerStatus from './components/ServerStatus';
+import AccountPanel, { AccountChip } from './components/AccountPanel';
 import { rpcCall } from './api';
+import { useBridgeSession } from './hooks/useBridgeSession';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { useServerHeartbeat } from './hooks/useServerHeartbeat';
 import {
@@ -57,12 +59,16 @@ function App() {
     const [view, setView] = useState<View>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
-    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit' | 'devices'>(
-        'appearance'
-    );
+    const [prefsTab, setPrefsTab] = useState<
+        'account' | 'appearance' | 'server' | 'ratelimit' | 'devices'
+    >('appearance');
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
     const serverHeartbeat = useServerHeartbeat();
+    // Who the bridge is connected as: on a shared server, the header shows the
+    // login and GitHub link state, and Preferences gains an Account tab.
+    const session = useBridgeSession();
+    const remote = !!session?.remote;
     // Transient toast notification; keyed by id so a new message restarts the
     // timer. Held here rather than in the view that raised it so work that
     // finishes in the background — a review submit — can still report after
@@ -71,10 +77,11 @@ function App() {
         id: number;
         message: string;
         variant: StatusVariant;
+        duration?: number;
     } | null>(null);
     const showToast = useCallback(
-        (message: string, variant: StatusVariant = 'info') =>
-            setToast({ id: Date.now(), message, variant }),
+        (message: string, variant: StatusVariant = 'info', duration?: number) =>
+            setToast({ id: Date.now(), message, variant, duration }),
         []
     );
     const [theme, setTheme] = useState<Theme>(() => {
@@ -323,6 +330,16 @@ function App() {
                         </button>
                     )}
                     <ServerStatus {...serverHeartbeat} compact={isMobile} />
+                    {session?.remote && (
+                        <AccountChip
+                            session={session}
+                            compact={isMobile}
+                            onOpen={() => {
+                                setPrefsTab('account');
+                                setShowPrefs(true);
+                            }}
+                        />
+                    )}
                     <button
                         onClick={() => setShowPrefs(true)}
                         style={{
@@ -379,6 +396,7 @@ function App() {
                         theme={theme}
                         onThemeChange={setTheme}
                         onClose={handleBack}
+                        onToast={showToast}
                     />
                 )}
                 {view === 'AI_OUTPUT' && currentPR && (
@@ -410,6 +428,7 @@ function App() {
                 >
                     {(
                         [
+                            ...(remote ? [['account', 'Account'] as const] : []),
                             ['appearance', 'Appearance'],
                             ['server', 'Server Configuration'],
                             ['ratelimit', 'Rate Limit'],
@@ -441,6 +460,8 @@ function App() {
                         </button>
                     ))}
                 </div>
+
+                {prefsTab === 'account' && remote && <AccountPanel />}
 
                 {prefsTab === 'server' && <ConfigManager />}
 
@@ -571,6 +592,7 @@ function App() {
                     key={toast.id}
                     message={toast.message}
                     variant={toast.variant}
+                    duration={toast.duration}
                     // Clear the review view's mobile action bar.
                     bottomOffset={isMobile && view === 'REVIEW' ? 84 : 24}
                     onDismiss={() => setToast(null)}

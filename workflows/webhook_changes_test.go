@@ -141,7 +141,7 @@ func TestDeliveriesThatChangeNothingAreNotAnnounced(t *testing.T) {
 	// A PR held with no reviews cached to patch.
 	key := whKey(1)
 	trackItem(t, env.db, key)
-	env.db.UpsertPullRequest(key.Number, key.Repo, "head1", "", "")
+	env.db.UpsertPullRequest(key.Owner, key.Repo, key.Number, "head1", "", "")
 	applyWebhookEvent(webhookDelivery{eventType: "pull_request_review", event: review(1)})
 
 	if len(*got) != 0 {

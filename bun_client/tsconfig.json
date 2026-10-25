@@ -13,6 +13,6 @@
         "isolatedModules": true,
         "noEmit": true
     },
-    "include": ["server.ts", "test_rpc.ts", "scripts/**/*.ts"],
+    "include": ["server.ts", "remote_rpc.ts", "test_rpc.ts", "scripts/**/*.ts"],
     "exclude": ["node_modules", "frontend", "embedded_assets.ts"]
 }

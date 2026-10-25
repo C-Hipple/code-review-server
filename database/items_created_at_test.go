@@ -24,7 +24,7 @@ func itemCreatedAt(t *testing.T, db *DB, sectionID int64, identifier string) tim
 // every later upsert, and not read back as "now".
 func TestItemCreatedAtIsWhenAddedToSection(t *testing.T) {
 	db := newTestDB(t)
-	section, err := db.GetOrCreateSection("Review Requested", 0)
+	section, err := db.GetOrCreateSection("", "Review Requested", 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestItemCreatedAtIsWhenAddedToSection(t *testing.T) {
 // action-log row for the PR in that section.
 func TestItemCreatedAtBackfill(t *testing.T) {
 	db := newTestDB(t)
-	section, err := db.GetOrCreateSection("Review Requested", 0)
+	section, err := db.GetOrCreateSection("", "Review Requested", 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}

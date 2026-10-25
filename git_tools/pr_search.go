@@ -67,6 +67,7 @@ const (
 var (
 	searchPRRefs = searchPRRefsFromGithub
 	myTeamRefs   = GetMyTeamRefs
+	tokenLogin   = GetAuthenticatedLogin
 )
 
 // ReviewRequestedRefs returns the open PRs GitHub is asking login to review —
@@ -74,13 +75,27 @@ var (
 // belong to. That union is what github.com's own "Review requests" list shows,
 // and the two halves need separate search qualifiers: review-requested: does
 // not expand to team membership.
+//
+// The team half is there only for the token's own account (teamRefsOf).
 func ReviewRequestedRefs(login string) ([]PRRef, error) {
 	if login == "" {
 		return nil, fmt.Errorf("cannot search for review requests without a GitHub login")
 	}
 	return cachedRefSearch("review_requested:"+strings.ToLower(login), func() []string {
-		return ReviewRequestedQueries(login, myTeamRefs())
+		return ReviewRequestedQueries(login, teamRefsOf(login))
 	})
+}
+
+// teamRefsOf returns the teams login belongs to, as far as the server can tell.
+// The token lists only its own account's teams (/user/teams), so for any other
+// login — a hosted server's users — it knows none, and their review requests
+// are only the ones made of them by name. Searching the token's teams for them
+// would fill their dashboard with requests that were never theirs.
+func teamRefsOf(login string) []string {
+	if !strings.EqualFold(login, tokenLogin()) {
+		return nil
+	}
+	return myTeamRefs()
 }
 
 // MyInteractionRefs returns the open PRs login has reviewed or commented on.

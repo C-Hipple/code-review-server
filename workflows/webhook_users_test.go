@@ -4,6 +4,7 @@ import (
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -320,5 +321,75 @@ func TestDeliveriesLeaveDeletedUsersAndRemovedWorkflowsAlone(t *testing.T) {
 	}
 	if section, err := env.db.GetSection("bob", greenRaw.SectionTitle); err != nil || section == nil {
 		t.Errorf("bob's remaining section went with the prune: %v", err)
+	}
+}
+
+// Waiting on me is judged for each dashboard's own login, from the caches a
+// delivery just patched: the author answering alice's review comment puts the
+// PR in alice's section, and nobody else's.
+func TestAReplyPutsThePRInTheCommentersWaitingOnMeOnly(t *testing.T) {
+	waitingRaw := config.RawWorkflow{WorkflowType: "WaitingOnMeWorkflow", Name: "waiting", SectionTitle: "Waiting On Me"}
+	env := newWebhookTestEnv(t)
+	cfg := config.C()
+	server := waitingRaw
+	server.GithubUsername = "me"
+	cfg.GithubUsername, cfg.UserActiveHours, cfg.RawWorkflows = "me", 24, []config.RawWorkflow{server}
+	config.SetC(cfg)
+	for _, login := range []string{"alice", "bob"} {
+		registerUser(t, env.db, database.User{Login: login, LastSeen: time.Now()}, waitingRaw)
+	}
+	run := RunSet(config.C(), time.Now())
+	for _, wf := range run {
+		if _, err := workflowSection(env.db, wf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setActiveWorkflows(run)
+	withCycleCoverage(t, whOwner+"/"+whRepo)
+	git_tools.SetPRStateSource(webhookPRState{})
+	for _, login := range []string{"me", "alice", "bob"} {
+		// No interaction prefilter to hand: every PR is checked, from the
+		// caches, rather than searched for.
+		git_tools.GlobalCache.Set("open_interactions:"+login, git_tools.InteractionSet(nil), time.Minute)
+	}
+	t.Cleanup(func() {
+		git_tools.SetPRStateSource(nil)
+		setActiveWorkflows(nil)
+		for _, login := range []string{"me", "alice", "bob"} {
+			git_tools.GlobalCache.Set("open_interactions:"+login, nil, -1)
+		}
+	})
+
+	key := whKey(1)
+	seedCachedPR(t, env.db, key, "head1")
+	at := func(s int64) *github.Timestamp { return &github.Timestamp{Time: time.Unix(s, 0)} }
+	comment := func(id int64, login string, created int64) *github.PullRequestComment {
+		return &github.PullRequestComment{ID: github.Ptr(id), URL: github.Ptr("https://api.github.com/repos/acme/widgets/pulls/comments/" + itoa(int(id))),
+			DiffHunk: github.Ptr("@@"), Path: github.Ptr("w.go"), Body: github.Ptr("hm"), User: &github.User{Login: github.Ptr(login)}, CreatedAt: at(created)}
+	}
+	j, _ := json.Marshal([]*github.PullRequestComment{comment(10, "alice", 100)})
+	if err := env.db.UpsertPRComments(whOwner, whRepo, 1, string(j)); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.UpsertPRReviewThreads(whOwner, whRepo, 1, `[{"id":"T1","comment_ids":[10]}]`); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := comment(11, "author", 200)
+	reply.InReplyTo = github.Ptr(int64(10))
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewCommentEvent{
+		Action: github.Ptr("created"), Comment: reply, PullRequest: whPR(1, "head1"), Repo: whRepository(),
+	}})
+	drainReevaluations()
+
+	for user, want := range map[string]bool{"": false, "alice": true, "bob": false} {
+		section, err := env.db.GetSection(user, waitingRaw.SectionTitle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, _ := env.db.GetItem(section.ID, "acme/widgets-1")
+		if listed := item != nil && slices.Contains(item.GetWorkflows(), config.OwnershipKey(user, waitingRaw.Name)); listed != want {
+			t.Errorf("%q's Waiting On Me lists the PR = %v, want %v", user, listed, want)
+		}
 	}
 }

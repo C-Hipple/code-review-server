@@ -36,7 +36,7 @@ export CRS_WEBHOOK_SECRET="the secret you give GitHub below"
 | `ListenAddress` | Where to listen, as `host:port`. Required — without it nothing listens. |
 | `Secret` | The webhook's secret. Leave it out of the file and export `CRS_WEBHOOK_SECRET` instead (the file's value wins when both are set). Required: unsigned deliveries are never accepted, so without a secret nothing listens. |
 | `Path` | The URL path GitHub posts to. Default `/github/webhook`. |
-| `Repos` | The repositories whose webhooks deliver here: `owner/repo`, or `owner/*` for an organization webhook. Only PRs in these are left to webhooks; any other PR is still polled. Default: every repository the config already names — the root `Repos` and each workflow's own. The search-driven workflows (`WaitingOnMeWorkflow`, `MyReviewRequestsWorkflow`) name none, so a config made only of them needs `Repos` set. |
+| `Repos` | The repositories whose webhooks deliver here: `owner/repo`, or `owner/*` for an organization webhook. Only PRs in these are left to webhooks; any other PR is still polled. Default: every repository the config already names — the root `Repos` and each workflow's own. The search-driven workflows (`WaitingOnMeWorkflow`, `MyReviewRequestsWorkflow`) name none, so a config made only of them needs `Repos` set. Names match without regard to case, here and everywhere else: GitHub's deliveries spell a repository as GitHub does, and find the same PRs as the config's spelling of it. |
 | `FullRefreshInterval` | Minutes between cycles that refresh every PR as if webhooks were off, to catch up on any delivery that never arrived. Default 360 (six hours). Set it to `SleepDuration` or less and every cycle refreshes everything, with webhooks only filling in between — see [Rolling It Out](#rolling-it-out). |
 
 The table is re-read every cycle, so adding, changing or removing it takes effect on the next sync, without a restart.
@@ -101,7 +101,7 @@ A delivery can change which sections a PR belongs in, not only what its rows say
 - **rewritten** — details included — in one it still matches,
 - **dropped** from one it no longer matches; a row no workflow claims any more is removed.
 
-What "matches" means is what the workflow's own run would decide: for a repository-list workflow, the PR's repository and state and its filters; for *Review Requested*, a review request to you or one of your teams, then its filters; for *Waiting on me*, its filters. A project-list workflow's PRs are whatever its Jira epic links, which a PR can't tell, so there a delivery can only drop a PR its filters now reject.
+What "matches" means is what the workflow's own run would decide: for a repository-list workflow, the PR's repository and state and its filters; for *Review Requested*, a review request to you or one of your teams (the token's teams; on a [hosted server](#on-a-hosted-server) a user's requests by name), then its filters; for *Waiting on me*, its filters. A project-list workflow's PRs are whatever its Jira epic links, which a PR can't tell, so there a delivery can only drop a PR its filters now reject.
 
 This happens only while webhooks are trusted for the PR, and only when its caches hold its current head, so it never asks GitHub for anything. A delivery that lands while a cycle is refreshing everything is checked as soon as that cycle finishes. A delivery with no PR in it (a conversation comment, a check run, a commit status) is judged against the PR as the last listing or delivery showed it. If a cycle is writing sections when a delivery lands, the check waits for it to finish, so a cycle working from an older listing can't undo it. A burst of deliveries about one PR — a push sets off a check run delivery per check — is checked once.
 
@@ -152,7 +152,14 @@ The log carries the same, per cycle: `GitHub API calls this cycle mode=...`, `Gi
 
 ## On a Hosted Server
 
-On a [hosted server](hosted_server.md#github-webhooks) the server's `[Webhooks]` table serves everyone. The PR caches are shared, so deliveries keep every user's review view current, and a webhook cycle reads the PRs it covers from the caches for every dashboard's workflows alike. [Sections follow deliveries](#sections-follow-deliveries) on the server's own dashboard — its config file's workflows; a user's dashboard follows the cycles, its rows' status, title and tags included. `Repos` defaults to the repositories the server's config names, so PRs a user's workflows list elsewhere are polled; an organization webhook (`owner/*`) covers them.
+On a [hosted server](hosted_server.md#github-webhooks) the server's `[Webhooks]` table serves everyone, and one delivery serves every dashboard. The listener is the table's `ListenAddress`, an address of its own beside `--listen`'s: GitHub posts to the first, your team's clients connect to the second.
+
+- **The PR caches are shared**, so a delivery keeps every user's review view current, and a webhook cycle reads the PRs it covers from the caches for every dashboard's workflows alike.
+- **[Sections follow deliveries](#sections-follow-deliveries) on every active dashboard**: the server's own — its config file's workflows — and every user's the cycles run, those seen within `UserActiveHours`. Each workflow judges the PR by its own login, as its run does. A review a user submits through their [linked account](hosted_server.md#linking-your-github-account) arrives naming them, and takes the PR out of their *Review Requested* alone; a review requested of one user puts it in that user's. A request of one of the token's teams counts on the server's own dashboard only, as in the cycles' searches, since the token can't list anyone else's teams.
+- **An idle user's dashboard catches up at their next cycle**: which sections list a PR, and the rows' details. Their rows' status, title and tags — the PR's own, the same on every dashboard — follow deliveries meanwhile.
+- **Deliveries follow the workflows the latest cycle started with.** A user who registers or changes their workflows is followed from the next cycle, which is also when their new sections are created; a user deleted since, or a workflow removed, is not followed at all, and no delivery creates a section.
+
+`Repos` defaults to the repositories the server's config names, so PRs a user's workflows list elsewhere go on being polled. Users' workflows can name repositories the config doesn't, so for a hosted server an organization webhook is the natural fit: `Repos = ["my-org/*"]` leaves every PR in the organization to webhooks, whichever dashboard lists it.
 
 ## Security
 

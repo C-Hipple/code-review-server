@@ -79,16 +79,42 @@ seconds is closed.
 ### GitHub webhooks
 
 A `[Webhooks]` table in the server's config works as it does for one user
-(see [GitHub Webhooks](webhooks.md)). Deliveries arrive over HTTP at its
-`ListenAddress`, an address of its own beside `--listen`'s, which GitHub has to
-be able to reach. The PR caches are shared, so a delivery keeps every user's
-review view current, and a webhook cycle reads the PRs it covers from the
-caches whichever dashboards list them. Sections follow deliveries on the
-server's own dashboard; a user's dashboard — which sections a PR is in, and
-its rows' status, title and tags — catches up on the next cycle. `Repos`
-defaults to the repositories the server's config names, so PRs that users'
-workflows list elsewhere go on being polled: an organization webhook
-(`owner/*`) covers them.
+(see [GitHub Webhooks](webhooks.md)), and one delivery serves every
+dashboard. Deliveries arrive over HTTP at its `ListenAddress`, an address of
+its own beside `--listen`'s: GitHub has to be able to reach it, while only
+your team's clients need to reach `--listen`.
+
+```toml
+[Webhooks]
+ListenAddress = "127.0.0.1:8790"   # GitHub posts here, through a proxy or tunnel
+Repos = ["my-org/*"]               # an organization webhook
+```
+
+- **Caches.** The PR caches are shared, so a delivery keeps every user's
+  review view current, and a webhook cycle reads the PRs it covers from the
+  caches whichever dashboards list them.
+- **Sections.** A delivery re-checks the PR's sections on the server's own
+  dashboard and on every active user's — the users the cycles run, seen
+  within `UserActiveHours` — each workflow judging it by its own login. A
+  review a user submits through their linked account names them, so it takes
+  the PR out of their *Review Requested* straight away, and out of nobody
+  else's; a review requested of a user puts it in theirs. A request of one
+  of the token's teams lands on the server's own dashboard only.
+- **Idle users.** An idle user's dashboard catches up at their next cycle —
+  which sections list a PR, and the rows' details. Only their rows' status,
+  title and tags, which are the PR's own, follow deliveries meanwhile.
+- **Changes between cycles.** Deliveries follow the workflows the latest
+  cycle started with: a user who registers or changes their workflows is
+  followed from the next cycle, which creates their sections. A deleted
+  user's dashboard and a removed workflow's section are not written to, and
+  no delivery creates a section.
+- **Coverage.** `Repos` defaults to the repositories the server's config
+  names, so PRs that users' workflows list elsewhere go on being polled. An
+  organization webhook with `Repos = ["my-org/*"]` leaves every PR in the
+  organization to webhooks, whichever dashboard lists it.
+- **Spelling.** Owner and repository names are matched without regard to
+  case: a delivery, which spells them as GitHub does, finds the PRs that the
+  config or a user's workflows spell otherwise.
 
 ## Clients
 
@@ -268,8 +294,9 @@ statuses a client sees are in the [protocol](protocol.md#linking-a-github-accoun
 
 Everything the server computes "for me" is computed for the token's account,
 not the viewer: a team chip's `mine` and `personal`, a reaction's
-`viewer_reacted`. A user's workflows are the exception: their filters and
-searches compare against the user's own login. The token can list only its
+`viewer_reacted`. A user's workflows are the exception: their filters,
+searches and [webhook re-checks](#github-webhooks) compare against the
+user's own login. The token can list only its
 own account's teams, so a user's review-request searches cover the requests
 made of them by name, not those made of their teams.
 

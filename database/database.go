@@ -138,6 +138,7 @@ type prCacheTable struct {
 // hosted server any user can make the server fetch for a repository of their
 // own (a fork of the same name, one PR in it, a SyncPR): its diff, head and
 // comments were then served for the other owner's PR of the same number.
+// Both names are kept lower-cased (foldOwnerRepo).
 var prCacheTables = []prCacheTable{
 	{"PullRequests", `
 		owner TEXT NOT NULL,
@@ -208,17 +209,33 @@ var prCacheTables = []prCacheTable{
 		UNIQUE(owner, repo, pr_number, sha)`, "sha, status_json"},
 }
 
+// foldOwnerRepo is how a PR's owner and repository are spelled in the keys of
+// the tables that hold what is known about a PR — the PR caches, the PR
+// metadata, plugin and AI feature results, its worktree and the workflow
+// action log: lower-cased. GitHub treats both names without regard to case, and they
+// reach these tables in more than one spelling. A workflow cycle keys a PR by
+// its repository as the config spells it ("acme/widgets"); a webhook delivery
+// by GitHub's own spelling ("Acme/widgets"), as do clients, which take it from
+// the PR; the browser extension by whatever the page's URL says. Every
+// accessor folds the key on the way in and out, so each spelling reads and
+// writes the same rows: a delivery patches the caches a cycle wrote, and a
+// client reads them.
+func foldOwnerRepo(owner, repo string) (string, string) {
+	return strings.ToLower(owner), strings.ToLower(repo)
+}
+
 // prCacheOwner is the owner a short-name cache row is migrated under: the one
 // owner the database knows a PR of that repository name and number under —
 // from the caches that were always keyed by owner — or "" when it knows none,
-// or more than one, and cannot tell whose the row is.
+// or more than one, and cannot tell whose the row is. Owners and repositories
+// that differ only in case are one (foldOwnerRepo).
 const prCacheOwner = `COALESCE((
-	SELECT CASE WHEN COUNT(DISTINCT k.owner) = 1 THEN MIN(k.owner) END FROM (
+	SELECT CASE WHEN COUNT(DISTINCT lower(k.owner)) = 1 THEN lower(MIN(k.owner)) END FROM (
 		SELECT owner, repo, pr_number FROM PRMetadataCache
 		UNION SELECT owner, repo, pr_number FROM PluginResults
 		UNION SELECT owner, repo, pr_number FROM AIResults
 		UNION SELECT owner, repo, pr_number FROM Worktrees
-	) k WHERE k.repo = %[1]s.repo AND k.pr_number = %[1]s.pr_number AND k.owner != ''
+	) k WHERE lower(k.repo) = lower(%[1]s.repo) AND k.pr_number = %[1]s.pr_number AND k.owner != ''
 ), '')`
 
 // migratePRCacheOwners rebuilds each PR cache that predates its owner column,
@@ -251,6 +268,107 @@ func (db *DB) migratePRCacheOwners() error {
 		dropped, _ := res.RowsAffected()
 		slog.Info("Migrated a PR cache to keys with the PR's owner", "table", t.name, "dropped_rows_of_unknown_owner", dropped)
 	}
+	return nil
+}
+
+// foldedTable is a table whose keys foldOwnerRepo spells, and how
+// foldPRKeyCase chooses between rows that turn out to be one PR's once their
+// keys are folded.
+type foldedTable struct {
+	name string
+	// key lists the columns that identify a row together with its owner and
+	// repository — the rest of its UNIQUE constraint. Empty for a table
+	// without one, whose rows are only re-spelled.
+	key string
+	// newest orders the rows of one key best first: the most recently
+	// written as far as the table can tell (its timestamp where it keeps one,
+	// otherwise the row inserted last), and for a diff one that holds it over
+	// a SHA-only placeholder. The first is kept.
+	newest string
+}
+
+var foldedTables = []foldedTable{
+	{"PullRequests", "pr_number, latest_sha", "(body != '') DESC, rowid DESC"},
+	{"PRComments", "pr_number", "rowid DESC"},
+	{"RequestedReviewers", "pr_number", "rowid DESC"},
+	{"PRReviews", "pr_number", "rowid DESC"},
+	{"PRCommits", "pr_number", "rowid DESC"},
+	{"PRReviewThreads", "pr_number", "rowid DESC"},
+	{"PRReactions", "pr_number", "rowid DESC"},
+	{"PRTeamReviews", "pr_number", "updated_at DESC, rowid DESC"},
+	{"PRMergeability", "pr_number", "rowid DESC"},
+	{"CIStatus", "pr_number, sha", "rowid DESC"},
+	{"PRMetadataCache", "pr_number", "cached_at DESC, rowid DESC"},
+	{"PluginResults", "pr_number, plugin_name", "updated_at DESC, rowid DESC"},
+	{"AIResults", "pr_number, feature_name", "updated_at DESC, rowid DESC"},
+	{"Worktrees", "pr_number", "created_at DESC, rowid DESC"},
+	{"WorkflowActionLog", "", ""},
+}
+
+// foldPRKeyCase brings the keys an older database wrote into the spelling
+// foldOwnerRepo gives them. Rows whose owner or repository differ only in case
+// are one PR's — a cycle wrote one under the config's spelling, a client or a
+// webhook delivery the other under GitHub's — so of each such set the best is
+// kept (foldedTable.newest) and the rest are dropped. Which one survives
+// matters for a cycle at most: the first after the upgrade refreshes every PR
+// a workflow lists (with webhooks on, the first cycle is always a full
+// refresh), rewriting its caches. Rows keep their rowids, so the most recent
+// head of a PR is still the PullRequests row written last. A table whose keys
+// are all folded already is left alone, so running this against a migrated
+// database changes nothing.
+func (db *DB) foldPRKeyCase() error {
+	for _, t := range foldedTables {
+		var unfolded bool
+		if err := db.conn.QueryRow(
+			"SELECT EXISTS (SELECT 1 FROM " + t.name + " WHERE owner != lower(owner) OR repo != lower(repo))",
+		).Scan(&unfolded); err != nil {
+			return fmt.Errorf("reading %s: %w", t.name, err)
+		}
+		if !unfolded {
+			continue
+		}
+		if err := db.foldTableKeys(t); err != nil {
+			return fmt.Errorf("folding %s: %w", t.name, err)
+		}
+	}
+	return nil
+}
+
+// foldTableKeys is foldPRKeyCase for one table, in one transaction: drop the
+// rows another spelling of their key outranks, then re-spell the rest. Once
+// the duplicates are gone the re-spelling cannot collide with a UNIQUE
+// constraint.
+func (db *DB) foldTableKeys(t foldedTable) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var dropped int64
+	if t.key != "" {
+		res, err := tx.Exec(`DELETE FROM ` + t.name + ` WHERE rowid IN (
+			SELECT rowid FROM (
+				SELECT rowid, ROW_NUMBER() OVER (
+					PARTITION BY lower(owner), lower(repo), ` + t.key + `
+					ORDER BY ` + t.newest + `
+				) AS rank FROM ` + t.name + `
+			) WHERE rank > 1
+		)`)
+		if err != nil {
+			return err
+		}
+		dropped, _ = res.RowsAffected()
+	}
+	res, err := tx.Exec("UPDATE " + t.name + " SET owner = lower(owner), repo = lower(repo) WHERE owner != lower(owner) OR repo != lower(repo)")
+	if err != nil {
+		return err
+	}
+	folded, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.Info("Folded the case of PR keys", "table", t.name, "rows_respelled", folded, "case_variants_dropped", dropped)
 	return nil
 }
 
@@ -790,6 +908,11 @@ func (db *DB) initSchema() error {
 	if err := db.migratePRCacheOwners(); err != nil {
 		return fmt.Errorf("migrating the PR caches to keys with the PR's owner: %w", err)
 	}
+	// And every accessor reads them folded, so a key left in another case
+	// would never be found again.
+	if err := db.foldPRKeyCase(); err != nil {
+		return fmt.Errorf("folding the case of PR keys: %w", err)
+	}
 
 	return nil
 }
@@ -1014,6 +1137,7 @@ func countForeignKeyViolations(ctx context.Context, tx *sql.Tx) (int, error) {
 }
 
 func (db *DB) AddWorktree(prNumber int, repo, owner, path, branch string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO Worktrees (pr_number, repo, owner, path, branch)
 		 VALUES (?, ?, ?, ?, ?)
@@ -1027,6 +1151,7 @@ func (db *DB) AddWorktree(prNumber int, repo, owner, path, branch string) error 
 }
 
 func (db *DB) GetWorktree(prNumber int, repo, owner string) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var path string
 	err := db.conn.QueryRow(
 		"SELECT path FROM Worktrees WHERE pr_number = ? AND repo = ? AND owner = ?",
@@ -1043,6 +1168,7 @@ func (db *DB) GetWorktree(prNumber int, repo, owner string) (string, error) {
 }
 
 func (db *DB) RemoveWorktreeRecord(prNumber int, repo, owner string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM Worktrees WHERE pr_number = ? AND repo = ? AND owner = ?",
 		prNumber, repo, owner,
@@ -1058,6 +1184,7 @@ func (db *DB) RemoveWorktreeRecord(prNumber int, repo, owner string) error {
 // plugin takes over from the automatic run it got before joining the section.
 // Checked and written in one statement, like MarkPluginDeferred.
 func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName, result, status, sha, callType string) (bool, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	res, err := db.conn.Exec(
 		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, call_type, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -1085,6 +1212,7 @@ type PluginResult struct {
 }
 
 func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]PluginResult, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	rows, err := db.conn.Query(
 		"SELECT plugin_name, result, status FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -1114,6 +1242,7 @@ func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]Plu
 // status and the call type of the run that wrote it, all empty when there is
 // none. A row written before call types were stored has an empty call type.
 func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName string) (sha, status, callType string, err error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	err = db.conn.QueryRow(
 		"SELECT sha, COALESCE(status, ''), COALESCE(call_type, '') FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
 		owner, repo, prNumber, pluginName,
@@ -1155,6 +1284,7 @@ func (db *DB) MarkPluginDeferred(owner, repo string, prNumber int, pluginName, s
 // DeletePluginResultsForPR clears plugin results for a PR to force rerun
 // If pluginName is empty, all plugin results for the PR are deleted
 func (db *DB) DeletePluginResultsForPR(owner, repo string, prNumber int, pluginName string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	if pluginName == "" {
 		// Delete all plugin results for this PR
 		_, err := db.conn.Exec(
@@ -1992,6 +2122,7 @@ func requireOneRow(res sql.Result, err error) error {
 // GetPullRequest returns the cached diff of owner/repo#prNumber and the head
 // SHA it is for.
 func (db *DB) GetPullRequest(owner, repo string, prNumber int) (string, string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var body string
 	var sha string
 	// A PR accumulates one row per head SHA it has ever had (the UNIQUE key
@@ -2017,6 +2148,7 @@ func (db *DB) GetPullRequest(owner, repo string, prNumber int) (string, string, 
 // their head, by the rows cached for them. It is how a commit status, which
 // names a commit but no PR, is traced back to the PRs it reports on.
 func (db *DB) FindPRNumbersBySHA(owner, repo, sha string) ([]int, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	rows, err := db.conn.Query(
 		"SELECT DISTINCT pr_number FROM PullRequests WHERE owner = ? AND repo = ? AND latest_sha = ? ORDER BY pr_number",
 		owner, repo, sha,
@@ -2038,6 +2170,7 @@ func (db *DB) FindPRNumbersBySHA(owner, repo, sha string) ([]int, error) {
 
 // GetPullRequestSHAs returns both the head and base SHAs for a cached PR.
 func (db *DB) GetPullRequestSHAs(owner, repo string, prNumber int) (headSHA, baseSHA string, err error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	err = db.conn.QueryRow(
 		"SELECT latest_sha, base_sha FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ? ORDER BY rowid DESC LIMIT 1",
 		owner, repo, prNumber,
@@ -2050,6 +2183,7 @@ func (db *DB) GetPullRequestSHAs(owner, repo string, prNumber int) (headSHA, bas
 }
 
 func (db *DB) UpsertPullRequest(owner, repo string, prNumber int, latestSha, baseSha, body string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	// Never overwrite a cached diff with an empty body. The workflow writes a
 	// SHA-only placeholder row (empty body) for PRs whose section doesn't need
 	// the diff, purely so CI/SHA lookups work. Clobbering the real diff with ""
@@ -2067,6 +2201,7 @@ func (db *DB) UpsertPullRequest(owner, repo string, prNumber int, latestSha, bas
 }
 
 func (db *DB) GetPRComments(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var commentsJSON string
 	err := db.conn.QueryRow(
 		"SELECT comments_json FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2083,6 +2218,7 @@ func (db *DB) GetPRComments(owner, repo string, prNumber int) (string, error) {
 }
 
 func (db *DB) UpsertPRComments(owner, repo string, prNumber int, commentsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRComments (owner, repo, pr_number, comments_json)
 		 VALUES (?, ?, ?, ?)
@@ -2094,6 +2230,7 @@ func (db *DB) UpsertPRComments(owner, repo string, prNumber int, commentsJSON st
 }
 
 func (db *DB) DeletePRComments(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRComments WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2108,6 +2245,7 @@ func (db *DB) DeletePRComments(owner, repo string, prNumber int) error {
 // the counting, so totalling every PR on the review list never decodes their
 // comment JSON in Go. A PR with no cached comments returns an empty map.
 func (db *DB) GetPRCommentCountsByAuthor(owner, repo string, prNumber int) (map[string]int, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	rows, err := db.conn.Query(
 		`SELECT COALESCE(json_extract(c.value, '$.user.login'), ''), COUNT(*)
 		 FROM PRComments p, json_each(p.comments_json) c
@@ -2133,6 +2271,7 @@ func (db *DB) GetPRCommentCountsByAuthor(owner, repo string, prNumber int) (map[
 }
 
 func (db *DB) DeletePullRequests(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PullRequests WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2141,6 +2280,7 @@ func (db *DB) DeletePullRequests(owner, repo string, prNumber int) error {
 }
 
 func (db *DB) GetRequestedReviewers(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var reviewersJSON string
 	err := db.conn.QueryRow(
 		"SELECT reviewers_json FROM RequestedReviewers WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2157,6 +2297,7 @@ func (db *DB) GetRequestedReviewers(owner, repo string, prNumber int) (string, e
 }
 
 func (db *DB) UpsertRequestedReviewers(owner, repo string, prNumber int, reviewersJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO RequestedReviewers (owner, repo, pr_number, reviewers_json)
 		 VALUES (?, ?, ?, ?)
@@ -2168,6 +2309,7 @@ func (db *DB) UpsertRequestedReviewers(owner, repo string, prNumber int, reviewe
 }
 
 func (db *DB) GetCIStatus(owner, repo string, prNumber int, sha string) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var statusJSON string
 	err := db.conn.QueryRow(
 		"SELECT status_json FROM CIStatus WHERE owner = ? AND repo = ? AND pr_number = ? AND sha = ?",
@@ -2184,6 +2326,7 @@ func (db *DB) GetCIStatus(owner, repo string, prNumber int, sha string) (string,
 }
 
 func (db *DB) UpsertCIStatus(owner, repo string, prNumber int, sha, statusJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO CIStatus (owner, repo, pr_number, sha, status_json)
 		 VALUES (?, ?, ?, ?, ?)
@@ -2195,6 +2338,7 @@ func (db *DB) UpsertCIStatus(owner, repo string, prNumber int, sha, statusJSON s
 }
 
 func (db *DB) GetPRMetadataCache(owner string, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var metadataJSON string
 	err := db.conn.QueryRow(
 		"SELECT metadata_json FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2211,6 +2355,7 @@ func (db *DB) GetPRMetadataCache(owner string, repo string, prNumber int) (strin
 }
 
 func (db *DB) UpsertPRMetadataCache(owner string, repo string, prNumber int, metadataJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRMetadataCache (owner, repo, pr_number, metadata_json, cached_at)
 		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -2223,6 +2368,7 @@ func (db *DB) UpsertPRMetadataCache(owner string, repo string, prNumber int, met
 }
 
 func (db *DB) GetReleaseStatus(owner string, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var status string
 	err := db.conn.QueryRow(
 		"SELECT release_status FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2239,6 +2385,7 @@ func (db *DB) GetReleaseStatus(owner string, repo string, prNumber int) (string,
 }
 
 func (db *DB) UpsertReleaseStatus(owner string, repo string, prNumber int, releaseStatus string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`UPDATE PRMetadataCache SET release_status = ? WHERE owner = ? AND repo = ? AND pr_number = ?`,
 		releaseStatus, owner, repo, prNumber,
@@ -2247,6 +2394,7 @@ func (db *DB) UpsertReleaseStatus(owner string, repo string, prNumber int, relea
 }
 
 func (db *DB) DeletePRMetadataCache(owner string, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRMetadataCache WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2316,6 +2464,7 @@ func (db *DB) Begin() (*sql.Tx, error) {
 }
 
 func (db *DB) GetPRReviews(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var reviewsJSON string
 	err := db.conn.QueryRow(
 		"SELECT reviews_json FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2332,6 +2481,7 @@ func (db *DB) GetPRReviews(owner, repo string, prNumber int) (string, error) {
 }
 
 func (db *DB) UpsertPRReviews(owner, repo string, prNumber int, reviewsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRReviews (owner, repo, pr_number, reviews_json)
 		 VALUES (?, ?, ?, ?)
@@ -2343,6 +2493,7 @@ func (db *DB) UpsertPRReviews(owner, repo string, prNumber int, reviewsJSON stri
 }
 
 func (db *DB) DeletePRReviews(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2351,6 +2502,7 @@ func (db *DB) DeletePRReviews(owner, repo string, prNumber int) error {
 }
 
 func (db *DB) GetPRCommits(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var commitsJSON string
 	err := db.conn.QueryRow(
 		"SELECT commits_json FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2367,6 +2519,7 @@ func (db *DB) GetPRCommits(owner, repo string, prNumber int) (string, error) {
 }
 
 func (db *DB) UpsertPRCommits(owner, repo string, prNumber int, commitsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRCommits (owner, repo, pr_number, commits_json)
 		 VALUES (?, ?, ?, ?)
@@ -2378,6 +2531,7 @@ func (db *DB) UpsertPRCommits(owner, repo string, prNumber int, commitsJSON stri
 }
 
 func (db *DB) DeletePRCommits(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRCommits WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2389,6 +2543,7 @@ func (db *DB) DeletePRCommits(owner, repo string, prNumber int) error {
 // does not expose it), so it gets its own cache alongside the other PR caches.
 
 func (db *DB) GetPRReviewThreads(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var threadsJSON string
 	err := db.conn.QueryRow(
 		"SELECT threads_json FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2405,6 +2560,7 @@ func (db *DB) GetPRReviewThreads(owner, repo string, prNumber int) (string, erro
 }
 
 func (db *DB) UpsertPRReviewThreads(owner, repo string, prNumber int, threadsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRReviewThreads (owner, repo, pr_number, threads_json)
 		 VALUES (?, ?, ?, ?)
@@ -2416,6 +2572,7 @@ func (db *DB) UpsertPRReviewThreads(owner, repo string, prNumber int, threadsJSO
 }
 
 func (db *DB) DeletePRReviewThreads(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRReviewThreads WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2430,6 +2587,7 @@ func (db *DB) DeletePRReviewThreads(owner, repo string, prNumber int) error {
 // changed.
 
 func (db *DB) GetPRReactions(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var reactionsJSON string
 	err := db.conn.QueryRow(
 		"SELECT reactions_json FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2446,6 +2604,7 @@ func (db *DB) GetPRReactions(owner, repo string, prNumber int) (string, error) {
 }
 
 func (db *DB) UpsertPRReactions(owner, repo string, prNumber int, reactionsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRReactions (owner, repo, pr_number, reactions_json)
 		 VALUES (?, ?, ?, ?)
@@ -2457,6 +2616,7 @@ func (db *DB) UpsertPRReactions(owner, repo string, prNumber int, reactionsJSON 
 }
 
 func (db *DB) DeletePRReactions(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRReactions WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2470,6 +2630,7 @@ func (db *DB) DeletePRReactions(owner, repo string, prNumber int) error {
 // "[]") is what stops the workflow re-asking GitHub for the request history on
 // every cycle.
 func (db *DB) GetPRTeamReviews(owner, repo string, prNumber int) (string, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	var teamsJSON string
 	err := db.conn.QueryRow(
 		"SELECT teams_json FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
@@ -2486,6 +2647,7 @@ func (db *DB) GetPRTeamReviews(owner, repo string, prNumber int) (string, error)
 }
 
 func (db *DB) UpsertPRTeamReviews(owner, repo string, prNumber int, teamsJSON string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRTeamReviews (owner, repo, pr_number, teams_json, updated_at)
 		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -2498,6 +2660,7 @@ func (db *DB) UpsertPRTeamReviews(owner, repo string, prNumber int, teamsJSON st
 }
 
 func (db *DB) DeletePRTeamReviews(owner, repo string, prNumber int) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		"DELETE FROM PRTeamReviews WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,
@@ -2519,6 +2682,7 @@ func (db *DB) DeletePRTeamReviews(owner, repo string, prNumber int) error {
 // conflict every time someone merges elsewhere. "unknown" for a new head
 // replaces it, because the old answer was about other code.
 func (db *DB) RecordPRMergeability(owner, repo string, prNumber int, headSHA, state string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO PRMergeability (owner, repo, pr_number, head_sha, state)
 		 VALUES (?, ?, ?, ?, ?)
@@ -2537,6 +2701,7 @@ func (db *DB) RecordPRMergeability(owner, repo string, prNumber int, headSHA, st
 // GetPRMergeability returns the mergeability recorded for a PR and the head SHA
 // it was recorded for, or two empty strings when none has been.
 func (db *DB) GetPRMergeability(owner, repo string, prNumber int) (state, headSHA string, err error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	err = db.conn.QueryRow(
 		"SELECT state, head_sha FROM PRMergeability WHERE owner = ? AND repo = ? AND pr_number = ?",
 		owner, repo, prNumber,

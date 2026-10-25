@@ -165,18 +165,14 @@ func activeWorkflowsSnapshot() []Workflow {
 
 // rememberedPRs holds the latest PR object seen for each PR, from a cycle's
 // listing or a delivery, for re-evaluating PRs after a delivery that carries
-// none — a conversation comment, a check run, a commit status.
-var rememberedPRs sync.Map // rememberedKey -> rememberedPR
+// none — a conversation comment, a check run, a commit status. It is keyed by
+// the folded key: a cycle knows a PR by the repository as the config spells
+// it, a delivery as GitHub does.
+var rememberedPRs sync.Map // folded PRKey -> rememberedPR
 
 type rememberedPR struct {
 	pr *github.PullRequest
 	at time.Time
-}
-
-// rememberedKey ignores case: a cycle keys PRs by the repository as the config
-// spells it, a delivery as GitHub does.
-func rememberedKey(key PRKey) PRKey {
-	return PRKey{Owner: strings.ToLower(key.Owner), Repo: strings.ToLower(key.Repo), Number: key.Number}
 }
 
 // rememberPR records pr as the latest seen for key, unless what is held
@@ -186,7 +182,7 @@ func rememberPR(key PRKey, pr *github.PullRequest) {
 	if pr == nil {
 		return
 	}
-	k := rememberedKey(key)
+	k := key.folded()
 	if v, ok := rememberedPRs.Load(k); ok {
 		held := v.(rememberedPR).pr
 		if held.UpdatedAt != nil && pr.UpdatedAt != nil && held.UpdatedAt.After(pr.UpdatedAt.Time) {
@@ -197,7 +193,7 @@ func rememberPR(key PRKey, pr *github.PullRequest) {
 }
 
 func rememberedPRFor(key PRKey) *github.PullRequest {
-	if v, ok := rememberedPRs.Load(rememberedKey(key)); ok {
+	if v, ok := rememberedPRs.Load(key.folded()); ok {
 		return v.(rememberedPR).pr
 	}
 	return nil

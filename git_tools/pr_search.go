@@ -67,35 +67,40 @@ const (
 var (
 	searchPRRefs = searchPRRefsFromGithub
 	myTeamRefs   = GetMyTeamRefs
-	tokenLogin   = GetAuthenticatedLogin
 )
 
 // ReviewRequestedRefs returns the open PRs GitHub is asking login to review —
-// both the requests made of them directly and the requests made of a team they
-// belong to. That union is what github.com's own "Review requests" list shows,
-// and the two halves need separate search qualifiers: review-requested: does
-// not expand to team membership.
+// both the requests made of them directly and the requests made of a team the
+// token's account belongs to. That union is what github.com's own "Review
+// requests" list shows, and the two halves need separate search qualifiers:
+// review-requested: does not expand to team membership.
 //
-// The team half is there only for the token's own account (teamRefsOf).
+// The teams are the token's own (/user/teams lists no one else's), whoever
+// login is: this is the search for the server's own dashboard — its config
+// file's workflows — whose GithubUsername may name someone other than the
+// token's account, a bot or a shared token's, and still means the token's
+// teams. A hosted server's users search ReviewRequestedRefsByName instead.
 func ReviewRequestedRefs(login string) ([]PRRef, error) {
 	if login == "" {
 		return nil, fmt.Errorf("cannot search for review requests without a GitHub login")
 	}
 	return cachedRefSearch("review_requested:"+strings.ToLower(login), func() []string {
-		return ReviewRequestedQueries(login, teamRefsOf(login))
+		return ReviewRequestedQueries(login, myTeamRefs())
 	})
 }
 
-// teamRefsOf returns the teams login belongs to, as far as the server can tell.
-// The token lists only its own account's teams (/user/teams), so for any other
-// login — a hosted server's users — it knows none, and their review requests
-// are only the ones made of them by name. Searching the token's teams for them
-// would fill their dashboard with requests that were never theirs.
-func teamRefsOf(login string) []string {
-	if !strings.EqualFold(login, tokenLogin()) {
-		return nil
+// ReviewRequestedRefsByName returns the open PRs whose review is requested of
+// login by name — the half of ReviewRequestedRefs a hosted server's user gets.
+// The token can list only its own account's teams, so it cannot tell which
+// teams a user is in; searching the token's for them would fill their
+// dashboard with requests that were never theirs.
+func ReviewRequestedRefsByName(login string) ([]PRRef, error) {
+	if login == "" {
+		return nil, fmt.Errorf("cannot search for review requests without a GitHub login")
 	}
-	return myTeamRefs()
+	return cachedRefSearch("review_requested_by_name:"+strings.ToLower(login), func() []string {
+		return ReviewRequestedQueries(login, nil)
+	})
 }
 
 // MyInteractionRefs returns the open PRs login has reviewed or commented on.

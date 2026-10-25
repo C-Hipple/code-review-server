@@ -144,11 +144,30 @@ func (w SearchWorkflow) filters(login string) []git_tools.PRFilter {
 	return append([]git_tools.PRFilter{git_tools.MakeWaitingOnMeFilter(login)}, w.Filters...)
 }
 
+// searchesTokenTeams reports whether the review requests this workflow
+// follows include those made of the token's teams. A config file's workflow
+// is the server's own and does, whatever its GithubUsername names — as a
+// bot's or a shared token's config may name its owner. A user's on a hosted
+// server doesn't: the token can't list anyone else's teams, so a user follows
+// the requests made of them by name. The cycle's searches and a webhook
+// delivery's re-check both go by this.
+func (w SearchWorkflow) searchesTokenTeams() bool {
+	return w.User == ""
+}
+
+// reviewRequestedRefs is the review-request search for login.
+func (w SearchWorkflow) reviewRequestedRefs(login string) ([]git_tools.PRRef, error) {
+	if w.searchesTokenTeams() {
+		return git_tools.ReviewRequestedRefs(login)
+	}
+	return git_tools.ReviewRequestedRefsByName(login)
+}
+
 // candidateRefs runs the searches this mode draws its PRs from.
 func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
 	switch w.Mode {
 	case ModeReviewRequested:
-		return git_tools.ReviewRequestedRefs(login)
+		return w.reviewRequestedRefs(login)
 
 	case ModeWaitingOnMe:
 		// A PR is waiting on me either because I have an open review request
@@ -158,7 +177,7 @@ func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
 		// only exists among PRs I have reviewed or commented on, so the union
 		// of the two searches is the complete candidate set. See
 		// git_tools/interaction_prefilter.go for the full argument.
-		requested, err := git_tools.ReviewRequestedRefs(login)
+		requested, err := w.reviewRequestedRefs(login)
 		if err != nil {
 			return nil, err
 		}

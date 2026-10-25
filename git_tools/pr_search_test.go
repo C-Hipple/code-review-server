@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubSearch swaps in a fake search (and an empty team list, so no test ever
@@ -12,10 +13,9 @@ import (
 // was asked for.
 func stubSearch(t *testing.T, results map[string][]PRRef, err error) *[]string {
 	t.Helper()
-	oldSearch, oldTeams, oldLogin := searchPRRefs, myTeamRefs, tokenLogin
-	t.Cleanup(func() { searchPRRefs, myTeamRefs, tokenLogin = oldSearch, oldTeams, oldLogin })
+	oldSearch, oldTeams := searchPRRefs, myTeamRefs
+	t.Cleanup(func() { searchPRRefs, myTeamRefs = oldSearch, oldTeams })
 	myTeamRefs = func() []string { return nil }
-	tokenLogin = func() string { return "" }
 
 	queries := []string{}
 	searchPRRefs = func(query string) ([]PRRef, error) {
@@ -97,14 +97,21 @@ func TestReviewRequestedRefsUnionsAndDedupes(t *testing.T) {
 	}
 }
 
-// The token lists only its own account's teams. Its account's review
-// requests include them; anyone else's — a hosted server's user — include
-// only the requests made of them by name, never the token's teams.
-func TestReviewRequestedRefsSearchTheTokensTeamsOnlyForItsAccount(t *testing.T) {
+// The server's own dashboard searches the token's teams whoever its
+// GithubUsername names — a bot's or a shared token's config may name its
+// owner — and without asking GitHub who the token is. A hosted server's user
+// gets the requests made of them by name only, even when they share a login
+// with the token's account.
+func TestReviewRequestedRefsSearchTheTokensTeamsForTheServerOnly(t *testing.T) {
 	login := testLogin(t)
 	queries := stubSearch(t, nil, nil)
 	myTeamRefs = func() []string { return []string{"acme/platform"} }
-	tokenLogin = func() string { return strings.ToUpper(login) }
+	// Who the token is never comes into it. Were it asked, it would be told
+	// "the-bot" — someone other than login — from the cache rather than
+	// GitHub.
+	t.Setenv("CRS_GITHUB_TOKEN", "test-token")
+	GlobalCache.Set("authenticated_login", "the-bot", time.Hour)
+	t.Cleanup(func() { GlobalCache.Set("authenticated_login", "", -1) })
 
 	if _, err := ReviewRequestedRefs(login); err != nil {
 		t.Fatal(err)
@@ -113,15 +120,27 @@ func TestReviewRequestedRefsSearchTheTokensTeamsOnlyForItsAccount(t *testing.T) 
 		fmt.Sprintf("is:pr is:open archived:false review-requested:%s", login),
 		"is:pr is:open archived:false team-review-requested:acme/platform",
 	}; strings.Join(*queries, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the token's account searched %q, want %q", *queries, want)
+		t.Errorf("the server's dashboard searched %q, want %q", *queries, want)
 	}
 
+	for _, user := range []string{"alice-" + login, "the-bot"} {
+		*queries = nil
+		if _, err := ReviewRequestedRefsByName(user); err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("is:pr is:open archived:false review-requested:%s", user); len(*queries) != 1 || (*queries)[0] != want {
+			t.Errorf("user %s searched %q, want only %q", user, *queries, want)
+		}
+	}
+
+	// The two are cached apart: a user who shares the login doesn't get the
+	// server's team results, nor the server a user's narrower ones.
 	*queries = nil
-	if _, err := ReviewRequestedRefs("alice-" + login); err != nil {
+	if _, err := ReviewRequestedRefsByName(login); err != nil {
 		t.Fatal(err)
 	}
-	if want := fmt.Sprintf("is:pr is:open archived:false review-requested:alice-%s", login); len(*queries) != 1 || (*queries)[0] != want {
-		t.Errorf("another login searched %q, want only %q", *queries, want)
+	if len(*queries) != 1 {
+		t.Errorf("the by-name search reused the server's cached one: ran %q", *queries)
 	}
 }
 
@@ -186,6 +205,9 @@ func TestMyInteractionRefsSearchesReviewsAndComments(t *testing.T) {
 
 func TestRefSearchesRequireALogin(t *testing.T) {
 	if _, err := ReviewRequestedRefs(""); err == nil {
+		t.Error("expected an error without a login")
+	}
+	if _, err := ReviewRequestedRefsByName(""); err == nil {
 		t.Error("expected an error without a login")
 	}
 	if _, err := MyInteractionRefs(""); err == nil {

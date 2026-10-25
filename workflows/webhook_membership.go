@@ -80,7 +80,7 @@ func (w SearchWorkflow) webhookMembership(pr *github.PullRequest) membership {
 	switch w.Mode {
 	case ModeReviewRequested:
 		// The search is what admits a PR here; ask what it asks.
-		if verdict := reviewRequestedOf(pr, login); verdict != memberYes {
+		if verdict := reviewRequestedOf(pr, login, w.searchesTokenTeams()); verdict != memberYes {
 			return verdict
 		}
 	case ModeWaitingOnMe:
@@ -117,14 +117,14 @@ func filtersMembership(pr *github.PullRequest, filters []git_tools.PRFilter) mem
 	return memberYes
 }
 
-// reviewRequestedOf reports whether pr's review is requested of login,
-// personally or through one of their teams — what ReviewRequestedRefs'
-// searches find.
-func reviewRequestedOf(pr *github.PullRequest, login string) membership {
+// reviewRequestedOf reports whether pr's review is requested of login: by
+// name, or with tokenTeams through one of the token's teams — what the
+// workflow's own searches find (SearchWorkflow.searchesTokenTeams).
+func reviewRequestedOf(pr *github.PullRequest, login string, tokenTeams bool) membership {
 	if userInRequestedReviewers(pr, login) {
 		return memberYes
 	}
-	if len(pr.RequestedTeams) == 0 {
+	if !tokenTeams || len(pr.RequestedTeams) == 0 {
 		return memberNo
 	}
 	mine := git_tools.GetMyTeamRefs()

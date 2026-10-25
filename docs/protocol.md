@@ -16,9 +16,35 @@ Since the server communicates over **stdin/stdout**, the client is responsible f
 
 1.  **Spawning**: The client should start the `crs` binary as a child process. A browser extension, which can't, has a native messaging host start it instead (see [Building Clients](building_clients.md)).
 2.  **Environment**: Ensure `CRS_GITHUB_TOKEN` is set in the environment if required.
-3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`.
+3.  **Communication**: The client sends JSON-RPC requests to the server's `stdin` and reads responses from its `stdout`. A client that [subscribes](#server-notifications) also gets notifications on `stdout`, between the responses.
 4.  **Logging**: The server may write logs or errors to `stderr`. It is recommended that clients monitor `stderr` for debugging and error handling.
 5.  **Termination**: The server will terminate when its `stdin` is closed or when it receives an interrupt signal (SIGINT/SIGTERM).
+
+---
+
+## Server Notifications
+
+Everything above is the client asking and the server answering. For the server to speak first, a client calls [`RPCHandler.Subscribe`](#rpchandlersubscribe); from then on the server writes **notifications** to `stdout` alongside the responses. A notification is a JSON-RPC 1.0 request whose `id` is `null`: it names a `method`, carries its data as a one-element `params` array, and expects no reply.
+
+```json
+{"method": "Server.Heartbeat", "params": [{"seq": 12, "time": "2026-10-25T21:39:07Z", "started_at": "2026-10-25T21:37:05Z", "interval_seconds": 10}], "id": null}
+```
+
+- **Telling them apart**: a response has an `id` and a `result`/`error`; a notification has a `method`. Route on `method` before matching ids. Each message is still one line, never spliced into another.
+- **Opt-in**: a client that never subscribes never receives one, so a client that reads exactly one line per call keeps working.
+- **Unknown methods**: ignore notifications you don't recognize; the server may add new ones.
+- **Ordering**: the first heartbeat follows one interval after `Subscribe`'s reply, and none follows `Unsubscribe`'s reply.
+
+### `Server.Heartbeat`
+
+Sent every interval while a client is subscribed. If a few intervals pass without one, the server has exited or hung (the web client warns after three).
+
+| Field              | Type   | Description                                                                 |
+|--------------------|--------|-----------------------------------------------------------------------------|
+| `seq`              | int64  | Heartbeats sent since the server started                                    |
+| `time`             | string | The server's clock when it was sent (RFC 3339)                              |
+| `started_at`       | string | When the server started (RFC 3339); a new value means a new server process  |
+| `interval_seconds` | int    | How long until the next heartbeat                                           |
 
 ---
 
@@ -38,6 +64,32 @@ A simple health check / test method.
 |-----------|--------|--------------------------------------------------|
 | `Count`   | int    | Number of sections in the database               |
 | `Content` | string | Greeting message with cumulative count           |
+
+---
+
+### `RPCHandler.Subscribe`
+
+Turns on [server notifications](#server-notifications) for this connection: a `Server.Heartbeat` every interval, and any event the server sends. Calling it again changes the interval.
+
+**Arguments** (`SubscribeArgs`):
+| Field             | Type | Required | Description                                                          |
+|-------------------|------|----------|----------------------------------------------------------------------|
+| `IntervalSeconds` | int  | No       | Seconds between heartbeats: `0` for the default (10), otherwise clamped to 1–300 |
+
+**Reply** (`SubscribeReply`): the heartbeat state at the moment of subscribing, in the same shape as a [`Server.Heartbeat`](#serverheartbeat) (`seq` is the last one sent, `0` before the first), with the interval the server settled on.
+
+---
+
+### `RPCHandler.Unsubscribe`
+
+Turns notifications off. None arrives after this reply.
+
+**Arguments** (`UnsubscribeArgs`): `{}`
+
+**Reply** (`UnsubscribeReply`):
+| Field  | Type | Description   |
+|--------|------|---------------|
+| `okay` | bool | Always `true` |
 
 ---
 

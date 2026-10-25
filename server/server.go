@@ -9,6 +9,7 @@ import (
 	"crs/workflows"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/rpc"
 	"net/rpc/jsonrpc"
@@ -35,17 +36,22 @@ func RunServer() {
 		return
 	}
 
-	server.ServeCodec(jsonrpc.NewServerCodec(&Stdio{}))
+	// Replies and notifications share stdout; out keeps their lines whole.
+	out := &syncWriter{w: os.Stdout}
+	notifier = newNotifier(out)
+	server.ServeCodec(jsonrpc.NewServerCodec(&Stdio{out: out}))
 }
 
-type Stdio struct{}
+type Stdio struct {
+	out io.Writer
+}
 
 func (s *Stdio) Read(p []byte) (n int, err error) {
 	return os.Stdin.Read(p)
 }
 
 func (s *Stdio) Write(p []byte) (n int, err error) {
-	return os.Stdout.Write(p)
+	return s.out.Write(p)
 }
 
 func (s *Stdio) Close() error {

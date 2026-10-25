@@ -75,6 +75,11 @@ class Backend {
         return this.rpc('E2E.SetReviewEase', { enabled });
     }
 
+    /** Stop or resume the backend's heartbeats. */
+    setHeartbeat(beating: boolean) {
+        return this.rpc('E2E.SetHeartbeat', { beating });
+    }
+
     /** Turn change-diagram on or off, optionally serving `mermaid` as its diagram. */
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });

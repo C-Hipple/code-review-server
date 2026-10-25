@@ -11,6 +11,7 @@ import {
     startLspServer,
 } from './lsp_pool';
 import { JsonRpcLineParser } from './rpc_framing';
+import { isNotification, type JsonRpcNotification, ServerEventHub } from './server_events';
 
 let assets: Record<string, string> = {};
 try {
@@ -91,7 +92,9 @@ class RpcBridge {
         string | number,
         { resolve: (val: unknown) => void; reject: (err: unknown) => void }
     >();
-    private parser = new JsonRpcLineParser(msg => this.handleResponse(msg as JsonRpcResponse));
+    private parser = new JsonRpcLineParser(msg => this.handleMessage(msg));
+    /** Receives the notifications the server sends between replies. */
+    public onNotification: (notification: JsonRpcNotification) => void = () => {};
 
     constructor() {
         console.log(`[RpcBridge] PROJECT_ROOT: ${PROJECT_ROOT}`);
@@ -120,6 +123,14 @@ class RpcBridge {
         } catch (e) {
             console.error('Error reading from server:', e);
         }
+    }
+
+    private handleMessage(msg: unknown) {
+        if (isNotification(msg)) {
+            this.onNotification(msg);
+            return;
+        }
+        this.handleResponse(msg as JsonRpcResponse);
     }
 
     private handleResponse(res: JsonRpcResponse) {
@@ -151,6 +162,23 @@ class RpcBridge {
 }
 
 const bridge = new RpcBridge();
+
+// Relay the server's notifications to the browser (GET /api/events), starting
+// with its heartbeat. A crs too old to know Subscribe sends none; pages then
+// never hear a heartbeat and show no connection status.
+const serverEvents = new ServerEventHub();
+bridge.onNotification = notification => serverEvents.publish(notification);
+// 0 lets the server pick its default interval.
+const HEARTBEAT_SECONDS = parseInt(process.env.CRS_HEARTBEAT_SECONDS || '0', 10) || 0;
+bridge
+    .call('RPCHandler.Subscribe', [{ IntervalSeconds: HEARTBEAT_SECONDS }])
+    .then(reply => {
+        const seconds = (reply as { interval_seconds?: number })?.interval_seconds;
+        console.log(`[Events] Subscribed to server notifications (heartbeat every ${seconds}s)`);
+    })
+    .catch(err => {
+        console.warn('[Events] The server did not accept a subscription; no heartbeats:', err);
+    });
 
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -229,6 +257,20 @@ Bun.serve<{
         if (req.method === 'OPTIONS') {
             return new Response(null, {
                 headers: CORS_HEADERS,
+            });
+        }
+
+        // Server-Sent Events: the server's notifications, as they arrive. The
+        // stream is quiet between heartbeats, longer than Bun's idle timeout
+        // allows, so this connection has none.
+        if (url.pathname === '/api/events' && req.method === 'GET') {
+            server.timeout(req, 0);
+            return new Response(serverEvents.stream(), {
+                headers: {
+                    ...CORS_HEADERS,
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                },
             });
         }
 

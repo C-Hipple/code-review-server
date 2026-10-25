@@ -10,6 +10,10 @@ no GitHub token, network, or SQLite database:
 | `diff-lsp`                                 | `harness/fake_lsp.ts` | Reads the bridge's tempfile like the real diff-lsp and resolves positions the same way (1-indexed tempfile line, raw diff column).                                                                                                                                                                                                                                                  |
 | `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`.                                                                                                                                                                                                                                                                                                                         |
 
+The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
+second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
+`backend.setHeartbeat(false)`, which `E2E.Reset` undoes.
+
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 

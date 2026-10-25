@@ -21,6 +21,7 @@ process that owns the child process and bridges it to the browser — that is wh
 browser (React SPA)
     │  HTTP POST /api/*        (JSON)
     │  WebSocket /api/lsp*     (LSP framing)
+    │  ▲ GET /api/events       (Server-Sent Events: the server's notifications)
     ▼
 bun_client/server.ts           ← the bridge; owns the child process
     │  stdin/stdout, newline-delimited JSON-RPC 1.0
@@ -44,6 +45,12 @@ crs --server                   (the server binary)
    assets, then `frontend/dist` on disk, then an SPA fallback to `index.html`.
 5. Provide the non-RPC endpoints the browser can't do itself: local file reads,
    repository file listing, and LSP WebSocket proxying.
+6. Relay the server's notifications. At startup the bridge calls `Subscribe`
+   (heartbeat interval from `CRS_HEARTBEAT_SECONDS`, else the server's default of
+   10 s); the parser hands any message with a `method` to `server_events.ts`
+   (`ServerEventHub`) instead of the reply map, and the hub writes it to every open
+   `GET /api/events` stream as a Server-Sent Event named after the method, with its
+   `params[0]` as the data.
 
 **`frontend/`** — React 19 + Vite SPA. Dependencies are deliberately thin:
 `react-markdown` and `react-syntax-highlighter` (Prism) are the only runtime ones.
@@ -122,6 +129,7 @@ browser cannot. Reproduce them if you want the corresponding features.
 | `POST /api/prepare-diff-lsp` | Writes the diff plus a `Project/Root/Worktree/Buffer/Type` header to a temp file and returns its path; `diff-lsp` consumes that file. |
 | `WS /api/lsp?tempfile=` | Connects to a `diff-lsp` for the tempfile's workspace. |
 | `WS /api/lsp-file?lang=&root=` | Connects to a plain language server (`gopls`, `typescript-language-server`, `rust-analyzer`, `pyright-langserver`, resolved at startup) for `root`. |
+| `GET /api/events` | Server-Sent Events: each server notification as an event named after its method (`Server.Heartbeat`, ...), data its params. A new stream opens with the latest heartbeat if the next isn't overdue yet. The connection has no idle timeout. |
 | `POST /api/lsp-lines` | The text on each line a list of LSP locations points at, read from disk, so the popover can show what each reference is. |
 
 The WebSocket handlers translate between browser JSON messages and LSP's
@@ -567,6 +575,12 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 - Transient toasts for sync results; `alert()` for errors (a gap worth improving in a
   new client).
 - Loading states on every async button.
+- **Server status** (`ServerStatus.tsx`, `useServerHeartbeat.ts`, `server_events.ts`):
+  the top bar shows a small green dot while `Server.Heartbeat`s arrive over
+  `/api/events`, and **Server not responding** once three intervals pass without
+  one or the stream drops, until the next arrives. Nothing shows before the first
+  heartbeat, so a server too old to send them isn't reported as down. Every
+  listener on the page shares one `EventSource` (`serverEvents.on(method, ...)`).
 
 ---
 

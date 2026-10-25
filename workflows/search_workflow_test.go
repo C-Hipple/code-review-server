@@ -2,9 +2,13 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/git_tools"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/go-github/v74/github"
 )
 
 // TestDefaultConfigWorkflowsAreBuildable is the guard on the promise that the
@@ -114,5 +118,50 @@ func TestSearchWorkflowFiltersPrependTheModeFilter(t *testing.T) {
 	requested := SearchWorkflow{Mode: ModeReviewRequested}
 	if got := len(requested.filters("octocat")); got != 0 {
 		t.Errorf("review-requested is already the search; it should add no filter, got %d", got)
+	}
+}
+
+// A config file's search workflow is the server's own and follows the review
+// requests made of the token's teams as well as of its login, whoever that
+// login is; a hosted server's user follows only the requests made of them by
+// name (see git_tools' TestReviewRequestedRefsSearchTheTokensTeamsForTheServerOnly
+// for the searches each runs). The two are cached under different keys, which
+// is what this tells apart without reaching GitHub.
+func TestSearchWorkflowsSearchTheTokensTeamsForTheServerOnly(t *testing.T) {
+	login := "octocat-" + strings.ToLower(t.Name())
+	withTeams := []git_tools.PRRef{{Owner: "acme", Repo: "widgets", Number: 1}, {Owner: "acme", Repo: "widgets", Number: 2}}
+	byName := []git_tools.PRRef{{Owner: "acme", Repo: "widgets", Number: 1}}
+	git_tools.GlobalCache.Set("review_requested:"+login, withTeams, time.Minute)
+	git_tools.GlobalCache.Set("review_requested_by_name:"+login, byName, time.Minute)
+	t.Cleanup(func() {
+		git_tools.GlobalCache.Set("review_requested:"+login, nil, -1)
+		git_tools.GlobalCache.Set("review_requested_by_name:"+login, nil, -1)
+	})
+
+	server := SearchWorkflow{Name: "requested", Mode: ModeReviewRequested, Login: login}
+	user := server
+	user.User = login
+	if !server.searchesTokenTeams() || user.searchesTokenTeams() {
+		t.Fatalf("searchesTokenTeams: server %v, user %v", server.searchesTokenTeams(), user.searchesTokenTeams())
+	}
+	if refs, err := server.candidateRefs(login); err != nil || len(refs) != 2 {
+		t.Errorf("the server's workflow found %v, %v; want the search with the token's teams", refs, err)
+	}
+	if refs, err := user.candidateRefs(login); err != nil || len(refs) != 1 {
+		t.Errorf("a user's workflow found %v, %v; want the by-name search", refs, err)
+	}
+
+	// A delivery's re-check asks what the search asks: a request made of one
+	// of the token's teams counts for the server's dashboard only.
+	t.Setenv("CRS_GITHUB_TOKEN", "test-token")
+	git_tools.GlobalCache.Set("my_team_refs", []string{"acme/core"}, time.Minute)
+	t.Cleanup(func() { git_tools.GlobalCache.Set("my_team_refs", nil, -1) })
+	pr := whPR(1, "head1")
+	pr.RequestedTeams = []*github.Team{{Slug: github.Ptr("core")}}
+	if got := server.webhookMembership(pr); got != memberYes {
+		t.Errorf("the server's workflow judged a request of the token's team %v", got)
+	}
+	if got := user.webhookMembership(pr); got != memberNo {
+		t.Errorf("a user's workflow judged a request of the token's team %v; it isn't theirs", got)
 	}
 }

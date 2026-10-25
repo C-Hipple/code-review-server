@@ -68,8 +68,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// runCycle runs one cycle the way ManagerService.Run does.
-func runCycle(ms ManagerService) {
+// runManagerCycle runs one cycle the way ManagerService.Run does.
+func runManagerCycle(ms ManagerService) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	ms.workflow_chan = make(chan FileChanges)
@@ -92,7 +92,7 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	key := whKey(1)
 	seedCachedPR(t, env.db, key, "head1")
 	trackItem(t, env.db, key)
-	env.db.RecordPRMergeability(1, whRepo, "head1", git_tools.MergeabilityMergeable)
+	env.db.RecordPRMergeability(whOwner, whRepo, 1, "head1", git_tools.MergeabilityMergeable)
 	markMergeabilityChecked(git_tools.PRRef{Owner: whOwner, Repo: whRepo, Number: 1}, time.Now())
 	t.Cleanup(func() { pruneWebhookMemory(time.Now().Add(time.Hour)) })
 	ms := NewManagerService(MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, ""), false, cfg.SleepDuration)
@@ -107,7 +107,7 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	t.Cleanup(func() { lookupMergeability = oldLookup })
 
 	// Polling: everything about the PR is asked for again.
-	runCycle(ms)
+	runManagerCycle(ms)
 	polled := requested()
 	t.Logf("polling cycle asked for %v", polled)
 	for _, want := range []string{"/repos/acme/widgets/pulls/1/reviews", "/repos/acme/widgets/commits/head1/check-runs"} {
@@ -125,7 +125,7 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	lastFullRefresh.mu.Lock()
 	lastFullRefresh.at = time.Now().Add(-time.Minute)
 	lastFullRefresh.mu.Unlock()
-	runCycle(ms)
+	runManagerCycle(ms)
 	got := requested()
 	t.Logf("webhook cycle asked for %v", got)
 	for _, path := range got {
@@ -141,7 +141,7 @@ func TestWebhookCycleOnlyListsAPRWhoseCachesAreCurrent(t *testing.T) {
 	}
 
 	// And the PR's row was still rendered, from the caches.
-	section, _ := env.db.GetSection("Reviews")
+	section, _ := env.db.GetSection("", "Reviews")
 	item, err := env.db.GetItem(section.ID, "acme/widgets-1")
 	if err != nil || item == nil {
 		t.Fatalf("item: %v", err)

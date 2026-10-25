@@ -108,7 +108,8 @@ func applyWebhookEvent(d webhookDelivery) {
 // me" because its cached reviews say so. Left stale, they would keep it out.
 //
 // The repository is the PR's base — the one a delivery is sent from — and the
-// key uses its short name, as every PR cache does.
+// key uses its owner and short name, as every PR cache does. Any dashboard's
+// section counts: the caches are shared by all of them.
 func trackedPR(db *database.DB, repo *github.Repository, number int) (PRKey, bool) {
 	owner, name := repo.GetOwner().GetLogin(), repo.GetName()
 	if owner == "" || name == "" || number <= 0 {
@@ -127,7 +128,7 @@ func trackedPR(db *database.DB, repo *github.Repository, number int) (PRKey, boo
 	if listed {
 		return key, true
 	}
-	sha, _, err := db.GetPullRequestSHAs(number, name)
+	sha, _, err := db.GetPullRequestSHAs(owner, name, number)
 	if err != nil {
 		slog.Warn("Failed to look up whether a webhook's PR is cached", "repo", fullName, "pr", number, "error", err)
 		return PRKey{}, false
@@ -166,7 +167,7 @@ func refetchIfHeadMoved(db *database.DB, key PRKey, pr *github.PullRequest, deta
 	if sha == "" {
 		return false
 	}
-	_, cachedSHA, err := db.GetPullRequest(key.Number, key.Repo)
+	_, cachedSHA, err := db.GetPullRequest(key.Owner, key.Repo, key.Number)
 	if err != nil || cachedSHA == sha {
 		return false
 	}
@@ -233,7 +234,7 @@ func refreshFromPRPayload(db *database.DB, key PRKey, pr *github.PullRequest) []
 	if _, hasRow := loadCachedTeamReviews(key); hasRow {
 		if teams := resolvePRTeamReviews(&apiCallCounter{}, key, pr, reviews); teams != nil {
 			if j, err := json.Marshal(teams); err == nil {
-				if err := db.UpsertPRTeamReviews(key.Number, key.Repo, string(j)); err != nil {
+				if err := db.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 					slog.Error("Failed to cache team reviews from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 				} else {
 					written = append(written, "team_reviews")
@@ -253,7 +254,7 @@ func recordPayloadMergeability(db *database.DB, key PRKey, pr *github.PullReques
 		return
 	}
 	state := git_tools.RESTMergeability(pr)
-	if err := db.RecordPRMergeability(key.Number, key.Repo, pr.GetHead().GetSHA(), state); err != nil {
+	if err := db.RecordPRMergeability(key.Owner, key.Repo, key.Number, pr.GetHead().GetSHA(), state); err != nil {
 		slog.Error("Failed to cache PR mergeability from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 		return
 	}
@@ -263,8 +264,16 @@ func recordPayloadMergeability(db *database.DB, key PRKey, pr *github.PullReques
 }
 
 // updateItemSummaries brings the PR's rows on the review list — in every
-// section listing it — up to date with its status, title and tags, which is
-// what the list shows. Their details follow on the next cycle.
+// section listing it, on every dashboard — up to date with its status, title
+// and tags, which is what the list shows. Their details follow on the next
+// cycle, or the re-check that follows the delivery.
+//
+// Every dashboard's rows, an idle user's included: the three are the PR's own
+// (PRToOrgBridge reads them off the PR alone), the same whichever workflow
+// listed it, so rewriting them changes no dashboard's membership — only how
+// current it reads. An idle user's dashboard otherwise waits for their next
+// cycle, which would write the same text; a deleted user's rows, which go when
+// the next cycle ends, are only ever rewritten here, never created.
 func updateItemSummaries(db *database.DB, key PRKey, pr *github.PullRequest) {
 	// PRToOrgBridge dereferences these.
 	if pr.Number == nil || pr.Title == nil || pr.State == nil || pr.Draft == nil ||
@@ -288,7 +297,11 @@ func applyReviewEvent(db *database.DB, d webhookDelivery, e *github.PullRequestR
 	}
 	// Submitting a review clears the reviewer's own review request — that is
 	// what "Re-request review" puts back — so the PR leaves their review
-	// queue. Applied here too in case the delivery's PR predates it.
+	// queue. Applied here too in case the delivery's PR predates it. The
+	// reviewer is whoever GitHub says submitted it: on a hosted server, a user
+	// whose review went out under their own linked account, so the PR leaves
+	// that user's queue — and only theirs — when the re-check that follows
+	// judges each dashboard by its own login.
 	if e.GetAction() == "submitted" {
 		pr.RequestedReviewers = withoutReviewer(pr.RequestedReviewers, review.GetUser().GetLogin())
 	}
@@ -406,7 +419,7 @@ func patchCachedComments(db *database.DB, key PRKey, action string, comment *git
 	if err != nil {
 		return nil
 	}
-	if err := db.UpsertPRComments(key.Number, key.Repo, string(j)); err != nil {
+	if err := db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 		slog.Error("Failed to cache PR comments from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 		return nil
 	}
@@ -478,7 +491,7 @@ func cacheReviewThreads(db *database.DB, key PRKey, threads []git_tools.ReviewTh
 	if err != nil {
 		return false
 	}
-	if err := db.UpsertPRReviewThreads(key.Number, key.Repo, string(j)); err != nil {
+	if err := db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 		slog.Error("Failed to cache review threads from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)
 		return false
 	}
@@ -637,7 +650,7 @@ func applyStatusEvent(db *database.DB, d webhookDelivery, e *github.StatusEvent)
 
 // prNumbersForSHA finds the PRs in repo whose cached head has been sha.
 func prNumbersForSHA(db *database.DB, repo *github.Repository, sha string) []int {
-	numbers, err := db.FindPRNumbersBySHA(repo.GetName(), sha)
+	numbers, err := db.FindPRNumbersBySHA(repo.GetOwner().GetLogin(), repo.GetName(), sha)
 	if err != nil {
 		slog.Warn("Failed to look up PRs by head SHA for a webhook", "repo", repo.GetFullName(), "sha", sha, "error", err)
 	}
@@ -666,7 +679,7 @@ func patchCachedCI(db *database.DB, key PRKey, sha, detail string,
 		return
 	}
 	written := []string{"ci_status"}
-	if _, head, err := db.GetPullRequest(key.Number, key.Repo); err == nil && head == sha && patchMetadataCI(db, key, status, checkRuns) {
+	if _, head, err := db.GetPullRequest(key.Owner, key.Repo, key.Number); err == nil && head == sha && patchMetadataCI(db, key, status, checkRuns) {
 		written = append(written, "metadata")
 	}
 	logWebhookWrite(key, sha, written, detail)

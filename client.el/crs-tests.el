@@ -43,6 +43,7 @@
                 crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
                 crs-ai-list-features crs-quit-ai-output
                 crs-show-change-diagram
+                crs-link-github crs-unlink-github crs-github-link-status
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -1024,7 +1025,7 @@ The buffer is bound to `buffer' and killed afterwards."
       (should (= (length sent) 1))
       (should (equal (nth 0 (car sent)) "RPCHandler.SubmitReview"))
       (should (equal (json-encode (nth 1 (car sent)))
-                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Event\":\"APPROVE\",\"Body\":\"Ship it\"}]"))
+                     "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Event\":\"APPROVE\",\"Body\":\"Ship it\",\"ExpectedDraftIDs\":[]}]"))
       ;; Nothing has come back yet: the reviewer is told it is under way,
       ;; and the buffer is as it was.
       (should (equal events '((message . "Approving acme/widgets #42..."))))
@@ -1081,6 +1082,114 @@ The buffer is bound to `buffer' and killed afterwards."
               (should (= (length sent) 3)))))
       (delete-process crs--process))))
 
+(ert-deftest crs-test-review-draft-ids ()
+  "The drafts a submit carries are the local comments, by their numeric ids."
+  (should (equal (crs--review-draft-ids
+                  '(((id . "9001") (author . "local"))
+                    ((id . "5") (author . "bob"))
+                    ((id . 9002) (author . "local"))
+                    ((id . "not-a-number") (author . "local"))))
+                 [9001 9002]))
+  (should (equal (crs--review-draft-ids []) [])))
+
+(ert-deftest crs-test-submit-review-names-the-drafts-it-showed ()
+  "A submit sends the ids of the pending comments the review buffer shows."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (setq crs--buffer-comments
+              '(((id . "9001") (author . "local") (body . "Name this better."))
+                ((id . "17") (author . "bob") (body . "LGTM"))))
+        (crs-submit-review "APPROVE"))
+      (should (equal (cdr (assq 'ExpectedDraftIDs (aref (nth 1 (car sent)) 0))) [9001])))))
+
+(defmacro crs-test--with-timers (&rest body)
+  "Run BODY with `run-at-time' recording instead of scheduling.
+Binds `scheduled' to each (FUNCTION . ARGS), most recent first."
+  (declare (indent 0))
+  `(let ((scheduled nil))
+     (cl-letf (((symbol-function 'run-at-time)
+                (lambda (_time _repeat fn &rest args) (push (cons fn args) scheduled))))
+       ,@body)))
+
+(ert-deftest crs-test-submit-review-lost-with-the-connection-is-outcome-unknown ()
+  "A submit whose connection dropped before the answer may have gone out:
+it says so and reloads the PR, rather than reading as not submitted."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (crs-test--with-timers
+        (with-current-buffer buffer
+          (crs-submit-review "APPROVE"))
+        (funcall (nth 2 (car sent))
+                 '((error . "connection lost: The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))
+        (let ((note (concat "Lost the connection to the server while submitting the review on"
+                            " acme/widgets #42: it may or may not have gone out.  Check the PR"
+                            " before submitting again")))
+          (should (equal (car events) (cons 'message (concat note " (reloading it...)"))))
+          (should (equal scheduled `((crs--review-reload "acme" "widgets" 42 ,note))))
+          (should-not (assq 'render events))
+          ;; Kept, in case it did not go out.
+          (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+          ;; The reload syncs the PR into its buffer, then says it again:
+          ;; reconnecting has its own messages.
+          (apply (caar scheduled) (cdar scheduled))
+          (should (equal (nth 0 (car sent)) "RPCHandler.SyncPR"))
+          (funcall (nth 2 (car sent)) crs-test--submit-reply)
+          (should (equal (seq-take events 2)
+                         `((message . ,note) (render ,buffer ,crs-test--submit-reply t)))))))))
+
+(ert-deftest crs-test-submit-review-whose-drafts-are-gone-reloads ()
+  "A submit refused because drafts it showed are gone says so and reloads the PR."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (crs-test--with-timers
+        (with-current-buffer buffer
+          (crs-submit-review "APPROVE"))
+        (funcall (nth 2 (car sent))
+                 '((error . "drafts changed: some of the pending comments this review was to carry no longer exist")))
+        (let ((note (concat "Review on acme/widgets #42 was not submitted: some of its pending"
+                            " comments are gone, already submitted or removed with your account"
+                            " after a stretch of inactivity.  Check what is pending, then submit"
+                            " again")))
+          (should (equal (car events) (cons 'message (concat note " (reloading the PR...)"))))
+          (should (equal scheduled `((crs--review-reload "acme" "widgets" 42 ,note))))
+          (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it"))
+          ;; A reload that cannot reach the server says so, with the note.
+          ;; The reason goes through "%s": `error' runs its format string
+          ;; through `format-message', which curves the apostrophe under a
+          ;; UTF-8 locale (as on CI) and leaves it straight under C.
+          (cl-letf (((symbol-function 'crs--send-request)
+                     (lambda (&rest _) (error "%s" "Can't reach crs at crs.test:7700"))))
+            (apply (caar scheduled) (cdar scheduled)))
+          (should (equal (car events)
+                         (cons 'message
+                               (concat note " (could not reload the PR: Can't reach crs at"
+                                       " crs.test:7700)")))))))))
+
+(ert-deftest crs-test-submit-review-one-at-a-time-across-a-reconnect ()
+  "A submit that reconnects first still holds the PR until its reply lands.
+The connection it goes out on is the one sending it opened, not the one
+that dropped before."
+  (let ((crs--process nil)
+        (connection nil))
+    (unwind-protect
+        (crs-test--with-review-buffer "Ship it"
+          (crs-test--with-held-rpc
+            (cl-letf* ((held (symbol-function 'crs--send-request))
+                       ((symbol-function 'crs--send-request)
+                        (lambda (method params callback)
+                          ;; What sending does after a drop: reconnect.
+                          (unless crs--process
+                            (setq connection (make-pipe-process :name "crs-test-reconnected"
+                                                                :noquery t)
+                                  crs--process connection))
+                          (funcall held method params callback))))
+              (with-current-buffer buffer
+                (crs-submit-review "APPROVE")
+                (should-error (crs-submit-review "APPROVE") :type 'user-error)
+                (should (= (length sent) 1))))))
+      (when connection (delete-process connection)))))
+
 (ert-deftest crs-test-submit-review-reply-after-the-buffer-is-gone ()
   "A reply for a review buffer that was closed is still announced."
   (crs-test--with-review-buffer "Ship it"
@@ -1091,6 +1200,424 @@ The buffer is bound to `buffer' and killed afterwards."
       (funcall (nth 2 (car sent)) crs-test--submit-reply)
       (should (equal (car events) '(message . "Approved acme/widgets #42")))
       (should-not (assq 'render events)))))
+
+;;; --- Remote mode ---
+;;
+;; The connect flow against a shared server, with the wire stubbed out:
+;; `sent' collects each request written (METHOD PARAMS CALLBACK), newest
+;; first, and a test answers one by calling its CALLBACK.
+
+(defconst crs-test--remote-config
+  '((Workflows . [((WorkflowType . "SyncReviewRequestsWorkflow") (Name . "Reviews")
+                   (IncludeDiff . :json-false))])
+    (Repos . ["acme/widgets"])
+    (SectionPriority . ((Reviews . 1)))
+    (SectionSorting . nil))
+  "What `crs-remote-user-config-command' printed, parsed.")
+
+(defconst crs-test--token (concat "crs_" (make-string 64 ?a)))
+
+(defmacro crs-test--with-remote (&rest body)
+  "Run BODY connected to a stubbed shared server, in a scratch home.
+Binds `sent', `warnings' and `dir' (holding the token file and config)."
+  (declare (indent 0))
+  `(let* ((dir (make-temp-file "crs-remote-test" t))
+          (process-environment
+           (append (list (concat "XDG_CONFIG_HOME=" dir))
+                   (seq-remove (lambda (v)
+                                 (string-match-p
+                                  "\\`\\(CRS_REMOTE_TOKEN\\|CRS_LOGIN\\|CRS_REGISTRATION_KEY\\|XDG_CONFIG_HOME\\)="
+                                  v))
+                               process-environment)))
+          (crs-remote-address "crs.test:7700")
+          (crs-remote-token-directory (expand-file-name "crs/remote_tokens" dir))
+          (crs-remote-registration-key "sesame")
+          (crs-remote-login "octocat")
+          (crs--remote-ready nil)
+          (crs--remote-queue nil)
+          (crs--remote-issued-token nil)
+          (crs--remote-last-error nil)
+          (crs--pending-requests (make-hash-table :test 'equal))
+          (crs--process (make-pipe-process :name "crs-test-remote" :noquery t))
+          (sent nil)
+          (warnings nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'crs--send-request-now)
+                    (lambda (method params callback)
+                      (push (list method params callback) sent)))
+                   ((symbol-function 'crs--remote-user-config)
+                    (lambda () crs-test--remote-config))
+                   ((symbol-function 'display-warning)
+                    (lambda (_type message &rest _) (push message warnings)))
+                   ((symbol-function 'message) #'ignore))
+           ,@body)
+       (when (process-live-p crs--process) (delete-process crs--process))
+       (delete-directory dir t))))
+
+(defun crs-test--answer (request reply)
+  "Answer REQUEST, an entry of `sent', with REPLY."
+  (funcall (nth 2 request) reply))
+
+(ert-deftest crs-test-remote-ready-suggests-linking-github ()
+  "Connecting to a server that can link GitHub accounts, unlinked, says how to link."
+  (crs-test--with-remote
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (crs--remote-ready "octocat" '((okay . t) (github_linked . :json-false)
+                                       (github_link_available . t)))
+        (should (equal (car messages)
+                       (concat "Connected to crs at crs.test:7700 as octocat; link your GitHub"
+                               " account with M-x crs-link-github to submit reviews as yourself")))
+        (should (equal crs--remote-session
+                       '((login . "octocat") (is_admin . nil) (github_linked . nil)
+                         (github_link_available . t))))
+        ;; Linked already, or a server that cannot link: nothing to suggest.
+        (crs--remote-ready "octocat" '((github_linked . t) (github_link_available . t)))
+        (should (equal (car messages) "Connected to crs at crs.test:7700 as octocat"))
+        (crs--remote-ready "octocat" '((github_link_available . :json-false)))
+        (should (equal (car messages) "Connected to crs at crs.test:7700 as octocat"))))))
+
+;;; --- Linking a GitHub account ---
+
+(defconst crs-test--link-started
+  '((okay . t) (status . "pending") (user_code . "WDJB-MJHT")
+    (verification_uri . "https://github.com/login/device")
+    (expires_at . "2099-01-01T17:05:00Z") (interval . 5)
+    (message . "Enter WDJB-MJHT at https://github.com/login/device"))
+  "A StartGitHubLink reply with a code waiting to be entered.")
+
+(defmacro crs-test--with-link (&rest body)
+  "Run BODY on a stubbed shared server, linking a GitHub account.
+Binds `sent' and `events' as `crs-test--with-held-rpc' does, `browsed' to
+the URLs opened and `timers' to the (SECONDS . FUNCTION) scheduled, most
+recent first."
+  (declare (indent 0))
+  `(let ((crs-remote-address "crs.test:7700")
+         (crs-link-github-browse t)
+         (crs--remote-session '((login . "octocat")))
+         (crs--link-poll-timer nil)
+         (crs--link-pending nil)
+         (kill-ring nil)
+         (kill-ring-yank-pointer nil)
+         (browsed nil)
+         (timers nil))
+     (unwind-protect
+         (crs-test--with-held-rpc
+           (cl-letf (((symbol-function 'browse-url) (lambda (url &rest _) (push url browsed)))
+                     ((symbol-function 'display-buffer) #'ignore)
+                     ((symbol-function 'run-with-timer)
+                      (lambda (secs _repeat fn &rest _) (push (cons secs fn) timers) 'crs-test-timer)))
+             ,@body))
+       (when (get-buffer crs--link-buffer-name)
+         (kill-buffer crs--link-buffer-name)))))
+
+(ert-deftest crs-test-link-github-shows-the-code-and-polls-until-linked ()
+  "Linking shows and copies the code, opens GitHub, and polls until GitHub answers."
+  (crs-test--with-link
+    (crs-link-github)
+    (should (equal (mapcar #'car sent) '("RPCHandler.StartGitHubLink")))
+    (crs-test--answer (car sent) crs-test--link-started)
+    (should (equal (current-kill 0) "WDJB-MJHT"))
+    (should (equal browsed '("https://github.com/login/device")))
+    (should (equal (cdar events)
+                   "Enter WDJB-MJHT at https://github.com/login/device (copied to the kill ring); waiting for GitHub..."))
+    (with-current-buffer crs--link-buffer-name
+      (should (string-match-p "Enter the code   WDJB-MJHT" (buffer-string)))
+      (should (string-match-p "signed in to GitHub as octocat" (buffer-string)))
+      (should (string-match-p "Waiting for GitHub\\.\\.\\." (buffer-string))))
+    ;; Polls at the server's interval, while the link is pending.
+    (should (equal (mapcar #'car timers) '(5)))
+    (funcall (cdar timers))
+    (should (equal (caar sent) "RPCHandler.GetGitHubLink"))
+    (crs-test--answer (car sent) '((okay . t) (status . "pending")))
+    (should (= (length timers) 2))
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((okay . t) (status . "linked") (github_login . "octocat")))
+    (should (equal (cdar events) "Linked to GitHub as octocat: your reviews now go out as you"))
+    (with-current-buffer crs--link-buffer-name
+      (should (string-match-p "Linked to GitHub as octocat" (buffer-string))))
+    ;; Done: nothing more is scheduled.
+    (should (= (length timers) 2))
+    (should-not crs--link-pending)
+    (should (eq (alist-get 'github_linked crs--remote-session) t))))
+
+(ert-deftest crs-test-link-github-reports-a-declined-link ()
+  "A link that ends without linking says how, and how to try again."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent) crs-test--link-started)
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((okay . t) (status . "denied")
+                                   (message . "The authorization was declined on GitHub")))
+    (should (equal (cdar events)
+                   (concat "The authorization was declined on GitHub, so nothing was linked;"
+                           " M-x crs-link-github to try again")))
+    (should (= (length timers) 1))
+    (should-not crs--link-pending)))
+
+(ert-deftest crs-test-link-github-on-a-server-that-cannot-link ()
+  "A server that cannot link says so, with no code, no browser and no polling."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent)
+                      '((okay . :json-false) (status . "unavailable")
+                        (message . "This server has no GitHubOAuthClientID configured")))
+    (should (equal (cdar events)
+                   "This server can't link GitHub accounts: This server has no GitHubOAuthClientID configured"))
+    (should-not browsed)
+    (should-not timers)
+    (should-not kill-ring)))
+
+(ert-deftest crs-test-link-github-keeps-polling-through-a-dropped-connection ()
+  "A poll that fails is tried again at the next interval; the server keeps the link."
+  (crs-test--with-link
+    (crs-link-github)
+    (crs-test--answer (car sent) crs-test--link-started)
+    (funcall (cdar timers))
+    (crs-test--answer (car sent) '((error . "The connection to crs at crs.test:7700 was lost")))
+    (should (= (length timers) 2))
+    (should crs--link-pending)))
+
+(ert-deftest crs-test-link-github-needs-a-shared-server ()
+  "Locally there is nothing to link: crs writes with your own token."
+  (let ((crs-remote-address nil))
+    (should-error (crs-link-github) :type 'user-error)
+    (should-error (crs-unlink-github) :type 'user-error)
+    (should-error (crs-github-link-status) :type 'user-error)))
+
+(ert-deftest crs-test-unlink-github ()
+  "Unlinking asks first, and reports the server's answer."
+  (crs-test--with-link
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+      (crs-unlink-github))
+    (should-not sent)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (crs-unlink-github))
+    (should (equal (caar sent) "RPCHandler.UnlinkGitHub"))
+    (crs-test--answer (car sent) '((okay . t) (message . "Unlinked your GitHub account")))
+    (should (equal (cdar events) "Unlinked your GitHub account"))))
+
+(ert-deftest crs-test-github-link-status ()
+  "The status command says where the link stands."
+  (should (equal (crs--link-status-text '((status . "linked") (github_login . "octocat")))
+                 "GitHub: linked as octocat; your reviews go out as you"))
+  (should (equal (crs--link-status-text '((status . "unlinked")))
+                 "GitHub: not linked; M-x crs-link-github links your account so your reviews go out as you"))
+  (should (equal (crs--link-status-text '((status . "pending") (user_code . "WDJB-MJHT")
+                                          (verification_uri . "https://github.com/login/device")))
+                 "GitHub: waiting for WDJB-MJHT to be entered at https://github.com/login/device"))
+  (should (equal (crs--link-status-text '((error . "not authenticated: no session")))
+                 "Could not read your GitHub link: not authenticated: no session")))
+
+(ert-deftest crs-test-submit-review-refused-until-github-is-linked ()
+  "A submit refused for want of a linked GitHub account says how to link it."
+  (crs-test--with-review-buffer "Ship it"
+    (crs-test--with-held-rpc
+      (with-current-buffer buffer
+        (crs-submit-review "APPROVE"))
+      (funcall (nth 2 (car sent))
+               '((error . "refused: link-github: link your GitHub account to submit reviews as yourself")))
+      (should (equal (car events)
+                     (cons 'message
+                           (concat "Review on acme/widgets #42 was not submitted: refused: link-github:"
+                                   " link your GitHub account to submit reviews as yourself.  Your"
+                                   " feedback is kept: link your GitHub account with M-x"
+                                   " crs-link-github, then submit again"))))
+      (should (equal (buffer-local-value 'crs--buffer-review-feedback buffer) "Ship it")))))
+
+(ert-deftest crs-test-remote-parse-address ()
+  "`crs-remote-address' is host:port, the host maybe a bracketed IPv6 address."
+  (should (equal (crs--remote-parse-address "crs.internal:7700") '("crs.internal" . 7700)))
+  (should (equal (crs--remote-parse-address "[::1]:443") '("::1" . 443)))
+  (should-error (crs--remote-parse-address "crs.internal") :type 'user-error)
+  (should-error (crs--remote-parse-address "crs.internal:0") :type 'user-error)
+  (should-error (crs--remote-parse-address "::1:443") :type 'user-error))
+
+(ert-deftest crs-test-remote-toml-login ()
+  "The login falls back to the root GithubUsername of the config file."
+  (crs-test--with-remote
+    (let ((crs-remote-login nil)
+          (file (expand-file-name "codereviewserver.toml" dir)))
+      (should-not (crs--remote-login))
+      (with-temp-file file
+        (insert "Repos = [\"acme/widgets\"]\nGithubUsername = \"hubot\"\n\n"
+                "[[Workflows]]\nGithubUsername = \"someone-else\"\n"))
+      (should (equal (crs--remote-login) "hubot"))
+      ;; A workflow's GithubUsername is not the root one.
+      (with-temp-file file
+        (insert "[[Workflows]]\nGithubUsername = \"someone-else\"\n"))
+      (should-not (crs--remote-login))
+      (let ((process-environment (cons "CRS_LOGIN=from-env" process-environment)))
+        (should (equal (crs--remote-login) "from-env"))))))
+
+(ert-deftest crs-test-remote-registers-without-a-token ()
+  "With no token yet, the flow registers with the local workflows and saves the token."
+  (crs-test--with-remote
+    (crs--send-request "RPCHandler.GetAllReviews" (vector) #'ignore)
+    (should (equal crs--remote-queue
+                   `(("RPCHandler.GetAllReviews" [] ,(nth 2 (car crs--remote-queue))))))
+    (crs--remote-authenticate)
+    (should (= (length sent) 1))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (json-encode (nth 1 (car sent)))
+                   (concat "[{\"RegistrationKey\":\"sesame\",\"Login\":\"octocat\",\"Token\":\"\","
+                           "\"Workflows\":[{\"WorkflowType\":\"SyncReviewRequestsWorkflow\","
+                           "\"Name\":\"Reviews\",\"IncludeDiff\":false}],"
+                           "\"Repos\":[\"acme/widgets\"],\"SectionPriority\":{\"Reviews\":1},"
+                           "\"SectionSorting\":{}}]")))
+    (crs-test--answer (car sent) `((okay . t) (created . t) (login . "octocat")
+                                   (token . ,crs-test--token) (is_admin . :json-false)))
+    (should crs--remote-ready)
+    (should (equal (with-temp-buffer
+                     (insert-file-contents (crs--remote-token-file))
+                     (buffer-string))
+                   (concat crs-test--token "\n")))
+    (should (equal (crs--remote-token-file)
+                   (expand-file-name "crs/remote_tokens/crs.test_7700" dir)))
+    (should (= (file-modes (crs--remote-token-file)) #o600))
+    ;; The request that waited goes out now.
+    (should (equal (nth 0 (car sent)) "RPCHandler.GetAllReviews"))
+    (should-not crs--remote-queue)))
+
+(ert-deftest crs-test-remote-authenticates-a-known-token ()
+  "A stored token the server knows authenticates without registering."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (should (equal (nth 0 (car sent)) "RPCHandler.Authenticate"))
+    (should (equal (json-encode (nth 1 (car sent)))
+                   (format "[{\"Token\":\"%s\"}]" crs-test--token)))
+    (crs-test--answer (car sent) '((okay . t) (known . t) (login . "octocat")))
+    (should crs--remote-ready)
+    (should (= (length sent) 1))))
+
+(ert-deftest crs-test-remote-reregisters-a-forgotten-token ()
+  "A token the server has forgotten is registered again, the same token."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent) '((okay . :json-false) (known . :json-false)))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (cdr (assq 'Token (aref (nth 1 (car sent)) 0))) crs-test--token))
+    (crs-test--answer (car sent) `((okay . t) (created . t) (login . "octocat")
+                                   (token . ,crs-test--token)))
+    (should crs--remote-ready)))
+
+(ert-deftest crs-test-remote-retries-a-not-authenticated-request-once ()
+  "A request refused as not authenticated reconnects and goes again, once."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (setq crs--remote-ready t)
+    (let (replies)
+      (crs--send-request "RPCHandler.GetPR" (vector) (lambda (r) (push r replies)))
+      (crs-test--answer (car sent) '((error . "not authenticated: no session")))
+      ;; The flow runs again before the request is sent anew.
+      (should (equal (nth 0 (car sent)) "RPCHandler.Authenticate"))
+      (should-not crs--remote-ready)
+      (crs-test--answer (car sent) '((okay . t) (known . t) (login . "octocat")))
+      (should (equal (nth 0 (car sent)) "RPCHandler.GetPR"))
+      ;; Refused again: that is the request's answer.
+      (crs-test--answer (car sent) '((error . "not authenticated: still no")))
+      (should (equal replies '(((error . "not authenticated: still no")))))
+      (should (= (length sent) 3)))))
+
+(ert-deftest crs-test-remote-without-a-key-says-how-to-register ()
+  "With no token and no registration key, the waiting requests fail with what to set."
+  (crs-test--with-remote
+    (let ((crs-remote-registration-key nil)
+          replies)
+      (push (list "RPCHandler.GetAllReviews" (vector) (lambda (r) (push r replies)))
+            crs--remote-queue)
+      (crs--remote-authenticate)
+      (should-not sent)
+      (should (string-match-p "set `crs-remote-registration-key'" (car warnings)))
+      (should (equal replies `(((error . ,(car warnings))))))
+      ;; The connection is dropped, so the next request reconnects.
+      (should-not crs--process))))
+
+(ert-deftest crs-test-remote-token-file-per-server ()
+  "Each server's token has a file of its own, named the way the bridge names it."
+  (crs-test--with-remote
+    (let ((file (lambda (address)
+                  (let ((crs-remote-address address))
+                    (file-name-nondirectory (crs--remote-token-file))))))
+      (should (equal (funcall file "crs.test:7700") "crs.test_7700"))
+      (should (equal (funcall file "CRS.Test:7700") "crs.test_7700"))
+      (should (equal (funcall file "[::1]:443") "__1_443"))
+      (should (equal (funcall file "[fe80::1%eth0]:7700") "fe80__1_eth0_7700"))
+      (should-not (equal (funcall file "crs.test:7701") "crs.test_7700")))))
+
+(ert-deftest crs-test-remote-never-sends-another-servers-token ()
+  "A token another server issued stays in its file: this one is registered afresh."
+  (crs-test--with-remote
+    (let ((crs-remote-address "crs.other:7700"))
+      (crs--remote-save-token crs-test--token))
+    (crs--remote-authenticate)
+    (should (= (length sent) 1))
+    (should (equal (nth 0 (car sent)) "RPCHandler.RegisterUser"))
+    (should (equal (cdr (assq 'Token (aref (nth 1 (car sent)) 0))) ""))))
+
+(ert-deftest crs-test-remote-registration-passes-on-the-servers-word ()
+  "Signing in by registering says what the server said: when the dashboard follows."
+  (crs-test--with-remote
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+        (crs--remote-authenticate)
+        (crs-test--answer (car sent)
+                          `((okay . t) (created . t) (login . "octocat") (token . ,crs-test--token)
+                            (message . "Registered octocat with 1 workflow; the dashboard follows on the next workflow cycle")))
+        (should (equal (car messages)
+                       (concat "Connected to crs at crs.test:7700 as octocat: Registered octocat"
+                               " with 1 workflow; the dashboard follows on the next workflow cycle")))))))
+
+(ert-deftest crs-test-remote-revoked-token-says-which ()
+  "A token the server revoked names the file it is in, to remove it."
+  (crs-test--with-remote
+    (crs--remote-save-token crs-test--token)
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent) '((okay . :json-false) (known . :json-false)))
+    (crs-test--answer (car sent)
+                      '((okay . :json-false)
+                        (message . "token revoked: an administrator deleted the user this token belonged to, so it cannot register again; remove the token your client stored to register afresh, or ask an administrator")))
+    (should (string-suffix-p (format "or ask an administrator.  That token is the one in %s"
+                                     (crs--remote-token-file))
+                             (car warnings)))))
+
+(ert-deftest crs-test-remote-refused-registration-gives-the-reasons ()
+  "A registration the server refuses says why, worded like the server's errors."
+  (crs-test--with-remote
+    (crs--remote-authenticate)
+    (crs-test--answer (car sent)
+                      '((okay . :json-false) (message . "invalid workflows")
+                        (errors . [((workflow . 0) (field . "WorkflowType")
+                                    (message . "unknown type"))])))
+    (should (equal (car warnings)
+                   (concat "crs at crs.test:7700 refused to register octocat: invalid workflows"
+                           " (Workflows[0].WorkflowType: unknown type)")))))
+
+(ert-deftest crs-test-remote-lost-connection-fails-what-it-owed ()
+  "A dropped connection answers its outstanding requests with an error.
+One already sent may have been carried out, which its error says."
+  (crs-test--with-remote
+    (setq crs--remote-ready t)
+    (let ((process crs--process)
+          replies)
+      (crs--send-request "RPCHandler.GetPR" (vector) (lambda (r) (push r replies)))
+      ;; What the real `crs--send-request-now' would have recorded.
+      (puthash 1 (nth 2 (car sent)) crs--pending-requests)
+      ;; And one still waiting for the connect flow, never sent.
+      (push (list "RPCHandler.SyncPR" (vector) (lambda (r) (push r replies)))
+            crs--remote-queue)
+      (crs--remote-connection-lost process "connection broken by remote peer\n")
+      (should (equal (reverse replies)
+                     '(((error . "connection lost: The connection to crs at crs.test:7700 was lost (connection broken by remote peer)"))
+                       ((error . "The connection to crs at crs.test:7700 was lost (connection broken by remote peer)")))))
+      (should-not crs--process)
+      (should-not crs--remote-ready)
+      (should (= (hash-table-count crs--pending-requests) 0))
+      (delete-process process))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

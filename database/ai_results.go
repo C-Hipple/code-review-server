@@ -27,6 +27,7 @@ type AIResult struct {
 // UpsertAIResult stores a feature's result for a PR, replacing any earlier one.
 // Like the other cache tables, repo is the short repo name.
 func (db *DB) UpsertAIResult(owner, repo string, prNumber int, featureName, result, status, sha, inputHash string) error {
+	owner, repo = foldOwnerRepo(owner, repo)
 	_, err := db.conn.Exec(
 		`INSERT INTO AIResults (owner, repo, pr_number, feature_name, result, status, sha, input_hash, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -44,6 +45,7 @@ func (db *DB) UpsertAIResult(owner, repo string, prNumber int, featureName, resu
 // GetAIResults returns every stored AI feature result for a PR, keyed by
 // feature name. A PR no feature has run for yields an empty map.
 func (db *DB) GetAIResults(owner, repo string, prNumber int) (map[string]AIResult, error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	rows, err := db.conn.Query(
 		`SELECT feature_name, result, status, sha, input_hash, updated_at
 		 FROM AIResults WHERE owner = ? AND repo = ? AND pr_number = ?`,
@@ -69,6 +71,7 @@ func (db *DB) GetAIResults(owner, repo string, prNumber int) (map[string]AIResul
 // GetAIResult returns one feature's stored result for a PR. ok is false when
 // the feature has never produced a result for it.
 func (db *DB) GetAIResult(owner, repo string, prNumber int, featureName string) (res AIResult, ok bool, err error) {
+	owner, repo = foldOwnerRepo(owner, repo)
 	row := db.conn.QueryRow(
 		`SELECT feature_name, result, status, sha, input_hash, updated_at
 		 FROM AIResults WHERE owner = ? AND repo = ? AND pr_number = ? AND feature_name = ?`,

@@ -17,6 +17,15 @@ export const NO_LSP_PORT = LSP_PORT + 1;
  */
 export const REAL_LSP_PORT = LSP_PORT + 2;
 export const REAL_LSP = process.env.CRS_E2E_REAL_LSP === '1';
+/**
+ * Bridge in remote mode (CRS_REMOTE), connected over TCP to a fake crs
+ * started with --listen, with no language servers; see remote.e2e.ts.
+ */
+export const REMOTE_PORT = LSP_PORT + 3;
+/** Where the remote bridge's fake crs listens: the port after the bridge's. */
+export const remoteCrsPortFor = (port: number) => port + 1;
+/** The registration key the remote bridge and its fake crs share. */
+export const REGISTRATION_KEY = 'e2e-registration-key';
 
 export const urlFor = (port: number) => `http://127.0.0.1:${port}`;
 
@@ -28,3 +37,10 @@ export const stateDirFor = (port: number) => join(tmpdir(), 'crs-e2e', String(po
  * runs `git fetch origin` in its root, which must not touch this checkout.
  */
 export const repoCopyFor = (port: number) => join(stateDirFor(port), 'repo');
+
+/**
+ * The remote bridge's HOME, so nothing of the machine's leaks in: its
+ * codereviewserver.toml is under .config, and the token it registers for
+ * lands in .crs/remote_tokens/127.0.0.1_<port of its fake crs>.
+ */
+export const remoteHomeFor = (port: number) => join(stateDirFor(port), 'home');

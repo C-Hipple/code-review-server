@@ -52,6 +52,12 @@ type SearchWorkflow struct {
 	// DesktopNotifications overrides the global setting for this workflow.
 	// nil means inherit the global config.
 	DesktopNotifications *bool
+
+	// User and SectionPriority place the workflow's section, as on
+	// SyncReviewRequestsWorkflow. For a user's workflow Login is that user's
+	// login unless the workflow names another.
+	User            string
+	SectionPriority int
 }
 
 func (w SearchWorkflow) GetName() string {
@@ -62,6 +68,14 @@ func (w SearchWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
+func (w SearchWorkflow) GetUser() string {
+	return w.User
+}
+
+func (w SearchWorkflow) GetSectionPriority() int {
+	return w.SectionPriority
+}
+
 // GetPRRequirements returns nothing: this workflow's PRs aren't known until its
 // searches run, so the manager's collection phase has nothing to pre-fetch and
 // Run does its own fetching — the same arrangement ProjectListWorkflow uses.
@@ -70,12 +84,9 @@ func (w SearchWorkflow) GetPRRequirements() []PRRequirement {
 }
 
 // ShouldNotify resolves the effective desktop-notification setting for this
-// workflow: the per-workflow override if set, otherwise the global config.
+// workflow; see shouldNotify.
 func (w SearchWorkflow) ShouldNotify() bool {
-	if w.DesktopNotifications != nil {
-		return *w.DesktopNotifications
-	}
-	return config.C().DesktopNotifications
+	return shouldNotify(w.User, w.DesktopNotifications)
 }
 
 func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
@@ -100,26 +111,26 @@ func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_ch
 
 	// Pre-filter fetch: only what this workflow's filters read from the store.
 	if w.AuxDataReq != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.AuxDataReq)
+		prefetchAuxForFilteredPRs(ownershipKey(w), prs, w.AuxDataReq)
 	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.filters(login))
 
 	// Post-filter fetch: display data, for the survivors only.
 	if w.PostFilterAux != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
+		prefetchAuxForFilteredPRs(ownershipKey(w), prs, w.PostFilterAux)
 	}
 
 	db := config.C().DB
-	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
+	section, err := workflowSection(db, w)
 	if err != nil {
-		slog.Error("Error getting section", "error", err, "section", w.SectionTitle)
+		slog.Error("Error getting section", "error", err, "section", w.SectionTitle, "user", w.User)
 		return RunResult{}, errors.New("Section Not Found")
 	}
 
 	beforeCount, _ := db.GetItemCount()
 	slog.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(w.Name, prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	result := ProcessPRsDB(ownershipKey(w), prs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
@@ -133,11 +144,30 @@ func (w SearchWorkflow) filters(login string) []git_tools.PRFilter {
 	return append([]git_tools.PRFilter{git_tools.MakeWaitingOnMeFilter(login)}, w.Filters...)
 }
 
+// searchesTokenTeams reports whether the review requests this workflow
+// follows include those made of the token's teams. A config file's workflow
+// is the server's own and does, whatever its GithubUsername names — as a
+// bot's or a shared token's config may name its owner. A user's on a hosted
+// server doesn't: the token can't list anyone else's teams, so a user follows
+// the requests made of them by name. The cycle's searches and a webhook
+// delivery's re-check both go by this.
+func (w SearchWorkflow) searchesTokenTeams() bool {
+	return w.User == ""
+}
+
+// reviewRequestedRefs is the review-request search for login.
+func (w SearchWorkflow) reviewRequestedRefs(login string) ([]git_tools.PRRef, error) {
+	if w.searchesTokenTeams() {
+		return git_tools.ReviewRequestedRefs(login)
+	}
+	return git_tools.ReviewRequestedRefsByName(login)
+}
+
 // candidateRefs runs the searches this mode draws its PRs from.
 func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
 	switch w.Mode {
 	case ModeReviewRequested:
-		return git_tools.ReviewRequestedRefs(login)
+		return w.reviewRequestedRefs(login)
 
 	case ModeWaitingOnMe:
 		// A PR is waiting on me either because I have an open review request
@@ -147,7 +177,7 @@ func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
 		// only exists among PRs I have reviewed or commented on, so the union
 		// of the two searches is the complete candidate set. See
 		// git_tools/interaction_prefilter.go for the full argument.
-		requested, err := git_tools.ReviewRequestedRefs(login)
+		requested, err := w.reviewRequestedRefs(login)
 		if err != nil {
 			return nil, err
 		}

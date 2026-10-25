@@ -38,6 +38,9 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.ListAIFeatures': '/api/list-ai-features',
     'RPCHandler.RunAIFeature': '/api/run-ai-feature',
     'RPCHandler.GetAIOutput': '/api/get-ai-output',
+    'RPCHandler.StartGitHubLink': '/api/start-github-link',
+    'RPCHandler.GetGitHubLink': '/api/get-github-link',
+    'RPCHandler.UnlinkGitHub': '/api/unlink-github',
 };
 
 export interface GetHunkContextArgs {
@@ -144,6 +147,98 @@ export async function getAIOutput(
     return reply.output ?? {};
 }
 
+/**
+ * Where a user's GitHub link stands on a shared server (docs/protocol.md):
+ * `pending` while a code waits to be entered on GitHub; `expired`, `denied`,
+ * `mismatch` and `error` for a link that ended without linking; `unavailable`
+ * when the server (or this connection) cannot link accounts at all.
+ */
+export type GitHubLinkStatus =
+    | 'unavailable'
+    | 'unlinked'
+    | 'pending'
+    | 'linked'
+    | 'expired'
+    | 'denied'
+    | 'mismatch'
+    | 'error';
+
+export interface StartGitHubLinkReply {
+    /** True when a code is waiting for the user (`status` is `pending`). */
+    okay: boolean;
+    status: GitHubLinkStatus;
+    /** What the user enters at `verification_uri`, e.g. `WDJB-MJHT`. */
+    user_code: string;
+    verification_uri: string;
+    /** When the code expires, RFC 3339. */
+    expires_at: string;
+    /** Seconds between polls of GetGitHubLink that GitHub asks for. */
+    interval: number;
+    message: string;
+}
+
+export interface GetGitHubLinkReply {
+    /** False only when `status` is `unavailable`. */
+    okay: boolean;
+    status: GitHubLinkStatus;
+    /** The linked account's login whenever one is linked, also while a new link is pending. */
+    github_login: string;
+    user_code: string;
+    verification_uri: string;
+    expires_at: string;
+    message: string;
+}
+
+/**
+ * Starts linking the user's GitHub account through GitHub's device flow, or
+ * returns the link already waiting. Poll getGitHubLink until it is no longer
+ * pending.
+ */
+export async function startGitHubLink(): Promise<StartGitHubLinkReply> {
+    return rpcCall<StartGitHubLinkReply>('RPCHandler.StartGitHubLink', [{}]);
+}
+
+/** Where the user's GitHub link stands. Only reads. */
+export async function getGitHubLink(): Promise<GetGitHubLinkReply> {
+    return rpcCall<GetGitHubLinkReply>('RPCHandler.GetGitHubLink', [{}]);
+}
+
+/** Removes the user's GitHub link; `message` says whether its token was revoked. */
+export async function unlinkGitHub(): Promise<{ okay: boolean; message: string }> {
+    return rpcCall<{ okay: boolean; message: string }>('RPCHandler.UnlinkGitHub', [{}]);
+}
+
+/**
+ * What the bridge says about its connection (GET /api/session). Running its
+ * own crs it is `{ remote: false }`; connected to a shared server, who it is
+ * signed in as there.
+ */
+export interface BridgeSession {
+    remote: boolean;
+    /** The shared server's host:port. */
+    address?: string;
+    /**
+     * Whether the bridge has signed in to the shared server. Until it has
+     * there is no login — `error` says why — and nobody to show as signed in.
+     */
+    connected?: boolean;
+    /** The login the bridge registered as; '' for the server's administrator token. */
+    login?: string;
+    is_admin?: boolean;
+    /** Their own GitHub account is linked, so their reviews go out as them. */
+    github_linked?: boolean;
+    /** The server can link GitHub accounts. */
+    github_link_available?: boolean;
+    /** Why the bridge could not read the session just now. */
+    error?: string;
+}
+
+export async function getBridgeSession(): Promise<BridgeSession> {
+    const res = await fetch(`${API_BASE}/api/session`);
+    if (!res.ok) throw new Error(`/api/session answered ${res.status}`);
+    return (await res.json()) as BridgeSession;
+}
+
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
     const id = Date.now();
     const specializedPath = SPECIALIZED_ENDPOINTS[method];
@@ -193,6 +288,66 @@ export function rpcErrorMessage(e: unknown): string {
         // Not JSON — a network failure or the like, already readable.
     }
     return raw;
+}
+
+/** How a shared server (`crs --listen`) turned a call down. */
+export interface RpcRefusal {
+    /**
+     * `permission-denied`: the method is for the server's administrators.
+     * `link-github`: a write to GitHub — submitting a review, merging — needs
+     * the user's own GitHub account, which is not linked (or no longer
+     * works); linking it and trying again will do.
+     * `refused`: the server won't act under its own GitHub account for a
+     * user connected to it, and cannot link theirs. Final.
+     */
+    kind: 'permission-denied' | 'link-github' | 'refused';
+    /** The server's explanation, after the prefix. */
+    detail: string;
+}
+
+// Most specific first: a link-github refusal is also a refusal.
+const REFUSAL_PREFIXES = [
+    ['permission denied:', 'permission-denied'],
+    ['refused: link-github:', 'link-github'],
+    ['refused:', 'refused'],
+] as const;
+
+/**
+ * Reads a shared server's refusal off an error rpcCall threw, by the prefix
+ * the server puts on it (docs/protocol.md). Null for any other error —
+ * including every error a server run locally gives, since it refuses nothing.
+ */
+export function rpcRefusal(e: unknown): RpcRefusal | null {
+    const message = rpcErrorMessage(e);
+    for (const [prefix, kind] of REFUSAL_PREFIXES) {
+        if (message.startsWith(prefix)) {
+            return { kind, detail: message.slice(prefix.length).trim() };
+        }
+    }
+    return null;
+}
+
+/**
+ * Whether the bridge lost its connection to a shared server before the server
+ * answered the call (remote_rpc.ts, `connection lost:`). The call reached the
+ * server, which may have acted on it: a write's outcome is unknown, not failed.
+ */
+export function rpcConnectionLost(e: unknown): boolean {
+    return rpcErrorMessage(e).startsWith('connection lost:');
+}
+
+/**
+ * Whether SubmitReview refused a review because pending comments it was shown
+ * with are gone (`drafts changed:`): already sent by an earlier submit, or
+ * deleted with the user. Nothing was submitted; the PR wants reloading.
+ */
+export function rpcDraftsChanged(e: unknown): boolean {
+    return rpcErrorMessage(e).startsWith('drafts changed:');
+}
+
+/** What to say when a `permission-denied` refusal stops `action` ("rerun plugins"). */
+export function adminOnlyMessage(action: string): string {
+    return `Only an administrator of this server can ${action}.`;
 }
 
 /**

@@ -8,6 +8,7 @@
  * single interpretation of those fields.
  */
 
+import { adminOnlyMessage, rpcErrorMessage, rpcRefusal } from './api';
 import type { StatusVariant } from './design';
 
 export type PluginBodyType = 'markdown' | 'html';
@@ -107,6 +108,15 @@ export function annotationSeverityVariant(severity: string): StatusVariant {
 export function canRerunPlugin(plugin: PluginResult): boolean {
     const status = (plugin.status || '').toLowerCase();
     return status !== '' && status !== 'deferred' && status !== 'pending';
+}
+
+/**
+ * The toast a failed rerun shows. RerunPlugins is for administrators only on
+ * a shared server, which no amount of retrying changes.
+ */
+export function pluginRerunFailedMessage(plugin: string, error: unknown): string {
+    if (rpcRefusal(error)?.kind === 'permission-denied') return adminOnlyMessage('rerun plugins');
+    return `Could not rerun ${plugin}: ${rpcErrorMessage(error)}`;
 }
 
 /** Whether a plugin is still running: its result is yet to land. */

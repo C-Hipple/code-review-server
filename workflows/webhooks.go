@@ -382,7 +382,7 @@ func markMergeabilityChecked(ref git_tools.PRRef, at time.Time) {
 // mergeabilityCurrent reports whether the mergeability on record for pr still
 // stands, so a webhook cycle needn't ask GitHub again.
 func mergeabilityCurrent(db *database.DB, ref git_tools.PRRef, pr *github.PullRequest) bool {
-	state, headSHA, err := db.GetPRMergeability(ref.Number, ref.Repo)
+	state, headSHA, err := db.GetPRMergeability(ref.Owner, ref.Repo, ref.Number)
 	if err != nil || headSHA != pr.GetHead().GetSHA() {
 		return false
 	}

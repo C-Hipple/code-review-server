@@ -28,6 +28,12 @@ import (
 // filters and the row's details be worked out without asking GitHub. It waits
 // for any cycle in progress to finish writing sections first (membershipMu),
 // so a cycle working from a listing older than the delivery can't undo it.
+//
+// On a hosted server one delivery serves every dashboard the cycles do: the
+// workflows checked are the last cycle's run set — the config file's, on the
+// server's own dashboard, and those of every user active then, each on its
+// user's — and each judges the PR as its own run would, by its own login. An
+// idle user's dashboard is left to their next cycle, as it is by the cycles.
 
 // membershipMu is held by a cycle from the start of its run until its section
 // changes are written and pruned, and by each round of re-evaluation.
@@ -80,7 +86,7 @@ func (w SearchWorkflow) webhookMembership(pr *github.PullRequest) membership {
 	switch w.Mode {
 	case ModeReviewRequested:
 		// The search is what admits a PR here; ask what it asks.
-		if verdict := reviewRequestedOf(pr, login); verdict != memberYes {
+		if verdict := reviewRequestedOf(pr, login, w.searchesTokenTeams()); verdict != memberYes {
 			return verdict
 		}
 	case ModeWaitingOnMe:
@@ -117,14 +123,14 @@ func filtersMembership(pr *github.PullRequest, filters []git_tools.PRFilter) mem
 	return memberYes
 }
 
-// reviewRequestedOf reports whether pr's review is requested of login,
-// personally or through one of their teams — what ReviewRequestedRefs'
-// searches find.
-func reviewRequestedOf(pr *github.PullRequest, login string) membership {
+// reviewRequestedOf reports whether pr's review is requested of login: by
+// name, or with tokenTeams through one of the token's teams — what the
+// workflow's own searches find (SearchWorkflow.searchesTokenTeams).
+func reviewRequestedOf(pr *github.PullRequest, login string, tokenTeams bool) membership {
 	if userInRequestedReviewers(pr, login) {
 		return memberYes
 	}
-	if len(pr.RequestedTeams) == 0 {
+	if !tokenTeams || len(pr.RequestedTeams) == 0 {
 		return memberNo
 	}
 	mine := git_tools.GetMyTeamRefs()
@@ -146,8 +152,13 @@ func reviewRequestedOf(pr *github.PullRequest, login string) membership {
 	return memberNo
 }
 
-// activeWorkflows is the manager's current workflows, as of its last config
-// load.
+// activeWorkflows is the run set of the manager's latest cycle (RunSet): the
+// config file's workflows and those of every user active when it began. It
+// is replaced at the start of each cycle, so a user who registers, changes
+// their workflows or comes back between cycles is followed from the next one
+// — which is also when their sections are created and filled — and a user who
+// goes idle is followed until then. Deletions don't wait: see
+// followedWorkflows.
 var activeWorkflows atomic.Pointer[[]Workflow]
 
 func setActiveWorkflows(workflows []Workflow) {
@@ -162,20 +173,57 @@ func activeWorkflowsSnapshot() []Workflow {
 	return nil
 }
 
+// followedWorkflows is the run set a round of re-evaluation works from: the
+// snapshot less each user workflow that is no longer stored as it was — its
+// user deleted since, by an administrator or by the retention sweep that ends
+// a cycle, or the workflow removed, renamed or pointed at another section.
+// Their rows are released when the next cycle ends; until then a delivery
+// must not add to them. The server's own workflows are followed as they are,
+// as they always were. Should the users fail to load, theirs are left out of
+// this round rather than followed blind.
+func followedWorkflows(db *database.DB, snapshot []Workflow) []Workflow {
+	if !slices.ContainsFunc(snapshot, func(wf Workflow) bool { return wf.GetUser() != "" }) {
+		return snapshot
+	}
+	stored, err := storedUserSections(db)
+	if err != nil {
+		slog.Error("Failed to load users; re-checking only the server's own sections after webhook deliveries", "error", err)
+	}
+	return slices.DeleteFunc(slices.Clone(snapshot), func(wf Workflow) bool {
+		if wf.GetUser() == "" {
+			return false
+		}
+		section, ok := stored[ownershipKey(wf)]
+		return !ok || section != (database.SectionRef{User: wf.GetUser(), Name: wf.GetOrgSectionName()})
+	})
+}
+
+// storedUserSections maps the ownership key of every registered user's stored
+// workflow to the section it writes into.
+func storedUserSections(db *database.DB) (map[string]database.SectionRef, error) {
+	dashboards, err := loadUserDashboards(db)
+	if err != nil {
+		return nil, err
+	}
+	sections := map[string]database.SectionRef{}
+	for _, d := range dashboards {
+		for _, wf := range d.workflows {
+			sections[config.OwnershipKey(d.user.Login, wf.Name)] = database.SectionRef{User: d.user.Login, Name: wf.SectionTitle}
+		}
+	}
+	return sections, nil
+}
+
 // rememberedPRs holds the latest PR object seen for each PR, from a cycle's
 // listing or a delivery, for re-evaluating PRs after a delivery that carries
-// none — a conversation comment, a check run, a commit status.
-var rememberedPRs sync.Map // rememberedKey -> rememberedPR
+// none — a conversation comment, a check run, a commit status. It is keyed by
+// the folded key: a cycle knows a PR by the repository as the config spells
+// it, a delivery as GitHub does.
+var rememberedPRs sync.Map // folded PRKey -> rememberedPR
 
 type rememberedPR struct {
 	pr *github.PullRequest
 	at time.Time
-}
-
-// rememberedKey ignores case: a cycle keys PRs by the repository as the config
-// spells it, a delivery as GitHub does.
-func rememberedKey(key PRKey) PRKey {
-	return PRKey{Owner: strings.ToLower(key.Owner), Repo: strings.ToLower(key.Repo), Number: key.Number}
 }
 
 // rememberPR records pr as the latest seen for key, unless what is held
@@ -185,7 +233,7 @@ func rememberPR(key PRKey, pr *github.PullRequest) {
 	if pr == nil {
 		return
 	}
-	k := rememberedKey(key)
+	k := key.folded()
 	if v, ok := rememberedPRs.Load(k); ok {
 		held := v.(rememberedPR).pr
 		if held.UpdatedAt != nil && pr.UpdatedAt != nil && held.UpdatedAt.After(pr.UpdatedAt.Time) {
@@ -196,7 +244,7 @@ func rememberPR(key PRKey, pr *github.PullRequest) {
 }
 
 func rememberedPRFor(key PRKey) *github.PullRequest {
-	if v, ok := rememberedPRs.Load(rememberedKey(key)); ok {
+	if v, ok := rememberedPRs.Load(key.folded()); ok {
 		return v.(rememberedPR).pr
 	}
 	return nil
@@ -264,34 +312,37 @@ func drainReevaluations() {
 	// or the listing of a cycle that ran while it waited — so a check that
 	// waited out a cycle can't put back what the cycle's newer listing changed.
 	db := config.C().DB
+	if len(pending) == 0 || db == nil {
+		return
+	}
+	workflows := followedWorkflows(db, activeWorkflowsSnapshot())
 	for key := range pending {
 		if pr := rememberedPRFor(key); pr != nil {
-			reevaluateMembershipSafely(db, key, pr)
+			reevaluateMembershipSafely(db, workflows, key, pr)
 		}
 	}
 }
 
 // reevaluateMembershipSafely keeps a panic on one PR from taking the worker
 // down with it.
-func reevaluateMembershipSafely(db *database.DB, key PRKey, pr *github.PullRequest) {
+func reevaluateMembershipSafely(db *database.DB, workflows []Workflow, key PRKey, pr *github.PullRequest) {
 	defer func() {
 		if p := recover(); p != nil {
 			slog.Error("Panic re-evaluating a PR's sections after a webhook", "pr", key.Number, "repo", key.Repo, "panic", p)
 		}
 	}()
-	reevaluateMembership(db, key, pr)
+	reevaluateMembership(db, workflows, key, pr)
 }
 
-// reevaluateMembership checks pr against every workflow and brings its section
-// rows in line: added where it now belongs, rewritten — details included, from
-// the caches — where it still does, and dropped where it no longer does. The
-// caller holds membershipMu.
-func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
-	if db == nil || !webhookHandles(key) || !cacheServes(db, key, pr) || pr.Number == nil {
-		return
-	}
-	workflows := activeWorkflowsSnapshot()
-	if len(workflows) == 0 {
+// reevaluateMembership checks pr against each of workflows and brings its
+// section rows in line, on every dashboard they fill: added where it now
+// belongs, rewritten — details included, from the caches — where it still
+// does, and dropped where it no longer does. A section that doesn't exist is
+// skipped, never created: a cycle creates its workflows' sections, and one
+// that is gone was pruned with a deleted user or workflow. The caller holds
+// membershipMu.
+func reevaluateMembership(db *database.DB, workflows []Workflow, key PRKey, pr *github.PullRequest) {
+	if db == nil || len(workflows) == 0 || !webhookHandles(key) || !cacheServes(db, key, pr) || pr.Number == nil {
 		return
 	}
 	fullName := pr.GetBase().GetRepo().GetFullName()
@@ -318,12 +369,13 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 		if verdict == memberUnknown {
 			continue
 		}
-		section, err := db.GetSection(wf.GetOrgSectionName())
+		section, err := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
 		if err != nil || section == nil {
 			continue
 		}
+		claim := ownershipKey(wf)
 		item, _ := db.GetItem(section.ID, identifier)
-		listed := item != nil && slices.Contains(item.GetWorkflows(), wf.GetName())
+		listed := item != nil && slices.Contains(item.GetWorkflows(), claim)
 
 		switch {
 		case verdict == memberNo && listed:
@@ -334,15 +386,15 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 				Title:        item.Title,
 				SectionID:    section.ID,
 				SectionName:  section.SectionName,
-				WorkflowName: wf.GetName(),
+				WorkflowName: claim,
 				HeadSHA:      pr.GetHead().GetSHA(),
 			}}, "webhook: no longer matches the workflow")
 			webhookActivity.sectionDrops.Add(1)
 			dropped = true
-			slog.Info("Webhook took a PR out of a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName())
+			slog.Info("Webhook took a PR out of a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName(), "user", wf.GetUser())
 
 		case verdict == memberYes:
-			change := SyncTODOToSectionDB(db, wf.GetName(), pr, section, member.includesDiff())
+			change := SyncTODOToSectionDB(db, claim, pr, section, member.includesDiff())
 			if change.ChangeType == "No Change" {
 				continue
 			}
@@ -351,7 +403,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 			applyChange(SerializedFileChange{FileChange: &change, Lines: change.GetLines(2)}, "webhook: matches the workflow")
 			if !listed {
 				webhookActivity.sectionAdds.Add(1)
-				slog.Info("Webhook put a PR into a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName())
+				slog.Info("Webhook put a PR into a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName(), "user", wf.GetUser())
 			}
 		}
 	}

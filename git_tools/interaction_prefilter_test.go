@@ -1,6 +1,7 @@
 package git_tools
 
 import (
+	"crs/config"
 	"errors"
 	"fmt"
 	"os"
@@ -192,7 +193,7 @@ func TestFilterWaitingOnMePrefilter(t *testing.T) {
 	}
 
 	seedState := func(number int, state InteractionState) {
-		cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, number)
+		cacheKey := InteractionStateCacheKey(login, owner, repo, number)
 		GlobalCache.Set(cacheKey, state, 1*time.Hour)
 	}
 
@@ -264,7 +265,7 @@ func TestFilterWaitingOnAuthorPrefilter(t *testing.T) {
 		LastCommitTime: time.Now().Add(-20 * time.Minute),
 	}
 	seedState := func(number int, state InteractionState) {
-		cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, number)
+		cacheKey := InteractionStateCacheKey(login, owner, repo, number)
 		GlobalCache.Set(cacheKey, state, 1*time.Hour)
 	}
 
@@ -299,5 +300,50 @@ func TestFilterWaitingOnAuthorPrefilter(t *testing.T) {
 	}
 	if matched[302] {
 		t.Errorf("PR 302 has an open request on me and should not be waiting on its author")
+	}
+}
+
+// Each login gets its own answer for a PR: on a hosted server every user's
+// workflows ask about the same PRs as the server's, and a review dismissed for
+// one user waits on that user alone. The PR's reviews and comments are fetched
+// once for all of them.
+func TestInteractionStateIsPerLogin(t *testing.T) {
+	cfg := config.C()
+	cfg.GithubUsername = "server-account"
+	config.SetC(cfg)
+	owner, repo, number := "owner", "repo", 640
+	pr := &github.PullRequest{
+		Number: github.Ptr(number),
+		User:   &github.User{Login: github.Ptr("author")},
+		Base: &github.PullRequestBranch{Repo: &github.Repository{
+			Owner: &github.User{Login: github.Ptr(owner)}, Name: github.Ptr(repo),
+		}},
+	}
+	// alice reviewed and the author dismissed it; the server's account never
+	// touched the PR. Fetched data, seeded where the fetch would leave it.
+	GlobalCache.Set(fmt.Sprintf("interaction_data:%s/%s:%d", owner, repo, number), interactionData{
+		reviews: []*github.PullRequestReview{{
+			User:        &github.User{Login: github.Ptr("alice")},
+			State:       github.Ptr("DISMISSED"),
+			SubmittedAt: &github.Timestamp{Time: time.Now().Add(-time.Hour)},
+		}},
+	}, time.Hour)
+
+	if !GetInteractionState(owner, repo, "Alice", pr).MyReviewDismissed {
+		t.Error("alice's dismissed review is not hers")
+	}
+	if GetInteractionState(owner, repo, "server-account", pr).MyReviewDismissed {
+		t.Error("alice's dismissed review was judged the server account's")
+	}
+
+	// Both pass the prefilter: the searches found something of each.
+	for _, login := range []string{"alice", "server-account"} {
+		GlobalCache.Set(interactionSetCacheKey(login), InteractionSet{interactionKey(owner, repo, number): true}, time.Hour)
+	}
+	if got := MakeWaitingOnMeFilter("alice")([]*github.PullRequest{pr}); len(got) != 1 {
+		t.Error("the PR is missing from alice's waiting on me")
+	}
+	if got := MakeWaitingOnMeFilter("server-account")([]*github.PullRequest{pr}); len(got) != 0 {
+		t.Error("the PR waits on the server's account, which never touched it")
 	}
 }

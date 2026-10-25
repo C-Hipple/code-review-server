@@ -106,19 +106,19 @@ func seedCachedPR(t *testing.T, db *database.DB, key PRKey, sha string) {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	must(db.UpsertPullRequest(key.Number, key.Repo, sha, "base-sha", "diff --git a/w.go b/w.go\n+widget\n"))
-	must(db.UpsertPRComments(key.Number, key.Repo, "[]"))
+	must(db.UpsertPullRequest(key.Owner, key.Repo, key.Number, sha, "base-sha", "diff --git a/w.go b/w.go\n+widget\n"))
+	must(db.UpsertPRComments(key.Owner, key.Repo, key.Number, "[]"))
 	must(cacheReviews(db, key, nil))
-	must(db.UpsertPRCommits(key.Number, key.Repo, "[]"))
+	must(db.UpsertPRCommits(key.Owner, key.Repo, key.Number, "[]"))
 	must(cacheCI(db, key, sha, &github.CombinedStatus{State: github.Ptr("success")}, &github.ListCheckRunsResults{Total: github.Ptr(0)}))
 	must(db.UpsertPRMetadataCache(key.Owner, key.Repo, key.Number, `{"number":1,"ci_status":"pending (0/0 checks passed)"}`))
-	must(db.UpsertPRReviewThreads(key.Number, key.Repo, "[]"))
+	must(db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, "[]"))
 }
 
 // trackItem puts the PR in a section, the way a workflow cycle would.
 func trackItem(t *testing.T, db *database.DB, key PRKey) {
 	t.Helper()
-	section, err := db.GetOrCreateSection("Reviews", 1)
+	section, err := db.GetOrCreateSection("", "Reviews", 1)
 	if err != nil {
 		t.Fatalf("section: %v", err)
 	}
@@ -161,7 +161,7 @@ func fakeListening(t *testing.T, since time.Time) {
 
 func cachedReviewsOf(t *testing.T, db *database.DB, key PRKey) []cachedReview {
 	t.Helper()
-	raw, _ := db.GetPRReviews(key.Number, key.Repo)
+	raw, _ := db.GetPRReviews(key.Owner, key.Repo, key.Number)
 	var reviews []cachedReview
 	if err := json.Unmarshal([]byte(raw), &reviews); err != nil {
 		t.Fatalf("decode reviews %q: %v", raw, err)
@@ -297,7 +297,7 @@ func TestLoadCachedAuxDataReadsWhatDetailsNeeds(t *testing.T) {
 			Body: github.Ptr("lgtm"), User: &github.User{Login: github.Ptr("rev")}, CreatedAt: created}),
 	}
 	j, _ := json.Marshal(comments)
-	env.db.UpsertPRComments(key.Number, key.Repo, string(j))
+	env.db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j))
 	cacheReviews(env.db, key, []*github.PullRequestReview{{ID: github.Ptr(int64(5)), User: &github.User{Login: github.Ptr("rev")},
 		State: github.Ptr("APPROVED"), SubmittedAt: created}})
 	cacheCI(env.db, key, "head1", nil, &github.ListCheckRunsResults{CheckRuns: []*github.CheckRun{
@@ -509,7 +509,7 @@ func TestDeliveriesAboutUnknownPRsAreDropped(t *testing.T) {
 		Repo:        whRepository(),
 	}
 	applyWebhookEvent(webhookDelivery{eventType: "pull_request_review", event: review})
-	if raw, _ := env.db.GetPRReviews(5, whRepo); raw != "" {
+	if raw, _ := env.db.GetPRReviews(whOwner, whRepo, 5); raw != "" {
 		t.Errorf("cached reviews for a PR nothing tracks: %s", raw)
 	}
 
@@ -527,14 +527,14 @@ func TestReviewDeliveryNeverStartsAReviewList(t *testing.T) {
 	env := newWebhookTestEnv(t)
 	key := whKey(1)
 	trackItem(t, env.db, key)
-	env.db.UpsertPullRequest(key.Number, key.Repo, "head1", "", "")
+	env.db.UpsertPullRequest(key.Owner, key.Repo, key.Number, "head1", "", "")
 	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
 		Action:      github.Ptr("submitted"),
 		Review:      &github.PullRequestReview{ID: github.Ptr(int64(1)), State: github.Ptr("approved")},
 		PullRequest: whPR(1, "head1"),
 		Repo:        whRepository(),
 	}})
-	if raw, _ := env.db.GetPRReviews(key.Number, key.Repo); raw != "" {
+	if raw, _ := env.db.GetPRReviews(key.Owner, key.Repo, key.Number); raw != "" {
 		t.Errorf("a single review became the PR's cached list: %s", raw)
 	}
 }
@@ -618,10 +618,10 @@ func TestPullRequestDeliveryUpdatesMetadataAndTheList(t *testing.T) {
 	if meta["title"] != "Add better widgets" || meta["state"] != "closed" {
 		t.Errorf("metadata = %v", meta)
 	}
-	if raw, _ := env.db.GetRequestedReviewers(key.Number, key.Repo); !strings.Contains(raw, "someone") {
+	if raw, _ := env.db.GetRequestedReviewers(key.Owner, key.Repo, key.Number); !strings.Contains(raw, "someone") {
 		t.Errorf("requested reviewers = %s", raw)
 	}
-	section, _ := env.db.GetSection("Reviews")
+	section, _ := env.db.GetSection("", "Reviews")
 	item, _ := env.db.GetItem(section.ID, "acme/widgets-1")
 	if item.Status != "DONE" || item.Title != "Add better widgets" || !strings.Contains(item.Tags, "merged") {
 		t.Errorf("list row = %+v", item)
@@ -641,8 +641,8 @@ func TestReviewCommentDeliveries(t *testing.T) {
 		User: &github.User{Login: github.Ptr("rev")}, CreatedAt: &github.Timestamp{Time: time.Unix(100, 0)},
 	}
 	j, _ := json.Marshal([]*github.PullRequestComment{root})
-	env.db.UpsertPRComments(key.Number, key.Repo, string(j))
-	env.db.UpsertPRReviewThreads(key.Number, key.Repo, `[{"id":"PRRT_1","comment_ids":[10]}]`)
+	env.db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j))
+	env.db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, `[{"id":"PRRT_1","comment_ids":[10]}]`)
 
 	deliver := func(action string, c *github.PullRequestComment) {
 		applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewCommentEvent{
@@ -716,7 +716,7 @@ func TestIssueCommentDeliveries(t *testing.T) {
 	review := &github.PullRequestComment{ID: github.Ptr(int64(5)), URL: github.Ptr("https://api.github.com/repos/acme/widgets/pulls/comments/5"),
 		DiffHunk: github.Ptr("@@"), User: &github.User{Login: github.Ptr("rev")}, CreatedAt: &github.Timestamp{Time: time.Unix(1, 0)}}
 	j, _ := json.Marshal([]*github.PullRequestComment{review})
-	env.db.UpsertPRComments(key.Number, key.Repo, string(j))
+	env.db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j))
 
 	comment := &github.IssueComment{ID: github.Ptr(int64(5)), URL: github.Ptr("https://api.github.com/repos/acme/widgets/issues/comments/5"),
 		Body: github.Ptr("thanks"), User: &github.User{Login: github.Ptr("author")}, CreatedAt: &github.Timestamp{Time: time.Unix(2, 0)}}
@@ -747,7 +747,7 @@ func TestReviewThreadDeliveries(t *testing.T) {
 	env := newWebhookTestEnv(t)
 	key := whKey(1)
 	seedCachedPR(t, env.db, key, "head1")
-	env.db.UpsertPRReviewThreads(key.Number, key.Repo, `[{"id":"PRRT_1","comment_ids":[10,11]}]`)
+	env.db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, `[{"id":"PRRT_1","comment_ids":[10,11]}]`)
 	deliver := func(action, nodeID string, ids ...int64) {
 		var comments []*github.PullRequestComment
 		for _, id := range ids {
@@ -824,7 +824,7 @@ func TestCheckRunDeliveries(t *testing.T) {
 	other := run(3, "completed", "success")
 	other.HeadSHA = github.Ptr("head-unknown")
 	deliver(other, &github.PullRequest{Number: github.Ptr(1)})
-	if raw, _ := env.db.GetCIStatus(key.Number, key.Repo, "head-unknown"); raw != "" {
+	if raw, _ := env.db.GetCIStatus(key.Owner, key.Repo, key.Number, "head-unknown"); raw != "" {
 		t.Errorf("CI started from a single run: %s", raw)
 	}
 }
@@ -893,7 +893,7 @@ func TestMergeabilityStandsUntilTheHeadOrBaseMoves(t *testing.T) {
 	if mergeabilityCurrent(env.db, ref, pr) {
 		t.Fatal("current with nothing recorded")
 	}
-	env.db.RecordPRMergeability(1, whRepo, "head1", git_tools.MergeabilityConflicting)
+	env.db.RecordPRMergeability(whOwner, whRepo, 1, "head1", git_tools.MergeabilityConflicting)
 	if mergeabilityCurrent(env.db, ref, pr) {
 		t.Fatal("current although this process never asked")
 	}
@@ -964,15 +964,15 @@ func TestInteractionStateFromCache(t *testing.T) {
 			DiffHunk: github.Ptr("@@"), User: &github.User{Login: github.Ptr("author")}, CreatedAt: at(200)},
 	}
 	j, _ := json.Marshal(comments)
-	env.db.UpsertPRComments(key.Number, key.Repo, string(j))
-	env.db.UpsertPRCommits(key.Number, key.Repo, `[{"sha":"c1","date":"2026-01-01T00:00:00Z","committed_at":"2026-02-01T00:00:00Z"}]`)
+	env.db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j))
+	env.db.UpsertPRCommits(key.Owner, key.Repo, key.Number, `[{"sha":"c1","date":"2026-01-01T00:00:00Z","committed_at":"2026-02-01T00:00:00Z"}]`)
 
 	source := webhookPRState{}
-	if _, ok := source.InteractionState(whOwner, whRepo, pr); ok {
+	if _, ok := source.InteractionState(whOwner, whRepo, "me", pr); ok {
 		t.Fatal("answered outside a webhook cycle")
 	}
 	withCycleCoverage(t, whOwner+"/"+whRepo)
-	state, ok := source.InteractionState(whOwner, whRepo, pr)
+	state, ok := source.InteractionState(whOwner, whRepo, "me", pr)
 	if !ok {
 		t.Fatal("didn't answer for a covered, cached PR")
 	}
@@ -981,7 +981,14 @@ func TestInteractionStateFromCache(t *testing.T) {
 	if !state.HasUnrespondedComments || !state.LastCommitTime.Equal(want.LastCommitTime) || !state.LastMeTime.Equal(want.LastMeTime) {
 		t.Errorf("state = %+v, want %+v", state, want)
 	}
-	if _, ok := source.InteractionState(whOwner, whRepo, whPR(1, "head2")); ok {
+	// Another login asking gets its own standing from the same caches.
+	theirs, ok := source.InteractionState(whOwner, whRepo, "author", pr)
+	wantTheirs := git_tools.CalculateInteractionState("author", pr, nil, comments, nil)
+	if !ok || theirs.HasUnrespondedComments != wantTheirs.HasUnrespondedComments || !theirs.LastMeTime.Equal(wantTheirs.LastMeTime) ||
+		theirs.LastMeTime.Equal(state.LastMeTime) {
+		t.Errorf("author's state = %+v, %v; want %+v", theirs, ok, wantTheirs)
+	}
+	if _, ok := source.InteractionState(whOwner, whRepo, "me", whPR(1, "head2")); ok {
 		t.Error("answered from caches about an older head")
 	}
 

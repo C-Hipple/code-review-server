@@ -40,7 +40,7 @@ func TestPRNeedsCacheWarm(t *testing.T) {
 
 	t.Run("head SHA changed warms", func(t *testing.T) {
 		db := warmTestDB(t)
-		if err := db.UpsertPullRequest(prNumber, repo, "sha_old", "", "cached diff"); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, repo, prNumber, "sha_old", "", "cached diff"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		if !prNeedsCacheWarm(db, key, prWithHeadSHA("sha_new")) {
@@ -50,7 +50,7 @@ func TestPRNeedsCacheWarm(t *testing.T) {
 
 	t.Run("placeholder row (empty diff) warms", func(t *testing.T) {
 		db := warmTestDB(t)
-		if err := db.UpsertPullRequest(prNumber, repo, "sha1", "", ""); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, repo, prNumber, "sha1", "", ""); err != nil {
 			t.Fatalf("seed placeholder: %v", err)
 		}
 		if !prNeedsCacheWarm(db, key, prWithHeadSHA("sha1")) {
@@ -60,7 +60,7 @@ func TestPRNeedsCacheWarm(t *testing.T) {
 
 	t.Run("unchanged PR with cached diff does not warm", func(t *testing.T) {
 		db := warmTestDB(t)
-		if err := db.UpsertPullRequest(prNumber, repo, "sha1", "", "cached diff"); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, repo, prNumber, "sha1", "", "cached diff"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		if prNeedsCacheWarm(db, key, prWithHeadSHA("sha1")) {
@@ -120,7 +120,7 @@ func TestApplyCacheWarmRequirements(t *testing.T) {
 
 	t.Run("leaves an unchanged PR alone", func(t *testing.T) {
 		db := warmTestDB(t)
-		if err := db.UpsertPullRequest(prNumber, repo, "sha1", "", "cached diff"); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, repo, prNumber, "sha1", "", "cached diff"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		prObjects := map[PRKey]*github.PullRequest{key: prWithHeadSHA("sha1")}
@@ -138,7 +138,7 @@ func TestApplyCacheWarmRequirements(t *testing.T) {
 		// appearing here would rerun plugins for a revision already handled.
 		db := warmTestDB(t)
 		unchanged := PRKey{Owner: "owner", Repo: repo, Number: 200}
-		if err := db.UpsertPullRequest(unchanged.Number, repo, "sha1", "", "cached diff"); err != nil {
+		if err := db.UpsertPullRequest(unchanged.Owner, repo, unchanged.Number, "sha1", "", "cached diff"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 		prObjects := map[PRKey]*github.PullRequest{

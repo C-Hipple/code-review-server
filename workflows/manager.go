@@ -118,7 +118,8 @@ func deduplicateChanges(changes []SerializedFileChange) []SerializedFileChange {
 	// one canonical change per item per cycle, but different workflows that
 	// touch the same item must each contribute (e.g. one Update from workflow
 	// A and one Delete from workflow B both need to land so ownership is
-	// tracked correctly).
+	// tracked correctly). WorkflowName is the ownership key, so two users'
+	// workflows of the same name count as different workflows here too.
 	changesByIdentifier := make(map[string][]SerializedFileChange)
 	for _, change := range changes {
 		identifier := change.FileChange.Identifier + "\x00" + change.FileChange.WorkflowName
@@ -159,14 +160,16 @@ func deduplicateChanges(changes []SerializedFileChange) []SerializedFileChange {
 }
 
 func ListenChanges(channel chan FileChanges, wg *sync.WaitGroup) {
-	changesMap := make(map[string][]SerializedFileChange)
+	// Grouped by section id rather than name: two users can both have a
+	// "Needs Review", and their changes must not be deduplicated together.
+	changesMap := make(map[int64][]SerializedFileChange)
 	for fileChange := range channel {
 		if fileChange.ChangeType == "No Change" {
 			wg.Done()
 			continue
 		}
 		fileChange.Report()
-		key := fileChange.SectionName
+		key := fileChange.SectionID
 
 		var lines []string
 		if fileChange.ChangeType != "Delete" {
@@ -309,9 +312,8 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 	}
 
 	// We need head SHA and branch name. These are NOT in FileChanges.
-	// We might need to fetch them from DB if they were cached — under the
-	// short repo name, like every cache table.
-	_, sha, _ := db.GetPullRequest(prNumber, repoName)
+	// We might need to fetch them from DB if they were cached.
+	_, sha, _ := db.GetPullRequest(ownerName, repoName, prNumber)
 	if sha == "" {
 		// If we don't have it in DB, we can't easily manage worktree here without a refactor
 		// to include more info in FileChanges or performing a GitHub API call.
@@ -453,7 +455,7 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 	if _, err := os.Stat(path); err != nil {
 		return
 	}
-	_, sha, _ := db.GetPullRequest(number, repo)
+	_, sha, _ := db.GetPullRequest(owner, repo, number)
 	branch := cachedHeadRef(db, owner, repo, number)
 	if sha == "" || branch == "" {
 		return
@@ -462,8 +464,9 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 }
 
 // prClaimedElsewhere reports whether the PR a Delete releases is still listed
-// by another workflow or in another section. On a lookup error it says yes,
-// so a worktree is never removed on a guess.
+// by another workflow or in another section — any user's, since the worktree
+// is the server's and shared by every dashboard listing the PR. On a lookup
+// error it says yes, so a worktree is never removed on a guess.
 func prClaimedElsewhere(db *database.DB, change *FileChanges) bool {
 	items, err := db.GetAllItems()
 	if err != nil {
@@ -494,14 +497,14 @@ func NewManagerService(workflows []Workflow, oneoff bool, sleepTime time.Duratio
 
 func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullRequest, workflow_chan chan FileChanges, file_change_wg *sync.WaitGroup) error {
 	// Helper which times the workflow run command.
-	slog.Info("Starting Workflow", "workflow", workflow.GetName())
+	slog.Info("Starting Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser())
 	start := time.Now()
 	result, err := workflow.Run(prs, workflow_chan, file_change_wg)
 	duration := time.Since(start)
 	if err != nil {
-		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "after", duration, "error", err)
+		slog.Error("Errored in Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser(), "after", duration, "error", err)
 	}
-	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "took", duration, "result", result.Report())
+	slog.Info("Finishing Workflow", "workflow", workflow.GetName(), "user", workflow.GetUser(), "took", duration, "result", result.Report())
 	return err
 }
 
@@ -626,7 +629,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		// Skip if any required PR data was not successfully fetched (e.g. rate limit).
 		// Running section-matching against an empty list would delete all DB items.
 		if hasUnfetchedRequirements(workflow, repoStatePRs, specificPRs) {
-			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName())
+			slog.Warn("Skipping workflow due to PR fetch error; will retry next cycle", "workflow", workflow.GetName(), "user", workflow.GetUser())
 			incomplete.Store(true)
 			continue
 		}
@@ -774,28 +777,28 @@ func (ms *ManagerService) Run() {
 		if waitTimeout(&listener_wg, 240*time.Second) {
 			slog.Error("Listener waitgroup timed out waiting for changes to be applied")
 		}
-		releaseStaleWorkflowOwnership()
-		pruneOrphanedItems()
-		pruneRetiredSections()
-		pruneWorkflowActionLog()
+		finishCycle()
 	} else {
 		cycle_count := 0
 		for {
-			// Reload config and workflows before each cycle
+			// Reload config and workflows before each cycle. A failed reload
+			// leaves the previous config in place, and the run set is rebuilt
+			// from it all the same: users who registered, changed their
+			// workflows or came back since are picked up either way.
 			if err := config.Reload(); err != nil {
 				slog.Error("Failed to reload config before cycle", "error", err)
-			} else {
-				// Re-generate workflows
-				cfg := config.C()
-				ms.Workflows = MatchWorkflows(cfg.RawWorkflows, &cfg.Repos, cfg.JiraDomain)
-				ms.sleepTime = cfg.SleepDuration
-				ms.Initialize()
 			}
+			cfg := config.C()
+			ms.Workflows = RunSet(cfg, time.Now())
+			ms.sleepTime = cfg.SleepDuration
+			ms.Initialize()
 			// Only the process running the sync listens for webhooks: it is
 			// the one whose cycles can leave PRs to them. A --oneoff run
-			// never gets here, and polls everything.
+			// never gets here, and polls everything. Deliveries re-check
+			// sections against this cycle's run set, every active user's
+			// dashboard included, once Initialize has created its sections.
 			setActiveWorkflows(ms.Workflows)
-			syncWebhookListener(config.C())
+			syncWebhookListener(cfg)
 
 			// Throttle: skip this cycle if the last completed cycle was within half the sleep interval.
 			// This prevents hammering the GitHub API when the server is restarted frequently.
@@ -834,10 +837,7 @@ func (ms *ManagerService) Run() {
 				slog.Error("Cycle waitgroup timed out waiting for changes to be applied")
 			}
 
-			releaseStaleWorkflowOwnership()
-			pruneOrphanedItems()
-			pruneRetiredSections()
-			pruneWorkflowActionLog()
+			finishCycle()
 			membershipMu.Unlock()
 
 			// Log cycle completion so the throttle check works on next server start.
@@ -852,56 +852,65 @@ func (ms *ManagerService) Run() {
 	slog.Info("Exiting Service")
 }
 
-// configuredWorkflowSections maps each configured workflow name to the section
-// it writes into. It reads the raw config rather than the built workflow list on
-// purpose: a workflow that is present in the TOML but fails to build (unknown
-// WorkflowType, bad filter name) is skipped by MatchWorkflows, and treating that
-// as a removal would evict its items over a typo. Only a workflow actually
-// deleted from the config should lose its claims.
-func configuredWorkflowSections() map[string]string {
-	raw := config.C().RawWorkflows
-	sections := make(map[string]string, len(raw))
-	for _, wf := range raw {
-		sections[wf.Name] = wf.SectionTitle
+// finishCycle is the housekeeping that follows a cycle once its changes have
+// landed. The retention sweep goes first so that a user it deletes is already
+// gone from the owned set read right after it: their items are released and
+// pruned, and their emptied sections deleted, in this same cycle.
+//
+// The owned set is read here, at the end, rather than kept from the top of the
+// cycle, so a user who registered or changed their workflows while it ran is
+// judged by what they have now — a reprocess may already have written their
+// new sections.
+func finishCycle() {
+	cfg := config.C()
+	sweepIdleUsers(cfg, time.Now())
+	owned, ok := ownedSections(cfg)
+	spareServer := len(cfg.RawWorkflows) == 0
+	if ok {
+		releaseStaleWorkflowOwnership(owned, spareServer)
 	}
-	return sections
+	pruneOrphanedItems()
+	if ok {
+		pruneRetiredSections(owned, spareServer)
+	}
+	pruneWorkflowActionLog()
 }
 
-// releaseStaleWorkflowOwnership drops item ownership held by workflows the
-// config no longer defines, so the items fall to pruneOrphanedItems. Run before
-// it, at the end of a cycle.
+// releaseStaleWorkflowOwnership drops item ownership held by workflows that
+// are gone — deleted from the config or from a user's list, or whose user was
+// deleted — so the items fall to pruneOrphanedItems. owned is ownedSections'
+// answer. Run before the prune, at the end of a cycle.
 //
-// The empty-config guard matters: config.Reload failing mid-run leaves the
-// previous config in place, but a config that legitimately parses to zero
-// workflows would otherwise release every item in the database.
-func releaseStaleWorkflowOwnership() {
-	ownedSections := configuredWorkflowSections()
-	if len(ownedSections) == 0 {
-		slog.Warn("No workflows configured; skipping stale ownership release")
-		return
+// spareServer, set when the config file has no workflows, leaves the server's
+// own dashboard alone: config.Reload failing mid-run leaves the previous config
+// in place, but a config that parses to zero workflows by mistake would
+// otherwise release every item on it. Users' dashboards are released all the
+// same — the users table, which loaded, says what they own — so a hosted
+// server whose config has no workflows of its own still clears out a deleted
+// user's dashboard.
+func releaseStaleWorkflowOwnership(owned map[string]database.SectionRef, spareServer bool) {
+	if spareServer && len(owned) == 0 {
+		slog.Warn("No workflows configured or registered; releasing only deleted users' items")
 	}
-	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(ownedSections)
+	released, err := config.C().DB.ReleaseStaleWorkflowOwnership(owned, spareServer)
 	if err != nil {
 		slog.Error("Failed to release stale workflow ownership", "error", err)
 		return
 	}
 	if released > 0 {
-		slog.Info("Released ownership held by workflows no longer in the config", "items", released)
+		slog.Info("Released ownership held by workflows that no longer exist", "items", released)
 	}
 }
 
-// pruneRetiredSections deletes empty sections that no configured workflow writes
-// into. Run after pruneOrphanedItems, which is what empties them.
-func pruneRetiredSections() {
-	ownedSections := configuredWorkflowSections()
-	if len(ownedSections) == 0 {
-		return
-	}
-	keep := make([]string, 0, len(ownedSections))
-	for _, section := range ownedSections {
+// pruneRetiredSections deletes empty sections that no workflow in owned writes
+// into, sparing the server's own as releaseStaleWorkflowOwnership does. Run
+// after pruneOrphanedItems, which is what empties them.
+func pruneRetiredSections(owned map[string]database.SectionRef, spareServer bool) {
+	keep := make([]database.SectionRef, 0, len(owned))
+	for _, section := range owned {
 		keep = append(keep, section)
 	}
-	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep)
+	deleted, err := config.C().DB.DeleteEmptySectionsNotIn(keep, spareServer)
 	if err != nil {
 		slog.Error("Failed to prune retired sections", "error", err)
 		return
@@ -947,11 +956,11 @@ func pruneWorkflowActionLog() {
 }
 
 func (ms *ManagerService) Initialize() {
-	// Ensure all required sections exist.
+	// Ensure all required sections exist, each on its workflow's dashboard.
 	// Does this sync since GetSection has creation side effect
 	db := config.C().DB
 	for _, wf := range ms.Workflows {
-		db.GetOrCreateSection(wf.GetOrgSectionName(), config.C().SectionPriority[wf.GetOrgSectionName()])
+		workflowSection(db, wf)
 	}
 }
 
@@ -984,7 +993,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 
 	for _, wf := range ms.Workflows {
 		for _, req := range wf.GetPRRequirements() {
-			slog.Info("AuxDataRequirement", "workflow", wf.GetName(),
+			slog.Info("AuxDataRequirement", "workflow", wf.GetName(), "user", wf.GetUser(),
 				"repo", fmt.Sprintf("%s/%s", req.Owner, req.Repo),
 				"comments", req.AuxData.Comments, "ci_status", req.AuxData.CIStatus,
 				"diff", req.AuxData.Diff, "reviews", req.AuxData.Reviews, "commits", req.AuxData.Commits)
@@ -1009,8 +1018,8 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
 				prObjects[key] = pr
 				rememberPR(key, pr)
-				if !slices.Contains(prWorkflows[key], wf.GetName()) {
-					prWorkflows[key] = append(prWorkflows[key], wf.GetName())
+				if requester := ownershipKey(wf); !slices.Contains(prWorkflows[key], requester) {
+					prWorkflows[key] = append(prWorkflows[key], requester)
 				}
 
 				// Merge requirements (OR them together)
@@ -1157,7 +1166,7 @@ func prNeedsCacheWarm(db *database.DB, key PRKey, pr *github.PullRequest) bool {
 	if pr == nil || pr.Head == nil || pr.Head.SHA == nil {
 		return false
 	}
-	body, cachedSHA, err := db.GetPullRequest(key.Number, key.Repo)
+	body, cachedSHA, err := db.GetPullRequest(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		// On a lookup error, err on the side of warming.
 		return true
@@ -1186,8 +1195,9 @@ func applyAuxImplications(req AuxDataRequirement) AuxDataRequirement {
 
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
-// workflowName identifies who asked for the fetch; it is recorded in
-// WorkflowActionLog alongside the fields that actually landed.
+// workflowName identifies who asked for the fetch — the ownership keys of the
+// requesting workflows, comma-joined — and is recorded in WorkflowActionLog
+// alongside the fields that actually landed.
 func fetchAuxDataForPR(client *github.Client,
 	apiCalls *apiCallCounter,
 	workflowName string,
@@ -1425,7 +1435,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// 1. Comments
 	if allComments != nil {
 		if j, err := json.Marshal(allComments); err == nil {
-			if err := db.UpsertPRComments(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRComments(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR comments", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "comments")
@@ -1435,14 +1445,14 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 
 	// 2. Diff + SHA
 	if auxData.Diff != "" {
-		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, key.Repo, key.Number, auxData.HeadSHA, auxData.BaseSHA, auxData.Diff); err != nil {
 			slog.Error("Failed to cache PR diff", "pr", key.Number, "repo", key.Repo, "error", err)
 		} else {
 			written = append(written, "diff")
 		}
 	} else if auxData.HeadSHA != "" {
 		// Store SHA even without diff so GetPRDetails can look up CI status
-		if err := db.UpsertPullRequest(key.Number, key.Repo, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
+		if err := db.UpsertPullRequest(key.Owner, key.Repo, key.Number, auxData.HeadSHA, auxData.BaseSHA, ""); err != nil {
 			slog.Error("Failed to cache PR SHA", "pr", key.Number, "repo", key.Repo, "error", err)
 		} else {
 			written = append(written, "sha")
@@ -1493,7 +1503,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 			cms = append(cms, commit)
 		}
 		if j, err := json.Marshal(cms); err == nil {
-			if err := db.UpsertPRCommits(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRCommits(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR commits", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "commits")
@@ -1506,7 +1516,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// previously cached row is left alone rather than being blanked.
 	if auxData.ReviewThreads != nil {
 		if j, err := json.Marshal(auxData.ReviewThreads); err == nil {
-			if err := db.UpsertPRReviewThreads(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRReviewThreads(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR review threads", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "review_threads")
@@ -1519,7 +1529,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// previously cached row stands rather than being blanked.
 	if auxData.TeamReviews != nil {
 		if j, err := json.Marshal(auxData.TeamReviews); err == nil {
-			if err := db.UpsertPRTeamReviews(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR team reviews", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "team_reviews")
@@ -1532,7 +1542,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 	// so the cached row stands rather than being blanked.
 	if auxData.Reactions != nil {
 		if j, err := json.Marshal(auxData.Reactions); err == nil {
-			if err := db.UpsertPRReactions(key.Number, key.Repo, string(j)); err != nil {
+			if err := db.UpsertPRReactions(key.Owner, key.Repo, key.Number, string(j)); err != nil {
 				slog.Error("Failed to cache PR reactions", "pr", key.Number, "repo", key.Repo, "error", err)
 			} else {
 				written = append(written, "reactions")
@@ -1614,7 +1624,7 @@ func cacheReviews(db *database.DB, key PRKey, reviews []*github.PullRequestRevie
 	if err != nil {
 		return err
 	}
-	return db.UpsertPRReviews(key.Number, key.Repo, string(j))
+	return db.UpsertPRReviews(key.Owner, key.Repo, key.Number, string(j))
 }
 
 // cacheCI writes a commit's statuses and check runs to the CIStatus cache.
@@ -1623,7 +1633,7 @@ func cacheCI(db *database.DB, key PRKey, sha string, status *github.CombinedStat
 	if err != nil {
 		return err
 	}
-	return db.UpsertCIStatus(key.Number, key.Repo, sha, string(j))
+	return db.UpsertCIStatus(key.Owner, key.Repo, key.Number, sha, string(j))
 }
 
 // cacheRequestedReviewers writes who the PR object says is still asked to
@@ -1637,7 +1647,7 @@ func cacheRequestedReviewers(db *database.DB, key PRKey, pr *github.PullRequest)
 	if err != nil {
 		return err
 	}
-	return db.UpsertRequestedReviewers(key.Number, key.Repo, string(j))
+	return db.UpsertRequestedReviewers(key.Owner, key.Repo, key.Number, string(j))
 }
 
 // describeAuxRequest notes anything worth knowing about a cache write beyond

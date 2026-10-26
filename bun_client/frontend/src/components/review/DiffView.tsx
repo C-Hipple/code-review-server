@@ -428,19 +428,12 @@ export default function DiffView({
                             // desktop, static on mobile); an inline value here
                             // would override the class.
                         }}
-                        onClick={() =>
-                            item.file &&
-                            item.pos !== null &&
-                            onCommentClick(idx, item.file, item.pos)
-                        }
+                        onClick={() => item.file && onToggleFileCollapse(item.file)}
                         className="hover-line diff-file-row"
-                        title={`Add comment to ${item.file}`}
                     >
+                        {/* The whole header toggles the file; the chevron shows
+                            which way and is its keyboard target. */}
                         <button
-                            onClick={e => {
-                                e.stopPropagation();
-                                if (item.file) onToggleFileCollapse(item.file);
-                            }}
                             style={{
                                 background: 'transparent',
                                 border: 'none',

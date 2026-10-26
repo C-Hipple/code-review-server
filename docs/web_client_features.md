@@ -333,7 +333,8 @@ misplaces comments:
 - Old/new line-number gutters, a `+`/`−` gutter, and per-file `+n/−m` counts.
 - Test files sort last (`sortParsedLinesTestsLast`) — `*.test.*`, `*.spec.*`,
   `*_test.go`, `__tests__/`.
-- Per-file collapse plus Collapse All / Expand All.
+- Per-file collapse — clicking anywhere on a file header toggles it — plus Collapse
+  All / Expand All.
 - Sticky file headers and hunk headers. `Review.tsx` measures the toolbar and one
   file row with a `ResizeObserver` and publishes `--review-sticky-top` and
   `--review-hunk-sticky-top`, so headers pin correctly at any font size. Each file's
@@ -372,7 +373,6 @@ client treats `author === 'local'` as "mine, still editable".
 
 - **Inline comment on any line** — clicking the `+`/`−` gutter opens an inline form
   anchored to that row, pre-filled with the file and position.
-- **File-level comment** — clicking a file header comments on the file (position 0).
 - **Free-form comment modal** — the toolbar's `+ Comment` opens a modal where file
   and position are typed manually.
 - **Threading** — comments are grouped into threads by walking `in_reply_to` up to

@@ -437,19 +437,10 @@ test.describe('LSP in the review diff', () => {
         const refs = page.getByText('References (3)');
         await expect(refs).toBeVisible();
 
-        // A line comment leaves the floating popover up beside the form...
+        // A line comment leaves the floating popover up beside the form.
         await page.getByTitle('Add comment to src/main.ts:4').click();
         await expect(page.getByText('Commenting on src/main.ts:4')).toBeVisible();
         await expect(refs).toBeVisible();
-        await page.getByRole('button', { name: 'Cancel' }).click();
-
-        // ...and a file-level comment shows it inline in the form itself.
-        await page.locator('.diff-file-row').filter({ hasText: 'src/main.ts' }).click();
-        const form = page.getByText('Commenting on src/main.ts:0').locator('..');
-        await expect(form.getByText('LSP Info')).toBeVisible();
-        await expect(form.getByText('Hover:')).toBeVisible();
-        await expect(form).toContainText('export function formatGreeting(greeting: Greeting)');
-        expect(await locations(section(form, 'Definition'))).toEqual(['src/greet.ts:8']);
     });
 
     test('opens a definition in the code viewer, backed by its own language server', async ({

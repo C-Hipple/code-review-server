@@ -64,11 +64,12 @@ listed beneath the body sorted by file and line."
 (defun crs--refresh-plugin-buffer (buffer &optional quiet)
   "Fetch the plugin output shown in BUFFER again and redraw it.
 With QUIET, as for a change the server announced, say nothing and keep
-point where the reader left it.  One fetch runs at a time per buffer:
-one asked for meanwhile runs once it lands."
+point where the reader left it.  Announced changes are fetched one at a
+time per buffer: one that comes in meanwhile is fetched once that lands.
+A refresh asked for by hand always fetches."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (if crs--plugin-refreshing
+      (if (and quiet crs--plugin-refreshing)
           (setq crs--plugin-refreshing 'again)
         (setq crs--plugin-refreshing t)
         (let ((owner crs--plugin-owner)
@@ -161,9 +162,12 @@ run asked for from here is announced once it lands."
 
 (defun crs--plugin-on-subscribed ()
   "Read every open plugin output buffer's output again, for a new server.
-Runs asked for from the old one are gone with it."
+Runs asked for from the old one are gone with it, and so are any replies
+it owed."
   (clrhash crs--plugin-runs-requested)
   (dolist (buffer (crs--plugin-buffers))
+    (with-current-buffer buffer
+      (setq crs--plugin-refreshing nil))
     (crs--refresh-plugin-buffer buffer t)))
 
 (add-hook 'crs-server-notification-functions #'crs--plugin-on-notification)

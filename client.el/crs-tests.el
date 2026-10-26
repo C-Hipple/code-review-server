@@ -1102,7 +1102,16 @@ The buffer is bound to `buffer'."
         (should (string-match-p "Status: success" (buffer-string)))
         (should (string-match-p "All clear\\." (buffer-string))))
       ;; Followed quietly: nothing was said in the echo area.
-      (should-not (assq 'message events)))))
+      (should-not (assq 'message events))
+      ;; A refresh asked for by hand fetches even with a read in flight, so a
+      ;; reply that never came can't leave the buffer stuck.
+      (crs-test--notify "Server.PluginOutputChanged"
+                        '((owner . "acme") (repo . "widgets") (number . 42)
+                          (plugin . "lint") (status . "pending")))
+      (should (= (length sent) 3))
+      (with-current-buffer buffer
+        (crs-refresh-plugin-output))
+      (should (= (length sent) 4)))))
 
 (ert-deftest crs-test-plugin-run-asked-for-is-announced ()
   "A plugin run asked for from here is announced when it lands, and only once."

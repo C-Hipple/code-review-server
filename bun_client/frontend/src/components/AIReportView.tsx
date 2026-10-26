@@ -26,7 +26,6 @@ interface AIReportViewProps {
     output: AIFeatureOutput | null;
     error?: string | null;
     notice?: string | null;
-    gaveUp?: boolean;
     /** Takes the reviewer to an item's thread in the diff. Without it, locations are plain text. */
     onJumpToItem?: (item: ReportItem) => void;
     /** Grow to fill the parent, a flex column, as the change diagram does in its modal. */
@@ -47,7 +46,6 @@ export default function AIReportView({
     output,
     error,
     notice,
-    gaveUp,
     onJumpToItem,
     fill,
     imageName,
@@ -67,11 +65,6 @@ export default function AIReportView({
 
             {error && <Callout variant="danger">Could not load the report: {error}</Callout>}
             {notice && <Callout variant="warning">{notice}</Callout>}
-            {gaveUp && (
-                <Callout variant="warning">
-                    Still running after several minutes — close this and check back later.
-                </Callout>
-            )}
             {output?.stale && !pending && (
                 <Callout variant="warning">
                     The PR has changed since this report was made. Re-run it for a current answer.

@@ -50,17 +50,18 @@ interface State {
     // AI features: whether comments-addressed is enabled, whether review-ease
     // is (the fixtures' ratings are served only while it is), whether
     // change-diagram is and the Mermaid source it serves, the runs in flight
-    // (polls left before each lands) and the results there are — both keyed
-    // by PR and feature.
+    // and the results there are — both keyed by PR and feature.
     aiEnabled: boolean;
     reviewEaseEnabled: boolean;
     diagramEnabled: boolean;
     diagramSource: string;
-    aiRuns: Map<string, number>;
+    aiRuns: Set<string>;
     aiDone: Set<string>;
-    // Plugin re-runs in flight: reads of the output left before each lands,
-    // keyed by PR and plugin.
-    pluginRuns: Map<string, number>;
+    // Background runs (plugin re-runs, AI runs) land on a timer, as the
+    // server's do, unless E2E.HoldRuns holds them: then each waits here until
+    // the hold is lifted.
+    runsHeld: boolean;
+    heldRuns: (() => void)[];
     // What the Server Configuration tab edits: UpdateConfig merges each field
     // it is sent into this, the way the server merges an update into the file.
     config: Record<string, unknown>;
@@ -117,15 +118,54 @@ function freshState(): State {
         reviewEaseEnabled: true,
         diagramEnabled: false,
         diagramSource: DIAGRAM_SOURCE,
-        aiRuns: new Map(),
+        aiRuns: new Set(),
         aiDone: new Set(),
-        pluginRuns: new Map(),
+        runsHeld: false,
+        heldRuns: [],
         config: freshConfig(),
         heartbeatPaused: false,
     };
 }
 
 let state = freshState();
+
+// Whether the bridge has subscribed to notifications: the server sends none
+// before it does.
+let subscribed = false;
+
+// How long each step of a background run takes: a plugin re-run is marked
+// pending this long after it was accepted, and lands this long after that.
+const RUN_STEP_MS = 300;
+
+/**
+ * Runs `step` of a background run after `ms`, unless the state was reset in
+ * the meantime (the next test). A step that `lands` a run waits while runs
+ * are held.
+ */
+function later(step: () => void, { lands = false, ms = RUN_STEP_MS } = {}) {
+    const owner = state;
+    setTimeout(() => {
+        if (state !== owner) return;
+        if (lands && state.runsHeld) {
+            state.heldRuns.push(step);
+            return;
+        }
+        step();
+    }, ms);
+}
+
+function prRef(pr: PRFixture) {
+    return { owner: pr.item.owner, repo: pr.item.repo, number: pr.item.number };
+}
+
+// What the server announces as a PR's plugin output or AI results change.
+function pluginOutputChanged(pr: PRFixture, plugin: string, status: string) {
+    notify('Server.PluginOutputChanged', { ...prRef(pr), plugin, status });
+}
+
+function aiOutputChanged(pr: PRFixture, feature: string, status: string) {
+    notify('Server.AIOutputChanged', { ...prRef(pr), feature, status });
+}
 
 // Server.Heartbeat notifications, once the bridge subscribes. They outlive
 // E2E.Reset: the bridge subscribes once, at startup.
@@ -339,8 +379,8 @@ function aiResult(pr: PRFixture, feature: string) {
     return commentsAddressedReport(pr);
 }
 
-// One feature's output for a PR, in the shape GetAIOutput serves. A run in
-// flight reads "pending" for one poll, then the canned report lands.
+// One feature's output for a PR, in the shape GetAIOutput serves: "pending"
+// while a run is in flight, then the canned report once it has landed.
 function aiOutput(pr: PRFixture, feature = AI_FEATURE) {
     const k = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:${feature.id}`;
     const base = {
@@ -354,21 +394,15 @@ function aiOutput(pr: PRFixture, feature = AI_FEATURE) {
         stale: false,
         truncated: false,
     };
-    const pollsLeft = state.aiRuns.get(k);
-    if (pollsLeft !== undefined) {
-        if (pollsLeft > 0) {
-            state.aiRuns.set(k, pollsLeft - 1);
-            return {
-                ...base,
-                status: 'pending',
-                body: { body_type: 'markdown', body_content: '' },
-                report: null,
-                outstanding: null,
-                updated_at: '',
-            };
-        }
-        state.aiRuns.delete(k);
-        state.aiDone.add(k);
+    if (state.aiRuns.has(k)) {
+        return {
+            ...base,
+            status: 'pending',
+            body: { body_type: 'markdown', body_content: '' },
+            report: null,
+            outstanding: null,
+            updated_at: '',
+        };
     }
     if (!state.aiDone.has(k)) {
         return {
@@ -393,37 +427,50 @@ function aiOutput(pr: PRFixture, feature = AI_FEATURE) {
     };
 }
 
-// A PR's plugin output, as GetPluginOutput serves it. A re-run deletes the
-// plugin's result, as the server does, so the plugin is missing from the
-// first read after it; it reads as pending for the next, then lands with a
-// new result.
-function pluginOutput(pr: PRFixture): Record<string, unknown> {
-    const prefix = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:`;
-    for (const [k, readsLeft] of state.pluginRuns) {
-        if (!k.startsWith(prefix)) continue;
-        const name = k.slice(prefix.length);
-        if (readsLeft === 0) {
-            state.pluginRuns.delete(k);
-            const content = `## Re-run\n\n${name} ran again.`;
-            pr.plugins[name] = {
-                result: content,
-                status: 'success',
-                body: { body_type: 'markdown', body_content: content },
-                annotations: [],
-            };
-            continue;
-        }
-        state.pluginRuns.set(k, readsLeft - 1);
-        if (readsLeft === 1) {
-            pr.plugins[name] = {
-                result: '',
-                status: 'pending',
-                body: { body_type: 'markdown', body_content: '' },
-                annotations: [],
-            };
-        }
-    }
-    return pr.plugins;
+// Runs a plugin the way the server does, announcing each step: marked
+// pending, then landing with a new result. A re-run has already deleted the
+// old result, so until the first step the plugin is missing from the output.
+function runPlugin(pr: PRFixture, name: string) {
+    later(() => {
+        pr.plugins[name] = {
+            result: '',
+            status: 'pending',
+            body: { body_type: 'markdown', body_content: '' },
+            annotations: [],
+        };
+        pluginOutputChanged(pr, name, 'pending');
+        later(
+            () => {
+                const content = `## Re-run\n\n${name} ran again.`;
+                pr.plugins[name] = {
+                    result: content,
+                    status: 'success',
+                    body: { body_type: 'markdown', body_content: content },
+                    annotations: [],
+                };
+                pluginOutputChanged(pr, name, 'success');
+            },
+            { lands: true }
+        );
+    });
+}
+
+// Starts an AI run the way the server does: pending from the claim on,
+// announced before RunAIFeature replies; it lands in the background and
+// announces that too.
+function startAIRun(pr: PRFixture, feature: string) {
+    const k = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:${feature}`;
+    state.aiDone.delete(k);
+    state.aiRuns.add(k);
+    aiOutputChanged(pr, feature, 'pending');
+    later(
+        () => {
+            state.aiRuns.delete(k);
+            state.aiDone.add(k);
+            aiOutputChanged(pr, feature, 'success');
+        },
+        { lands: true }
+    );
 }
 
 // Lines of a file in the fixture checkout, for GetHunkContext.
@@ -609,14 +656,16 @@ const handlers: Record<string, (args: any) => unknown> = {
 
     'RPCHandler.ListPlugins': () => ({ plugins: ['summarize'] }),
 
-    'RPCHandler.GetPluginOutput': args => ({ output: pluginOutput(findPR(args)) }),
+    'RPCHandler.GetPluginOutput': args => ({ output: findPR(args).plugins }),
 
+    // Clears each result and announces it before replying, then runs the
+    // plugins in the background, as the server does.
     'RPCHandler.RerunPlugins': args => {
         const pr = findPR(args);
-        const prefix = `${key(pr.item.owner, pr.item.repo, pr.item.number)}:`;
         for (const name of args.Plugins ?? []) {
             delete pr.plugins[name];
-            state.pluginRuns.set(prefix + name, 2);
+            pluginOutputChanged(pr, name, '');
+            runPlugin(pr, name);
         }
         return { okay: true };
     },
@@ -698,8 +747,7 @@ const handlers: Record<string, (args: any) => unknown> = {
                 output: aiOutput(pr, feature),
             };
         }
-        state.aiDone.delete(k);
-        state.aiRuns.set(k, 1);
+        startAIRun(pr, feature.id);
         return {
             okay: true,
             outcome: 'started',
@@ -718,6 +766,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     },
 
     'RPCHandler.Subscribe': args => {
+        subscribed = true;
         heartbeatInterval = Number(args.IntervalSeconds) > 0 ? Number(args.IntervalSeconds) : 10;
         clearInterval(heartbeatTimer);
         heartbeatTimer = setInterval(() => {
@@ -729,6 +778,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     },
 
     'RPCHandler.Unsubscribe': () => {
+        subscribed = false;
         clearInterval(heartbeatTimer);
         return { okay: true };
     },
@@ -777,6 +827,29 @@ const handlers: Record<string, (args: any) => unknown> = {
     // Turn review-ease on or off: while it is off no PR carries a rating.
     'E2E.SetReviewEase': args => {
         state.reviewEaseEnabled = !!args.enabled;
+        return { okay: true };
+    },
+
+    // Run a plugin, or an AI feature, as the server does on its own (a
+    // workflow cycle, a push): nothing the page did asked for it.
+    'E2E.RunPlugin': args => {
+        runPlugin(findPR(args), args.Plugin);
+        return { okay: true };
+    },
+
+    'E2E.RunAIFeature': args => {
+        startAIRun(findPR(args), args.Feature);
+        return { okay: true };
+    },
+
+    // Hold background runs short of landing, or land every run held.
+    'E2E.HoldRuns': args => {
+        state.runsHeld = !!args.held;
+        if (!state.runsHeld) {
+            const held = state.heldRuns;
+            state.heldRuns = [];
+            for (const land of held) land();
+        }
         return { okay: true };
     },
 
@@ -831,8 +904,10 @@ function respond(id: Request['id'], result: unknown, error: string | null) {
     process.stdout.write(`${JSON.stringify({ id, result: error ? null : result, error })}\n`);
 }
 
-// A JSON-RPC notification, as the server writes one between replies.
+// A JSON-RPC notification, as the server writes one between replies, once
+// the bridge has subscribed.
 function notify(method: string, params: unknown) {
+    if (!subscribed) return;
     process.stdout.write(`${JSON.stringify({ method, params: [params], id: null })}\n`);
 }
 

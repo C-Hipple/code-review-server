@@ -7,10 +7,14 @@ import {
     heartbeatDeadlineMs,
     heartbeatReducer,
     INITIAL_HEARTBEAT_STATE,
+    isChangeFor,
     isUpdateFor,
     onPRUpdates,
+    parseAIOutputChanged,
     parseHeartbeat,
+    parsePluginOutputChanged,
     parsePRUpdate,
+    PLUGIN_OUTPUT_CHANGED_EVENT,
     PR_UPDATED_EVENT,
     prUpdateMessage,
     ServerEvents,
@@ -30,6 +34,7 @@ const BEAT: Heartbeat = {
 /** Stands in for EventSource: records listeners, delivers events on demand. */
 class FakeStream implements EventStream {
     listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
+    onopen: ((event: Event) => void) | null = null;
     onerror: ((event: Event) => void) | null = null;
     closed = false;
 
@@ -55,6 +60,10 @@ class FakeStream implements EventStream {
     fail() {
         this.onerror?.(new Event('error'));
     }
+
+    connect() {
+        this.onopen?.(new Event('open'));
+    }
 }
 
 function hub() {
@@ -77,6 +86,42 @@ describe('parseHeartbeat', () => {
         expect(parseHeartbeat('beat')).toBeNull();
         expect(parseHeartbeat({ ...BEAT, seq: '7' })).toBeNull();
         expect(parseHeartbeat({ seq: 1 })).toBeNull();
+    });
+});
+
+describe('change events', () => {
+    const pr = { owner: 'acme', repo: 'widgets', number: 42 };
+
+    test('reads a plugin output change', () => {
+        expect(parsePluginOutputChanged({ ...pr, plugin: 'summarize', status: 'success' })).toEqual(
+            { ...pr, plugin: 'summarize', status: 'success' }
+        );
+        // A re-run of every plugin clears them all at once: no plugin, no status.
+        expect(parsePluginOutputChanged({ ...pr, plugin: '', status: '' })).toEqual({
+            ...pr,
+            plugin: '',
+            status: '',
+        });
+    });
+
+    test('reads an AI output change', () => {
+        expect(
+            parseAIOutputChanged({ ...pr, feature: 'comments-addressed', status: 'pending' })
+        ).toEqual({ ...pr, feature: 'comments-addressed', status: 'pending' });
+        expect(parseAIOutputChanged({ ...pr, status: 'pending' })).toBeNull();
+    });
+
+    test('rejects anything that names no PR', () => {
+        expect(parsePluginOutputChanged(null)).toBeNull();
+        expect(parsePluginOutputChanged({ ...pr, number: '42' })).toBeNull();
+        expect(parseAIOutputChanged({ owner: 'acme', number: 42, feature: 'x' })).toBeNull();
+    });
+
+    test('matches its PR whatever the case of its names', () => {
+        expect(isChangeFor({ owner: 'Acme', repo: 'Widgets', number: 42 }, pr)).toBe(true);
+        expect(isChangeFor({ ...pr, number: 43 }, pr)).toBe(false);
+        expect(isChangeFor({ ...pr, repo: 'gadgets' }, pr)).toBe(false);
+        expect(isChangeFor({ ...pr, owner: 'other' }, pr)).toBe(false);
     });
 });
 
@@ -173,6 +218,21 @@ describe('ServerEvents', () => {
         off();
         opened[0].fail();
         expect(errors).toBe(1);
+    });
+
+    test('tells open listeners each time the stream connects', () => {
+        const { events, opened } = hub();
+        let opens = 0;
+        const off = events.onOpen(() => opens++);
+        events.on(PLUGIN_OUTPUT_CHANGED_EVENT, () => {});
+        opened[0].connect();
+        // EventSource reconnects by itself after a drop, and says so again.
+        opened[0].fail();
+        opened[0].connect();
+        expect(opens).toBe(2);
+        off();
+        opened[0].connect();
+        expect(opens).toBe(2);
     });
 
     test('does nothing where there is no EventSource', () => {

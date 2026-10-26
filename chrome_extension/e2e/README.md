@@ -44,9 +44,14 @@ tests share nothing and run in parallel.
   environment.
 - **Steering the fake** (`harness/scenario.ts`): specs write `scenario.json`
   in the state directory (`crs.update(...)`) and the fake re-reads it on every
-  request — e.g. `finishRuns` lets a pending AI or plugin run land,
-  `exitOn` makes the server die on a method. The fake appends every request to
-  `calls.jsonl`, which `crs.calls()` / `crs.waitForCall()` read.
+  request, and every 50 ms for its runs — e.g. `finishRuns` lands a pending AI
+  or plugin run, `serverRuns` (`crs.startServerRuns`) has the server start runs
+  for PR42 on its own, `exitOn` makes the server die on a method. Like the
+  server, the fake answers `Subscribe` and then announces each run as it
+  starts and lands (`Server.AIOutputChanged`, `Server.PluginOutputChanged`);
+  the extension reads output again on those and never polls, and nothing lands
+  on a read. The fake appends every request to `calls.jsonl`, which
+  `crs.calls()` / `crs.waitForCall()` read.
 - **The toolbar button**: Playwright can't click browser UI, and headless
   Chromium doesn't deliver the `Alt+Shift+R` command, so `github.clickToolbarButton`
   calls `chrome.action.onClicked.dispatch(tab)` in the service worker. That

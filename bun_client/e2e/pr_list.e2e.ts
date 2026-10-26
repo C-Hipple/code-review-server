@@ -279,11 +279,33 @@ test.describe('PR list', () => {
         await expect(page.getByText('pending', { exact: true })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Summary' })).toHaveCount(0);
 
-        // Polled until it lands, with nothing reloaded by hand.
+        // Shown once the server announces it landed, with nothing reloaded by hand.
         await expect(page.getByText('summarize ran again.')).toBeVisible();
         await expect(page.getByText('pending', { exact: true })).toHaveCount(0);
         const [rerun] = await backend.calls('RerunPlugins');
         expect(rerun.params).toMatchObject({ Plugins: ['summarize'] });
+    });
+
+    test('waits on the server to announce a plugin landing rather than polling', async ({
+        page,
+        backend,
+    }) => {
+        await page.goto('/?owner=acme&repo=widgets&number=42&view=plugins');
+        await expect(page.getByRole('heading', { name: 'Summary' })).toBeVisible();
+
+        await backend.holdRuns(true);
+        await page.getByRole('button', { name: 'Re-run' }).click();
+        await expect(page.getByText('pending', { exact: true })).toBeVisible();
+        // Past the step that marks it pending, the run sits there, and the
+        // page asks for nothing while it does.
+        await page.waitForTimeout(1000);
+        const reads = (await backend.calls('GetPluginOutput')).length;
+        await page.waitForTimeout(3000);
+        expect(await backend.calls('GetPluginOutput')).toHaveLength(reads);
+
+        await backend.holdRuns(false);
+        await expect(page.getByText('summarize ran again.')).toBeVisible();
+        await expect(page.getByText('pending', { exact: true })).toHaveCount(0);
     });
 
     test('opens AI reports from a row', async ({ page }) => {

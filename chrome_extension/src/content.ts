@@ -192,10 +192,16 @@ function onRuntimeMessage(
     sendResponse: (response: unknown) => void
 ): boolean {
     if (sender.id !== chrome.runtime.id) return false;
-    if ((message as { type?: unknown } | null)?.type === 'crs-toggle') {
+    const type = (message as { type?: unknown } | null)?.type;
+    if (type === 'crs-toggle') {
         toggle();
         // Answer so the service worker's sendMessage resolves rather than
         // treating the tab as having no content script.
+        sendResponse({ ok: true });
+    } else if (type === 'crs-file-order-changed') {
+        // A new order landed for this tab's PR: forget the one held and ask.
+        order = null;
+        void refreshOrder();
         sendResponse({ ok: true });
     }
     return false;
@@ -357,14 +363,11 @@ function scheduleRefresh(): void {
 
 /**
  * The order the server holds for the page's PR: `files` once it has one, null
- * while it has none, and `asked` — when it was last asked for — so a page that
- * found none can look again.
+ * while it has none. The service worker says when a new one lands
+ * (`crs-file-order-changed`), and it is asked for again then.
  */
-let order: { pr: PullRef; files: string[] | null; asked: number } | null = null;
+let order: { pr: PullRef; files: string[] | null } | null = null;
 let orderSeq = 0;
-
-/** How long a page that found no order waits before asking again. */
-const ORDER_RETRY_MS = 5000;
 
 /** Asks the service worker for this page's PR's stored file order. */
 async function requestOrder(): Promise<FileOrderReply | null> {
@@ -390,20 +393,17 @@ async function refreshOrder(): Promise<void> {
     if (!pr) return;
 
     if (order && samePull(order.pr, pr)) {
-        if (order.files) {
-            applyFileOrder(document, order.files);
-            return;
-        }
-        // Nothing stored yet. The server works an order out when the PR is
-        // opened — the panel may be doing that in this tab right now — so look
-        // again now and then rather than leave the page unordered for good.
-        if (Date.now() - order.asked < ORDER_RETRY_MS) return;
+        // Nothing stored yet stays that way until the server works an order
+        // out — when the PR is opened, as the panel may be doing in this tab
+        // right now — and the service worker says so.
+        if (order.files) applyFileOrder(document, order.files);
+        return;
     }
 
     const seq = ++orderSeq;
     const reply = await requestOrder();
     if (seq !== orderSeq || !reply?.pr || !samePull(reply.pr, pr)) return;
-    order = { pr, files: reply.files, asked: Date.now() };
+    order = { pr, files: reply.files };
     if (reply.files) applyFileOrder(document, reply.files);
 }
 

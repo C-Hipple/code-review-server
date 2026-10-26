@@ -431,11 +431,12 @@ test.describe('filtered diffs', () => {
             'Since my last review: changes since your comment review'
         );
         await expect(banner(page)).toContainText('1 new commit');
-        // Only the file changed since then is left.
+        // Only what changed since then is left: README.md is gone.
         const files = page.locator('.diff-file-row');
-        await expect(files).toHaveCount(1);
-        await expect(files.first()).toContainText('src/main.ts');
-        await expect(diffRow(page, 'const message = formatGreeting(')).toBeVisible();
+        await expect(files).toHaveCount(2);
+        await expect(files.nth(0)).toContainText('src/greet.ts');
+        await expect(files.nth(1)).toContainText('src/main.ts');
+        await expect(diffRow(page, "console.log('hi');")).toBeVisible();
 
         const [call] = await backend.calls('GetFilteredDiff');
         expect(call.params).toEqual({
@@ -445,19 +446,62 @@ test.describe('filtered diffs', () => {
             Filter: 'since-last-review',
         });
 
-        // The filtered diff's positions aren't the PR's, so it takes no comments.
-        await page.getByTitle('Add comment to src/main.ts:4').click();
-        await expect(page.getByText('Comments anchor to the full diff')).toBeVisible();
-        await expect(page.getByPlaceholder('Write a comment...')).toHaveCount(0);
-
         await banner(page).getByRole('button', { name: 'Show full diff' }).click();
         await expect(banner(page)).toHaveCount(0);
         await expect(files).toHaveCount(3);
         await expect(range(page)).toHaveValue('');
+        await expect(diffRow(page, "console.log('hi');")).toHaveCount(0);
+    });
 
-        // Back on the full diff, commenting works again at the PR's position.
-        await page.getByTitle('Add comment to src/main.ts:4').click();
-        await expect(page.getByText('Commenting on src/main.ts:4')).toBeVisible();
+    test('comments on a filtered diff land at the PR diff position', async ({ page, backend }) => {
+        await openReview(page);
+        await range(page).selectOption({ label: 'Since my last review' });
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
+
+        // `const message` is row 3 of main.ts here, and row 4 of the PR's diff.
+        await page.getByTitle('Add comment to src/main.ts:3').click();
+        await page.getByPlaceholder('Write a comment...').fill('Name it greeting?');
+        await page.getByRole('button', { name: 'Add Comment' }).click();
+        const [add] = await backend.calls('AddComment');
+        expect(add.params).toMatchObject({ Filename: 'src/main.ts', Position: 4 });
+
+        // It shows on the filtered diff, on the line it was left on...
+        const thread = page.locator('.hover-thread').filter({ hasText: 'Name it greeting?' });
+        await expect(thread).toBeVisible();
+        await expect(
+            diffRow(page, 'const message = formatGreeting(').getByTitle('Hide comment thread')
+        ).toBeVisible();
+
+        // ...and on the full diff, on the same line.
+        await banner(page).getByRole('button', { name: 'Show full diff' }).click();
+        await expect(page.locator('.diff-file-row')).toHaveCount(3);
+        await expect(thread).toBeVisible();
+        await expect(
+            diffRow(page, 'const message = formatGreeting(').getByTitle('Hide comment thread')
+        ).toBeVisible();
+    });
+
+    test('a line the PR diff does not show takes no comment', async ({ page, backend }) => {
+        await openReview(page);
+        await range(page).selectOption({ label: 'Since my last review' });
+
+        // The line removed since the review is not in the PR's diff at all.
+        await page.getByTitle('Add comment to src/main.ts:2').click();
+        await expect(page.getByText("This line isn't in the PR's diff")).toBeVisible();
+        await expect(page.getByPlaceholder('Write a comment...')).toHaveCount(0);
+        expect(await backend.calls('AddComment')).toHaveLength(0);
+    });
+
+    test('shows existing threads on the lines it shows', async ({ page }) => {
+        await openReview(page);
+        await range(page).selectOption({ label: 'Since my last review' });
+
+        // Bob's thread is on `punctuation`, row 3 of greet.ts in the PR's diff
+        // and row 2 here.
+        const row = diffRow(page, 'punctuation: string;').first();
+        await row.getByTitle('Click to show comment thread').click();
+        const thread = page.locator('.hover-thread').filter({ hasText: 'bob commented' });
+        await expect(thread).toContainText('Should punctuation have a default?');
     });
 
     test('keeps the full diff when the filter has nothing to start from', async ({ page }) => {
@@ -485,12 +529,12 @@ test.describe('filtered diffs', () => {
     test('asks again after a sync', async ({ page, backend }) => {
         await openReview(page);
         await range(page).selectOption({ label: 'Since my last review' });
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
 
         await page.getByRole('button', { name: '↻ Sync' }).click();
         await expect(page.getByText('Synced — already up to date')).toBeVisible();
         await expect.poll(async () => (await backend.calls('GetFilteredDiff')).length).toBe(2);
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
     });
 });
 

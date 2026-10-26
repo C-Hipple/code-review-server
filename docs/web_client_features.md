@@ -352,12 +352,15 @@ misplaces comments:
   select, shown when the server answers `ListDiffFilters`, swaps the diff for a
   [filtered one](protocol.md#filtered-diffs) (*Since my last review*, *Since my last
   interaction*) from `GetFilteredDiff`, with a banner above the diff naming the range
-  and a way back. A filtered diff's positions aren't the PR's, so while one is shown
-  no comment threads render inline, clicking a line toasts instead of opening the
-  comment form, and the submit preview keeps anchoring local comments to the full
-  diff (kept in `fullDiff`). A result with no diff (`no-baseline`, `rebased`,
-  `error`) leaves the full diff, and its comments, on screen under a banner saying
-  why. Sync and submit re-request the filter, since either can move its baseline.
+  and a way back. A filtered diff's positions aren't the PR's, so comments go
+  through the reply's `positions`. Threads on lines it shows render on their rows
+  there (`commentsOnFilteredDiff`). Clicking a row opens the comment form for the
+  same line's full-diff position (`toFullPosition`), or toasts for a row that has
+  none, such as a removed line. The submit preview keeps anchoring local comments
+  to the full diff (kept in `fullDiff`). A result with no diff (`no-baseline`,
+  `rebased`, `error`) leaves the full diff, and its comments, on screen under a
+  banner saying why. Sync and submit re-request the filter, since either can move
+  its baseline.
 - **Mobile layout** — the whole diff becomes a horizontally scrollable
   `width: max-content` block so long lines can be read; inline cards are pinned to
   the left edge with `position: sticky` so they stay readable while scrolled.

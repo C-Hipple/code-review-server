@@ -86,6 +86,11 @@ Set to nil to disable the timeout."
 (defvar-local crs--comment-number nil)
 (defvar-local crs--comment-filename nil)
 (defvar-local crs--comment-position nil)
+(defvar-local crs--comment-full-position nil
+  "Where the comment goes out: `crs--comment-position' in the PR's full diff.
+The same row while the review buffer shows the full diff; on a filtered diff,
+the same line's row in the full one, worked out when the comment buffer
+opened (see `crs--full-diff-position').")
 (defvar-local crs--comment-reply-to-id nil)
 (defvar-local crs--comment-editing-id nil
   "When non-nil, we're editing an existing local comment with this ID.")

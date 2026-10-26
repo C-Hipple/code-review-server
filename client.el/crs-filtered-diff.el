@@ -10,11 +10,15 @@
 ;;
 ;; `crs-show-filtered-diff' (F in a review buffer) swaps the buffer's diff for
 ;; a filtered one, and back.  Comments are anchored by their position in the
-;; PR's full diff, which a filtered diff doesn't share, so while one is shown
-;; comments are not drawn inline and new ones can't be started; the
-;; conversation section still lists them all.  A fresh payload (a sync, a
-;; submitted review) keeps the filtered diff on screen and asks the server for
-;; it again, since the baseline or the head may have moved.
+;; PR's full diff, which a filtered diff doesn't share, so the reply carries
+;; `positions': per file, each row of the filtered diff that the full diff
+;; shows too, mapped to that row's position there.  Comments on lines the
+;; filtered diff shows are drawn on their rows (`crs--displayed-comments'),
+;; and a comment started from a row is sent at its full-diff position
+;; (`crs--full-diff-position'); a row the full diff doesn't show — a line
+;; removed since the baseline, say — takes none.  A fresh payload (a sync, a
+;; submitted review) keeps the filtered diff on screen and asks the server
+;; for it again, since the baseline or the head may have moved.
 
 ;;; Code:
 
@@ -64,7 +68,7 @@ leaves the full diff, and its comments, on screen."
      ((and (equal status "ready") (string-empty-p (string-trim diff)))
       (format "%s: nothing has changed since %s (%s)." filter-name detail from))
      ((equal status "ready")
-      (format "%s: changes since %s%s, %s -> %s%s.  Comments are hidden; press F for the full diff."
+      (format "%s: changes since %s%s, %s -> %s%s.  Comments on lines outside this range are hidden."
               filter-name detail
               (if (eq (cdr (assq 'inferred baseline)) t) " (estimated from its time)" "")
               from to
@@ -203,12 +207,57 @@ That is your most recent review or comment on the PR."
   (crs--get-current-review-info)
   (crs--show-full-diff (current-buffer)))
 
-(defun crs--refuse-comment-on-filtered-diff ()
-  "Signal a `user-error' when the review buffer shows a filtered diff.
-Comments are placed by their position in the PR's full diff."
-  (when (crs--filtered-diff-displayed-p)
-    (user-error "Comments anchor to the full diff; press F and pick \"%s\" first"
-                crs--full-diff-choice)))
+(defun crs--filtered-diff-rows (filename)
+  "The row map the displayed filtered diff's reply has for FILENAME, or nil.
+An alist from each row's position, as a symbol, to the position of the same
+line in the PR's full diff."
+  (cdr (assq (intern filename) (cdr (assq 'positions crs--buffer-filtered-diff)))))
+
+(defun crs--full-diff-position (filename position)
+  "The full-diff position of row POSITION of FILENAME in the displayed diff.
+POSITION itself while the full diff is shown; on a filtered diff, the
+position of the same line in the PR's full diff, or nil when the full diff
+doesn't show it.  Call it in the review buffer."
+  (cond
+   ((not (crs--filtered-diff-displayed-p)) position)
+   ((and filename (integerp position))
+    (cdr (assq (intern (number-to-string position)) (crs--filtered-diff-rows filename))))))
+
+(defun crs--full-diff-position-or-refuse (filename position)
+  "Like `crs--full-diff-position', but a `user-error' for a row that has none."
+  (or (crs--full-diff-position filename position)
+      (user-error "This line isn't in the PR's diff, so it can't take a comment; press F and pick \"%s\" to comment around it"
+                  crs--full-diff-choice)))
+
+(defun crs--displayed-comments ()
+  "The review buffer's comments as the diff on screen places them.
+All of them on the full diff.  On a filtered diff, those whose line it shows,
+each with its position moved to that line's row there; a comment on the file
+itself stays one wherever the file is shown."
+  (if (not (crs--filtered-diff-displayed-p))
+      crs--buffer-comments
+    (let ((rows (make-hash-table :test 'equal))
+          (placed nil))
+      ;; Invert each file's row map: full-diff position -> filtered row.
+      (dolist (file (cdr (assq 'positions crs--buffer-filtered-diff)))
+        (let ((inverse (make-hash-table :test 'eql)))
+          (dolist (row (cdr file))
+            (puthash (cdr row) (string-to-number (symbol-name (car row))) inverse))
+          (puthash (symbol-name (car file)) inverse rows)))
+      (seq-do
+       (lambda (comment)
+         (let* ((inverse (gethash (cdr (assq 'path comment)) rows))
+                (pos (cdr (assq 'position comment))))
+           (when inverse
+             (if (or (null pos) (string-empty-p pos))
+                 (push comment placed)
+               (let ((row (gethash (string-to-number pos) inverse)))
+                 (when row
+                   (push (cons (cons 'position (number-to-string row))
+                               (assq-delete-all 'position (copy-alist comment)))
+                         placed)))))))
+       crs--buffer-comments)
+      (vconcat (nreverse placed)))))
 
 (provide 'crs-filtered-diff)
 ;;; crs-filtered-diff.el ends here

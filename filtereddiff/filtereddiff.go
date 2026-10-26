@@ -140,6 +140,15 @@ type Result struct {
 	// Commits are the SHAs of the PR's commits after the baseline, oldest
 	// first, as far as the cached commit list knows them.
 	Commits []string `json:"commits"`
+	// Positions maps rows of Diff to rows of the PR's full diff, per file:
+	// for each row showing a line of the head that the full diff shows too,
+	// its position in Diff to that line's position in the full diff, both
+	// counted the way comment positions are. A comment's position is a row of
+	// the full diff, so this is what places comments on Diff and turns a row
+	// of Diff back into a position to comment at. Position 0 (the file
+	// itself) maps to 0 for each file both diffs touch. Rows missing from it —
+	// removed lines, lines the full diff doesn't show — take no comment.
+	Positions map[string]map[int]int `json:"positions"`
 	// Message explains any status but StatusReady.
 	Message string `json:"message"`
 	// ComputedAt is when the diff was fetched; zero when none was needed.

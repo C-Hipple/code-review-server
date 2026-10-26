@@ -983,7 +983,7 @@ A filtered diff is the PR's diff narrowed to the commits after a **baseline** th
 
 GitHub only compares three-dot (head against its merge base with the baseline), which is the diff wanted only while the baseline is still in the PR's history. When it isn't — a force-push or rebase rewrote it — the answer is `rebased`, with no diff, rather than a diff that would mix in the base branch's changes. Commits merged in from the base branch after the baseline do show up in the diff, as they do on GitHub.
 
-The diff is rendered like `GetPR`'s, but **its positions are its own**: a comment's `position` counts rows of the PR's full diff, so clients don't place comments on a filtered diff, or start new ones from it.
+The diff is rendered like `GetPR`'s, but **its positions are its own**: a comment's `position` counts rows of the PR's full diff. The reply's `positions` bridges the two. Both diffs end at the head, so a line the filtered diff shows with a head-side line number is the same line wherever the full diff shows that number. For each file, `positions` maps such a row's position in `diff` to that line's position in the full diff, both counted the way comment positions are: from the row after the file's first hunk header, with each later hunk header taking a position of its own. Position `0` (the file itself) maps to `0` for each file both diffs touch. A client draws a comment on the filtered row its position maps from, and sends a comment started on a filtered row at the position that row maps to. A row with no entry takes no comment: a line removed since the baseline, or one the full diff doesn't show (a change since the review that was later undone).
 
 ### `RPCHandler.ListDiffFilters`
 
@@ -1018,6 +1018,7 @@ Returns the PR's diff narrowed by one filter. Everything but an unknown filter (
 | `baseline`    | object   | `null` without one, else `sha`, `at` (when the interaction happened), `kind` (`review`, `review_comment` or `comment`), `detail` (e.g. `your approving review`) and `inferred` |
 | `diff`        | string   | The rendered diff from `base_sha` to `head_sha`; empty unless `ready`       |
 | `commits`     | []string | SHAs of the PR's commits after the baseline, oldest first                   |
+| `positions`   | object   | Per file path, a row of `diff` (its position, as a string key) to the position of the same line in the PR's full diff; `{}` unless `ready`. See above |
 | `message`     | string   | Says why, for any status but `ready`                                        |
 | `computed_at` | string   | When the diff was fetched (RFC 3339); zero when none was needed             |
 

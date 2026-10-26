@@ -436,6 +436,47 @@ function fileLines(pr: PRFixture, filename: string): string[] {
     }
 }
 
+// A PR's filtered diff, as GetFilteredDiff serves it. On acme/widgets#42 the
+// reviewer last reviewed before src/main.ts changed, so "since my last
+// review" is that file's part of the diff; they never commented, so "since my
+// last interaction" has nothing to start from. No other PR has a baseline.
+function filteredDiff(pr: PRFixture, filter: string): Record<string, unknown> {
+    const result = {
+        filter,
+        status: 'no-baseline',
+        head_sha: 'e2e-head',
+        base_sha: '',
+        baseline: null as Record<string, unknown> | null,
+        diff: '',
+        commits: [] as string[],
+        message: "You haven't reviewed this PR yet.",
+        computed_at: '0001-01-01T00:00:00Z',
+    };
+    if (pr.item.number !== 42 || filter !== 'since-last-review') {
+        if (filter === 'since-last-interaction') {
+            result.message = "You haven't reviewed or commented on this PR yet.";
+        }
+        return result;
+    }
+    const mainSection = pr.diff.slice(pr.diff.indexOf('diff --git a/src/main.ts'));
+    return {
+        ...result,
+        status: 'ready',
+        base_sha: 'e2e-base-sha',
+        baseline: {
+            sha: 'e2e-base-sha',
+            at: '2026-10-01T12:00:00Z',
+            kind: 'review',
+            detail: 'your comment review',
+            inferred: false,
+        },
+        diff: mainSection,
+        commits: ['e2e-head'],
+        message: '',
+        computed_at: new Date().toISOString(),
+    };
+}
+
 const REVIEW_STATE: Record<string, string> = {
     APPROVE: 'APPROVED',
     REQUEST_CHANGES: 'CHANGES_REQUESTED',
@@ -594,6 +635,23 @@ const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetRateLimitHistory': () => ({ hours_back: 3, since: '', points: [] }),
 
     'RPCHandler.GetImage': () => ({ okay: false, error: 'no images in e2e fixtures' }),
+
+    'RPCHandler.ListDiffFilters': () => ({
+        filters: [
+            {
+                id: 'since-last-review',
+                name: 'Since my last review',
+                description: 'Changes pushed since your most recent review.',
+            },
+            {
+                id: 'since-last-interaction',
+                name: 'Since my last interaction',
+                description: 'Changes pushed since you last reviewed or commented.',
+            },
+        ],
+    }),
+
+    'RPCHandler.GetFilteredDiff': args => filteredDiff(findPR(args), args.Filter),
 
     'RPCHandler.ListAIFeatures': () => ({
         features: [

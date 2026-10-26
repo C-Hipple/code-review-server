@@ -1568,6 +1568,9 @@ type cachedReview struct {
 	State       string    `json:"state"`
 	SubmittedAt time.Time `json:"submitted_at"`
 	HTMLURL     string    `json:"html_url"`
+	// CommitID is the commit the review was submitted against, which the
+	// since-last-review filtered diff starts from (filtereddiff).
+	CommitID string `json:"commit_id,omitempty"`
 }
 
 // cachedCommit is a commit as the PRCommits cache stores it — the JSON shape
@@ -1608,6 +1611,7 @@ func cacheReviews(db *database.DB, key PRKey, reviews []*github.PullRequestRevie
 			State:       r.GetState(),
 			SubmittedAt: submittedAt,
 			HTMLURL:     r.GetHTMLURL(),
+			CommitID:    r.GetCommitID(),
 		})
 	}
 	j, err := json.Marshal(rvs)

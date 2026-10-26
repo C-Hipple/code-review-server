@@ -413,6 +413,87 @@ test.describe('review view', () => {
     });
 });
 
+test.describe('filtered diffs', () => {
+    const range = (page: import('@playwright/test').Page) =>
+        page.getByRole('combobox', { name: 'Diff range' });
+    const banner = (page: import('@playwright/test').Page) =>
+        page.getByTestId('filtered-diff-banner');
+
+    test('switches the review to the changes since the last review and back', async ({
+        page,
+        backend,
+    }) => {
+        await openReview(page);
+        await expect(page.locator('.diff-file-row')).toHaveCount(3);
+
+        await range(page).selectOption({ label: 'Since my last review' });
+        await expect(banner(page)).toContainText(
+            'Since my last review: changes since your comment review'
+        );
+        await expect(banner(page)).toContainText('1 new commit');
+        // Only the file changed since then is left.
+        const files = page.locator('.diff-file-row');
+        await expect(files).toHaveCount(1);
+        await expect(files.first()).toContainText('src/main.ts');
+        await expect(diffRow(page, 'const message = formatGreeting(')).toBeVisible();
+
+        const [call] = await backend.calls('GetFilteredDiff');
+        expect(call.params).toEqual({
+            Owner: 'acme',
+            Repo: 'widgets',
+            Number: 42,
+            Filter: 'since-last-review',
+        });
+
+        // The filtered diff's positions aren't the PR's, so it takes no comments.
+        await page.getByTitle('Add comment to src/main.ts:4').click();
+        await expect(page.getByText('Comments anchor to the full diff')).toBeVisible();
+        await expect(page.getByPlaceholder('Write a comment...')).toHaveCount(0);
+
+        await banner(page).getByRole('button', { name: 'Show full diff' }).click();
+        await expect(banner(page)).toHaveCount(0);
+        await expect(files).toHaveCount(3);
+        await expect(range(page)).toHaveValue('');
+
+        // Back on the full diff, commenting works again at the PR's position.
+        await page.getByTitle('Add comment to src/main.ts:4').click();
+        await expect(page.getByText('Commenting on src/main.ts:4')).toBeVisible();
+    });
+
+    test('keeps the full diff when the filter has nothing to start from', async ({ page }) => {
+        await openReview(page);
+
+        await range(page).selectOption({ label: 'Since my last interaction' });
+        await expect(banner(page)).toContainText(
+            "You haven't reviewed or commented on this PR yet. Showing the full diff."
+        );
+        await expect(page.locator('.diff-file-row')).toHaveCount(3);
+    });
+
+    test('a filter the backend fails on falls back to the full diff', async ({ page, backend }) => {
+        await openReview(page);
+
+        await backend.failNext('GetFilteredDiff', 'compare exploded');
+        await range(page).selectOption({ label: 'Since my last review' });
+        await expect(
+            page.getByText("Couldn't load the filtered diff: compare exploded")
+        ).toBeVisible();
+        await expect(range(page)).toHaveValue('');
+        await expect(page.locator('.diff-file-row')).toHaveCount(3);
+    });
+
+    test('asks again after a sync', async ({ page, backend }) => {
+        await openReview(page);
+        await range(page).selectOption({ label: 'Since my last review' });
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+
+        await page.getByRole('button', { name: '↻ Sync' }).click();
+        await expect(page.getByText('Synced — already up to date')).toBeVisible();
+        await expect.poll(async () => (await backend.calls('GetFilteredDiff')).length).toBe(2);
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+    });
+});
+
 test.describe('preferences', () => {
     test('switching theme applies and persists it', async ({ page }) => {
         await openReview(page, PR42);

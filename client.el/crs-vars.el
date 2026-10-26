@@ -129,6 +129,23 @@ copy the server downloaded, which is what makes a screenshot on a private
 repository renderable here: GitHub serves it only to an authenticated
 request, and the server holds the token.")
 
+;; Filtered diffs (crs-filtered-diff.el).  The buffer-local ones are
+;; permanent: rendering re-enters the review buffer's major mode, which
+;; would otherwise reset them on every render.
+(defvar crs-diff-filters nil
+  "The diff filters the server offers, from ListDiffFilters.
+Each is an alist with `id', `name' and `description'.")
+(defvar-local crs--buffer-diff-filter nil
+  "ID of the diff filter the review buffer shows, or nil for the full diff.
+While one is shown, `crs--buffer-diff' holds the filtered diff.")
+(put 'crs--buffer-diff-filter 'permanent-local t)
+(defvar-local crs--buffer-full-diff nil
+  "The PR's full diff, kept while the review buffer shows a filtered one.")
+(put 'crs--buffer-full-diff 'permanent-local t)
+(defvar-local crs--buffer-filtered-diff nil
+  "The GetFilteredDiff reply the review buffer shows, if any.")
+(put 'crs--buffer-filtered-diff 'permanent-local t)
+
 ;; Buffer-local state for plugin-output buffers.
 (defvar-local crs--plugin-owner nil
   "Owner of the PR for plugin output.")

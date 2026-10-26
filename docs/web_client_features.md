@@ -105,6 +105,8 @@ status 500).
 | `/api/run-ai-feature` | `RPCHandler.RunAIFeature` | |
 | `/api/get-ai-output` | `RPCHandler.GetAIOutput` | `GET` (query params `owner`/`repo`/`number`/`feature`) or `POST` |
 | `/api/get-hunk-context` | `RPCHandler.GetHunkContext` | |
+| `/api/list-diff-filters` | `RPCHandler.ListDiffFilters` | `GET` or `POST` |
+| `/api/get-filtered-diff` | `RPCHandler.GetFilteredDiff` | |
 | `/api/get-config` | `RPCHandler.GetConfig` | `GET` or `POST` |
 | `/api/update-config` | `RPCHandler.UpdateConfig` | |
 | `/api/rpc` | *any* | Generic escape hatch: `{ method, params, id }` |
@@ -346,6 +348,16 @@ misplaces comments:
 - **File index** — a pill bar above the diff listing every changed file with its
   status icon and `+/−` counts; clicking scrolls to that file, expanding it first,
   with a flash highlight on arrival.
+- **Diff range** (`FilteredDiffBanner.tsx`, `diff_filter_utils.ts`) — a toolbar
+  select, shown when the server answers `ListDiffFilters`, swaps the diff for a
+  [filtered one](protocol.md#filtered-diffs) (*Since my last review*, *Since my last
+  interaction*) from `GetFilteredDiff`, with a banner above the diff naming the range
+  and a way back. A filtered diff's positions aren't the PR's, so while one is shown
+  no comment threads render inline, clicking a line toasts instead of opening the
+  comment form, and the submit preview keeps anchoring local comments to the full
+  diff (kept in `fullDiff`). A result with no diff (`no-baseline`, `rebased`,
+  `error`) leaves the full diff, and its comments, on screen under a banner saying
+  why. Sync and submit re-request the filter, since either can move its baseline.
 - **Mobile layout** — the whole diff becomes a horizontally scrollable
   `width: max-content` block so long lines can be read; inline cards are pinned to
   the left edge with `position: sticky` so they stay readable while scrolled.

@@ -469,7 +469,7 @@ func TestReviewDeliveryEndToEnd(t *testing.T) {
 
 	payload := []byte(`{
 	  "action": "submitted",
-	  "review": {"id": 77, "user": {"login": "rev"}, "body": "ship it", "state": "approved",
+	  "review": {"id": 77, "user": {"login": "rev"}, "body": "ship it", "state": "approved", "commit_id": "head1",
 	             "submitted_at": "2026-10-01T12:00:00Z", "html_url": "https://github.com/acme/widgets/pull/1#review-77"},
 	  "pull_request": {"number": 1, "title": "Add widgets", "state": "open", "draft": false,
 	                   "user": {"login": "author"}, "requested_reviewers": [],
@@ -488,6 +488,10 @@ func TestReviewDeliveryEndToEnd(t *testing.T) {
 	if len(reviews) != 1 || reviews[0].ID != 77 || reviews[0].State != "APPROVED" || reviews[0].User != "rev" {
 		t.Fatalf("reviews = %+v, want rev's approval in the API's upper case", reviews)
 	}
+	// The since-last-review filtered diff starts from the reviewed commit.
+	if reviews[0].CommitID != "head1" {
+		t.Errorf("review commit = %q, want head1", reviews[0].CommitID)
+	}
 	meta := cachedMetadataOf(t, env.db, key)
 	if approved, _ := meta["approved_by"].([]any); len(approved) != 1 || approved[0] != "rev" {
 		t.Errorf("metadata approved_by = %v", meta["approved_by"])
@@ -497,6 +501,31 @@ func TestReviewDeliveryEndToEnd(t *testing.T) {
 	}
 	if action, _ := env.db.GetLatestWorkflowAction(whOwner, whRepo, 1); action == nil || action.WorkflowName != webhookWorkflowName {
 		t.Errorf("no action log entry for the delivery: %+v", action)
+	}
+}
+
+func TestReviewDeliveryKeepsTheCachedReviewsCommits(t *testing.T) {
+	env := newWebhookTestEnv(t)
+	key := whKey(1)
+	seedCachedPR(t, env.db, key, "head2")
+	if err := cacheReviews(env.db, key, []*github.PullRequestReview{{
+		ID: github.Ptr(int64(5)), User: &github.User{Login: github.Ptr("me")}, State: github.Ptr("COMMENTED"),
+		SubmittedAt: &github.Timestamp{Time: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)}, CommitID: github.Ptr("head1"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	applyWebhookEvent(webhookDelivery{eventType: "pull_request_review", event: &github.PullRequestReviewEvent{
+		Action: github.Ptr("submitted"),
+		Review: &github.PullRequestReview{ID: github.Ptr(int64(6)), User: &github.User{Login: github.Ptr("rev")},
+			State: github.Ptr("approved"), CommitID: github.Ptr("head2")},
+		PullRequest: whPR(1, "head2"),
+		Repo:        whRepository(),
+	}})
+
+	reviews := cachedReviewsOf(t, env.db, key)
+	if len(reviews) != 2 || reviews[0].CommitID != "head1" || reviews[1].CommitID != "head2" {
+		t.Fatalf("reviews = %+v, want each review's commit kept through the patch", reviews)
 	}
 }
 

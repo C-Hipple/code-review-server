@@ -1,4 +1,5 @@
 import type { AIFeatureInfo, AIFeatureOutput, RunAIFeatureReply } from './ai_utils';
+import type { DiffFilterInfo, FilteredDiffResult } from './diff_filter_utils';
 import type {
     AIFeatureEntry,
     AISettings,
@@ -38,6 +39,8 @@ const SPECIALIZED_ENDPOINTS: Record<string, string> = {
     'RPCHandler.ListAIFeatures': '/api/list-ai-features',
     'RPCHandler.RunAIFeature': '/api/run-ai-feature',
     'RPCHandler.GetAIOutput': '/api/get-ai-output',
+    'RPCHandler.ListDiffFilters': '/api/list-diff-filters',
+    'RPCHandler.GetFilteredDiff': '/api/get-filtered-diff',
 };
 
 export interface GetHunkContextArgs {
@@ -144,13 +147,35 @@ export async function getAIOutput(
     return reply.output ?? {};
 }
 
+/** The filters getFilteredDiff takes, in the order to offer them. */
+export async function listDiffFilters(): Promise<DiffFilterInfo[]> {
+    const reply = await rpcCall<{ filters: DiffFilterInfo[] | null }>(
+        'RPCHandler.ListDiffFilters',
+        [{}]
+    );
+    return reply.filters ?? [];
+}
+
+/**
+ * The PR's diff narrowed by a filter, e.g. the changes since the reviewer's
+ * last review. Served from the server's cache. Its positions are its own, so
+ * comments can't be placed on it by their full-diff position.
+ */
+export async function getFilteredDiff(
+    args: PRRef & { Filter: string }
+): Promise<FilteredDiffResult> {
+    return rpcCall<FilteredDiffResult>('RPCHandler.GetFilteredDiff', [args]);
+}
+
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {
     const id = Date.now();
     const specializedPath = SPECIALIZED_ENDPOINTS[method];
 
     const url = specializedPath ? `${API_BASE}${specializedPath}` : RPC_URL;
     const body = specializedPath
-        ? method === 'RPCHandler.GetAllReviews' || method === 'RPCHandler.ListPlugins'
+        ? method === 'RPCHandler.GetAllReviews' ||
+          method === 'RPCHandler.ListPlugins' ||
+          method === 'RPCHandler.ListDiffFilters'
             ? {}
             : params[0]
         : { method, params, id };

@@ -14,6 +14,10 @@ The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
 second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
 `backend.setHeartbeat(false)`, which `E2E.Reset` undoes.
 
+It serves filtered diffs too (`ListDiffFilters`, `GetFilteredDiff`): on
+`acme/widgets#42`, "Since my last review" is the `src/main.ts` part of its diff;
+every other filter and PR has no baseline.
+
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 

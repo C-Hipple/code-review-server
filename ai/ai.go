@@ -24,6 +24,7 @@ package ai
 
 import (
 	"context"
+	"crs/filtereddiff"
 	"crs/git_tools"
 	"encoding/json"
 	"time"
@@ -172,6 +173,13 @@ type Request struct {
 	// a fixed string, for agent tools, one "path:line:text" per match. Nil when
 	// there is no local clone to search.
 	SearchCode func(ctx context.Context, query string) (string, error)
+	// FilteredDiff returns the PR's diff narrowed to a range of its commits by
+	// a filter — filtereddiff.SinceLastReview, filtereddiff.SinceLastInteraction
+	// or any other registered — the same diff clients switch the review to,
+	// read from the PRFilteredDiffs cache (computed on a miss). Check the
+	// result's Status: only filtereddiff.StatusReady carries a diff. Nil when
+	// the server can't provide one.
+	FilteredDiff func(ctx context.Context, filter string) (filtereddiff.Result, error)
 }
 
 // Discussion is a PR's conversation as features see it. The server builds it

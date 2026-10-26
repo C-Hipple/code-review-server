@@ -9,6 +9,7 @@
 (require 'crs-vars)
 (require 'crs-rpc)
 (require 'crs-render)
+(require 'crs-filtered-diff)
 (require 'markdown-mode)
 
 (declare-function crs--get-current-review-info "crs-review")
@@ -258,7 +259,8 @@ If on a local comment, local-comment-id and local-comment-body will be set."
 If on a local comment, opens it for editing with the existing body pre-filled.
 If called interactively, attempts to guess parameters from context."
   (interactive
-   (let ((ctx (crs--get-comment-context)))
+   (let ((ctx (progn (crs--refuse-comment-on-filtered-diff)
+                     (crs--get-comment-context))))
      ;; For editing, we need local-comment-id; for adding, we need position or reply-to-id
      (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx) (nth 6 ctx)))
        (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S, LocalID: %S). Buffer: %S"
@@ -349,6 +351,7 @@ opening a comment buffer, with the body
 
   ANNOTATION CONTENT"
   (interactive)
+  (crs--refuse-comment-on-filtered-diff)
   (let ((annotations (crs--annotations-on-current-line)))
     (unless annotations
       (user-error "No plugin annotation on this line"))

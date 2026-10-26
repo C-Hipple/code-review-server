@@ -128,6 +128,7 @@ func buildAIRequest(owner, repo string, number int) (ai.Request, error) {
 		Discussion:    aiDiscussion(details, rawComments),
 		ReadFile:      fileReaderAt(owner, repo, sha),
 		SearchCode:    codeSearcherAt(repo, sha),
+		FilteredDiff:  filteredDiffForAI(owner, repo, number),
 	}, nil
 }
 

@@ -35,7 +35,7 @@ import {
 } from '../pr_list_utils';
 import type { Facet, PRState, ReviewItem } from '../pr_list_utils';
 import { teamChips } from '../team_utils';
-import { CHANGE_SECTIONS, isUpdateFor, prUpdateMessage, type PRUpdate } from '../server_events';
+import { CHANGE_SECTIONS, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
@@ -314,9 +314,7 @@ export default function PRList({
         if (seq !== refreshSeq.current) return;
         // A PR it showed, or shows now: one that just left a section was in it.
         const shown = updates.filter(update =>
-            [...items, ...loaded].some(item =>
-                isUpdateFor(update, item.owner, item.repo, item.number)
-            )
+            [...items, ...loaded].some(item => isChangeFor(update, item))
         );
         setItems(loaded);
         setLoadError(false);
@@ -334,7 +332,7 @@ export default function PRList({
     usePRUpdates(
         update =>
             update.changes.includes(CHANGE_SECTIONS) ||
-            items.some(item => isUpdateFor(update, item.owner, item.repo, item.number)),
+            items.some(item => isChangeFor(update, item)),
         refreshLive
     );
 

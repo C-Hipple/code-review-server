@@ -8,8 +8,8 @@ import {
     heartbeatReducer,
     INITIAL_HEARTBEAT_STATE,
     isChangeFor,
-    isUpdateFor,
     onPRUpdates,
+    onReconnect,
     parseAIOutputChanged,
     parseHeartbeat,
     parsePluginOutputChanged,
@@ -319,11 +319,27 @@ describe('parsePRUpdate', () => {
     });
 });
 
-describe('isUpdateFor', () => {
-    test('matches the PR however it is capitalized', () => {
-        expect(isUpdateFor(UPDATE, 'c-hipple', 'Code-Review-Server', 303)).toBe(true);
-        expect(isUpdateFor(UPDATE, 'C-Hipple', 'code-review-server', 302)).toBe(false);
-        expect(isUpdateFor(UPDATE, 'C-Hipple', 'gtdbot', 303)).toBe(false);
+describe('onReconnect', () => {
+    test('calls back when the stream comes back after dropping, not on its first connect', () => {
+        const { events, opened } = hub();
+        const offEvents = events.on(PR_UPDATED_EVENT, () => {});
+        let reconnects = 0;
+        const off = onReconnect(events, () => reconnects++);
+
+        opened[0].connect();
+        expect(reconnects).toBe(0);
+        opened[0].fail();
+        opened[0].connect();
+        expect(reconnects).toBe(1);
+        // An open with no drop before it brings nothing new.
+        opened[0].connect();
+        expect(reconnects).toBe(1);
+
+        off();
+        opened[0].fail();
+        opened[0].connect();
+        expect(reconnects).toBe(1);
+        offEvents();
     });
 });
 

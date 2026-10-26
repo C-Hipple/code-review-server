@@ -157,8 +157,6 @@ export function heartbeatReducer(state: HeartbeatState, action: HeartbeatAction)
  */
 export const PR_UPDATED_EVENT = 'Server.PRUpdated';
 
-/** `changes` when the PR's head or base moved: its diff may be new. */
-export const CHANGE_HEAD = 'head';
 /** `changes` when only the review list's rows for the PR changed. */
 export const CHANGE_SECTIONS = 'sections';
 
@@ -205,18 +203,6 @@ export function parsePRUpdate(data: unknown): PRUpdate | null {
         own: own === true,
         summary: typeof summary === 'string' && summary !== '' ? summary : undefined,
     };
-}
-
-/**
- * Whether `update` is about the PR owner/repo#number. GitHub and the config
- * can spell an owner or repository in different cases.
- */
-export function isUpdateFor(update: PRUpdate, owner: string, repo: string, number: number) {
-    return (
-        update.number === number &&
-        update.owner.toLowerCase() === owner.toLowerCase() &&
-        update.repo.toLowerCase() === repo.toLowerCase()
-    );
 }
 
 /** Whether `update` changed the PR itself, not just the review list's rows for it. */
@@ -294,6 +280,28 @@ export function onPRUpdates(
         if (timer !== null) timers.clear(timer);
         timer = null;
         batch = [];
+    };
+}
+
+/**
+ * Calls `listener` each time the stream comes back after dropping. Anything
+ * sent while it was down never arrives, so that is when to read again. Unlike
+ * `onOpen` it skips the stream's first connect, which brings nothing a page
+ * that has just loaded is missing. Returns the unsubscribe.
+ */
+export function onReconnect(events: ServerEvents, listener: () => void): () => void {
+    let dropped = false;
+    const offError = events.onError(() => {
+        dropped = true;
+    });
+    const offOpen = events.onOpen(() => {
+        if (!dropped) return;
+        dropped = false;
+        listener();
+    });
+    return () => {
+        offError();
+        offOpen();
     };
 }
 

@@ -28,13 +28,7 @@ import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import { usePRUpdates } from '../hooks/usePRUpdates';
-import {
-    CHANGE_HEAD,
-    changesPR,
-    isUpdateFor,
-    prUpdateMessage,
-    type PRUpdate,
-} from '../server_events';
+import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
@@ -587,18 +581,16 @@ export default function Review({
         setOutdatedComments(unlessSame(res.outdated_comments || []));
         setReviews(unlessSame(res.reviews || []));
         setMetadata(unlessSame<PRMetadata | null>(res.metadata || null));
-        // Comments can change what the AI features cover, and a push re-runs
-        // the plugins.
+        // Comments and a push can change what the AI features' results cover,
+        // which no AI change event reports. The plugins a push re-runs
+        // announce themselves (usePluginOutputs).
         loadAIOutputs();
-        if (diffChanged || updates.some(u => u.changes.includes(CHANGE_HEAD))) {
-            loadPluginOutputs();
-        }
         const message = held ? 'Refreshed with the latest changes' : prUpdateMessage(updates);
         if (message) showToast(message, 'info');
     };
 
     usePRUpdates(
-        update => isUpdateFor(update, owner, repo, number) && changesPR(update),
+        update => isChangeFor(update, { owner, repo, number }) && changesPR(update),
         updates => refreshLive(updates)
     );
 

@@ -680,7 +680,9 @@ With [`[Webhooks]`](webhooks.md) configured, the server sends a
 and the bridge relays it over `/api/events` like the heartbeat. `onPRUpdates`
 collects a burst — a push sets off a delivery per check, then the section change —
 into one batch: the first update opens it and the rest join it for 400 ms, so the
-page refreshes once per burst and never waits longer than that.
+page refreshes once per burst and never waits longer than that. When the event
+stream comes back after dropping (`onReconnect`), both views read again quietly,
+since whatever was sent meanwhile is lost.
 
 - **Review** (`Review.tsx`, `refreshLive`): an update for the open PR, other than one
   that only touched the list's rows (`sections`), re-calls `GetPR` — served from the
@@ -693,8 +695,9 @@ page refreshes once per burst and never waits longer than that.
   comment is done, and closing the form brings it in. With a filtered diff on
   screen the new full diff is kept for comment positions, and the filtered one is
   asked for again after a push or the user's own review or comment (either can
-  move it), and swapped in only if the answer changed. A push also reloads the
-  plugin outputs; every refresh reloads the AI outputs' counts.
+  move it), and swapped in only if the answer changed. Every refresh reloads the
+  AI outputs' counts, which a push or a comment can make stale; the plugins a
+  push re-runs announce themselves (`Server.PluginOutputChanged`).
 - **List** (`PRList.tsx`): any update re-calls `GetAllReviews` in place — filters,
   collapsed sections and scroll kept, no spinner, no plugin warm-up — and the rows
   of the PRs it named flash with the accent colour for a moment (`.crs-row-updated`,

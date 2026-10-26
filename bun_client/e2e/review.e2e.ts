@@ -248,6 +248,14 @@ test.describe('review view', () => {
         await mainHeader.getByTitle('Expand file').click();
         await expect(code).toBeVisible();
 
+        // Clicking anywhere on the header toggles the file too, and opens no
+        // comment form.
+        await mainHeader.getByText('src/main.ts').click();
+        await expect(code).toHaveCount(0);
+        await expect(page.getByPlaceholder('Write a comment...')).toHaveCount(0);
+        await mainHeader.getByText('src/main.ts').click();
+        await expect(code).toBeVisible();
+
         await page.getByRole('button', { name: '◀ Collapse All' }).click();
         await expect(diffRow(page, 'A tiny example project.')).toHaveCount(0);
         await expect(code).toHaveCount(0);

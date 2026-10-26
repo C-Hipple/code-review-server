@@ -106,6 +106,9 @@ func main() {
 		// workflow-only process exits when its cycle ends and would kill the
 		// hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
+		// Tell a subscribed client — the web client's bridge — about each PR
+		// a webhook delivery changes, so a page showing it can refresh.
+		workflows.SetPRChangedHook(server.NotifyPRChanged)
 
 		go func() {
 			slog.Info("Starting pprof server", "addr", "localhost:6061")

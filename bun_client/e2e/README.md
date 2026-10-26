@@ -12,7 +12,10 @@ no GitHub token, network, or SQLite database:
 
 The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
 second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
-`backend.setHeartbeat(false)`, which `E2E.Reset` undoes.
+`backend.setHeartbeat(false)`, which `E2E.Reset` undoes. `backend.updatePR(pr, ...)`
+plays a webhook delivery: it changes the PR's fixture (a title, a conversation
+comment, text swapped in the diff) and sends the `Server.PRUpdated` the server would
+(`live_updates.e2e.ts`).
 
 It serves filtered diffs too (`ListDiffFilters`, `GetFilteredDiff`): on
 `acme/widgets#42`, "Since my last review" is the `src/main.ts` part of its diff;

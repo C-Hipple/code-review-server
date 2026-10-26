@@ -865,6 +865,39 @@ const handlers: Record<string, (args: any) => unknown> = {
         if (typeof args.mermaid === 'string') state.diagramSource = args.mermaid;
         return { okay: true };
     },
+
+    // A webhook delivery changing a PR: apply what it says to the fixture —
+    // a new title, a conversation comment, a diff with `ReplaceInDiff`'s text
+    // swapped — then send the Server.PRUpdated notification the server would.
+    'E2E.UpdatePR': args => {
+        const pr = findPR(args);
+        if (typeof args.Title === 'string') pr.item.title = args.Title;
+        if (args.Comment) {
+            pr.comments.push(
+                comment({
+                    id: String(state.nextCommentId++),
+                    author: args.Comment.author,
+                    body: args.Comment.body,
+                    created_at: new Date().toISOString(),
+                })
+            );
+        }
+        if (Array.isArray(args.ReplaceInDiff)) {
+            pr.diff = pr.diff.replace(args.ReplaceInDiff[0], args.ReplaceInDiff[1]);
+        }
+        notify('Server.PRUpdated', {
+            owner: pr.item.owner,
+            repo: pr.item.repo,
+            number: pr.item.number,
+            event: args.Event ?? 'issue_comment.created',
+            changes: args.Changes ?? ['comments'],
+            actor: args.Actor ?? '',
+            own: !!args.Own,
+            summary: args.Summary ?? '',
+            time: new Date().toISOString(),
+        });
+        return { okay: true };
+    },
 };
 
 function respond(id: Request['id'], result: unknown, error: string | null) {

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { listAIFeatures, rpcCall } from '../api';
 import { reportFeatures, type AIFeatureInfo } from '../ai_utils';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { usePRUpdates } from '../hooks/usePRUpdates';
 import {
     Button,
     Input,
@@ -13,6 +14,7 @@ import {
     ReviewLocation,
     type ReviewEaseDisplay,
     type ReviewEaseLevel,
+    type StatusVariant,
 } from '../design';
 import {
     PR_STATES,
@@ -33,6 +35,7 @@ import {
 } from '../pr_list_utils';
 import type { Facet, PRState, ReviewItem } from '../pr_list_utils';
 import { teamChips } from '../team_utils';
+import { CHANGE_SECTIONS, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 
 interface PRListProps {
     onOpenReview: (owner: string, repo: string, number: number) => void;
@@ -41,12 +44,21 @@ interface PRListProps {
     theme: Theme;
     reviewLocation: ReviewLocation;
     onThemeChange: (theme: Theme) => void;
+    /** Raises a transient notification, e.g. that a listed PR just changed. */
+    onToast?: (message: string, variant?: StatusVariant) => void;
 }
 
 interface GetReviewsResponse {
     content: string;
     items: ReviewItem[];
 }
+
+/** How long a row the server just reported a change to stays highlighted. */
+const UPDATED_HIGHLIGHT_MS = 2500;
+
+/** Names a PR the same however its owner and repository are capitalized. */
+const prKeyOf = (owner: string, repo: string, number: number) =>
+    `${owner}/${repo}#${number}`.toLowerCase();
 
 /** The sidebar's lifecycle buckets, plus the catch-all. */
 type StateFilter = PRState | 'all';
@@ -238,6 +250,7 @@ export default function PRList({
     theme: _theme,
     reviewLocation,
     onThemeChange: _onThemeChange,
+    onToast,
 }: PRListProps) {
     const isMobile = useIsMobile();
     const [items, setItems] = useState<ReviewItem[]>([]);
@@ -276,6 +289,52 @@ export default function PRList({
     useEffect(() => {
         loadList();
     }, []);
+
+    // Rows a webhook delivery just changed, by prKeyOf, highlighted for a
+    // moment so the eye finds what moved.
+    const [updatedRows, setUpdatedRows] = useState<Set<string>>(new Set());
+    const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    useEffect(() => () => clearTimeout(highlightTimer.current), []);
+    // Bumped per live refresh, so a slow one can't land over a newer one.
+    const refreshSeq = useRef(0);
+
+    // A webhook delivery changed a PR, or the sections listing it: fetch the
+    // list again in place — no spinner, filters and collapsed sections kept —
+    // and say what happened to the PRs it shows.
+    const refreshLive = async (updates: PRUpdate[]) => {
+        const seq = ++refreshSeq.current;
+        let loaded: ReviewItem[];
+        try {
+            const res = await rpcCall<GetReviewsResponse>('RPCHandler.GetAllReviews', [{}]);
+            loaded = res.items || [];
+        } catch (e) {
+            console.error('Could not refresh the list after the server reported a change:', e);
+            return;
+        }
+        if (seq !== refreshSeq.current) return;
+        // A PR it showed, or shows now: one that just left a section was in it.
+        const shown = updates.filter(update =>
+            [...items, ...loaded].some(item => isChangeFor(update, item))
+        );
+        setItems(loaded);
+        setLoadError(false);
+        if (shown.length === 0) return;
+
+        setUpdatedRows(new Set(shown.map(u => prKeyOf(u.owner, u.repo, u.number))));
+        clearTimeout(highlightTimer.current);
+        highlightTimer.current = setTimeout(() => setUpdatedRows(new Set()), UPDATED_HIGHLIGHT_MS);
+        const message = prUpdateMessage(shown, true);
+        if (message) onToast?.(message, 'info');
+    };
+
+    // Only a section change can bring in a PR the list doesn't show yet; any
+    // other is about a PR the server holds but no section lists.
+    usePRUpdates(
+        update =>
+            update.changes.includes(CHANGE_SECTIONS) ||
+            items.some(item => isChangeFor(update, item)),
+        refreshLive
+    );
 
     // The AI features are optional: none are enabled by default, and an older
     // server has no AI RPCs at all. Either way the rows simply show no AI
@@ -703,6 +762,9 @@ export default function PRList({
                                         <PRRow
                                             key={`${item.section}-${item.repo}-${item.number}-${item.title}`}
                                             item={item}
+                                            updated={updatedRows.has(
+                                                prKeyOf(item.owner, item.repo, item.number)
+                                            )}
                                             reviewLocation={reviewLocation}
                                             aiFeatures={aiFeatures}
                                             onOpenReview={onOpenReview}
@@ -825,6 +887,8 @@ function FacetList({
 
 interface PRRowProps {
     item: ReviewItem;
+    /** The server just reported a change to this PR. */
+    updated?: boolean;
     reviewLocation: ReviewLocation;
     /** The enabled AI features; the row offers the AI view when there are any. */
     aiFeatures: AIFeatureInfo[];
@@ -835,6 +899,7 @@ interface PRRowProps {
 
 function PRRow({
     item,
+    updated,
     reviewLocation,
     aiFeatures,
     onOpenReview,
@@ -860,7 +925,7 @@ function PRRow({
     };
 
     return (
-        <div className="crs-row">
+        <div className={updated ? 'crs-row crs-row-updated' : 'crs-row'}>
             <a
                 className="crs-row-link"
                 href={

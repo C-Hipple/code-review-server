@@ -112,6 +112,31 @@ class Backend {
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });
     }
+
+    /**
+     * Change a PR as a webhook delivery would, and push the Server.PRUpdated
+     * notification the server sends for it.
+     */
+    updatePR(pr: { owner: string; repo: string; number: number }, update: PRUpdateFields) {
+        return this.rpc('E2E.UpdatePR', {
+            Owner: pr.owner,
+            Repo: pr.repo,
+            Number: pr.number,
+            ...update,
+        });
+    }
+}
+
+export interface PRUpdateFields {
+    Title?: string;
+    Comment?: { author: string; body: string };
+    /** Swap the first text for the second in the PR's diff. */
+    ReplaceInDiff?: [string, string];
+    Event?: string;
+    Changes?: string[];
+    Actor?: string;
+    Own?: boolean;
+    Summary?: string;
 }
 
 export interface LspMessage {

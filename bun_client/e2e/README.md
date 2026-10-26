@@ -12,7 +12,10 @@ no GitHub token, network, or SQLite database:
 
 The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
 second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
-`backend.setHeartbeat(false)`, which `E2E.Reset` undoes.
+`backend.setHeartbeat(false)`, which `E2E.Reset` undoes. `backend.updatePR(pr, ...)`
+plays a webhook delivery: it changes the PR's fixture (a title, a conversation
+comment, text swapped in the diff) and sends the `Server.PRUpdated` the server would
+(`live_updates.e2e.ts`).
 
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.

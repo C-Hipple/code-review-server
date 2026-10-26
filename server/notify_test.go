@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"crs/config"
+	"crs/workflows"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -358,4 +360,62 @@ func TestNotificationsShareTheConnectionWithReplies(t *testing.T) {
 		}
 	}
 	expectSilence(t, out, 50*time.Millisecond)
+}
+
+func TestNotifyPRChangedSendsAPRUpdated(t *testing.T) {
+	w, out := lines(t)
+	saved := notifier
+	notifier = newNotifier(w)
+	t.Cleanup(func() {
+		notifier.Unsubscribe()
+		notifier = saved
+	})
+	config.SetC(config.Config{GithubUsername: "Me"})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+
+	change := workflows.PRChange{
+		Key:     workflows.PRKey{Owner: "acme", Repo: "widgets", Number: 42},
+		Event:   "pull_request_review.submitted",
+		Changes: []string{"reviews", "metadata"},
+		HeadSHA: "abc123",
+		Actor:   "rev",
+		Summary: "rev approved",
+	}
+	// Nothing goes out before the client subscribes.
+	NotifyPRChanged(change)
+	expectSilence(t, out, 50*time.Millisecond)
+
+	notifier.Subscribe(time.Hour)
+	NotifyPRChanged(change)
+	var n struct {
+		Method string      `json:"method"`
+		Params []PRUpdated `json:"params"`
+		ID     any         `json:"id"`
+	}
+	line := nextLine(t, out, time.Second)
+	if err := json.Unmarshal([]byte(line), &n); err != nil {
+		t.Fatalf("not JSON: %s: %v", line, err)
+	}
+	if n.Method != PRUpdatedMethod || n.ID != nil || len(n.Params) != 1 {
+		t.Fatalf("notification = %s", line)
+	}
+	got := n.Params[0]
+	if got.Owner != "acme" || got.Repo != "widgets" || got.Number != 42 || got.Event != change.Event ||
+		got.HeadSHA != "abc123" || got.Actor != "rev" || got.Summary != "rev approved" || got.Own || got.Time == "" ||
+		strings.Join(got.Changes, ",") != "reviews,metadata" {
+		t.Errorf("params = %+v", got)
+	}
+
+	// The user's own change says so, however the login is spelled.
+	change.Actor = "me"
+	NotifyPRChanged(change)
+	if line := nextLine(t, out, time.Second); !strings.Contains(line, `"own":true`) {
+		t.Errorf("the user's own change isn't marked own: %s", line)
+	}
+}
+
+func TestPRUpdatedOwnNeedsAnActor(t *testing.T) {
+	if prUpdated(workflows.PRChange{}, "", time.Now()).Own {
+		t.Error("a change with no actor counted as the user's own when no login is configured")
+	}
 }

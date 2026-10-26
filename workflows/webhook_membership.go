@@ -284,8 +284,9 @@ func reevaluateMembershipSafely(db *database.DB, key PRKey, pr *github.PullReque
 
 // reevaluateMembership checks pr against every workflow and brings its section
 // rows in line: added where it now belongs, rewritten — details included, from
-// the caches — where it still does, and dropped where it no longer does. The
-// caller holds membershipMu.
+// the caches — where it still does, and dropped where it no longer does. A
+// client is then told the rows changed (ChangeSections), so a review list on
+// screen can fetch them again. The caller holds membershipMu.
 func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 	if db == nil || !webhookHandles(key) || !cacheServes(db, key, pr) || pr.Number == nil {
 		return
@@ -308,7 +309,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 	defer SetCurrentAuxDataStore(nil)
 
 	ttl := time.Now().Add(2 * time.Hour).Unix()
-	dropped := false
+	dropped, changed := false, false
 	for _, wf := range workflows {
 		member, ok := wf.(webhookMember)
 		if !ok {
@@ -338,7 +339,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 				HeadSHA:      pr.GetHead().GetSHA(),
 			}}, "webhook: no longer matches the workflow")
 			webhookActivity.sectionDrops.Add(1)
-			dropped = true
+			dropped, changed = true, true
 			slog.Info("Webhook took a PR out of a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName())
 
 		case verdict == memberYes:
@@ -349,6 +350,7 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 			change.TTL = ttl
 			change.NotifyOnAdd = member.ShouldNotify()
 			applyChange(SerializedFileChange{FileChange: &change, Lines: change.GetLines(2)}, "webhook: matches the workflow")
+			changed = true
 			if !listed {
 				webhookActivity.sectionAdds.Add(1)
 				slog.Info("Webhook put a PR into a section", "pr", prName, "section", section.SectionName, "workflow", wf.GetName())
@@ -357,5 +359,13 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 	}
 	if dropped {
 		pruneOrphanedItems()
+	}
+	if changed {
+		notifyPRChanged(PRChange{
+			Key:     key,
+			Event:   ChangeSections,
+			Changes: []string{ChangeSections},
+			HeadSHA: pr.GetHead().GetSHA(),
+		})
 	}
 }

@@ -46,6 +46,31 @@ Sent every interval while a client is subscribed. If a few intervals pass withou
 | `started_at`       | string | When the server started (RFC 3339); a new value means a new server process  |
 | `interval_seconds` | int    | How long until the next heartbeat                                           |
 
+### `Server.PRUpdated`
+
+Sent when a [GitHub webhook](webhooks.md) delivery has changed what the server holds for a PR: once the delivery is applied to the caches, for each PR it rewrote anything for, and again when the check that follows rewrites the PR's [section rows](webhooks.md#sections-follow-deliveries). Nothing is sent for a delivery about a PR the server doesn't hold, or one that found nothing cached to patch. Without `[Webhooks]` none is ever sent.
+
+The notification says what changed, not what it changed to: a client showing the PR fetches it again with `GetPR` (or the list with `GetAllReviews`), which the delivery's changes are already cached for, so the refetch never waits on GitHub.
+
+```json
+{"method": "Server.PRUpdated", "params": [{"owner": "C-Hipple", "repo": "code-review-server", "number": 303, "event": "pull_request_review.submitted", "changes": ["reviews", "requested_reviewers", "metadata"], "head_sha": "9f2c1e7", "actor": "alice", "own": false, "summary": "alice approved", "time": "2026-10-26T14:02:11Z"}], "id": null}
+```
+
+| Field      | Type     | Description |
+|------------|----------|-------------|
+| `owner`    | string   | The PR's owner, as GitHub spells it (compare case-insensitively with the config's spelling) |
+| `repo`     | string   | The repository's short name, as `GetPR` takes it |
+| `number`   | int      | The PR number |
+| `event`    | string   | The delivery's event and action (`pull_request.synchronize`, `issue_comment.created`, `check_run.completed`, `status.success`, ...), or `sections` for a change to the PR's section rows |
+| `changes`  | string[] | What was rewritten: `head` (the head or base moved and the PR was fetched again in full, diff included), `pr` (title, description, state, draft, labels, assignees, review requests, and the list rows built from them), the cache fields a delivery patched (`reviews`, `comments`, `review_threads`, `ci_status`, `metadata`, `requested_reviewers`, `team_reviews`), or `sections` (the PR joined, left or had its rows rewritten in a section). Never empty |
+| `head_sha` | string   | The PR's head as the delivery saw it; omitted when the delivery carries no PR (a conversation comment, a check run, a commit status) |
+| `actor`    | string   | Who did it, from the delivery's sender; omitted for CI and `sections` |
+| `own`      | bool     | `actor` is the configured `GithubUsername`: the user's own change, made in a client or on GitHub |
+| `summary`  | string   | What happened in a few words, without naming the PR: `alice approved`, `bob commented on server/notify.go`, `alice pushed new commits`, `Checks failed: build, lint`. Omitted for a change not worth announcing — a check starting or another one failing once CI already has, a row rewritten |
+| `time`     | string   | The server's clock when it was sent (RFC 3339) |
+
+Deliveries come in bursts — a push sets off one per check, then the section change — so expect several of these close together for one PR, and refetch once per burst rather than once per notification.
+
 ---
 
 ## Methods
@@ -69,7 +94,7 @@ A simple health check / test method.
 
 ### `RPCHandler.Subscribe`
 
-Turns on [server notifications](#server-notifications) for this connection: a `Server.Heartbeat` every interval, and any event the server sends. Calling it again changes the interval.
+Turns on [server notifications](#server-notifications) for this connection: a `Server.Heartbeat` every interval, and any event the server sends — a [`Server.PRUpdated`](#serverprupdated) for each PR a webhook delivery changes. Calling it again changes the interval.
 
 **Arguments** (`SubscribeArgs`):
 | Field             | Type | Required | Description                                                          |

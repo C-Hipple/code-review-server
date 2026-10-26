@@ -20,6 +20,14 @@ import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { usePluginOutputs } from '../hooks/usePluginOutputs';
+import { usePRUpdates } from '../hooks/usePRUpdates';
+import {
+    CHANGE_HEAD,
+    changesPR,
+    isUpdateFor,
+    prUpdateMessage,
+    type PRUpdate,
+} from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
@@ -53,6 +61,11 @@ import {
     type PRMetadata,
     type PRResponse,
 } from './review/types';
+
+/** A state update to `next`, keeping the state as it is when they're the same. */
+function unlessSame<T>(next: T): (prev: T) => T {
+    return prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+}
 
 interface ReviewProps {
     owner: string;
@@ -244,6 +257,7 @@ export default function Review({
     useEffect(() => {
         loadPR();
         prKey.current = prRef;
+        deferredUpdates.current = null;
         setOpenAIFeature(null);
         setAIOutputs({});
         loadAIFeatures();
@@ -342,11 +356,19 @@ export default function Review({
         onToast: showToast,
     });
 
+    // The diff as the server last sent it, before any hunk was expanded into
+    // it: what a live refresh compares a new payload's diff against.
+    const serverDiff = useRef('');
+    const applyServerDiff = (next: string) => {
+        serverDiff.current = next;
+        setDiff(next);
+        setExpandedLineIndices(new Set());
+    };
+
     // Apply a PR response payload to component state.
     const applyPRResponse = (res: PRResponse) => {
         setContent(res.content || '');
-        setDiff(res.diff || '');
-        setExpandedLineIndices(new Set());
+        applyServerDiff(res.diff || '');
         setComments(res.comments || []);
         setOutdatedComments(res.outdated_comments || []);
         setReviews(res.reviews || []);
@@ -398,6 +420,77 @@ export default function Review({
             setLoading(false);
         }
     };
+
+    // A comment being written is anchored to a row of the diff on screen, so a
+    // live refresh that brings in a new diff waits until it is done.
+    const composing = activeLineIndex !== null || editingCommentId !== null;
+    const composingRef = useRef(composing);
+    composingRef.current = composing;
+    // The updates a live refresh held back for a comment being written.
+    const deferredUpdates = useRef<PRUpdate[] | null>(null);
+    // Bumped per live refresh, so a slow one can't land over a newer one.
+    const refreshSeq = useRef(0);
+
+    // A webhook delivery changed this PR (see server_events.ts): fetch it again
+    // — from the server's caches, which the delivery has just updated — and
+    // take in what changed without the loading state a sync shows. Open
+    // threads, expanded hunks, the comment being written and the feedback
+    // being typed are left as they are; only a new diff resets the expanded
+    // hunks, as a sync does. A toast says what happened.
+    const refreshLive = async (updates: PRUpdate[], held = false) => {
+        const key = prKey.current;
+        const seq = ++refreshSeq.current;
+        let res: PRResponse;
+        try {
+            res = await rpcCall<PRResponse>('RPCHandler.GetPR', [
+                { Owner: owner, Repo: repo, Number: number },
+            ]);
+        } catch (e) {
+            console.error('Could not refresh the PR after the server reported a change:', e);
+            return;
+        }
+        if (prKey.current !== key || refreshSeq.current !== seq) return;
+        const nextDiff = res.diff || '';
+        const diffChanged = nextDiff !== serverDiff.current;
+        if (diffChanged && composingRef.current) {
+            const holding = deferredUpdates.current !== null;
+            deferredUpdates.current = [...(deferredUpdates.current ?? []), ...updates];
+            if (!holding) {
+                const message = prUpdateMessage(updates) ?? 'This PR was updated';
+                showToast(`${message}\nIt will refresh once you finish your comment.`, 'info');
+            }
+            return;
+        }
+        if (diffChanged) applyServerDiff(nextDiff);
+        // Most deliveries change one thing (a check run, the CI line), so what
+        // came back unchanged keeps its identity and its memos stand.
+        setContent(res.content || '');
+        setComments(unlessSame(res.comments || []));
+        setOutdatedComments(unlessSame(res.outdated_comments || []));
+        setReviews(unlessSame(res.reviews || []));
+        setMetadata(unlessSame<PRMetadata | null>(res.metadata || null));
+        // Comments can change what the AI features cover, and a push re-runs
+        // the plugins.
+        loadAIOutputs();
+        if (diffChanged || updates.some(u => u.changes.includes(CHANGE_HEAD))) {
+            loadPluginOutputs();
+        }
+        const message = held ? 'Refreshed with the latest changes' : prUpdateMessage(updates);
+        if (message) showToast(message, 'info');
+    };
+
+    usePRUpdates(
+        update => isUpdateFor(update, owner, repo, number) && changesPR(update),
+        updates => refreshLive(updates)
+    );
+
+    // Take in what was held back once the comment is posted or cancelled.
+    useEffect(() => {
+        const held = deferredUpdates.current;
+        if (composing || !held) return;
+        deferredUpdates.current = null;
+        refreshLive(held, true);
+    }, [composing]);
 
     // Expand a hunk by fetching extra context lines from the server and
     // splicing them into the current diff text.
@@ -518,8 +611,7 @@ export default function Review({
             }
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [params]);
             setContent(res.content || '');
-            setDiff(res.diff || '');
-            setExpandedLineIndices(new Set());
+            applyServerDiff(res.diff || '');
             const prevIds = new Set(comments.map(c => c.id));
             const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
             if (newComments.length > 0) {
@@ -622,8 +714,7 @@ export default function Review({
                 },
             ]);
             setContent(res.content || '');
-            setDiff(res.diff || '');
-            setExpandedLineIndices(new Set());
+            applyServerDiff(res.diff || '');
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);

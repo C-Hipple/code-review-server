@@ -2,14 +2,22 @@ import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ServerStatus from './components/ServerStatus';
 import {
+    changesPR,
     HEARTBEAT_EVENT,
     heartbeatDeadlineMs,
     heartbeatReducer,
     INITIAL_HEARTBEAT_STATE,
+    isUpdateFor,
+    onPRUpdates,
     parseHeartbeat,
+    parsePRUpdate,
+    PR_UPDATED_EVENT,
+    prUpdateMessage,
     ServerEvents,
     type EventStream,
     type Heartbeat,
+    type PRUpdate,
+    type Timers,
 } from './server_events';
 
 const BEAT: Heartbeat = {
@@ -201,5 +209,179 @@ describe('ServerStatus', () => {
         );
         expect(compact).toContain('aria-label="Server not responding"');
         expect(compact).not.toContain('>Server not responding</span>');
+    });
+});
+
+const UPDATE: PRUpdate = {
+    owner: 'C-Hipple',
+    repo: 'code-review-server',
+    number: 303,
+    event: 'pull_request_review.submitted',
+    changes: ['reviews', 'metadata'],
+    head_sha: 'abc123',
+    actor: 'alice',
+    own: false,
+    summary: 'alice approved',
+};
+
+describe('parsePRUpdate', () => {
+    test('reads a PR update', () => {
+        expect(parsePRUpdate({ ...UPDATE, time: '2026-10-25T12:00:00Z' })).toEqual(UPDATE);
+    });
+
+    test('fills in what a quiet update leaves out', () => {
+        expect(
+            parsePRUpdate({
+                owner: 'a',
+                repo: 'b',
+                number: 1,
+                event: 'sections',
+                changes: ['sections'],
+            })
+        ).toEqual({
+            owner: 'a',
+            repo: 'b',
+            number: 1,
+            event: 'sections',
+            changes: ['sections'],
+            head_sha: undefined,
+            actor: undefined,
+            own: false,
+            summary: undefined,
+        });
+    });
+
+    test('rejects anything else', () => {
+        expect(parsePRUpdate(null)).toBeNull();
+        expect(parsePRUpdate({ ...UPDATE, number: '303' })).toBeNull();
+        expect(parsePRUpdate({ ...UPDATE, changes: 'reviews' })).toBeNull();
+        expect(parsePRUpdate({ owner: 'a' })).toBeNull();
+    });
+});
+
+describe('isUpdateFor', () => {
+    test('matches the PR however it is capitalized', () => {
+        expect(isUpdateFor(UPDATE, 'c-hipple', 'Code-Review-Server', 303)).toBe(true);
+        expect(isUpdateFor(UPDATE, 'C-Hipple', 'code-review-server', 302)).toBe(false);
+        expect(isUpdateFor(UPDATE, 'C-Hipple', 'gtdbot', 303)).toBe(false);
+    });
+});
+
+describe('changesPR', () => {
+    test('is false for a change to the list rows alone', () => {
+        expect(changesPR(UPDATE)).toBe(true);
+        expect(changesPR({ ...UPDATE, changes: ['sections'] })).toBe(false);
+        expect(changesPR({ ...UPDATE, changes: ['sections', 'head'] })).toBe(true);
+    });
+});
+
+describe('prUpdateMessage', () => {
+    test('says what happened, naming the PR when asked', () => {
+        expect(prUpdateMessage([UPDATE])).toBe('alice approved');
+        expect(prUpdateMessage([UPDATE], true)).toBe('code-review-server#303: alice approved');
+    });
+
+    test("leaves out quiet updates and the user's own", () => {
+        expect(prUpdateMessage([{ ...UPDATE, summary: undefined }])).toBeNull();
+        expect(prUpdateMessage([{ ...UPDATE, own: true }])).toBeNull();
+        expect(
+            prUpdateMessage([
+                { ...UPDATE, own: true },
+                { ...UPDATE, summary: 'Checks passed' },
+            ])
+        ).toBe('Checks passed');
+    });
+
+    test('says a repeat once and sums up a long burst', () => {
+        const said = (summary: string) => ({ ...UPDATE, summary });
+        expect(prUpdateMessage([said('Checks passed'), said('Checks passed')])).toBe(
+            'Checks passed'
+        );
+        expect(prUpdateMessage(['a', 'b', 'c', 'd', 'e'].map(said))).toBe('c\nd\ne\n…and 2 more');
+    });
+});
+
+/** Timers a test fires by hand. */
+function manualTimers() {
+    const pending = new Map<number, { fn: () => void; ms: number }>();
+    let next = 0;
+    const timers: Timers = {
+        set: (fn, ms) => {
+            pending.set(++next, { fn, ms });
+            return next;
+        },
+        clear: handle => pending.delete(handle as number),
+    };
+    const fire = () => {
+        const due = [...pending.values()];
+        pending.clear();
+        for (const { fn } of due) fn();
+    };
+    return { timers, pending, fire };
+}
+
+describe('onPRUpdates', () => {
+    test('batches a burst into one flush, bounded by the first update', () => {
+        const { events, opened } = hub();
+        const { timers, pending, fire } = manualTimers();
+        const flushed: PRUpdate[][] = [];
+        onPRUpdates(
+            events,
+            () => true,
+            updates => flushed.push(updates),
+            400,
+            timers
+        );
+
+        opened[0].emit(PR_UPDATED_EVENT, JSON.stringify(UPDATE));
+        opened[0].emit(PR_UPDATED_EVENT, JSON.stringify({ ...UPDATE, summary: 'Checks passed' }));
+        // The second joined the first's batch rather than putting it off.
+        expect(pending.size).toBe(1);
+        expect([...pending.values()][0].ms).toBe(400);
+        expect(flushed).toEqual([]);
+
+        fire();
+        expect(flushed.map(batch => batch.map(u => u.summary))).toEqual([
+            ['alice approved', 'Checks passed'],
+        ]);
+
+        opened[0].emit(PR_UPDATED_EVENT, JSON.stringify(UPDATE));
+        fire();
+        expect(flushed).toHaveLength(2);
+    });
+
+    test('ignores what it does not accept, and anything that is not an update', () => {
+        const { events, opened } = hub();
+        const { timers, pending } = manualTimers();
+        onPRUpdates(
+            events,
+            update => update.number === 1,
+            () => {},
+            400,
+            timers
+        );
+
+        opened[0].emit(PR_UPDATED_EVENT, JSON.stringify(UPDATE));
+        opened[0].emit(PR_UPDATED_EVENT, '{"owner":"a"}');
+        expect(pending.size).toBe(0);
+    });
+
+    test('drops a pending batch on unsubscribe', () => {
+        const { events, opened } = hub();
+        const { timers, pending } = manualTimers();
+        let flushed = 0;
+        const off = onPRUpdates(
+            events,
+            () => true,
+            () => flushed++,
+            400,
+            timers
+        );
+
+        opened[0].emit(PR_UPDATED_EVENT, JSON.stringify(UPDATE));
+        off();
+        expect(pending.size).toBe(0);
+        expect(flushed).toBe(0);
+        expect(opened[0].closed).toBe(true);
     });
 });

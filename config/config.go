@@ -334,9 +334,12 @@ func (s GitHubAPISettings) Routes() map[string]string {
 // WebhookSettings is the [Webhooks] table: GitHub webhook deliveries the server
 // accepts in place of re-fetching every PR it lists on every cycle. With it set
 // up, a cycle lists PRs and fully fetches the ones it is adding (or whose head
-// moved), while reviews, comments, CI and the rest arrive by webhook. Without a
-// ListenAddress — or without a secret to verify deliveries with — nothing
-// listens and every PR is polled, exactly as if the table weren't there.
+// moved), while reviews, comments, CI and the rest arrive by webhook. The
+// deliveries come either over HTTP, to ListenAddress, or — with PubSub set —
+// from a Google Cloud Pub/Sub subscription some other service publishes them
+// to. Without either — or without a secret to verify HTTP deliveries with —
+// nothing receives them and every PR is polled, exactly as if the table
+// weren't there.
 type WebhookSettings struct {
 	// ListenAddress is where the server listens for deliveries, as host:port —
 	// ":8790" on every interface, "127.0.0.1:8790" behind a tunnel or proxy.
@@ -355,6 +358,86 @@ type WebhookSettings struct {
 	// refresh every PR as if webhooks were off, to catch up on deliveries that
 	// never arrived. Zero means DefaultWebhookFullRefresh.
 	FullRefreshInterval int `toml:"FullRefreshInterval,omitempty"`
+	// PubSub, the [Webhooks.PubSub] table, takes deliveries from a Pub/Sub
+	// subscription in place of listening for them.
+	PubSub PubSubSettings `toml:"PubSub,omitempty"`
+}
+
+// PubSubSettings is the [Webhooks.PubSub] table: for an organization that
+// receives GitHub's webhooks with a service of its own and publishes each
+// delivery to a Google Cloud Pub/Sub topic, the subscription the server pulls
+// them from. Each message's data is a delivery's JSON body as GitHub sent it,
+// and its attributes name the event and the delivery. The publisher has
+// already verified GitHub's signature; who may publish is up to the topic's
+// IAM policy, so the server takes what the subscription hands it.
+type PubSubSettings struct {
+	// Subscription is the subscription to pull from, as
+	// "projects/<project>/subscriptions/<subscription>". Setting it is what
+	// turns Pub/Sub on.
+	Subscription string `toml:"Subscription,omitempty"`
+	// CredentialsFile is a Google credentials JSON file — a service account
+	// key, or what `gcloud auth application-default login` writes — to pull
+	// with. Empty means Application Default Credentials.
+	CredentialsFile string `toml:"CredentialsFile,omitempty"`
+	// EventTypeAttribute is the message attribute holding the GitHub event
+	// type, what GitHub sends as X-GitHub-Event; empty means
+	// DefaultPubSubEventTypeAttribute.
+	EventTypeAttribute string `toml:"EventTypeAttribute,omitempty"`
+	// DeliveryIDAttribute is the message attribute holding the delivery's ID,
+	// what GitHub sends as X-GitHub-Delivery; empty means
+	// DefaultPubSubDeliveryIDAttribute.
+	DeliveryIDAttribute string `toml:"DeliveryIDAttribute,omitempty"`
+}
+
+const (
+	// DefaultPubSubEventTypeAttribute is the attribute naming a message's
+	// GitHub event when [Webhooks.PubSub] doesn't set EventTypeAttribute.
+	DefaultPubSubEventTypeAttribute = "event_type"
+	// DefaultPubSubDeliveryIDAttribute is the attribute holding a message's
+	// delivery ID when [Webhooks.PubSub] doesn't set DeliveryIDAttribute.
+	DefaultPubSubDeliveryIDAttribute = "delivery_id"
+)
+
+// PubSubConfigured reports whether deliveries come from a Pub/Sub
+// subscription rather than over HTTP.
+func (c Config) PubSubConfigured() bool {
+	return strings.TrimSpace(c.Webhooks.PubSub.Subscription) != ""
+}
+
+// PubSubSubscription is the subscription deliveries are pulled from, or ""
+// when they aren't.
+func (c Config) PubSubSubscription() string {
+	return strings.TrimSpace(c.Webhooks.PubSub.Subscription)
+}
+
+// PubSubCredentialsFile is the credentials file to pull with, with a leading
+// "~" expanded, or "" for Application Default Credentials.
+func (c Config) PubSubCredentialsFile() string {
+	path := strings.TrimSpace(c.Webhooks.PubSub.CredentialsFile)
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := UserHomeDir(); err == nil {
+			path = home + path[1:]
+		}
+	}
+	return path
+}
+
+// PubSubEventTypeAttribute is the attribute a message's GitHub event type is
+// read from.
+func (c Config) PubSubEventTypeAttribute() string {
+	if a := strings.TrimSpace(c.Webhooks.PubSub.EventTypeAttribute); a != "" {
+		return a
+	}
+	return DefaultPubSubEventTypeAttribute
+}
+
+// PubSubDeliveryIDAttribute is the attribute a message's delivery ID is read
+// from.
+func (c Config) PubSubDeliveryIDAttribute() string {
+	if a := strings.TrimSpace(c.Webhooks.PubSub.DeliveryIDAttribute); a != "" {
+		return a
+	}
+	return DefaultPubSubDeliveryIDAttribute
 }
 
 const (
@@ -379,9 +462,13 @@ func (c Config) WebhookSecret() string {
 }
 
 // WebhooksConfigured reports whether the config asks for webhooks and gives
-// what they need to work: an address to listen on and a secret. Unsigned
-// deliveries are never accepted, so without a secret the server polls.
+// what they need to work: a Pub/Sub subscription to pull them from, or an
+// address to listen on and a secret. Unsigned HTTP deliveries are never
+// accepted, so without a secret a listening server polls.
 func (c Config) WebhooksConfigured() bool {
+	if c.PubSubConfigured() {
+		return true
+	}
 	return strings.TrimSpace(c.Webhooks.ListenAddress) != "" && c.WebhookSecret() != ""
 }
 

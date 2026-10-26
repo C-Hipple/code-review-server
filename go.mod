@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/google/go-github/v92 v92.0.0
 	github.com/google/go-querystring v1.2.0 // indirect
 )

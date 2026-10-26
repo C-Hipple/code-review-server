@@ -81,6 +81,7 @@ Root level:
 - A `SectionSorting` value is not `newest_first` or `oldest_first`.
 - A `[GitHubAPI]` key names something other than `rest` or `graphql` (see [GitHub API](#github-api)).
 - `[Webhooks]` sets a `ListenAddress` that isn't `host:port`, or sets one with no secret — neither `Secret` nor `CRS_WEBHOOK_SECRET` — to verify deliveries with; its `Path` doesn't start with `/`; a `Repos` entry is neither `owner/repo` nor `owner/*`; or `FullRefreshInterval` is negative (see [GitHub Webhooks](webhooks.md)).
+- `[Webhooks.PubSub]` sets other keys but no `Subscription`; its `Subscription` isn't `projects/<project>/subscriptions/<subscription>`; its `CredentialsFile` is a relative path; or `[Webhooks]` sets a `ListenAddress` as well — deliveries come from one or the other (see [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pubsub)).
 
 Per workflow:
 
@@ -389,6 +390,19 @@ ListenAddress = "127.0.0.1:8790"   # where GitHub's deliveries arrive (behind a 
 Repos = ["my-org/*"]               # whose webhooks deliver here; default: the repos this config names
 # Secret = "..."                   # or export CRS_WEBHOOK_SECRET
 ```
+
+If your organization already receives GitHub's webhooks with a service of its own and publishes each delivery to a Google Cloud Pub/Sub topic, the server can pull them from a subscription instead of listening — no port, tunnel or secret:
+
+```toml
+[Webhooks]
+Repos = ["my-org/*"]
+
+[Webhooks.PubSub]
+Subscription = "projects/my-project/subscriptions/crs-github-events"
+# CredentialsFile = "~/.config/crs/pubsub-key.json"   # default: Application Default Credentials
+```
+
+See [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pubsub).
 
 ## Example Config
 

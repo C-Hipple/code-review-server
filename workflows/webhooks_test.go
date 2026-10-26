@@ -626,6 +626,118 @@ func TestDeliveryForANewHeadRefetchesThePR(t *testing.T) {
 	}
 }
 
+// A delivery sent before a later push but arriving after it — Pub/Sub
+// promises no order — names a head the PR has moved on from. What it says
+// about that head (a comment's position, the head's CI) is no use, so the PR
+// is fetched, as for any head that isn't the cached one, but at the newest
+// head it was seen at: fetching it at the delivery's would cache the current
+// diff under the old head.
+func TestLateDeliveryRefetchesTheNewestHead(t *testing.T) {
+	env := newWebhookTestEnv(t)
+	var fetchedHeads []string
+	refetchPR = func(key PRKey, pr *github.PullRequest, _ string) {
+		env.refetched = append(env.refetched, key)
+		fetchedHeads = append(fetchedHeads, pr.GetHead().GetSHA())
+	}
+	now := time.Now()
+	at := func(pr *github.PullRequest, age time.Duration) *github.PullRequest {
+		pr.UpdatedAt = &github.Timestamp{Time: now.Add(-age)}
+		return pr
+	}
+	lateReview := func(number int) webhookDelivery {
+		return webhookDelivery{event: &github.PullRequestReviewEvent{
+			Action:      github.Ptr("submitted"),
+			Review:      &github.PullRequestReview{ID: github.Ptr(int64(number)), State: github.Ptr("approved")},
+			PullRequest: at(whPR(number, "head1"), time.Minute),
+			Repo:        whRepository(),
+		}}
+	}
+	track := func(number int, cached, newest string) PRKey {
+		key := whKey(number)
+		seedCachedPR(t, env.db, key, cached)
+		trackItem(t, env.db, key)
+		rememberPR(key, at(whPR(number, newest), 0))
+		return key
+	}
+
+	// The cache already holds the newest head.
+	current := track(1, "head2", "head2")
+	applyWebhookEvent(lateReview(1))
+	if !slices.Equal(fetchedHeads, []string{"head2"}) {
+		t.Errorf("fetched heads %v, want the newest one seen", fetchedHeads)
+	}
+	if got := cachedReviewsOf(t, env.db, current); len(got) != 0 {
+		t.Errorf("reviews = %+v, patched from a delivery about an older head", got)
+	}
+
+	// The cache is behind both.
+	fetchedHeads = nil
+	track(2, "head0", "head2")
+	applyWebhookEvent(lateReview(2))
+	if !slices.Equal(fetchedHeads, []string{"head2"}) {
+		t.Errorf("fetched heads %v, want the newest one seen", fetchedHeads)
+	}
+
+	// A late base change at the cached head, the PR since seen pushed to.
+	fetchedHeads = nil
+	track(3, "head1", "head2")
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
+		Action:      github.Ptr("edited"),
+		PullRequest: at(whPR(3, "head1"), time.Minute),
+		Changes:     &github.EditChange{Base: &github.EditBase{Ref: &github.EditRef{From: github.Ptr("develop")}}},
+		Repo:        whRepository(),
+	}})
+	if !slices.Equal(fetchedHeads, []string{"head2"}) {
+		t.Errorf("fetched heads %v after a late base change, want the newest one seen", fetchedHeads)
+	}
+
+	// A late edit at the cached head writes the PR as last seen, not as the
+	// delivery has it.
+	fetchedHeads = nil
+	edited := track(4, "head1", "head1")
+	newer := at(whPR(4, "head1"), 0)
+	newer.Title = github.Ptr("Current title")
+	rememberPR(edited, newer)
+	stale := at(whPR(4, "head1"), time.Minute)
+	stale.Title = github.Ptr("Old title")
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
+		Action: github.Ptr("edited"), PullRequest: stale, Repo: whRepository(),
+	}})
+	if len(fetchedHeads) != 0 {
+		t.Errorf("fetched %v for an edit at the cached head", fetchedHeads)
+	}
+	if meta := cachedMetadataOf(t, env.db, edited); meta["title"] != "Current title" {
+		t.Errorf("metadata title = %v, want the newest seen", meta["title"])
+	}
+
+	// So does a late review: the newer PR already reflects it.
+	reviewed := track(5, "head1", "head1")
+	newer = at(whPR(5, "head1"), 0)
+	newer.Title = github.Ptr("Current title")
+	rememberPR(reviewed, newer)
+	stale = at(whPR(5, "head1"), time.Minute)
+	stale.Title = github.Ptr("Old title")
+	stale.RequestedReviewers = []*github.User{{Login: github.Ptr("someone")}}
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
+		Action:      github.Ptr("submitted"),
+		Review:      &github.PullRequestReview{ID: github.Ptr(int64(50)), User: &github.User{Login: github.Ptr("rev")}, State: github.Ptr("approved")},
+		PullRequest: stale,
+		Repo:        whRepository(),
+	}})
+	if len(fetchedHeads) != 0 {
+		t.Errorf("fetched %v for a review at the cached head", fetchedHeads)
+	}
+	if got := cachedReviewsOf(t, env.db, reviewed); len(got) != 1 {
+		t.Errorf("reviews = %+v, want the late review patched in", got)
+	}
+	if meta := cachedMetadataOf(t, env.db, reviewed); meta["title"] != "Current title" {
+		t.Errorf("metadata title = %v after a late review, want the newest seen", meta["title"])
+	}
+	if raw, _ := env.db.GetRequestedReviewers(reviewed.Number, reviewed.Repo); strings.Contains(raw, "someone") {
+		t.Errorf("requested reviewers = %s, from the late review's PR", raw)
+	}
+}
+
 func TestPullRequestDeliveryUpdatesMetadataAndTheList(t *testing.T) {
 	env := newWebhookTestEnv(t)
 	key := whKey(1)

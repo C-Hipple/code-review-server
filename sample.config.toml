@@ -89,6 +89,15 @@ SectionTitle = "Needs My Team's Review"
 # FullRefreshInterval = 360         # minutes between refresh-everything cycles;
 #                                   # = SleepDuration to keep polling every cycle and
 #                                   # use webhooks only for updates in between
+#
+# Or, when your organization publishes GitHub's webhook deliveries to a Google
+# Cloud Pub/Sub topic, pull them from a subscription instead of listening (no
+# ListenAddress or Secret then):
+# [Webhooks.PubSub]
+# Subscription = "projects/my-project/subscriptions/crs-github-events"
+# CredentialsFile = "~/.config/crs/pubsub-key.json"  # default: Application Default Credentials
+# EventTypeAttribute = "event_type"     # the attribute naming the GitHub event
+# DeliveryIDAttribute = "delivery_id"   # the attribute holding the delivery's ID
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

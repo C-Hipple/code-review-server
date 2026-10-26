@@ -18,12 +18,22 @@ import (
 // that never subscribes never sees one, so a client that reads exactly one
 // line per call (the TUI) is unaffected.
 //
-// The one notification so far is the heartbeat, sent every interval while a
-// client is subscribed; Notifier.Notify is the seam the next event goes
-// through.
+// The heartbeat is sent every interval while a client is subscribed; events
+// go through Notifier.Notify as they happen: Server.PluginOutputChanged and
+// Server.AIOutputChanged, which let a client showing a PR's plugin output or
+// AI feature results read them again when they change instead of polling.
 
 // HeartbeatMethod is the method a heartbeat notification names.
 const HeartbeatMethod = "Server.Heartbeat"
+
+// PluginOutputChangedMethod is the method a notification names when a PR's
+// stored plugin output changes, so what GetPluginOutput returns for it has.
+const PluginOutputChangedMethod = "Server.PluginOutputChanged"
+
+// AIOutputChangedMethod is the method a notification names when an AI
+// feature's output for a PR changes as GetAIOutput reports it: a run starts,
+// or its result is stored.
+const AIOutputChangedMethod = "Server.AIOutputChanged"
 
 const (
 	defaultHeartbeatInterval = 10 * time.Second
@@ -60,6 +70,70 @@ type Heartbeat struct {
 	// IntervalSeconds is how long until the next heartbeat. A client that
 	// hears nothing for a few intervals can take the server for gone.
 	IntervalSeconds int `json:"interval_seconds"`
+}
+
+// PluginOutputChanged is a Server.PluginOutputChanged notification's params.
+// It names what changed rather than carrying the output, which can be large:
+// a client showing the PR reads GetPluginOutput again.
+type PluginOutputChanged struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	// Plugin is the plugin whose result changed; empty when every plugin's
+	// result for the PR was cleared at once, for a rerun of them all.
+	Plugin string `json:"plugin"`
+	// Status is the plugin's status as GetPluginOutput now reports it
+	// (pending, success, error or deferred), or empty when its result was
+	// cleared for a rerun: the plugin is missing from the output until the
+	// run marks it pending.
+	Status string `json:"status"`
+}
+
+// notifyPluginOutputChanged tells a subscribed client that a PR's plugin
+// output changed. Without the stdio connection (a one-off command) or a
+// subscribed client it does nothing.
+func notifyPluginOutputChanged(owner, repo string, number int, plugin, status string) {
+	n := notifier
+	if n == nil {
+		return
+	}
+	n.Notify(PluginOutputChangedMethod, PluginOutputChanged{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Plugin: plugin,
+		Status: status,
+	})
+}
+
+// AIOutputChanged is a Server.AIOutputChanged notification's params. Like
+// PluginOutputChanged it names what changed; a client showing the feature
+// reads GetAIOutput again.
+type AIOutputChanged struct {
+	Owner   string `json:"owner"`
+	Repo    string `json:"repo"`
+	Number  int    `json:"number"`
+	Feature string `json:"feature"`
+	// Status is the feature's status as GetAIOutput now reports it: pending
+	// once a run is claimed (queued for a slot included), then the stored
+	// result's (success, error or insufficient-input) once it lands.
+	Status string `json:"status"`
+}
+
+// notifyAIOutputChanged tells a subscribed client that an AI feature's output
+// for a PR changed. It is the AI runner's OnChange in server mode.
+func notifyAIOutputChanged(owner, repo string, number int, feature, status string) {
+	n := notifier
+	if n == nil {
+		return
+	}
+	n.Notify(AIOutputChangedMethod, AIOutputChanged{
+		Owner:   owner,
+		Repo:    repo,
+		Number:  number,
+		Feature: feature,
+		Status:  status,
+	})
 }
 
 // notification is a JSON-RPC 1.0 notification as it goes on the wire.

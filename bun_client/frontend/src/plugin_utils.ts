@@ -114,11 +114,12 @@ export function isPluginPending(plugin: PluginResult | undefined): boolean {
     return (plugin?.status || '').toLowerCase() === 'pending';
 }
 
-/** How often a plugin output surface reads the output again while a plugin is pending. */
-export const PLUGIN_POLL_MS = 2000;
-
-/** Give up polling after this long; the server stops a plugin after five minutes. */
-export const MAX_PLUGIN_POLL_MS = 6 * 60 * 1000;
+/**
+ * Stop standing in for a re-run's result after this long without one: the
+ * server stops a plugin after five minutes, so a re-run that hasn't landed by
+ * then was lost (a server restart) or never started.
+ */
+export const MAX_RERUN_WAIT_MS = 6 * 60 * 1000;
 
 /**
  * The output to show while re-runs are awaited. A re-run deletes the plugin's
@@ -149,14 +150,6 @@ export function rerunsStillAwaited(
     return new Set(
         [...awaiting].filter(name => !(name in outputs) || isPluginPending(outputs[name]))
     );
-}
-
-/** The plugins pending in `outputs`, as a stable key: empty when there are none. */
-export function pendingPluginsKey(outputs: Record<string, PluginResult>): string {
-    return Object.keys(outputs)
-        .filter(name => isPluginPending(outputs[name]))
-        .sort()
-        .join(',');
 }
 
 /** Total number of annotations across every plugin, for summary counts. */

@@ -271,14 +271,6 @@ export function shouldRunOnOpen(output: AIFeatureOutput | null | undefined): boo
     return output.status === 'not-run' || output.stale;
 }
 
-/** How long to wait before the next poll of a pending run. */
-export function pollDelayMs(attempt: number): number {
-    return attempt < 10 ? 1500 : 3000;
-}
-
-/** Give up polling a run after this long; the server's own timeout is five minutes. */
-export const MAX_POLL_MS = 6 * 60 * 1000;
-
 export function statusVariant(status: string): StatusVariant {
     switch (status) {
         case 'success':

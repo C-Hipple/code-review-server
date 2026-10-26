@@ -131,7 +131,7 @@ browser cannot. Reproduce them if you want the corresponding features.
 | `POST /api/prepare-diff-lsp` | Writes the diff plus a `Project/Root/Worktree/Buffer/Type` header to a temp file and returns its path; `diff-lsp` consumes that file. |
 | `WS /api/lsp?tempfile=` | Connects to a `diff-lsp` for the tempfile's workspace. |
 | `WS /api/lsp-file?lang=&root=` | Connects to a plain language server (`gopls`, `typescript-language-server`, `rust-analyzer`, `pyright-langserver`, resolved at startup) for `root`. |
-| `GET /api/events` | Server-Sent Events: each server notification as an event named after its method (`Server.Heartbeat`, ...), data its params. A new stream opens with the latest heartbeat if the next isn't overdue yet. The connection has no idle timeout. |
+| `GET /api/events` | Server-Sent Events: each server notification as an event named after its method (`Server.Heartbeat`, `Server.PluginOutputChanged`, `Server.AIOutputChanged`), data its params. A new stream opens with the latest heartbeat if the next isn't overdue yet. The connection has no idle timeout. |
 | `POST /api/lsp-lines` | The text on each line a list of LSP locations points at, read from disk, so the popover can show what each reference is. |
 
 The WebSocket handlers translate between browser JSON messages and LSP's
@@ -457,10 +457,15 @@ Behavior worth reproducing:
   `GetPluginOutput` again. The server deletes the old result before it accepts the
   re-run and only marks the plugin `pending` once it gets going, so a re-run plugin
   missing from the output is shown as `pending` rather than dropped.
-- **Polling** (`usePluginOutputs`) — while any plugin reads `pending`, both surfaces
-  read `GetPluginOutput` again every two seconds, one read at a time, until each
-  lands; only the latest read's reply is applied. Polling gives up after six minutes
-  of no change (the server stops a plugin after five).
+- **Following runs** (`usePluginOutputs`, `useServerChanges`) — nothing is polled.
+  The server sends a [`Server.PluginOutputChanged`](protocol.md#serverpluginoutputchanged)
+  each time a PR's plugin output changes (a re-run clearing a result, a plugin
+  marked `pending`, a result landing), and both surfaces read `GetPluginOutput`
+  again when one names their PR, and when the `/api/events` stream reconnects
+  (whatever was announced while it was down never arrives). Reads go one at a
+  time — announcements that land mid-read ask for one more — and only the latest
+  read's reply is applied. A re-run that never lands stops reading as `pending`
+  after six minutes (the server stops a plugin after five).
 
 ### 3.10 Plugin annotations in the diff (`annotation_utils.ts`)
 
@@ -592,7 +597,10 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
   `/api/events`, and **Server not responding** once three intervals pass without
   one or the stream drops, until the next arrives. Nothing shows before the first
   heartbeat, so a server too old to send them isn't reported as down. Every
-  listener on the page shares one `EventSource` (`serverEvents.on(method, ...)`).
+  listener on the page shares one `EventSource` (`serverEvents.on(method, ...)`,
+  and `serverEvents.onOpen` for each time it (re)connects). The same stream carries
+  `Server.PluginOutputChanged` and `Server.AIOutputChanged`, which the plugin and AI
+  views follow instead of polling.
 
 ---
 
@@ -620,9 +628,15 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   the feature's output and calls `RunAIFeature` (not forced) when the feature never
   ran for the PR (`not-run`) or its result is `stale`; the server answers from its
   cache when nothing changed. **↻ Re-run** forces a run.
-- **Polling** — while the output reads `pending`, the report polls `GetAIOutput`
-  (every 1.5 s, backing off to 3 s, giving up after six minutes). The previous
-  result stays on screen, dimmed, until the new one lands.
+- **Following runs** — nothing is polled. The server sends a
+  [`Server.AIOutputChanged`](protocol.md#serveraioutputchanged) as a run of the
+  feature starts and as it lands, whoever asked for it, and the report reads
+  `GetAIOutput` again on each (and when the event stream reconnects). Each request
+  takes a ticket and only a reply newer than the one shown is applied, so a run's
+  reply written before the run landed can't overwrite the result. The previous
+  result stays on screen, dimmed, until the new one lands. The review toolbar
+  (`useAIBackgroundRuns`) follows every other feature's runs the same way, so its
+  spinners and counts stay current without a report open.
 - **comments-addressed** renders from the typed `report`: the verdict and summary,
   a "Needs attention" list (the served `outstanding` list — outstanding, then
   unclear) with each item's status and whether GitHub or the model decided it,
@@ -688,8 +702,8 @@ basics:
   around a hunk boundary, so a diff can be expanded without fetching the whole file.
   Powers the ↑/↓ buttons on hunk headers.
 - [`RerunPlugins`](protocol.md#rpchandlerrerunplugins) — clears cached plugin results
-  and re-executes. The reply means "accepted", not "finished": poll
-  `GetPluginOutput` for results.
+  and re-executes. The reply means "accepted", not "finished": read
+  `GetPluginOutput` when a `Server.PluginOutputChanged` says the result landed.
 
 ### Reply fields worth knowing about
 
@@ -701,7 +715,7 @@ basics:
 - [`annotations`](protocol.md#the-pr-payload) — plugin annotations aggregated
   server-side. The client derives its own from the plugin outputs instead (see
   [3.10](#310-plugin-annotations-in-the-diff-annotation_utilsts)), but this field is
-  there for clients that don't poll plugins separately.
+  there for clients that don't read plugin output separately.
 - [`comments[].review_id`](protocol.md#comment-object-commentjson) — ties a comment
   to the review that submitted it, which is what makes the discussion timeline in
   [3.4](#34-pr-discussion-prdiscussiontsx-discussion_utilsts) possible.
@@ -730,7 +744,8 @@ Ordered roughly by how much time they'll cost you if missed.
    `C-Hipple/code-review-server` — see the Cache Key Convention in the project's
    `CLAUDE.md`. Full names miss the DB caches and hit GitHub every time.
 3. **Nothing on the read path blocks on plugins or the LLM.** `GetPR` returns
-   immediately with whatever is cached; plugin output arrives via separate polling.
+   immediately with whatever is cached; plugin output and AI results arrive later,
+   each announced by a server notification.
    Design your UI for results that show up late, and consider the list-view warm-up
    trick in [3.1](#31-review-list-prlisttsx).
 4. **Mutations return the whole PR.** `AddComment`, `EditComment`, `DeleteComment`,
@@ -804,7 +819,8 @@ PR-specific parsing.
 3. **Write path.** `AddComment` / `EditComment` / `DeleteComment` → `SubmitReview`,
    plus `SyncPR` afterward.
 4. **Navigation.** `GetAdjacentPR`, URL state, deep links.
-5. **Plugins.** `GetPluginOutput` polling, the body contract, `RerunPlugins`.
+5. **Plugins.** `GetPluginOutput` (read again on `Server.PluginOutputChanged`), the
+   body contract, `RerunPlugins`.
 6. **Extras.** Annotations in the diff, hunk expansion, the config editor, LSP, the
    code viewer, AI reports (`ListAIFeatures`, `RunAIFeature`, `GetAIOutput`).
 

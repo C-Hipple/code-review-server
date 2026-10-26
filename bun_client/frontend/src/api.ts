@@ -122,7 +122,8 @@ export async function listAIFeatures(): Promise<AIFeatureInfo[]> {
 
 /**
  * Asks for an AI feature to run for a PR. The run happens in the background:
- * poll getAIOutput while the output reads `pending`. Unless `Force` is set, a
+ * the server announces it landing (Server.AIOutputChanged), and getAIOutput
+ * then reads the result. Unless `Force` is set, a
  * stored result that still covers the PR's inputs answers without a run.
  */
 export async function runAIFeature(

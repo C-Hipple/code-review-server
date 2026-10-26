@@ -37,6 +37,13 @@ type Runner struct {
 	// NewProvider builds the provider a run's config chose. Tests replace it.
 	NewProvider func(choice config.AIProviderChoice) (Provider, error)
 
+	// OnChange, when set, is told each time a feature's output for a PR
+	// changes as a read of it would see: a run is claimed (pending, queued
+	// for a slot included) and the run's result is stored (its status). It is
+	// called on the claiming caller's goroutine or the run's, and must not
+	// block. The server sets it to notify subscribed clients.
+	OnChange func(owner, repo string, number int, feature, status string)
+
 	slots    chan struct{}
 	inflight sync.Map // runKey -> struct{}
 }
@@ -152,6 +159,7 @@ func (r *Runner) claim(job Job) (claim, Outcome) {
 	if _, running := r.inflight.LoadOrStore(runKey(job.Owner, job.Repo, job.Number, job.Feature), struct{}{}); running {
 		return claim{}, OutcomeAlreadyRunning
 	}
+	r.changed(job, StatusPending)
 	return claim{job: job, feature: f, mode: resolveMode(f, entry), provider: cfg.AIProviderFor(entry)}, OutcomeStarted
 }
 
@@ -227,10 +235,11 @@ func (r *Runner) execute(c claim) {
 			BodyContent: fmt.Sprintf("**%s failed.**\n\n%v", c.feature.Name(), err),
 		}}
 	}
-	store(job, status, result, sha, digest)
+	status = store(job, status, result, sha, digest)
 	// The result is readable from here on; don't keep reporting it as pending
 	// while the log entry is written.
 	r.inflight.Delete(key)
+	r.changed(job, status)
 
 	entry := llm.CallReport{
 		Title:           "AI Feature Run",
@@ -301,11 +310,19 @@ func runFeature(ctx context.Context, f Feature, req Request) (res Result, err er
 	return f.Run(ctx, req)
 }
 
-// store writes a run's result, keyed by the inputs it was computed from.
-func store(job Job, status string, result Result, sha, digest string) {
+// changed tells OnChange, if set, that job's feature output now reads status.
+func (r *Runner) changed(job Job, status string) {
+	if r.OnChange != nil {
+		r.OnChange(job.Owner, job.Repo, job.Number, job.Feature, status)
+	}
+}
+
+// store writes a run's result, keyed by the inputs it was computed from, and
+// returns the status it stored it under.
+func store(job Job, status string, result Result, sha, digest string) string {
 	db := config.C().DB
 	if db == nil {
-		return
+		return status
 	}
 	encoded, err := result.Encode()
 	if err != nil {
@@ -317,4 +334,5 @@ func store(job Job, status string, result Result, sha, digest string) {
 	if err := db.UpsertAIResult(job.Owner, job.Repo, job.Number, job.Feature, encoded, status, sha, digest); err != nil {
 		slog.Error("Failed to store AI feature result", "feature", job.Feature, "repo", job.Repo, "pr", job.Number, "error", err)
 	}
+	return status
 }

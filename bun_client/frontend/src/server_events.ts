@@ -35,6 +35,81 @@ export function parseHeartbeat(data: unknown): Heartbeat | null {
     return { seq, time, started_at, interval_seconds };
 }
 
+/**
+ * Sent whenever a PR's stored plugin output changes: a plugin marked pending,
+ * a result landing, a re-run clearing one. It names what changed, not the
+ * output; a page showing the PR reads GetPluginOutput again.
+ */
+export const PLUGIN_OUTPUT_CHANGED_EVENT = 'Server.PluginOutputChanged';
+
+export interface PluginOutputChanged {
+    owner: string;
+    repo: string;
+    number: number;
+    /** The plugin whose result changed; empty when a re-run cleared them all. */
+    plugin: string;
+    /** Its status now (`pending`, `success`, ...); empty when it was cleared for a re-run. */
+    status: string;
+}
+
+/**
+ * Sent when an AI feature's output for a PR changes: as a run starts
+ * (`pending`) and as its result is stored. Like a plugin change it names what
+ * changed; a page showing the feature reads GetAIOutput again.
+ */
+export const AI_OUTPUT_CHANGED_EVENT = 'Server.AIOutputChanged';
+
+export interface AIOutputChanged {
+    owner: string;
+    repo: string;
+    number: number;
+    feature: string;
+    /** `pending` as a run starts, then the stored result's status. */
+    status: string;
+}
+
+/** A pull request, as the server's change events name one. */
+export interface PRRef {
+    owner: string;
+    repo: string;
+    number: number;
+}
+
+function parsePRRef(data: unknown): (PRRef & Record<string, unknown>) | null {
+    if (typeof data !== 'object' || data === null) return null;
+    const fields = data as Record<string, unknown>;
+    const { owner, repo, number } = fields;
+    if (typeof owner !== 'string' || typeof repo !== 'string' || typeof number !== 'number') {
+        return null;
+    }
+    return { ...fields, owner, repo, number };
+}
+
+const text = (value: unknown) => (typeof value === 'string' ? value : '');
+
+export function parsePluginOutputChanged(data: unknown): PluginOutputChanged | null {
+    const pr = parsePRRef(data);
+    if (!pr) return null;
+    const { owner, repo, number } = pr;
+    return { owner, repo, number, plugin: text(pr.plugin), status: text(pr.status) };
+}
+
+export function parseAIOutputChanged(data: unknown): AIOutputChanged | null {
+    const pr = parsePRRef(data);
+    if (!pr || typeof pr.feature !== 'string') return null;
+    const { owner, repo, number } = pr;
+    return { owner, repo, number, feature: pr.feature, status: text(pr.status) };
+}
+
+/** Whether `change` is about `pr`. GitHub names ignore case. */
+export function isChangeFor(change: PRRef, pr: PRRef): boolean {
+    return (
+        change.number === pr.number &&
+        change.owner.toLowerCase() === pr.owner.toLowerCase() &&
+        change.repo.toLowerCase() === pr.repo.toLowerCase()
+    );
+}
+
 /** Heartbeats that can go missing before the server is taken for gone. */
 export const MISSED_HEARTBEATS = 3;
 
@@ -81,6 +156,7 @@ type MessageListener = (event: MessageEvent<string>) => void;
 export interface EventStream {
     addEventListener(type: string, listener: MessageListener): void;
     removeEventListener(type: string, listener: MessageListener): void;
+    onopen: ((event: Event) => void) | null;
     onerror: ((event: Event) => void) | null;
     close(): void;
 }
@@ -95,6 +171,7 @@ export class ServerEvents {
     private source: EventStream | null = null;
     private readonly listeners = new Map<string, Set<Listener>>();
     private readonly dispatchers = new Map<string, MessageListener>();
+    private readonly openListeners = new Set<() => void>();
     private readonly errorListeners = new Set<() => void>();
 
     constructor(private readonly open: () => EventStream | null) {}
@@ -118,6 +195,16 @@ export class ServerEvents {
         };
     }
 
+    /**
+     * Calls `listener` each time the stream connects: at first, and again
+     * whenever it comes back after dropping. Events sent while it was down are
+     * never delivered, so this is when to catch up. Returns the unsubscribe.
+     */
+    onOpen(listener: () => void): () => void {
+        this.openListeners.add(listener);
+        return () => this.openListeners.delete(listener);
+    }
+
     /** Calls `listener` whenever the stream drops. Returns the unsubscribe. */
     onError(listener: () => void): () => void {
         this.errorListeners.add(listener);
@@ -129,6 +216,9 @@ export class ServerEvents {
         const source = this.open();
         if (!source) return;
         this.source = source;
+        source.onopen = () => {
+            for (const listener of [...this.openListeners]) listener();
+        };
         source.onerror = () => {
             for (const listener of [...this.errorListeners]) listener();
         };

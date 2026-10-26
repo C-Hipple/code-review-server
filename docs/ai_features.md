@@ -215,7 +215,10 @@ change-diagram, file-ordering and review-ease run `oneshot` only.
 ## Running
 
 - **On demand.** A client asks with `RunAIFeature`; the run happens in the
-  background and the client polls `GetAIOutput` while it reads `pending`.
+  background. The server announces every run, on demand or automatic, as it
+  starts and as it lands ([`Server.AIOutputChanged`](protocol.md#serveraioutputchanged)),
+  and a client showing the feature reads `GetAIOutput` again on each instead of
+  polling.
   Opening a report in the web or Emacs client asks for a run when the feature
   has never run for the PR or its report is [stale](#caching-and-staleness);
   the Chrome extension leaves that to its **Run** button. The web

@@ -4,6 +4,7 @@ import (
 	"crs/subprocess"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -109,7 +110,9 @@ func Validate(cfg *Config) []ValidationError {
 func validateWebhooks(cfg *Config) []ValidationError {
 	var problems []ValidationError
 	w := cfg.Webhooks
-	if addr := strings.TrimSpace(w.ListenAddress); addr != "" {
+	// With a Pub/Sub subscription nothing listens, so the address and secret
+	// don't matter; validatePubSub says to remove the address instead.
+	if addr := strings.TrimSpace(w.ListenAddress); addr != "" && !cfg.PubSubConfigured() {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			problems = append(problems, rootError("Webhooks.ListenAddress",
 				"%q is not host:port (e.g. \":8790\", or \"127.0.0.1:8790\" behind a tunnel)", w.ListenAddress))
@@ -132,7 +135,46 @@ func validateWebhooks(cfg *Config) []ValidationError {
 		problems = append(problems, rootError("Webhooks.FullRefreshInterval",
 			"must be a positive number of minutes, or 0 for the default (%d)", int(DefaultWebhookFullRefresh.Minutes())))
 	}
+	return append(problems, validatePubSub(cfg)...)
+}
+
+// validatePubSub checks the [Webhooks.PubSub] table. Like the rest of
+// [Webhooks], a subscription that can't be pulled from only leaves the server
+// polling, with a log line saying why.
+func validatePubSub(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	p := cfg.Webhooks.PubSub
+	sub := strings.TrimSpace(p.Subscription)
+	if sub == "" {
+		if p != (PubSubSettings{}) {
+			problems = append(problems, rootError("Webhooks.PubSub.Subscription",
+				"is required for the rest of [Webhooks.PubSub] to do anything, e.g. \"projects/my-project/subscriptions/crs-github-events\""))
+		}
+		return problems
+	}
+	if !validPubSubSubscription(sub) {
+		problems = append(problems, rootError("Webhooks.PubSub.Subscription",
+			"%q is not \"projects/<project>/subscriptions/<subscription>\"", p.Subscription))
+	}
+	if strings.TrimSpace(cfg.Webhooks.ListenAddress) != "" {
+		problems = append(problems, rootError("Webhooks.ListenAddress",
+			"is ignored while Webhooks.PubSub.Subscription is set: deliveries come from one or the other, so remove one of them"))
+	}
+	// Whether the file is there is the subscriber's to report, when it reads
+	// it: a key missing on one machine shouldn't stop the config being saved.
+	if path := strings.TrimSpace(p.CredentialsFile); path != "" && !filepath.IsAbs(path) && path != "~" && !strings.HasPrefix(path, "~/") {
+		problems = append(problems, rootError("Webhooks.PubSub.CredentialsFile",
+			"%q must be an absolute path, or start with ~/: a relative one would depend on where the server was started", p.CredentialsFile))
+	}
 	return problems
+}
+
+// validPubSubSubscription reports whether name is a subscription's full
+// resource name, "projects/<project>/subscriptions/<subscription>".
+func validPubSubSubscription(name string) bool {
+	parts := strings.Split(name, "/")
+	return len(parts) == 4 && parts[0] == "projects" && parts[1] != "" &&
+		parts[2] == "subscriptions" && parts[3] != ""
 }
 
 // validateWebhookRepo accepts what a [Webhooks] Repos entry may be: a

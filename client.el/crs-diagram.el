@@ -11,8 +11,8 @@
 ;;
 ;; The buffer is an AI output buffer like crs-ai.el's, and shares its
 ;; machinery: opening it asks for a run when the diagram was never drawn
-;; for the PR or the PR has changed since, it polls while the run is
-;; pending, and `r', `R' and `q' refresh, re-run and quit.  Unlike a report
+;; for the PR or the PR has changed since, it redraws as the server
+;; announces the run landing, and `r', `R' and `q' refresh, re-run and quit.  Unlike a report
 ;; buffer, it holds nothing but the diagram, so mermaid-mode sees valid
 ;; Mermaid: the status goes in the header line, and when there is no
 ;; diagram, a Mermaid comment says why.
@@ -110,8 +110,7 @@ The buffer is read-only and holds the diagram's Mermaid source, in
           (fundamental-mode)
           (message "Install mermaid-mode to highlight and preview the diagram."))
         (setq buffer-read-only t)
-        (crs-diagram-view-mode 1)
-        (add-hook 'kill-buffer-hook #'crs--ai-cancel-poll nil t))
+        (crs-diagram-view-mode 1))
       (setq crs--ai-owner owner
             crs--ai-repo repo
             crs--ai-number number
@@ -157,7 +156,7 @@ or the one on the current line of the reviews list; anywhere else it is
 read from the minibuffer.
 
 Draws the diagram when it was never drawn for the PR or the PR has
-changed since, and keeps the buffer updated while that runs.  In the
+changed since, and redraws it as the server announces the run landing.  In the
 buffer, \\<crs-diagram-view-mode-map>\\[crs-ai-refresh] refreshes, \\[crs-ai-rerun] draws it afresh and \\[crs-quit-ai-output] quits."
   (interactive (crs--diagram-read-pr))
   (crs--ai-fetch (crs--diagram-open owner repo number) t))

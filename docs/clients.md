@@ -157,7 +157,7 @@ feedback in place to submit again.
 When the server has an [AI feature](ai_features.md) enabled, `C` in a review
 buffer (`crs-get-ai-output`) opens its report for the PR — for example, which
 review comments are still outstanding — running it first when it never ran or its
-report is stale. The report buffer updates itself while a run is pending; `r`
+report is stale. The report buffer updates itself as runs start and land; `r`
 refreshes it, `R` forces a re-run and `q` quits.
 
 `F` in a review buffer (`crs-show-filtered-diff`) narrows the diff to a
@@ -171,6 +171,16 @@ from it, since a comment's position counts lines of the full diff. When there is
 nothing to start from — you never reviewed the PR, or a force-push rewrote the
 commit you last saw — the full diff stays and the header says why. Syncing or
 submitting a review keeps the filter and asks for it again.
+
+The client follows the server's runs rather than polling for them:
+`crs-start-server` subscribes to the server's
+[notifications](protocol.md#server-notifications), and each time the server
+announces a change to a PR's plugin output or AI results, every open buffer
+showing it — a plugin output buffer, an AI report, the change diagram — reads it
+again, keeping point where it was. A plugin run with `crs-rerun-plugin` or
+`crs-run-on-demand-plugin` is announced in the echo area when it lands. The hooks
+`crs-server-notification-functions` (called with each notification's method and
+data) and `crs-server-subscribed-hook` are there for your own code too.
 
 The [change diagram](ai_features.md#change-diagram) has a command of its own:
 `M` in a review buffer, or on a PR's line in the reviews buffer, runs

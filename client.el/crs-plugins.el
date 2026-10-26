@@ -3,6 +3,13 @@
 ;;; Commentary:
 
 ;; Plugin-output buffers and on-demand plugin execution.
+;;
+;; Plugins run in the background on the server, which announces each change
+;; to a PR's plugin output (Server.PluginOutputChanged): a plugin marked
+;; pending, a result landing, a rerun clearing one.  An open plugin output
+;; buffer for the PR reads its output again on each, so it follows a run
+;; without being refreshed by hand, and a run asked for from here is
+;; announced in the echo area when it lands.
 
 ;;; Code:
 
@@ -54,38 +61,113 @@ listed beneath the body sorted by file and line."
                           (replace-regexp-in-string "\n" "\n  " content))))))
     (insert "\n")))
 
+(defun crs--refresh-plugin-buffer (buffer &optional quiet)
+  "Fetch the plugin output shown in BUFFER again and redraw it.
+With QUIET, as for a change the server announced, say nothing and keep
+point where the reader left it.  One fetch runs at a time per buffer:
+one asked for meanwhile runs once it lands."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (if crs--plugin-refreshing
+          (setq crs--plugin-refreshing 'again)
+        (setq crs--plugin-refreshing t)
+        (let ((owner crs--plugin-owner)
+              (repo crs--plugin-repo)
+              (number crs--plugin-number))
+          (unless quiet
+            (message "Refreshing plugin output for %s/%s #%d..." owner repo number))
+          (crs--send-request
+           "RPCHandler.GetPluginOutput"
+           (vector (list (cons 'Owner owner)
+                         (cons 'Repo repo)
+                         (cons 'Number number)))
+           (lambda (result)
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (let ((again (eq crs--plugin-refreshing 'again)))
+                   (setq crs--plugin-refreshing nil)
+                   (unless (cdr (assq 'error result))
+                     (crs--render-plugin-buffer (cdr (assq 'output result)) quiet)
+                     (unless quiet (message "Plugin output refreshed.")))
+                   (when again (crs--refresh-plugin-buffer buffer t))))))))))))
+
+(defun crs--render-plugin-buffer (output keep-point)
+  "Redraw the current plugin output buffer from OUTPUT, a GetPluginOutput map.
+A buffer showing one plugin shows only that one.  With KEEP-POINT, point
+stays where it was rather than going back to the top."
+  (let ((inhibit-read-only t)
+        (pos (point))
+        (target-plugin crs--plugin-name))
+    (erase-buffer)
+    (setq crs--plugin-output-map (make-hash-table :test 'equal))
+    (if (null output)
+        (insert "No plugin output available.\n")
+      (dolist (plugin-entry (append output nil))
+        (let* ((name (symbol-name (car plugin-entry)))
+               (data (cdr plugin-entry)))
+          (puthash name data crs--plugin-output-map)
+          (when (or (null target-plugin) (string= name target-plugin))
+            (crs--insert-plugin-output-entry name data)))))
+    (goto-char (if keep-point (min pos (point-max)) (point-min)))))
+
 (defun crs-refresh-plugin-output ()
   "Refresh the plugin output in the current buffer."
   (interactive)
   (unless (and crs--plugin-owner crs--plugin-repo crs--plugin-number)
     (error "Not in a plugin output buffer or missing PR context"))
-  (let ((owner crs--plugin-owner)
-        (repo crs--plugin-repo)
-        (number crs--plugin-number)
-        (target-plugin crs--plugin-name))
-    (message "Refreshing plugin output for %s/%s #%d..." owner repo number)
-    (crs--send-request
-     "RPCHandler.GetPluginOutput"
-     (vector (list (cons 'Owner owner)
-                   (cons 'Repo repo)
-                   (cons 'Number number)))
-     (lambda (result)
-       (let ((output (cdr (assq 'output result)))
-             (buffer (current-buffer)))
-         (with-current-buffer buffer
-           (let ((inhibit-read-only t))
-             (erase-buffer)
-             (setq crs--plugin-output-map (make-hash-table :test 'equal))
-             (if (null output)
-                 (insert "No plugin output available.\n")
-               (dolist (plugin-entry (append output nil))
-                 (let* ((name (symbol-name (car plugin-entry)))
-                        (data (cdr plugin-entry)))
-                   (puthash name data crs--plugin-output-map)
-                   (when (or (null target-plugin) (string= name target-plugin))
-                     (crs--insert-plugin-output-entry name data)))))
-             (goto-char (point-min))))
-         (message "Plugin output refreshed."))))))
+  (crs--refresh-plugin-buffer (current-buffer)))
+
+(defun crs--plugin-buffers (&optional owner repo number)
+  "Live plugin output buffers, or only those showing OWNER/REPO #NUMBER."
+  (seq-filter (lambda (buffer)
+                (with-current-buffer buffer
+                  (and (derived-mode-p 'crs-plugin-output-mode)
+                       crs--plugin-number
+                       (or (null number)
+                           (crs--server-same-pr-p
+                            (list (cons 'owner owner) (cons 'repo repo)
+                                  (cons 'number number))
+                            crs--plugin-owner crs--plugin-repo crs--plugin-number)))))
+              (buffer-list)))
+
+(defun crs--plugin-run-key (owner repo number plugin)
+  "The `crs--plugin-runs-requested' key of PLUGIN's run on OWNER/REPO #NUMBER."
+  (format "%s/%s#%d:%s" (downcase owner) (downcase repo) number plugin))
+
+(defun crs--plugin-on-notification (method data)
+  "Follow a Server.PluginOutputChanged notification, METHOD with DATA.
+Each open plugin output buffer for the PR reads its output again, and a
+run asked for from here is announced once it lands."
+  (when (equal method "Server.PluginOutputChanged")
+    (let ((owner (cdr (assq 'owner data)))
+          (repo (cdr (assq 'repo data)))
+          (number (cdr (assq 'number data)))
+          (plugin (cdr (assq 'plugin data)))
+          (status (cdr (assq 'status data))))
+      (when (and (stringp owner) (stringp repo) (integerp number))
+        (dolist (buffer (crs--plugin-buffers owner repo number))
+          (crs--refresh-plugin-buffer buffer t))
+        (when (and (stringp plugin) (member status '("success" "error")))
+          (let ((key (crs--plugin-run-key owner repo number plugin)))
+            (when (gethash key crs--plugin-runs-requested)
+              (remhash key crs--plugin-runs-requested)
+              (message "Plugin '%s' %s for %s/%s #%d%s"
+                       plugin (if (equal status "success") "finished" "failed")
+                       owner repo number
+                       (if (crs--plugin-buffers owner repo number)
+                           ""
+                         (substitute-command-keys
+                          "; \\<my-code-review-mode-map>\\[crs-get-plugin-output] in its review shows it"))))))))))
+
+(defun crs--plugin-on-subscribed ()
+  "Read every open plugin output buffer's output again, for a new server.
+Runs asked for from the old one are gone with it."
+  (clrhash crs--plugin-runs-requested)
+  (dolist (buffer (crs--plugin-buffers))
+    (crs--refresh-plugin-buffer buffer t)))
+
+(add-hook 'crs-server-notification-functions #'crs--plugin-on-notification)
+(add-hook 'crs-server-subscribed-hook #'crs--plugin-on-subscribed)
 
 
 (defun crs-quit-plugin-output ()
@@ -241,7 +323,9 @@ Uses cached data from the general plugin output buffer if available."
 (defun crs-run-on-demand-plugin ()
   "Run an on-demand plugin for the current PR.
 Presents a selection of plugins marked as OnlyOnDemand and triggers
-async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see results."
+async execution via RerunPlugins.  The echo area says when it lands, and
+an open plugin output buffer for the PR (\\[crs-get-plugin-output])
+shows the result as it does."
   (interactive)
   (if (null crs-plugins-full)
       (progn
@@ -259,6 +343,7 @@ async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see re
                (repo (nth 1 info))
                (number (nth 2 info)))
           (message "Running on-demand plugin '%s' for %s/%s #%d..." plugin owner repo number)
+          (puthash (crs--plugin-run-key owner repo number plugin) t crs--plugin-runs-requested)
           (crs--send-request
            "RPCHandler.RerunPlugins"
            (vector (list (cons 'Owner owner)
@@ -272,7 +357,9 @@ async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see re
 (defun crs-rerun-plugin ()
   "Rerun any plugin for the current PR.
 Presents a selection of all configured plugins and triggers
-async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see results."
+async execution via RerunPlugins.  The echo area says when it lands, and
+an open plugin output buffer for the PR (\\[crs-get-plugin-output])
+shows the result as it does."
   (interactive)
   (if (null crs-plugins-full)
       (progn
@@ -287,6 +374,7 @@ async execution via RerunPlugins.  Poll with \\[crs-get-plugin-output] to see re
                (repo (nth 1 info))
                (number (nth 2 info)))
           (message "Rerunning plugin '%s' for %s/%s #%d..." plugin owner repo number)
+          (puthash (crs--plugin-run-key owner repo number plugin) t crs--plugin-runs-requested)
           (crs--send-request
            "RPCHandler.RerunPlugins"
            (vector (list (cons 'Owner owner)

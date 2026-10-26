@@ -646,7 +646,8 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   legend) to share on **Copy image** / **Download image**; the AI page draws it
   inline.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
-  an enabled feature in its own buffer, which polls while a run is pending. In
+  an enabled feature in its own buffer, which redraws as the server announces
+  the feature's runs starting and landing, without polling. In
   that buffer, `r` refreshes, `R` re-runs and `q` quits. The applied features
   aren't offered; review-ease shows as the headline tag in the reviews buffer.
   The change diagram has a dedicated command, `crs-show-change-diagram` (`M` in

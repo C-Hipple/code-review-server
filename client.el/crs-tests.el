@@ -1125,7 +1125,8 @@ The buffer is bound to `buffer'."
     (crs-test--notify "Server.PluginOutputChanged"
                       '((owner . "acme") (repo . "widgets") (number . 42)
                         (plugin . "lint") (status . "success")))
-    (should (string-match-p "\\`Plugin 'lint' finished for acme/widgets #42"
+    ;; `message' curves the quotes where `text-quoting-style' says to.
+    (should (string-match-p "\\`Plugin .lint. finished for acme/widgets #42"
                             (cdr (assq 'message events))))
     (crs-test--notify "Server.PluginOutputChanged"
                       '((owner . "acme") (repo . "widgets") (number . 42)

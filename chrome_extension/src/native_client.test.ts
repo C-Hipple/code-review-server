@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test';
-import { NativeClient, type NativePort } from './native_client';
+import { NativeClient, SUBSCRIBE_PARAMS, type NativePort } from './native_client';
+import type { JsonRpcNotification } from './native_protocol';
 
 /** A native port the test drives by hand. */
 class FakePort implements NativePort {
@@ -225,5 +226,99 @@ describe('NativeClient', () => {
         expect(await fine).toEqual({ ok: true, result: 'ok' });
         const r = await broken;
         expect(!r.ok && r.error.kind).toBe('timeout');
+    });
+});
+
+describe('NativeClient notifications', () => {
+    function subscribing() {
+        const ports: FakePort[] = [];
+        const heard: JsonRpcNotification[] = [];
+        let subscribed = 0;
+        const client = new NativeClient({
+            connect: () => {
+                const port = new FakePort();
+                ports.push(port);
+                return port;
+            },
+            lastError: () => undefined,
+            onNotification: n => heard.push(n),
+            onSubscribed: () => subscribed++,
+        });
+        return { client, ports, heard, subscribed: () => subscribed };
+    }
+
+    const CHANGE = {
+        method: 'Server.AIOutputChanged',
+        params: [{ owner: 'acme', repo: 'widgets', number: 42, feature: 'x', status: 'pending' }],
+        id: null,
+    };
+
+    test('a new server is subscribed before the call that started it', async () => {
+        const { client, ports, subscribed } = subscribing();
+        const reply = client.call('RPCHandler.GetPR', { Number: 5 });
+        expect(ports[0].sent).toEqual([
+            { method: 'RPCHandler.Subscribe', params: [SUBSCRIBE_PARAMS], id: 1 },
+            { method: 'RPCHandler.GetPR', params: [{ Number: 5 }], id: 2 },
+        ]);
+
+        ports[0].receive({ id: 1, result: { seq: 0 }, error: null });
+        ports[0].receive({ id: 2, result: 'pr', error: null });
+        expect(await reply).toEqual({ ok: true, result: 'pr' });
+        await Promise.resolve();
+        expect(subscribed()).toBe(1);
+
+        // One subscription per server: the port is reused.
+        void client.call('RPCHandler.Hello', {});
+        expect(ports).toHaveLength(1);
+        expect(ports[0].sent).toHaveLength(3);
+    });
+
+    test('hands notifications on, whole or chunked, between replies', async () => {
+        const { client, ports, heard } = subscribing();
+        const reply = client.call('RPCHandler.Hello', {});
+        ports[0].receive(CHANGE);
+        const text = JSON.stringify(CHANGE);
+        ports[0].receive({ crs_chunk: { stream: 1, seq: 0, total: 2, data: text.slice(0, 20) } });
+        ports[0].receive({ crs_chunk: { stream: 1, seq: 1, total: 2, data: text.slice(20) } });
+        ports[0].receive({ id: 2, result: 'hi', error: null });
+
+        expect(await reply).toEqual({ ok: true, result: 'hi' });
+        expect(heard).toEqual([
+            { method: CHANGE.method, params: CHANGE.params },
+            { method: CHANGE.method, params: CHANGE.params },
+        ]);
+    });
+
+    test('subscribes again once the server is replaced', async () => {
+        const { client, ports, subscribed } = subscribing();
+        void client.call('RPCHandler.Hello', {});
+        ports[0].receive({ id: 1, result: {}, error: null });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(subscribed()).toBe(1);
+        ports[0].disconnect();
+
+        void client.call('RPCHandler.Hello', {});
+        expect(ports).toHaveLength(2);
+        expect((ports[1].sent[0] as { method: string }).method).toBe('RPCHandler.Subscribe');
+        ports[1].receive({ id: (ports[1].sent[0] as { id: number }).id, result: {}, error: null });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(subscribed()).toBe(2);
+    });
+
+    test('a server that refuses the subscription still answers calls', async () => {
+        const { client, ports, subscribed } = subscribing();
+        const reply = client.call('RPCHandler.Hello', {});
+        ports[0].receive({ id: 1, result: null, error: "rpc: can't find method" });
+        ports[0].receive({ id: 2, result: 'hi', error: null });
+        expect(await reply).toEqual({ ok: true, result: 'hi' });
+        expect(subscribed()).toBe(0);
+    });
+
+    test('without a listener nothing is subscribed', () => {
+        const { client, ports } = setup();
+        void client.call('RPCHandler.Hello', {});
+        expect(ports[0].sent).toEqual([{ method: 'RPCHandler.Hello', params: [{}], id: 1 }]);
     });
 });

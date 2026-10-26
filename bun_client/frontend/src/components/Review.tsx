@@ -116,7 +116,8 @@ export default function Review({
     const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
     const [reviews, setReviews] = useState<PRResponse['reviews']>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
-    // Loaded when the PR opens, and polled while any plugin is running.
+    // Loaded when the PR opens, and read again as the server announces plugins
+    // starting and finishing.
     const {
         outputs: pluginOutputs,
         executing: executingPlugins,

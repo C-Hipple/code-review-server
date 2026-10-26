@@ -172,9 +172,11 @@ the reader scrolls, so a re-render doesn't undo it.
 
 It comes from one more read-only message, `crs-file-order` — `GetAIOutput` for
 `file-ordering`, through the service worker, answered for the sender tab's own
-PR — so opening a page never starts a run. A page that finds no order stored yet
-asks again every few seconds, so one the server works out just after the page
-loaded arrives without a reload.
+PR — so opening a page never starts a run. When the server lands a new order for
+the PR (one it works out just after the page loaded, or after a push), the
+service worker hears it and tells that PR's tabs (`crs-file-order-changed`), and
+each asks again: the new order arrives without a reload, and nothing asks on a
+timer.
 
 The panel follows the system's light or dark setting, not GitHub's theme. The
 dot in its header says whether the server is connected; hovering it shows the
@@ -243,11 +245,12 @@ script and is styled to the panel's theme. Annotations are listed by file and
 line, each linking to its line in GitHub's Files changed tab
 (`…/pull/N/files#diff-<sha256 of the path>R<line>`).
 
-While anything reads as running, and for ten seconds after the PR is opened or
-a run is requested (a run is dispatched in the background, so the first read
-can come before it is marked), the view polls `GetAIOutput` and
-`GetPluginOutput` every three seconds. Whether each card is expanded is
-remembered.
+Nothing is polled. The server announces every run as it starts and as it lands
+(see [Change events](#change-events)), whoever started it — this view, another
+client, or the server itself after a push — and the view reads `GetAIOutput` or
+`GetPluginOutput` again when one names its PR, one read of each at a time. A run
+the view asked for reads as running from the moment it is accepted. Whether
+each card is expanded is remembered.
 
 ## Architecture
 
@@ -259,7 +262,7 @@ github.com tab
         │  chrome.runtime.sendMessage({type: 'crs-rpc', method, params})
         ▼
 background.js            the service worker: sender checks, RPC_METHODS, call ids,
-        │                timeouts, chunk reassembly
+        │                timeouts, chunk reassembly, relaying change events
         │  one native messaging port: a 4-byte length, then JSON, per message
         ▼
 crs_native_host          bridges the two framings, chunks large responses
@@ -304,6 +307,21 @@ result as the response. The host also reports on itself in `crs_host` messages:
 server has started, `error` when it can't be found or started, and
 `server_exited`, with the server's last lines of output, when it dies.
 
+**Change events.** The server speaks unasked once a client calls
+`RPCHandler.Subscribe` ([Server Notifications](../docs/protocol.md#server-notifications)):
+it writes JSON-RPC notifications (`{method, params, id: null}`) to the same
+stdout as its replies, and the host forwards them like any other line. The
+service worker subscribes each new server before anything else it asks it
+(with the slowest heartbeat, which it has no use for) and relays two
+notifications to the extension pages listening on a `crs-events` port
+(`chrome.runtime.connect`): `Server.PluginOutputChanged` and
+`Server.AIOutputChanged`, each naming a PR and the plugin or feature that
+changed, never the output. A page showing that PR reads the output again. When
+a new server has subscribed, or a page's port drops and is opened again, the
+page is told to `resync` — read everything again — since whatever happened in
+between was never announced. A landed `file-ordering` result also goes, as a
+bare `crs-file-order-changed`, to the content script of each tab on that PR.
+
 **What the panel may call.** The service worker forwards only the methods in
 `RPC_METHODS` (`src/types.ts`): `Hello`, `GetAllReviews`, `GetPR`, `SyncPR`,
 `ListPlugins`, `GetPluginOutput`, `RerunPlugins`, `ListAIFeatures`,
@@ -328,8 +346,10 @@ GitHub's page can't script into it, and it talks to the service worker directly,
 never through the page. `panel.html` and its files are web-accessible to
 `https://github.com/*` only. The trust checks:
 
-- The service worker answers only the extension's own pages for RPC and status:
-  the sender must carry the extension's ID and a `chrome-extension://<id>/` URL.
+- The service worker answers only the extension's own pages for RPC, status
+  and change events: the sender must carry the extension's ID and a
+  `chrome-extension://<id>/` URL. A `crs-events` port from anything else is
+  disconnected.
   A content script shares the ID but reports the GitHub page's URL, so nothing a
   page can influence reaches the server — its own messages, `crs-tools` and
   `crs-file-order`, are answered for the tab's own PR and nothing else.
@@ -410,19 +430,20 @@ To try a change, rebuild and click the extension's reload button on
 script predates the reload gets a fresh copy injected when the button is
 pressed. To inspect the panel, right-click inside the modal and choose Inspect.
 
-| Path                         | What it is                                                                                |
-| ---------------------------- | ----------------------------------------------------------------------------------------- |
-| `manifest.json`              | The MV3 manifest, copied into `dist/`                                                     |
-| `src/background.ts`          | The service worker: RPC for extension pages, the toolbar button, the per-tab button title |
-| `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting                                      |
-| `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)             |
-| `src/content.ts`             | The modal on github.com, the chips beside a PR's tabs, the file order over its diffs      |
-| `src/tool_chips.ts`          | Which chips a PR page draws: an enabled feature and a plugin each (pure, unit tested)     |
-| `src/file_order.ts`          | Laying file-ordering's order over GitHub's Files changed view (e2e tested)                |
-| `src/github_url.ts`          | Recognising PR URLs and building diff links                                               |
-| `src/rpc.ts`, `src/types.ts` | The panel's typed RPC client, the wire shapes and `RPC_METHODS`                           |
-| `src/panel/`                 | The React panel: `App.tsx` routes between `PRList.tsx` and `PRTools.tsx`                  |
-| `crs_native_host/`           | The native host (Go, standard library only) and `install.sh`                              |
+| Path                         | What it is                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `manifest.json`              | The MV3 manifest, copied into `dist/`                                                                       |
+| `src/background.ts`          | The service worker: RPC and change events for extension pages, the toolbar button, the per-tab button title |
+| `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting, subscribing each new server                           |
+| `src/server_events.ts`       | The server's change events as pages hear them (pure, unit tested)                                           |
+| `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)                               |
+| `src/content.ts`             | The modal on github.com, the chips beside a PR's tabs, the file order over its diffs                        |
+| `src/tool_chips.ts`          | Which chips a PR page draws: an enabled feature and a plugin each (pure, unit tested)                       |
+| `src/file_order.ts`          | Laying file-ordering's order over GitHub's Files changed view (e2e tested)                                  |
+| `src/github_url.ts`          | Recognising PR URLs and building diff links                                                                 |
+| `src/rpc.ts`, `src/types.ts` | The panel's typed RPC client, the wire shapes and `RPC_METHODS`                                             |
+| `src/panel/`                 | The React panel: `App.tsx` routes between `PRList.tsx` and `PRTools.tsx`                                    |
+| `crs_native_host/`           | The native host (Go, standard library only) and `install.sh`                                                |
 
 The host imports nothing from the module, so it builds without cgo or the
 server's dependencies. It is still part of the module — `go build ./...` builds

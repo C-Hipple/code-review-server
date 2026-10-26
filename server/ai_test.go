@@ -819,3 +819,69 @@ func TestFeatureFlagsEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// aiChange reads the next line written as a Server.AIOutputChanged.
+func aiChange(t *testing.T, out <-chan string) AIOutputChanged {
+	t.Helper()
+	line := nextLine(t, out, 5*time.Second)
+	var n struct {
+		Method string            `json:"method"`
+		Params []AIOutputChanged `json:"params"`
+		ID     any               `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &n); err != nil {
+		t.Fatalf("not JSON: %s: %v", line, err)
+	}
+	if n.Method != AIOutputChangedMethod || n.ID != nil || len(n.Params) != 1 {
+		t.Fatalf("not a %s notification: %s", AIOutputChangedMethod, line)
+	}
+	return n.Params[0]
+}
+
+func TestRunAIFeatureAnnouncesTheRunToASubscribedClient(t *testing.T) {
+	db := aiTestSetup(t, []config.AIFeature{{ID: "stub", Enabled: true}})
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	f := &stubFeature{id: "stub", release: make(chan struct{})}
+	useAIRunner(t, f).OnChange = notifyAIOutputChanged
+	out := subscribedNotifier(t)
+	h := &RPCHandler{}
+
+	// Each announcement says what a client reading GetAIOutput on hearing it
+	// sees.
+	read := func() string {
+		t.Helper()
+		var reply GetAIOutputReply
+		if err := h.GetAIOutput(&GetAIOutputArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: "stub"}, &reply); err != nil {
+			t.Fatalf("GetAIOutput: %v", err)
+		}
+		return reply.Output["stub"].Status
+	}
+
+	var run RunAIFeatureReply
+	if err := h.RunAIFeature(&RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: "stub"}, &run); err != nil {
+		t.Fatalf("RunAIFeature: %v", err)
+	}
+	want := AIOutputChanged{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: "stub", Status: ai.StatusPending}
+	if got := aiChange(t, out); got != want {
+		t.Errorf("first announcement = %+v, want %+v", got, want)
+	}
+	if got := read(); got != ai.StatusPending {
+		t.Errorf("read on hearing pending = %q", got)
+	}
+
+	close(f.release)
+	want.Status = ai.StatusSuccess
+	if got := aiChange(t, out); got != want {
+		t.Errorf("second announcement = %+v, want %+v", got, want)
+	}
+	if got := read(); got != ai.StatusSuccess {
+		t.Errorf("read on hearing success = %q", got)
+	}
+
+	// Asking again for unchanged inputs runs nothing, so announces nothing.
+	h.RunAIFeature(&RunAIFeatureArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Feature: "stub"}, &run)
+	if run.Outcome != string(ai.OutcomeUpToDate) {
+		t.Fatalf("outcome = %q, want up-to-date", run.Outcome)
+	}
+	expectSilence(t, out, 100*time.Millisecond)
+}

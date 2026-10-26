@@ -46,6 +46,42 @@ Sent every interval while a client is subscribed. If a few intervals pass withou
 | `started_at`       | string | When the server started (RFC 3339); a new value means a new server process  |
 | `interval_seconds` | int    | How long until the next heartbeat                                           |
 
+### `Server.PluginOutputChanged`
+
+Sent each time a plugin's stored result for a PR is written or cleared, so what [`GetPluginOutput`](#rpchandlergetpluginoutput) returns for that PR has changed: a plugin is marked `pending` as its run starts, then `success` or `error` as it ends; an on-demand plugin is recorded `deferred` whenever the PR's plugins run; and [`RerunPlugins`](#rpchandlerrerunplugins) clears the results it reruns before it replies. A client showing a PR's plugin output reads `GetPluginOutput` again when one names that PR, instead of polling it. The notification names what changed, never the output itself, which can be large.
+
+```json
+{"method": "Server.PluginOutputChanged", "params": [{"owner": "C-Hipple", "repo": "code-review-server", "number": 303, "plugin": "summarize", "status": "success"}], "id": null}
+```
+
+| Field    | Type   | Description                                                                                       |
+|----------|--------|---------------------------------------------------------------------------------------------------|
+| `owner`  | string | Repository owner, as the run was asked for it                                                     |
+| `repo`   | string | Repository name (the short name, as everywhere else)                                              |
+| `number` | int    | Pull request number                                                                               |
+| `plugin` | string | The plugin whose result changed; empty when `RerunPlugins` cleared every plugin's result at once  |
+| `status` | string | The plugin's status as `GetPluginOutput` now reports it (`pending`, `success`, `error`, `deferred`), or empty when its result was cleared for a rerun: the plugin is missing from the output until the run marks it `pending` |
+
+Only a subscribed client hears these, and only while it is subscribed: a client that was not (or whose connection dropped) reads `GetPluginOutput` once on (re)subscribing to catch up on what it missed.
+
+### `Server.AIOutputChanged`
+
+Sent each time an AI feature's output for a PR changes as [`GetAIOutput`](#rpchandlergetaioutput) reports it: once when a run is claimed (it reads `pending` from then on, while it waits for an automatic-run slot included), and once when its result is stored. Every run is announced, whoever started it — [`RunAIFeature`](#rpchandlerrunaifeature), opening a PR (the applied features), or a workflow cycle (the automatic ones). A request that starts nothing (`up-to-date`, `already-running`) announces nothing. A client showing a feature's result reads `GetAIOutput` again when one names that PR and feature, instead of polling it.
+
+```json
+{"method": "Server.AIOutputChanged", "params": [{"owner": "C-Hipple", "repo": "code-review-server", "number": 303, "feature": "comments-addressed", "status": "success"}], "id": null}
+```
+
+| Field     | Type   | Description                                                                                     |
+|-----------|--------|-------------------------------------------------------------------------------------------------|
+| `owner`   | string | Repository owner, as the run was asked for it                                                   |
+| `repo`    | string | Repository name                                                                                 |
+| `number`  | int    | Pull request number                                                                             |
+| `feature` | string | The feature ID                                                                                  |
+| `status`  | string | `pending` as a run starts; the stored result's status (`success`, `error`, `insufficient-input`) as it lands |
+
+As with plugins, a client that (re)subscribes reads `GetAIOutput` once to catch up. A run's in-flight state lives in the server's memory, so a run a server restart lost is never announced as landing; the new server reads the feature as its stored result, not `pending`.
+
 ---
 
 ## Methods
@@ -392,7 +428,7 @@ Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 
 Fetches a pull request from GitHub and returns it as rendered content (including diff, comments, conversations). Cached data is used where available; see `SyncPR` for a forced refresh.
 
-This is a read-only query as far as the caller is concerned: it never blocks on plugin execution or LLM analysis. Those are dispatched in the background, and their results arrive through `GetPluginOutput` (or on a later `GetPR`'s `annotations`).
+This is a read-only query as far as the caller is concerned: it never blocks on plugin execution or LLM analysis. Those are dispatched in the background, and their results arrive through `GetPluginOutput` (or on a later `GetPR`'s `annotations`); a subscribed client hears a [`Server.PluginOutputChanged`](#serverpluginoutputchanged) as each plugin's result lands.
 
 **Arguments** (`GetPRstructArgs`):
 | Field       | Type   | Required | Description                          |
@@ -837,7 +873,7 @@ Retrieves the output and status of all plugins for a specific pull request.
 
 Clears cached plugin results for a pull request and runs the plugins again, bypassing the head-SHA cache check that normally makes a plugin skip a PR it has already seen.
 
-Execution happens in the background: the reply means the rerun was **accepted**, not that it finished. Poll `GetPluginOutput` for results — a plugin that is still running reports `pending`.
+Execution happens in the background: the reply means the rerun was **accepted**, not that it finished. A subscribed client hears a [`Server.PluginOutputChanged`](#serverpluginoutputchanged) for each result the rerun clears (before this reply), and again as each plugin is marked `pending` and as it finishes; `GetPluginOutput` then serves the result.
 
 **Arguments** (`RerunPluginsArgs`):
 | Field     | Type     | Required | Description                                                           |
@@ -898,7 +934,7 @@ Lists every registered [AI feature](ai_features.md), enabled or not, as the serv
 
 ### `RPCHandler.RunAIFeature`
 
-Asks for an AI feature to run for a pull request and returns at once; the run happens in the background, like [`RerunPlugins`](#rpchandlerrerunplugins). Poll [`GetAIOutput`](#rpchandlergetaioutput) while the output's `status` is `pending`.
+Asks for an AI feature to run for a pull request and returns at once; the run happens in the background, like [`RerunPlugins`](#rpchandlerrerunplugins). A subscribed client hears a [`Server.AIOutputChanged`](#serveraioutputchanged) as the run starts (before this reply) and as it lands; [`GetAIOutput`](#rpchandlergetaioutput) then serves the result.
 
 Unless `Force` is set, a stored result that already covers the PR's current inputs — the same head SHA and the same [inputs digest](ai_features.md#caching-and-staleness), or just the same head SHA for a feature that reads only the code — answers without a run. Only one run per PR and feature is ever in flight.
 
@@ -923,7 +959,7 @@ Unless `Force` is set, a stored result that already covers the PR's current inpu
 
 ### `RPCHandler.GetAIOutput`
 
-Returns stored AI feature results for a pull request. It is a pure read — it never starts a run — so clients can poll it.
+Returns stored AI feature results for a pull request. It is a pure read — it never starts a run — so a client reads it whenever a [`Server.AIOutputChanged`](#serveraioutputchanged) names the PR.
 
 **Arguments** (`GetAIOutputArgs`):
 | Field     | Type   | Required | Description                                                      |
@@ -959,7 +995,7 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 | `truncated`      | bool           | `true` when some input was cut to fit the model's prompt                    |
 | `updated_at`     | string         | When the stored result was written (RFC 3339); empty when there is none     |
 
-**Example Request** (poll one feature):
+**Example Request** (read one feature):
 ```json
 {
   "method": "RPCHandler.GetAIOutput",
@@ -1294,8 +1330,8 @@ A typical code review workflow using this API:
 Alongside that loop:
 
 - **Expand context**: `GetHunkContext` fetches lines around a hunk boundary when the diff's own context isn't enough to judge a change.
-- **Plugin results**: `GetPluginOutput` polls for plugin results, which arrive asynchronously; `RerunPlugins` forces a re-execution.
-- **AI features**: `ListAIFeatures` says which are enabled; `RunAIFeature` starts one for the PR and `GetAIOutput` polls for its result (see [AI Features](ai_features.md)).
+- **Plugin results**: `GetPluginOutput` reads the plugin results, which arrive asynchronously, each announced by a [`Server.PluginOutputChanged`](#serverpluginoutputchanged) to a subscribed client; `RerunPlugins` forces a re-execution.
+- **AI features**: `ListAIFeatures` says which are enabled; `RunAIFeature` starts one for the PR and `GetAIOutput` reads its result once a [`Server.AIOutputChanged`](#serveraioutputchanged) says it landed (see [AI Features](ai_features.md)).
 
 Steps 2–5 each return [the PR payload](#the-pr-payload) in full, so a client can apply the reply directly rather than tracking which parts of its local state a mutation invalidated.
 

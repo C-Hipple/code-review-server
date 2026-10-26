@@ -37,6 +37,20 @@ describe('classifyHostMessage', () => {
         expect(classifyHostMessage(msg)).toEqual({ type: 'response', response: msg });
     });
 
+    test('a notification', () => {
+        const params = [{ owner: 'acme', repo: 'widgets', number: 42, plugin: 'lint' }];
+        expect(
+            classifyHostMessage({ method: 'Server.PluginOutputChanged', params, id: null })
+        ).toEqual({
+            type: 'notification',
+            notification: { method: 'Server.PluginOutputChanged', params },
+        });
+        // A request (it has an id) is not one: the server never sends those.
+        expect(classifyHostMessage({ method: 'Server.Heartbeat', params: [], id: 4 }).type).toBe(
+            'invalid'
+        );
+    });
+
     test('a chunk', () => {
         const chunk = { stream: 1, seq: 0, total: 2, data: '{"id"' };
         expect(classifyHostMessage({ crs_chunk: chunk })).toEqual({ type: 'chunk', chunk });

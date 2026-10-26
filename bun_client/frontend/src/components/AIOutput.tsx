@@ -27,8 +27,8 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
  *
  * Each feature's card behaves like the review view's report modal: opening
  * the page runs a feature that never ran for the PR or went stale (the server
- * answers from its cache when nothing changed), the card polls while the run
- * is pending, and ↻ Re-run forces a fresh one. There is no diff here to jump
+ * answers from its cache when nothing changed), the card shows the result as
+ * soon as the server says the run landed, and ↻ Re-run forces a fresh one. There is no diff here to jump
  * into, so item locations are plain text; Open review goes to the PR.
  */
 export default function AIOutput({ owner, repo, number, onOpenReview, onClose }: AIOutputProps) {
@@ -225,7 +225,6 @@ export function AIFeatureCard({
                     output={report.output}
                     error={report.error}
                     notice={report.notice}
-                    gaveUp={report.gaveUp}
                     imageName={reportImageName(owner, repo, number, feature.id)}
                 />
             </div>

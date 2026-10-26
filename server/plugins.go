@@ -81,7 +81,7 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 		// Skip on-demand plugins unless explicitly requested by name
 		if plugin.OnlyOnDemand && !pluginMap[plugin.Name] {
 			// Record a "deferred" status so clients know this plugin exists but hasn't been requested yet
-			if err := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "deferred", sha); err != nil {
+			if err := storePluginResult(owner, repo, number, plugin.Name, "", "deferred", sha); err != nil {
 				slog.Error("Failed to record deferred plugin status", "plugin", plugin.Name, "error", err)
 			}
 			continue
@@ -130,7 +130,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	}
 
 	// Set status to pending
-	err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, "", "pending", sha)
+	err = storePluginResult(owner, repo, number, plugin.Name, "", "pending", sha)
 	if err != nil {
 		slog.Error("Failed to set plugin status to pending", "plugin", plugin.Name, "error", err)
 	}
@@ -168,7 +168,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	}
 	if err != nil {
 		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "call_type", callType, "stderr", out.Stderr)
-		if upsertErr := config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, out.Stderr, resultStr), "error", sha); upsertErr != nil {
+		if upsertErr := storePluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, out.Stderr, resultStr), "error", sha); upsertErr != nil {
 			slog.Error("Failed to store plugin error result", "plugin", plugin.Name, "error", upsertErr)
 		}
 		return
@@ -177,8 +177,19 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	slog.Info("Plugin executed", "plugin", plugin.Name, "result_len", len(resultStr), "sha", sha, "call_type", callType)
 
 	// Store result
-	err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)
+	err = storePluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)
 	if err != nil {
 		slog.Error("Failed to store plugin result", "plugin", plugin.Name, "error", err)
 	}
+}
+
+// storePluginResult writes a plugin's result for a PR and tells a subscribed
+// client its plugin output changed. Every write of a result goes through
+// here, so a client showing the output never has to poll for it.
+func storePluginResult(owner, repo string, number int, plugin, result, status, sha string) error {
+	if err := config.C().DB.UpsertPluginResult(owner, repo, number, plugin, result, status, sha); err != nil {
+		return err
+	}
+	notifyPluginOutputChanged(owner, repo, number, plugin, status)
+	return nil
 }

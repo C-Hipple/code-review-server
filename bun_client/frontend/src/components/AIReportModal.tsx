@@ -27,8 +27,8 @@ interface AIReportModalProps {
  * One AI feature's result for the PR under review.
  *
  * Opening it asks the server for a run when there is no result yet or the
- * stored one no longer describes the PR, then polls while the run is pending
- * (see useAIReport). The previous result stays on screen, marked as
+ * stored one no longer describes the PR, then shows the new result as soon as
+ * the server says it landed (see useAIReport). The previous result stays on screen, marked as
  * refreshing, until the new one lands.
  *
  * The change diagram takes most of the screen, so a large diagram stays
@@ -74,7 +74,6 @@ export default function AIReportModal({
                 output={report.output}
                 error={report.error}
                 notice={report.notice}
-                gaveUp={report.gaveUp}
                 onJumpToItem={onJumpToItem}
                 fill={diagram}
                 imageName={reportImageName(owner, repo, number, feature.id)}

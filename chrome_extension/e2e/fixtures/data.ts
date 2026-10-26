@@ -282,6 +282,9 @@ export const FILE_ORDER = [
     'docs/api.md',
 ];
 
+/** The order a later file-ordering run lands with: the stored one, backwards. */
+export const RERUN_FILE_ORDER = [...FILE_ORDER].reverse();
+
 export function aiOutput(
     feature: AIFeature,
     fields: Partial<AIFeatureOutput> = {}
@@ -349,6 +352,9 @@ export function pr42AIOutputs(): Record<string, AIFeatureOutput> {
 
 /** What a finished run of `featureId` reports; `run` counts the runs started. */
 export function aiRunResult(featureId: string, run: number): Partial<AIFeatureOutput> {
+    if (featureId === 'file-ordering') {
+        return done({ report: { files: RERUN_FILE_ORDER }, updated_at: new Date().toISOString() });
+    }
     return done({
         body: {
             body_type: 'markdown',

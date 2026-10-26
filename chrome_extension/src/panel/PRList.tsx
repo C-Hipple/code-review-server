@@ -8,7 +8,7 @@ import { usePanel } from './context';
 import { ErrorCard } from './ErrorCard';
 import { failed, isFatal, loaded, loading, type Resource } from './resource';
 import { ReviewList } from './ReviewList';
-import { useNow } from './usePolling';
+import { useNow } from './useNow';
 
 export interface ReviewListState {
     list: Resource<ReviewItem[]>;

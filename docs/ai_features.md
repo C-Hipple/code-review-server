@@ -215,7 +215,10 @@ change-diagram, file-ordering and review-ease run `oneshot` only.
 ## Running
 
 - **On demand.** A client asks with `RunAIFeature`; the run happens in the
-  background and the client polls `GetAIOutput` while it reads `pending`.
+  background. The server announces every run, on demand or automatic, as it
+  starts and as it lands ([`Server.AIOutputChanged`](protocol.md#serveraioutputchanged)),
+  and a client showing the feature reads `GetAIOutput` again on each instead of
+  polling.
   Opening a report in the web or Emacs client asks for a run when the feature
   has never run for the PR or its report is [stale](#caching-and-staleness);
   the Chrome extension leaves that to its **Run** button. The web
@@ -643,7 +646,8 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   legend) to share on **Copy image** / **Download image**; the AI page draws it
   inline.
 - **Emacs.** `C` in a review buffer (`crs-get-ai-output`) opens the report of
-  an enabled feature in its own buffer, which polls while a run is pending. In
+  an enabled feature in its own buffer, which redraws as the server announces
+  the feature's runs starting and landing, without polling. In
   that buffer, `r` refreshes, `R` re-runs and `q` quits. The applied features
   aren't offered; review-ease shows as the headline tag in the reviews buffer.
   The change diagram has a dedicated command, `crs-show-change-diagram` (`M` in
@@ -667,7 +671,8 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   tab the content script also reorders GitHub's own diffs and file tree to match
   that order. Opening the view calls `GetPR`, which
   requests the applied features and runs the `Automatic` ones as any client
-  does, and the view polls `GetAIOutput` while anything is pending.
+  does, and the view reads `GetAIOutput` again as the server announces each
+  run starting and landing, without polling.
 
 The web and Emacs clients run a feature on open when it never ran or went
 stale; the extension runs one only when asked.

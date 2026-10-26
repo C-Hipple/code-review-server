@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { getAIOutput, rpcErrorMessage, runAIFeature } from '../api';
-import {
-    hasResult,
-    isPending,
-    pollDelayMs,
-    type AIFeatureInfo,
-    type AIFeatureOutput,
-} from '../ai_utils';
+import { hasResult, isPending, type AIFeatureInfo, type AIFeatureOutput } from '../ai_utils';
 import type { StatusVariant } from '../design';
+import {
+    AI_OUTPUT_CHANGED_EVENT,
+    isChangeFor,
+    parseAIOutputChanged,
+    serverEvents,
+    type ServerEvents,
+} from '../server_events';
+import { useServerChanges } from './useServerChanges';
 
 interface UseAIBackgroundRunsOptions {
     owner: string;
@@ -18,9 +20,10 @@ interface UseAIBackgroundRunsOptions {
     outputs: Record<string, AIFeatureOutput>;
     /** Merges the outputs this hook loads into the caller's. */
     onOutputs: (outputs: Record<string, AIFeatureOutput>) => void;
-    /** The feature whose report is open; its modal polls for itself. */
+    /** The feature whose report is open; its modal follows it for itself. */
     openFeature: string | null;
     onToast: (message: string, variant?: StatusVariant) => void;
+    events?: ServerEvents;
 }
 
 export interface AIBackgroundRuns {
@@ -35,9 +38,10 @@ export interface AIBackgroundRuns {
  *
  * A feature with no result for the PR has no report worth opening, so its
  * button asks for a run instead (`generate`) and spins until it lands, then
- * says so with a toast. Any feature whose run is in flight — asked for here,
- * or started automatically by the server — is polled, so the toolbar's
- * spinners and counts stay current without a report open.
+ * says so with a toast. The server announces every run of a feature for the
+ * PR as it starts and lands — asked for here, or started by the server itself
+ * — and the outputs are read again on each, so the toolbar's spinners and
+ * counts stay current without a report open, and without polling.
  */
 export function useAIBackgroundRuns({
     owner,
@@ -48,6 +52,7 @@ export function useAIBackgroundRuns({
     onOutputs,
     openFeature,
     onToast,
+    events = serverEvents,
 }: UseAIBackgroundRunsOptions): AIBackgroundRuns {
     const pr = `${owner}/${repo}#${number}`;
     // Features whose RunAIFeature request is in flight, before its reply
@@ -59,7 +64,7 @@ export function useAIBackgroundRuns({
     const prRef = useRef(pr);
 
     // Read through refs so a parent re-render (new callback identities)
-    // doesn't restart the polling.
+    // doesn't resubscribe.
     const onOutputsRef = useRef(onOutputs);
     const onToastRef = useRef(onToast);
     useEffect(() => {
@@ -73,35 +78,27 @@ export function useAIBackgroundRuns({
         setStarting(new Set());
     }, [pr]);
 
-    // The features to poll for: every run in flight but the open report's.
-    const polling = features
-        .filter(f => f.id !== openFeature && isPending(outputs[f.id]))
-        .map(f => f.id)
-        .join(',');
-
-    useEffect(() => {
-        if (!polling) return;
-        let cancelled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const poll = async (attempt: number) => {
-            try {
-                const loaded = await getAIOutput({ Owner: owner, Repo: repo, Number: number });
-                if (cancelled) return;
-                onOutputsRef.current(loaded);
-            } catch (e) {
-                if (cancelled) return;
-                console.error('Failed to poll AI outputs:', e);
-            }
-            // Stops once nothing is pending: `polling` empties and this
-            // effect is cleaned up.
-            timer = setTimeout(() => poll(attempt + 1), pollDelayMs(attempt));
-        };
-        timer = setTimeout(() => poll(0), pollDelayMs(0));
-        return () => {
-            cancelled = true;
-            if (timer) clearTimeout(timer);
-        };
-    }, [owner, repo, number, polling]);
+    // Read every output again when the server says one of the toolbar's
+    // features changed for this PR. The open report's modal reads its own and
+    // passes it on.
+    useServerChanges(
+        AI_OUTPUT_CHANGED_EVENT,
+        data => {
+            const change = parseAIOutputChanged(data);
+            return (
+                !!change &&
+                change.feature !== openFeature &&
+                features.some(f => f.id === change.feature) &&
+                isChangeFor(change, { owner, repo, number })
+            );
+        },
+        async () => {
+            const startedFor = prRef.current;
+            const loaded = await getAIOutput({ Owner: owner, Repo: repo, Number: number });
+            if (prRef.current === startedFor) onOutputsRef.current(loaded);
+        },
+        { key: pr, enabled: features.length > 0, events }
+    );
 
     useEffect(() => {
         for (const id of requested.current) {

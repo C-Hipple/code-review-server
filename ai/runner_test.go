@@ -5,9 +5,11 @@ import (
 	"crs/config"
 	"crs/database"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -464,5 +466,65 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met within 5s")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// changeLog records what a runner's OnChange is told, in order.
+type changeLog struct {
+	mu      sync.Mutex
+	changes []string
+}
+
+func (l *changeLog) record(owner, repo string, number int, feature, status string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.changes = append(l.changes, fmt.Sprintf("%s/%s#%d:%s %s", owner, repo, number, feature, status))
+}
+
+func (l *changeLog) get() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.changes...)
+}
+
+func TestRunnerAnnouncesARunStartingAndLanding(t *testing.T) {
+	release := make(chan struct{})
+	f := &fakeFeature{id: "fake", run: func(context.Context, Request) (Result, error) {
+		<-release
+		return Result{}, nil
+	}}
+	failing := &fakeFeature{id: "failing", run: func(context.Context, Request) (Result, error) {
+		return Result{}, errors.New("boom")
+	}}
+	r, _, _ := testRunner(t, nil, f, failing)
+	var log changeLog
+	r.OnChange = log.record
+
+	r.Dispatch(job("fake", TriggerExplicit, "s", "d"))
+	// Pending is announced as the run is claimed, before Dispatch returns: a
+	// client that hears it reads the run as in flight.
+	if got := log.get(); !reflect.DeepEqual(got, []string{"acme/widgets#42:fake pending"}) {
+		t.Fatalf("after dispatch: %v", got)
+	}
+	// A run already in flight is no change.
+	r.Dispatch(job("fake", TriggerRerun, "s", "d"))
+	close(release)
+	waitFor(t, func() bool { return len(log.get()) == 2 })
+	if r.Running("acme", "widgets", 42, "fake") {
+		t.Error("the landing was announced while the run still read as in flight")
+	}
+	// Up to date: nothing runs, nothing changes.
+	r.RunSync(job("fake", TriggerExplicit, "s", "d"))
+
+	r.RunSync(job("failing", TriggerExplicit, "s", "d"))
+
+	want := []string{
+		"acme/widgets#42:fake pending",
+		"acme/widgets#42:fake success",
+		"acme/widgets#42:failing pending",
+		"acme/widgets#42:failing error",
+	}
+	if got := log.get(); !reflect.DeepEqual(got, want) {
+		t.Errorf("announced %v, want %v", got, want)
 	}
 }

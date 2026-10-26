@@ -5,7 +5,6 @@ import {
     collapsePluginsByDefault,
     COLLAPSE_PLUGINS_OVER_LINES,
     isPluginPending,
-    pendingPluginsKey,
     pluginOutputLineCount,
     rerunsStillAwaited,
     resolvePluginBody,
@@ -202,23 +201,6 @@ describe('rerunsStillAwaited', () => {
             lint: { result: 'Error: boom', status: 'error' },
         });
         expect(still.size).toBe(0);
-    });
-});
-
-describe('pendingPluginsKey', () => {
-    test('names every pending plugin, in a stable order', () => {
-        expect(
-            pendingPluginsKey({
-                summarize: { result: '', status: 'pending' },
-                done: { result: 'x', status: 'success' },
-                lint: { result: '', status: 'pending' },
-            })
-        ).toBe('lint,summarize');
-    });
-
-    test('is empty when nothing is pending', () => {
-        expect(pendingPluginsKey({ done: { result: 'x', status: 'success' } })).toBe('');
-        expect(pendingPluginsKey({})).toBe('');
     });
 });
 

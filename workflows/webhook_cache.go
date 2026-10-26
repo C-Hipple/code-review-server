@@ -225,6 +225,9 @@ func loadCachedReviews(db *database.DB, key PRKey) ([]*github.PullRequestReview,
 			State:   github.Ptr(r.State),
 			HTMLURL: github.Ptr(r.HTMLURL),
 		}
+		if r.CommitID != "" {
+			review.CommitID = github.Ptr(r.CommitID)
+		}
 		if !r.SubmittedAt.IsZero() {
 			review.SubmittedAt = &github.Timestamp{Time: r.SubmittedAt}
 		}

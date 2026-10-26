@@ -23,7 +23,7 @@
   (should (featurep 'crs-client))
   (dolist (feat '(crs-vars crs-html crs-rpc crs-render crs-list-mode
                   crs-review crs-comments crs-review-actions crs-plugins
-                  crs-ai crs-diagram))
+                  crs-ai crs-diagram crs-filtered-diff))
     (should (featurep feat))))
 
 (ert-deftest crs-test-key-commands-defined ()
@@ -43,6 +43,8 @@
                 crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
                 crs-ai-list-features crs-quit-ai-output
                 crs-show-change-diagram
+                crs-show-filtered-diff crs-show-full-diff
+                crs-show-diff-since-last-review crs-show-diff-since-last-interaction
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -83,7 +85,9 @@
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map
                  crs-ai-features crs--ai-owner crs--ai-feature crs--ai-output
                  crs--ai-poll-timer crs--ai-insert-function
-                 crs-change-diagram-feature-id))
+                 crs-change-diagram-feature-id
+                 crs-diff-filters crs--buffer-diff-filter crs--buffer-full-diff
+                 crs--buffer-filtered-diff))
     (should (boundp var))))
 
 ;;; --- Modes can be entered without error ---
@@ -1091,6 +1095,180 @@ The buffer is bound to `buffer' and killed afterwards."
       (funcall (nth 2 (car sent)) crs-test--submit-reply)
       (should (equal (car events) '(message . "Approved acme/widgets #42")))
       (should-not (assq 'render events)))))
+
+;;; --- Filtered diffs ---
+
+(defconst crs-test--full-diff
+  (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+          "@@ -1,2 +1,3 @@\n one\n+two\n three\n"
+          "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
+          "@@ -1 +1 @@\n-old b\n+new b\n")
+  "A PR's full diff: two files.")
+
+(defconst crs-test--pr-payload
+  `((okay . t)
+    (metadata . ((number . 42) (title . "Widgets")))
+    (diff . ,crs-test--full-diff)
+    (comments . [((id . "7") (author . "bob") (body . "two-nit")
+                  (path . "a.txt") (position . "2"))])
+    (reviews . [])
+    (commits . []))
+  "A GetPR reply for acme/widgets #42 with one inline comment.")
+
+(defconst crs-test--filtered-reply
+  '((filter . "since-last-review")
+    (status . "ready")
+    (head_sha . "ffffffffff")
+    (base_sha . "aaaaaaaaaa")
+    (baseline . ((sha . "aaaaaaaaaa") (kind . "review")
+                 (detail . "your approving review") (inferred . :json-false)))
+    (diff . "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old b\n+new b\n")
+    (commits . ["ffffffffff"])
+    (message . "")
+    (computed_at . "2026-10-01T12:05:00Z"))
+  "A GetFilteredDiff reply narrowing `crs-test--full-diff' to b.txt.")
+
+(defconst crs-test--diff-filters
+  '(((id . "since-last-review") (name . "Since my last review") (description . ""))
+    ((id . "since-last-interaction") (name . "Since my last interaction") (description . "")))
+  "A ListDiffFilters reply's filters.")
+
+(defun crs-test--count (regexp text)
+  "How many times REGEXP matches in TEXT."
+  (let ((n 0) (start 0))
+    (while (string-match regexp text start)
+      (setq n (1+ n) start (match-end 0)))
+    n))
+
+(ert-deftest crs-test-filtered-diff-summary ()
+  "The summary line names the range, or says why the full diff stays."
+  (should (equal (crs--filtered-diff-summary crs-test--filtered-reply "Since my last review")
+                 (concat "Since my last review: changes since your approving review,"
+                         " aaaaaaa -> fffffff, 1 new commit.  Comments are hidden;"
+                         " press F for the full diff.")))
+  (let ((empty (append '((diff . "") (commits . [])) crs-test--filtered-reply)))
+    (should (equal (crs--filtered-diff-summary empty "Since my last review")
+                   "Since my last review: nothing has changed since your approving review (aaaaaaa).")))
+  (should (equal (crs--filtered-diff-summary
+                  '((status . "no-baseline") (message . "You haven't reviewed this PR yet."))
+                  "Since my last review")
+                 "You haven't reviewed this PR yet.  Showing the full diff."))
+  (should (string-match-p "Couldn't load \"Since my last review\": boom"
+                          (crs--filtered-diff-summary '((status . "error") (message . "boom"))
+                                                      "Since my last review"))))
+
+(ert-deftest crs-test-filtered-diff-keys-bound ()
+  "F picks the diff in a review buffer."
+  (should (eq (lookup-key my-code-review-mode-map (kbd "F")) #'crs-show-filtered-diff)))
+
+(ert-deftest crs-test-filtered-diff-swaps-and-restores ()
+  "A filter's diff replaces the full one without inline comments, and goes back."
+  (crs-test--with-review-buffer nil
+    (let ((crs-diff-filters crs-test--diff-filters)
+          (sent '())
+          full-text)
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        (crs--render-and-update buffer crs-test--pr-payload)
+        (setq full-text (with-current-buffer buffer (buffer-string)))
+        (should (string-match-p "^\\+two" full-text))
+
+        (with-current-buffer buffer
+          (crs-show-filtered-diff "since-last-review"))
+        (should (equal (nth 0 (car sent)) "RPCHandler.GetFilteredDiff"))
+        (should (equal (json-encode (nth 1 (car sent)))
+                       "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Filter\":\"since-last-review\"}]"))
+        (funcall (nth 2 (car sent)) crs-test--filtered-reply)
+
+        (with-current-buffer buffer
+          (let ((text (buffer-string)))
+            (should (equal crs--buffer-diff-filter "since-last-review"))
+            (should (crs--filtered-diff-displayed-p))
+            (should (string-match-p "^\\+new b" text))
+            (should-not (string-match-p "^\\+two" text))
+            (should (string-match-p "Since my last review: changes since your approving review" text))
+            ;; The comment is no longer drawn inline (the conversation may
+            ;; still list it).
+            (should (< (crs-test--count "two-nit" text) (crs-test--count "two-nit" full-text))))
+          ;; Its position counts lines of the full diff: no new comments here.
+          (should-error (call-interactively #'crs-add-or-edit-comment) :type 'user-error))
+
+        ;; A fresh payload keeps the filtered diff on screen and asks again.
+        (setq sent '())
+        (crs--render-and-update buffer crs-test--pr-payload)
+        (should (equal (nth 0 (car sent)) "RPCHandler.GetFilteredDiff"))
+        (with-current-buffer buffer
+          (should (equal crs--buffer-full-diff crs-test--full-diff))
+          (should-not (string-match-p "^\\+two" (buffer-string))))
+
+        (with-current-buffer buffer
+          (crs-show-filtered-diff nil)
+          (should-not crs--buffer-diff-filter)
+          (should (equal crs--buffer-diff crs-test--full-diff))
+          (should (string-match-p "^\\+two" (buffer-string)))
+          (should (= (crs-test--count "two-nit" (buffer-string))
+                     (crs-test--count "two-nit" full-text))))))))
+
+(ert-deftest crs-test-filtered-diff-without-a-baseline-keeps-the-full-diff ()
+  "A filter with nothing to start from leaves the full diff and its comments."
+  (crs-test--with-review-buffer nil
+    (let ((crs-diff-filters crs-test--diff-filters)
+          (sent '()))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        (crs--render-and-update buffer crs-test--pr-payload)
+        (with-current-buffer buffer
+          (crs-show-filtered-diff "since-last-interaction"))
+        (funcall (nth 2 (car sent))
+                 '((filter . "since-last-interaction") (status . "no-baseline")
+                   (diff . "") (commits . [])
+                   (message . "You haven't reviewed or commented on this PR yet.")))
+        (with-current-buffer buffer
+          (let ((text (buffer-string)))
+            (should-not (crs--filtered-diff-displayed-p))
+            (should (string-match-p "^\\+two" text))
+            (should (string-match-p "You haven't reviewed or commented on this PR yet.  Showing the full diff." text))
+            (should (string-match-p "two-nit" text))))))))
+
+(ert-deftest crs-test-filtered-diff-failure-goes-back-to-the-full-diff ()
+  "An RPC error leaves the buffer on the full diff with no filter picked."
+  (crs-test--with-review-buffer nil
+    (let ((crs-diff-filters crs-test--diff-filters)
+          (sent '()))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        (crs--render-and-update buffer crs-test--pr-payload)
+        (with-current-buffer buffer
+          (crs-show-filtered-diff "since-last-review"))
+        (funcall (nth 2 (car sent)) '((error . "compare exploded")))
+        (with-current-buffer buffer
+          (should-not crs--buffer-diff-filter)
+          (should (equal crs--buffer-diff crs-test--full-diff)))))))
+
+(ert-deftest crs-test-filtered-diff-chooser-offers-the-full-diff ()
+  "Interactively, the server's filters are offered after \"Full diff\"."
+  (crs-test--with-review-buffer nil
+    (let ((crs-diff-filters nil)
+          (sent '())
+          (offered nil))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent)))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _)
+                   (setq offered (mapcar #'car choices))
+                   "Since my last interaction")))
+        (with-current-buffer buffer
+          (call-interactively #'crs-show-filtered-diff))
+        ;; The filters are listed once, then the pick is asked for.
+        (should (equal (nth 0 (car sent)) "RPCHandler.ListDiffFilters"))
+        (funcall (nth 2 (car sent)) `((filters . ,(vconcat crs-test--diff-filters))))
+        (should (equal offered '("Full diff" "Since my last review" "Since my last interaction")))
+        (should (equal (nth 0 (car sent)) "RPCHandler.GetFilteredDiff"))
+        (should (equal (cdr (assq 'Filter (aref (nth 1 (car sent)) 0))) "since-last-interaction"))))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

@@ -374,6 +374,7 @@ Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 | `submitted_at` | Time       | Timestamp when the review was submitted          |
 | `html_url`     | string     | Link to the review on GitHub                     |
 | `reactions`    | []Reaction | Emoji reactions on the review's own body (see [Reactions](#reactions)) |
+| `commit_id`    | string     | The commit the review was submitted against — where [`since-last-review`](#filtered-diffs) starts. Empty for a review cached before it was recorded |
 
 #### Commit Object (`CommitJSON`)
 
@@ -964,6 +965,68 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
   "method": "RPCHandler.GetAIOutput",
   "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "Feature": "comments-addressed"}],
   "id": 11
+}
+```
+
+---
+
+### Filtered diffs
+
+A filtered diff is the PR's diff narrowed to the commits after a **baseline** the server picks from what it already knows about the PR — the changes since your last review, say. The server keeps them warm: whenever a PR is fetched or updated by a workflow, opened, synced or reviewed, it works out each filter's baseline from the DB caches (reviews, comments, commits; no GitHub call) and, for a baseline/head pair it hasn't stored yet, fetches the diff between them with one GitHub compare, which it keeps in SQLite. `GetFilteredDiff` is therefore a cache read; it computes a diff itself only when asked before the warm has stored it.
+
+| Filter ID                | Baseline                                                                                     |
+|--------------------------|----------------------------------------------------------------------------------------------|
+| `since-last-review`      | The commit your most recent submitted review was made against (its `commit_id`)              |
+| `since-last-interaction` | Your most recent review or comment: a review or review comment names its commit; a conversation comment doesn't, so the newest commit older than it stands in (`inferred: true`) |
+
+"You" is the server's `GithubUsername` (resolved from the token when unset). More filters can be registered server-side (`filtereddiff.Register`); `ListDiffFilters` lists whatever is.
+
+GitHub only compares three-dot (head against its merge base with the baseline), which is the diff wanted only while the baseline is still in the PR's history. When it isn't — a force-push or rebase rewrote it — the answer is `rebased`, with no diff, rather than a diff that would mix in the base branch's changes. Commits merged in from the base branch after the baseline do show up in the diff, as they do on GitHub.
+
+The diff is rendered like `GetPR`'s, but **its positions are its own**: a comment's `position` counts rows of the PR's full diff, so clients don't place comments on a filtered diff, or start new ones from it.
+
+### `RPCHandler.ListDiffFilters`
+
+Lists the filters `GetFilteredDiff` takes, in the order to offer them.
+
+**Arguments** (`ListDiffFiltersArgs`): none (send `{}`).
+
+**Reply** (`ListDiffFiltersReply`):
+| Field     | Type         | Description                                      |
+|-----------|--------------|--------------------------------------------------|
+| `filters` | []DiffFilter | Each with `id`, `name` (a label) and `description` |
+
+### `RPCHandler.GetFilteredDiff`
+
+Returns the PR's diff narrowed by one filter. Everything but an unknown filter (an RPC error) is an answer, carried in `status`.
+
+**Arguments** (`GetFilteredDiffArgs`):
+| Field    | Type   | Required | Description                         |
+|----------|--------|----------|-------------------------------------|
+| `Owner`  | string | Yes      | Repository owner                    |
+| `Repo`   | string | Yes      | Repository name                     |
+| `Number` | int    | Yes      | Pull request number                 |
+| `Filter` | string | Yes      | A filter ID from `ListDiffFilters`  |
+
+**Reply** (`GetFilteredDiffReply`):
+| Field         | Type     | Description                                                                 |
+|---------------|----------|-----------------------------------------------------------------------------|
+| `filter`      | string   | The filter asked for                                                        |
+| `status`      | string   | `ready` (`diff` holds the changes; empty when nothing was pushed since), `no-baseline` (nothing to start from — you never reviewed the PR, say), `rebased` (the baseline is no longer in the PR's history) or `error` (the diff couldn't be fetched; retried after two minutes) |
+| `head_sha`    | string   | The PR's head commit                                                        |
+| `base_sha`    | string   | The baseline commit; empty without one                                      |
+| `baseline`    | object   | `null` without one, else `sha`, `at` (when the interaction happened), `kind` (`review`, `review_comment` or `comment`), `detail` (e.g. `your approving review`) and `inferred` |
+| `diff`        | string   | The rendered diff from `base_sha` to `head_sha`; empty unless `ready`       |
+| `commits`     | []string | SHAs of the PR's commits after the baseline, oldest first                   |
+| `message`     | string   | Says why, for any status but `ready`                                        |
+| `computed_at` | string   | When the diff was fetched (RFC 3339); zero when none was needed             |
+
+**Example Request**:
+```json
+{
+  "method": "RPCHandler.GetFilteredDiff",
+  "params": [{"Owner": "octocat", "Repo": "Hello-World", "Number": 42, "Filter": "since-last-review"}],
+  "id": 12
 }
 ```
 

@@ -160,6 +160,18 @@ review comments are still outstanding — running it first when it never ran or 
 report is stale. The report buffer updates itself while a run is pending; `r`
 refreshes it, `R` forces a re-run and `q` quits.
 
+`F` in a review buffer (`crs-show-filtered-diff`) narrows the diff to a
+[range of commits](protocol.md#filtered-diffs): pick *Since my last review*,
+*Since my last interaction* or, to go back, *Full diff*
+(`crs-show-diff-since-last-review`, `crs-show-diff-since-last-interaction` and
+`crs-show-full-diff` do the same without asking). The server keeps these diffs
+warm, so switching is instant. The Changes header says which range is shown;
+comments are not drawn inline on a filtered diff, and new ones can't be started
+from it, since a comment's position counts lines of the full diff. When there is
+nothing to start from — you never reviewed the PR, or a force-push rewrote the
+commit you last saw — the full diff stays and the header says why. Syncing or
+submitting a review keeps the filter and asks for it again.
+
 The [change diagram](ai_features.md#change-diagram) has a command of its own:
 `M` in a review buffer, or on a PR's line in the reviews buffer, runs
 `crs-show-change-diagram`, which shows the diagram's raw Mermaid source in a

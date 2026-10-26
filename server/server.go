@@ -310,12 +310,17 @@ func ensurePostUpdateHooks(owner, repo string, number int, details *PRDetails) {
 }
 
 // dispatchPostUpdateHooks runs the post-update hooks for a PR once per head
-// SHA per hookDispatchTTL, and prefetches its images every time.
+// SHA per hookDispatchTTL, and prefetches its images and warms its filtered
+// diffs every time.
 func dispatchPostUpdateHooks(owner, repo string, number int, details *PRDetails) {
 	// Deliberately ahead of the SHA debounce below: a new comment carrying a
 	// screenshot doesn't change the head SHA, and it is exactly the case where
 	// an image is missing from the cache.
 	prefetchPRImages(repo, number, details)
+
+	// Also ahead of it: a review or comment moves a filter's baseline without
+	// moving the head. Only a commit pair not stored yet costs a request.
+	go warmFilteredDiffs(owner, repo, number)
 
 	_, sha, err := config.C().DB.GetPullRequest(number, repo)
 	if err != nil {

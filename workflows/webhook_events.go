@@ -336,6 +336,7 @@ func upsertReview(reviews []*github.PullRequestReview, review *github.PullReques
 		State:       github.Ptr(strings.ToUpper(review.GetState())),
 		SubmittedAt: review.SubmittedAt,
 		HTMLURL:     review.HTMLURL,
+		CommitID:    review.CommitID,
 	}
 	for i, r := range reviews {
 		if r.GetID() == review.GetID() {

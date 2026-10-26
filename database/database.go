@@ -241,6 +241,23 @@ func (db *DB) initSchema() error {
 		UNIQUE(owner, repo, pr_number, feature_name)
 	);
 
+	-- A PR's diff between two of its commits, for the filtered diffs (see
+	-- filtered_diffs.go). Keyed by the commit pair rather than the filter,
+	-- since filters that land on the same baseline share one diff. Additive,
+	-- like AIResults.
+	CREATE TABLE IF NOT EXISTS PRFilteredDiffs (
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		base_sha TEXT NOT NULL,
+		head_sha TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT '',
+		diff TEXT NOT NULL DEFAULT '',
+		message TEXT NOT NULL DEFAULT '',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(owner, repo, pr_number, base_sha, head_sha)
+	);
+
 	CREATE TABLE IF NOT EXISTS DiffFileOrderingCache (
 		pr_number INTEGER NOT NULL,
 		repo TEXT NOT NULL,

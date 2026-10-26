@@ -112,10 +112,10 @@ test.describe('live updates', () => {
         await connected(page);
         const range = page.getByRole('combobox', { name: 'Diff range' });
         await range.selectOption({ label: 'Since my last review' });
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
 
         await backend.updatePR(PR42, {
-            ReplaceInDiff: ["console.log('hello');", "console.log('hello, world');"],
+            ReplaceInDiff: ['console.log(message);', "console.log(message, '!');"],
             Event: 'pull_request.synchronize',
             Changes: ['pr', 'head'],
             Actor: 'alice',
@@ -123,8 +123,8 @@ test.describe('live updates', () => {
         });
 
         await expect(toast(page)).toHaveText('alice pushed new commits');
-        await expect(diffRow(page, "console.log('hello, world');")).toBeVisible();
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(diffRow(page, "console.log(message, '!');")).toBeVisible();
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
         await expect(range).toHaveValue('since-last-review');
         expect(await backend.calls('GetFilteredDiff')).toHaveLength(2);
     });
@@ -135,7 +135,7 @@ test.describe('live updates', () => {
         await page
             .getByRole('combobox', { name: 'Diff range' })
             .selectOption({ label: 'Since my last review' });
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
 
         await backend.updatePR(PR42, {
             Comment: { author: 'carol', body: 'Nice.' },
@@ -144,7 +144,7 @@ test.describe('live updates', () => {
         });
 
         await expect(toast(page)).toHaveText('carol commented');
-        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(page.locator('.diff-file-row')).toHaveCount(2);
         // Only the user's own review or comment can move its baseline.
         expect(await backend.calls('GetFilteredDiff')).toHaveLength(1);
     });

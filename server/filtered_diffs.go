@@ -76,14 +76,16 @@ func GetFilteredDiff(owner, repo string, number int, filterID string) (filteredd
 		return filtereddiff.Result{}, fmt.Errorf("unknown diff filter %q", filterID)
 	}
 	db := config.C().DB
-	in, err := filteredDiffInputs(db, repo, number)
-	return filteredDiff(db, owner, repo, number, f, in, err), nil
+	in, fullDiff, err := filteredDiffInputs(db, repo, number)
+	return filteredDiff(db, owner, repo, number, f, in, fullDiff, err), nil
 }
 
 // filteredDiff answers for one filter from inputs already read (or the error
 // reading them), so a caller resolving every filter reads the caches once.
-func filteredDiff(db *database.DB, owner, repo string, number int, f filtereddiff.Filter, in filtereddiff.Inputs, inputsErr error) filtereddiff.Result {
-	result := filtereddiff.Result{Filter: f.ID(), Commits: []string{}}
+// fullDiff is the PR's cached full diff, raw, which the result's Positions map
+// onto.
+func filteredDiff(db *database.DB, owner, repo string, number int, f filtereddiff.Filter, in filtereddiff.Inputs, fullDiff string, inputsErr error) filtereddiff.Result {
+	result := filtereddiff.Result{Filter: f.ID(), Commits: []string{}, Positions: map[string]map[int]int{}}
 	if inputsErr != nil {
 		result.Status = filtereddiff.StatusError
 		result.Message = inputsErr.Error()
@@ -120,37 +122,39 @@ func filteredDiff(db *database.DB, owner, repo string, number int, f filtereddif
 	result.Message = stored.Message
 	result.ComputedAt = stored.UpdatedAt
 	if stored.Status == filtereddiff.StatusReady {
-		result.Diff = renderFilteredDiff(stored.Diff, owner, repo, number, in.HeadSHA)
+		result.Diff, result.Positions = renderFilteredDiff(stored.Diff, fullDiff, owner, repo, number, in.HeadSHA)
 	}
 	return result
 }
 
-// filteredDiffInputs reads what the filters judge from: the PR's head and its
-// cached reviews, comments and commits, plus who the reviewer is.
-func filteredDiffInputs(db *database.DB, repo string, number int) (filtereddiff.Inputs, error) {
+// filteredDiffInputs reads what the filters judge from — the PR's head and its
+// cached reviews, comments and commits, plus who the reviewer is — and the
+// PR's cached full diff.
+func filteredDiffInputs(db *database.DB, repo string, number int) (filtereddiff.Inputs, string, error) {
 	if db == nil {
-		return filtereddiff.Inputs{}, errors.New("the server has no database")
+		return filtereddiff.Inputs{}, "", errors.New("the server has no database")
 	}
-	_, head, err := db.GetPullRequest(number, repo)
+	fullDiff, head, err := db.GetPullRequest(number, repo)
 	if err != nil {
-		return filtereddiff.Inputs{}, fmt.Errorf("reading the PR's head commit: %w", err)
+		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's head commit: %w", err)
 	}
 	if head == "" {
-		return filtereddiff.Inputs{}, errors.New("the PR's head commit isn't cached yet; open or sync the PR first")
+		return filtereddiff.Inputs{}, "", errors.New("the PR's head commit isn't cached yet; open or sync the PR first")
 	}
 	reviews, err := db.GetPRReviews(number, repo)
 	if err != nil {
-		return filtereddiff.Inputs{}, fmt.Errorf("reading the PR's reviews: %w", err)
+		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's reviews: %w", err)
 	}
 	comments, err := db.GetPRComments(number, repo)
 	if err != nil {
-		return filtereddiff.Inputs{}, fmt.Errorf("reading the PR's comments: %w", err)
+		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's comments: %w", err)
 	}
 	commits, err := db.GetPRCommits(number, repo)
 	if err != nil {
-		return filtereddiff.Inputs{}, fmt.Errorf("reading the PR's commits: %w", err)
+		return filtereddiff.Inputs{}, "", fmt.Errorf("reading the PR's commits: %w", err)
 	}
-	return filtereddiff.InputsFromCaches(config.C().GithubUsername, head, reviews, comments, commits)
+	in, err := filtereddiff.InputsFromCaches(config.C().GithubUsername, head, reviews, comments, commits)
+	return in, fullDiff, err
 }
 
 // rangeDiff returns the PR's diff from base to its head: the stored one when
@@ -232,16 +236,78 @@ func computeRangeDiff(db *database.DB, owner, repo string, number int, in filter
 }
 
 // renderFilteredDiff renders a stored diff the way GetPRDetails renders the
-// PR's full one, so clients parse both alike.
-func renderFilteredDiff(raw, owner, repo string, number int, head string) string {
+// PR's full one, so clients parse both alike, and maps its rows onto the full
+// diff's (see filtereddiff.Result.Positions).
+func renderFilteredDiff(raw, fullDiff, owner, repo string, number int, head string) (string, map[string]map[int]int) {
 	if strings.TrimSpace(raw) == "" {
-		return ""
+		return "", map[string]map[int]int{}
 	}
 	parsed, err := utils.Parse(raw)
 	if err != nil || parsed == nil {
-		return raw
+		return raw, map[string]map[int]int{}
 	}
-	return formatDiff(parsed, owner, repo, number, head)
+	full, err := utils.Parse(fullDiff)
+	if err != nil {
+		full = nil
+	}
+	return formatDiff(parsed, owner, repo, number, head), diffPositions(full, parsed)
+}
+
+// diffPositions maps each row of filtered that shows a line of the head onto
+// the row of full showing the same line, per file. Both diffs end at the head,
+// so a line is the same line when its head-side number is; a removed line
+// belongs to whichever commit each diff starts from, and is left out.
+func diffPositions(full, filtered *utils.Diff) map[string]map[int]int {
+	positions := map[string]map[int]int{}
+	if full == nil || filtered == nil {
+		return positions
+	}
+	headRows := map[string]map[int]int{}
+	for _, f := range full.Files {
+		if f.NewName == "" || f.Mode == utils.DELETED {
+			continue
+		}
+		rows := map[int]int{}
+		eachDiffRow(f, func(pos int, line *utils.DiffLine) {
+			if line.Mode != utils.REMOVED {
+				rows[line.Number] = pos
+			}
+		})
+		headRows[f.NewName] = rows
+	}
+	for _, f := range filtered.Files {
+		rows, ok := headRows[f.NewName]
+		if !ok || f.NewName == "" || f.Mode == utils.DELETED {
+			continue
+		}
+		mapped := map[int]int{0: 0}
+		eachDiffRow(f, func(pos int, line *utils.DiffLine) {
+			if line.Mode == utils.REMOVED {
+				return
+			}
+			if fullPos, ok := rows[line.Number]; ok {
+				mapped[pos] = fullPos
+			}
+		})
+		positions[f.NewName] = mapped
+	}
+	return positions
+}
+
+// eachDiffRow visits a file's rows with the positions clients give them in
+// the rendered diff: counting from the row after the file's first hunk
+// header, with every later hunk header taking a position of its own.
+func eachDiffRow(f *utils.DiffFile, visit func(pos int, line *utils.DiffLine)) {
+	pos := 0
+	for i, h := range f.Hunks {
+		if i > 0 {
+			pos++
+		}
+		for _, line := range h.WholeRange.Lines {
+			pos++
+			visit(pos, line)
+		}
+	}
 }
 
 func shortSHA(sha string) string {
@@ -251,23 +317,28 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// warmFilteredDiffs computes each registered filter's diff for the PR, so a
+// warmFilteredDiffs stores each registered filter's diff for the PR, so a
 // client switching to one finds it stored. The caches are read once for all
-// of them, and only a commit pair not stored yet reaches GitHub. It blocks,
-// so callers run it in a goroutine.
+// of them, only a commit pair not stored yet reaches GitHub, and nothing is
+// rendered: that happens when a diff is asked for. It blocks, so callers run
+// it in a goroutine.
 func warmFilteredDiffs(owner, repo string, number int) {
 	db := config.C().DB
 	if db == nil {
 		return
 	}
-	in, err := filteredDiffInputs(db, repo, number)
+	in, _, err := filteredDiffInputs(db, repo, number)
 	if err != nil {
 		// Nothing to warm from yet: the PR's caches aren't there.
 		slog.Debug("Not warming filtered diffs", "repo", repo, "pr", number, "reason", err)
 		return
 	}
 	for _, f := range filtereddiff.Filters() {
-		filteredDiff(db, owner, repo, number, f, in, nil)
+		baseline, err := f.Baseline(in)
+		if err != nil || baseline.SHA == in.HeadSHA {
+			continue
+		}
+		rangeDiff(db, owner, repo, number, in, baseline.SHA)
 	}
 }
 
@@ -344,8 +415,8 @@ type GetFilteredDiffReply struct {
 
 // GetFilteredDiff returns the PR's diff narrowed by a filter — the changes
 // since the reviewer's last review, say. The diff is rendered like GetPR's,
-// but its positions are its own: a comment's position in it is not the
-// comment's position in the PR's diff.
+// but its positions are its own: the reply's positions map them onto the PR's
+// diff, which is what comments are positioned in.
 func (h *RPCHandler) GetFilteredDiff(args *GetFilteredDiffArgs, reply *GetFilteredDiffReply) error {
 	result, err := GetFilteredDiff(args.Owner, args.Repo, args.Number, args.Filter)
 	if err != nil {

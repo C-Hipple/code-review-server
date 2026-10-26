@@ -30,9 +30,13 @@
         (editing-id crs--comment-editing-id)
         (original-line crs--comment-original-line)
         (original-context crs--comment-original-context)
+        ;; A reply goes where its thread is; anything else at its line's row
+        ;; in the PR's full diff, which may not be the row it was opened on.
         (position (if crs--comment-reply-to-id
                       nil
-                    crs--comment-position)))
+                    crs--comment-full-position)))
+    (when (and (not reply-to-id) (not editing-id) crs--comment-position (not position))
+      (user-error "This line isn't in the PR's diff, so it can't take a comment"))
     (if (string-match-p "\\`[[:space:]\n]*\\'" body)
         (message "Comment is empty, not submitting.")
       (if editing-id
@@ -259,15 +263,22 @@ If on a local comment, local-comment-id and local-comment-body will be set."
 If on a local comment, opens it for editing with the existing body pre-filled.
 If called interactively, attempts to guess parameters from context."
   (interactive
-   (let ((ctx (progn (crs--refuse-comment-on-filtered-diff)
-                     (crs--get-comment-context))))
+   (let ((ctx (crs--get-comment-context)))
      ;; For editing, we need local-comment-id; for adding, we need position or reply-to-id
      (unless (and (nth 0 ctx) (nth 3 ctx) (or (nth 4 ctx) (nth 5 ctx) (nth 6 ctx)))
        (error "Could not determine context (Owner: %S, Repo: %S, Num: %S, File: %S, Pos: %S, ReplyID: %S, LocalID: %S). Buffer: %S"
               (nth 0 ctx) (nth 1 ctx) (nth 2 ctx) (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (nth 6 ctx) (buffer-name)))
+     ;; A new comment from a row of a filtered diff needs a full-diff
+     ;; position to go out at; refuse a row that has none before the comment
+     ;; buffer opens.
+     (unless (or (nth 5 ctx) (nth 6 ctx))
+       (crs--full-diff-position-or-refuse (nth 3 ctx) (nth 4 ctx)))
      ctx))
   (let ((buffer (get-buffer-create (format "*Comment Edit %s/%s #%d*" owner repo number)))
         (editing (not (null local-comment-id)))
+        ;; Worked out now, while the review buffer's diff is the one POSITION
+        ;; counts rows of: it may show another by the time this is submitted.
+        (full-position (crs--full-diff-position filename position))
         (original-line (line-number-at-pos))
         ;; Store context for position restoration: filename, position, and file-line
         (original-context (when filename
@@ -280,6 +291,7 @@ If called interactively, attempts to guess parameters from context."
       (setq crs--comment-number number)
       (setq crs--comment-filename filename)
       (setq crs--comment-position position)
+      (setq crs--comment-full-position full-position)
       (setq crs--comment-reply-to-id reply-to-id)
       (setq crs--comment-editing-id local-comment-id)
       (setq crs--comment-original-line original-line)
@@ -351,7 +363,6 @@ opening a comment buffer, with the body
 
   ANNOTATION CONTENT"
   (interactive)
-  (crs--refuse-comment-on-filtered-diff)
   (let ((annotations (crs--annotations-on-current-line)))
     (unless annotations
       (user-error "No plugin annotation on this line"))
@@ -369,7 +380,8 @@ opening a comment buffer, with the body
       ;; and a comment left there would not render back onto any line.
       (unless (and (integerp position) (> position 0))
         (user-error "Annotation is not anchored to a line of the diff"))
-      (let* ((annotation (crs--select-annotation annotations))
+      (let* ((full-position (crs--full-diff-position-or-refuse filename position))
+             (annotation (crs--select-annotation annotations))
              (plugin (or (cdr (assq 'plugin annotation)) "plugin"))
              (body (crs--annotation-comment-body annotation))
              (original-line (line-number-at-pos))
@@ -380,7 +392,7 @@ opening a comment buffer, with the body
                        (cons 'Repo repo)
                        (cons 'Number number)
                        (cons 'Filename filename)
-                       (cons 'Position position)
+                       (cons 'Position full-position)
                        (cons 'ReplyToID nil)
                        (cons 'Body body)))
          (lambda (result)

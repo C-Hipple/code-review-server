@@ -34,11 +34,61 @@ export interface FilteredDiffResult {
     diff: string;
     /** SHAs of the commits after the baseline, oldest first. */
     commits: string[] | null;
+    /**
+     * Per file, a row of `diff` (its comment position) to the position of the
+     * same line in the PR's full diff, which is what comments are positioned
+     * in. Rows it leaves out (removed lines, lines the full diff doesn't
+     * show) take no comment. Absent from an older server.
+     */
+    positions?: Record<string, Record<string, number>> | null;
     message: string;
     computed_at: string;
 }
 
 export const shortSha = (sha: string): string => sha.slice(0, 7);
+
+/**
+ * The position in the PR's full diff of row `pos` of the filtered diff's
+ * `file`, or null when that row shows no line of the full diff.
+ */
+export function toFullPosition(
+    result: FilteredDiffResult | null,
+    file: string,
+    pos: number
+): number | null {
+    const full = result?.positions?.[file]?.[String(pos)];
+    return typeof full === 'number' ? full : null;
+}
+
+/**
+ * Comments placed on a filtered diff: each one whose line it shows, at that
+ * line's row there. A comment's position counts rows of the full diff; the
+ * rest are on lines the filtered diff doesn't show, and are left out.
+ */
+export function commentsOnFilteredDiff<T extends { path: string; position: string }>(
+    comments: T[],
+    result: FilteredDiffResult | null
+): T[] {
+    const rows = new Map<string, Map<number, number>>();
+    for (const [file, map] of Object.entries(result?.positions ?? {})) {
+        const inverse = new Map<number, number>();
+        for (const [row, full] of Object.entries(map)) inverse.set(full, Number(row));
+        rows.set(file, inverse);
+    }
+    const placed: T[] = [];
+    for (const c of comments) {
+        const inverse = rows.get(c.path);
+        if (!inverse) continue;
+        // A whole-file comment stays one wherever the file is shown.
+        if (c.position === '') {
+            placed.push(c);
+            continue;
+        }
+        const row = inverse.get(Number(c.position));
+        if (row !== undefined) placed.push({ ...c, position: String(row) });
+    }
+    return placed;
+}
 
 /**
  * Whether the review shows the filtered diff for this result. Only a ready
@@ -72,7 +122,7 @@ export function filteredDiffSummary(
             const commits = n > 0 ? `, ${n} new commit${n === 1 ? '' : 's'}` : '';
             const guess = result.baseline?.inferred ? ' (estimated from its time)' : '';
             return {
-                text: `${filterName}: changes since ${detail}${guess} — ${from} → ${shortSha(result.head_sha)}${commits}. Comments are hidden here; switch to the full diff to comment.`,
+                text: `${filterName}: changes since ${detail}${guess} — ${from} → ${shortSha(result.head_sha)}${commits}. Comments on lines outside this range are hidden.`,
                 variant: 'info',
             };
         }

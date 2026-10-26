@@ -165,12 +165,14 @@ refreshes it, `R` forces a re-run and `q` quits.
 *Since my last interaction* or, to go back, *Full diff*
 (`crs-show-diff-since-last-review`, `crs-show-diff-since-last-interaction` and
 `crs-show-full-diff` do the same without asking). The server keeps these diffs
-warm, so switching is instant. The Changes header says which range is shown;
-comments are not drawn inline on a filtered diff, and new ones can't be started
-from it, since a comment's position counts lines of the full diff. When there is
-nothing to start from — you never reviewed the PR, or a force-push rewrote the
-commit you last saw — the full diff stays and the header says why. Syncing or
-submitting a review keeps the filter and asks for it again.
+warm, so switching is instant. The Changes header says which range is shown.
+Comments on lines the filtered diff shows are drawn on them, and `c` comments
+there as usual: the comment goes out at the same line's position in the full
+diff. A line the full diff doesn't show, such as one removed since your review,
+can't take a comment. When there is nothing to start from (you never reviewed
+the PR, or a force-push rewrote the commit you last saw), the full diff stays
+and the header says why. Syncing or submitting a review keeps the filter and
+asks for it again.
 
 The client follows the server's runs rather than polling for them:
 `crs-start-server` subscribes to the server's

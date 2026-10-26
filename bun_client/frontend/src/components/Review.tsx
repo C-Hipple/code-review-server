@@ -19,7 +19,9 @@ import {
 } from '../ai_utils';
 import { Button, Select, Theme, StatusVariant } from '../design';
 import {
+    commentsOnFilteredDiff,
     showsFilteredDiff,
+    toFullPosition,
     type DiffFilterInfo,
     type FilteredDiffResult,
 } from '../diff_filter_utils';
@@ -77,11 +79,10 @@ function sameFilteredDiff(a: FilteredDiffResult, b: FilteredDiffResult | null): 
     );
 }
 
-// Comments are anchored by their position in the PR's full diff, which a
-// filtered diff doesn't share.
-const COMMENTS_NEED_FULL_DIFF =
-    'Comments anchor to the full diff: switch to "Full diff" to comment.';
-const NO_COMMENTS: Comment[] = [];
+// Comments are anchored by their position in the PR's full diff, so a row of
+// a filtered diff the full diff doesn't show can't take one.
+const LINE_NOT_IN_FULL_DIFF =
+    "This line isn't in the PR's diff, so it can't take a comment. Switch to \"Full diff\" to comment around it.";
 
 interface ReviewProps {
     owner: string;
@@ -120,8 +121,9 @@ export default function Review({
     const filteredDiffRef = useRef(filteredDiff);
     filteredDiffRef.current = filteredDiff;
     const [filterLoading, setFilterLoading] = useState(false);
-    // A filtered diff is on screen: its positions are not the PR's, so
-    // comments neither show inline nor start from it.
+    // A filtered diff is on screen. Its rows' positions are not the PR's, so
+    // comments are placed on it, and started from it, through the server's
+    // map onto the full diff (see displayedComments and commentPosition).
     const filteredView = diffFilter !== '' && showsFilteredDiff(filteredDiff);
     // Indices (into diff.split('\n')) of context lines fetched on demand via
     // hunk expansion. These lines are NOT part of the PR's canonical diff, so
@@ -755,15 +757,23 @@ export default function Review({
     // Adopt a plugin annotation as a local comment on the row it annotates, so
     // it goes out with the review under the reviewer's name, attributed to the
     // plugin that raised it.
+    // The position to comment at for row `pos` of the diff on screen: the row
+    // itself on the full diff, the same line's row there on a filtered one.
+    // Null, after saying why, when the full diff doesn't show the line.
+    const commentPosition = (file: string, pos: number): number | null => {
+        if (!filteredView) return pos;
+        const full = toFullPosition(filteredDiff, file, pos);
+        if (full === null) showToast(LINE_NOT_IN_FULL_DIFF, 'info');
+        return full;
+    };
+
     const handleAnnotationToComment = async (
         annotation: PRAnnotation,
         file: string,
-        pos: number
+        rowPos: number
     ) => {
-        if (filteredView) {
-            showToast(COMMENTS_NEED_FULL_DIFF, 'info');
-            return;
-        }
+        const pos = commentPosition(file, rowPos);
+        if (pos === null) return;
         setIsAddingComment(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [
@@ -968,17 +978,15 @@ export default function Review({
         setCollapsedFiles(new Set());
     };
 
-    const handleCommentClick = (idx: number, file: string, pos: number) => {
-        if (filteredView) {
-            showToast(COMMENTS_NEED_FULL_DIFF, 'info');
-            return;
-        }
+    const handleCommentClick = (idx: number, file: string, rowPos: number) => {
         if (activeLineIndex === idx) {
             setActiveLineIndex(null);
             setFilename('');
             setPosition('');
             setReplyToId(null);
         } else {
+            const pos = commentPosition(file, rowPos);
+            if (pos === null) return;
             setFilename(file);
             setPosition(pos.toString());
             setActiveLineIndex(idx);
@@ -1072,8 +1080,15 @@ export default function Review({
     }, []);
 
     // Handle clicking on a reply thread to reply to the last message, or edit if local
-    const handleThreadClick = (thread: Comment[], file: string, pos: number, lineIdx: number) => {
+    const handleThreadClick = (
+        thread: Comment[],
+        file: string,
+        rowPos: number,
+        lineIdx: number
+    ) => {
         const rc = thread[0];
+        // A thread on a filtered diff sits on a row the full diff shows too.
+        const pos = filteredView ? (toFullPosition(filteredDiff, file, rowPos) ?? rowPos) : rowPos;
         setFilename(file);
         setPosition(pos.toString());
         setActiveLineIndex(lineIdx);
@@ -1114,6 +1129,13 @@ export default function Review({
 
     // Custom Prism theme adjusted for diff context
     const customDiffTheme = useMemo(() => buildDiffTheme(theme), [theme]);
+
+    // Comments as the diff on screen places them: on a filtered diff, those
+    // on lines it shows, moved to their rows there.
+    const displayedComments = useMemo(
+        () => (filteredView ? commentsOnFilteredDiff(comments, filteredDiff) : comments),
+        [filteredView, comments, filteredDiff]
+    );
 
     // The full diff's rows while a filtered diff is on screen: what comment
     // positions count.
@@ -1198,8 +1220,8 @@ export default function Review({
         <DiffView
             parsedLines={parsedLines}
             filterFile={filterFile}
-            comments={filteredView ? NO_COMMENTS : comments}
-            outdatedComments={filteredView ? NO_COMMENTS : outdatedComments}
+            comments={displayedComments}
+            outdatedComments={outdatedComments}
             collapsedFiles={collapsedFiles}
             visibleThreadIds={visibleThreadIds}
             annotations={annotationIndex}

@@ -146,7 +146,7 @@ compact <C: ...> comment indicator or <A: ...> annotation indicator."
                      (pos (nth 4 ctx)))
                 (when (and file pos)
                   (gethash (format "%s:%s" file pos)
-                           (crs--index-comments crs--buffer-comments))))))
+                           (crs--index-comments (crs--displayed-comments)))))))
            (annotations (unless crs--buffer-show-annotations
                           (crs--annotations-on-current-line)))
            (parts (delq nil
@@ -682,7 +682,7 @@ This must be called after delta-wash."
 (defun crs--render-from-stored-data ()
   "Render the buffer content from stored diff, comments, and preamble.
 Uses `crs--buffer-show-comments' to determine whether to show full comments or compact indicators."
-  (let* ((comment-map (crs--index-comments crs--buffer-comments))
+  (let* ((comment-map (crs--index-comments (crs--displayed-comments)))
          (preamble (or crs--buffer-preamble ""))
          (feedback crs--buffer-review-feedback))
     ;; Inject feedback into existing section if it exists
@@ -1118,10 +1118,9 @@ for more robust position restoration."
         (crs--simplify-diff-headers)
 
         ;; 4. Insert Comments (only regular comments in-line with diff).
-        ;; Their positions count lines of the PR's full diff, so a filtered
-        ;; diff shows none.
-        (unless (crs--filtered-diff-displayed-p)
-          (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments))
+        ;; Their positions count rows of the PR's full diff; on a filtered
+        ;; diff, those it shows are moved to their rows there.
+        (crs--insert-comments-into-buffer (crs--displayed-comments) crs--buffer-show-comments)
 
         ;; 4.5. Insert plugin annotations (after comments so their line
         ;; positions account for the interleaved comment blocks)

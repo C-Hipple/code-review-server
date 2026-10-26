@@ -6,6 +6,7 @@ import (
 	"crs/database"
 	"crs/filtereddiff"
 	"crs/git_tools"
+	"crs/utils"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -397,5 +398,141 @@ func TestAIRequestCarriesTheFilteredDiffs(t *testing.T) {
 	}
 	if res.Filter != filtereddiff.SinceLastReview || res.Status != filtereddiff.StatusNoBaseline {
 		t.Fatalf("result = %+v, want the server's answer for the PR", res)
+	}
+}
+
+// fdFullDiff is a PR's full diff: greet.go changed in two places, and
+// notes.md added.
+const fdFullDiff = `diff --git a/greet.go b/greet.go
+index 1111111..3333333 100644
+--- a/greet.go
++++ b/greet.go
+@@ -1,4 +1,5 @@
+ package greet
+ 
++// Hello says hello.
+ func Hello() {}
+ 
+@@ -10,3 +11,4 @@ func Hello() {}
+ func Bye() {
++	println("bye")
+ }
+ 
+diff --git a/notes.md b/notes.md
+new file mode 100644
+--- /dev/null
++++ b/notes.md
+@@ -0,0 +1,2 @@
++# Notes
++Second line.
+`
+
+// fdSinceDiff is the diff since the reviewer's baseline: the comment line was
+// reworded, a line the baseline had added was taken out again (so the full
+// diff doesn't show it), Bye gained its println, and a file the full diff
+// doesn't touch at all came and went.
+const fdSinceDiff = `diff --git a/greet.go b/greet.go
+index 2222222..3333333 100644
+--- a/greet.go
++++ b/greet.go
+@@ -1,6 +1,5 @@
+ package greet
+ 
+-// Hello greets.
+-// TODO: remove
++// Hello says hello.
+ func Hello() {}
+ 
+@@ -11,4 +10,5 @@ func Hello() {}
+ // Bye says bye.
+ func Bye() {
++	println("bye")
+ }
+ 
+diff --git a/other.go b/other.go
+index 4444444..5555555 100644
+--- a/other.go
++++ b/other.go
+@@ -1 +1 @@
+-package old
++package other
+`
+
+func TestDiffPositionsMapsHeadLinesOntoTheFullDiff(t *testing.T) {
+	full, err := utils.Parse(fdFullDiff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	since, err := utils.Parse(fdSinceDiff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := diffPositions(full, since)
+
+	// In fdSinceDiff's greet.go: rows 1-2 are context (head lines 1, 2), rows
+	// 3-4 the removed lines, row 5 the new comment (head 3), rows 6-7 context
+	// (head 4, 5); row 8 is the second hunk header, then row 9 context (head
+	// 10), row 10 Bye (head 11), row 11 the println (head 12), rows 12-13
+	// context (head 13, 14). In the full diff, head lines 1-5 sit at rows 1-5,
+	// the second hunk header at 6, and head lines 11-14 at rows 7-10.
+	want := map[int]int{0: 0, 1: 1, 2: 2, 5: 3, 6: 4, 7: 5, 10: 7, 11: 8, 12: 9, 13: 10}
+	if !mapsEqual(got["greet.go"], want) {
+		t.Fatalf("greet.go positions = %v, want %v", got["greet.go"], want)
+	}
+	// Head line 10 is outside the full diff's hunks; removed rows and hunk
+	// headers map nowhere.
+	for _, row := range []int{3, 4, 8, 9} {
+		if _, ok := got["greet.go"][row]; ok {
+			t.Errorf("row %d mapped to %d, want it left out", row, got["greet.go"][row])
+		}
+	}
+	if _, ok := got["other.go"]; ok {
+		t.Error("a file the full diff doesn't touch got positions")
+	}
+	if len(diffPositions(nil, since)) != 0 || len(diffPositions(full, nil)) != 0 {
+		t.Error("a missing diff should map nothing")
+	}
+}
+
+func mapsEqual(a, b map[int]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+func TestFilteredDiffCarriesItsPositionsOntoTheFullDiff(t *testing.T) {
+	db := fdSetup(t, []ReviewJSON{myReview(fdAt(12), "c2")}, nil)
+	if err := db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", fdFullDiff); err != nil {
+		t.Fatal(err)
+	}
+	useFakeCompare(t, &fakeCompare{diff: fdSinceDiff})
+
+	res := getFD(t, filtereddiff.SinceLastReview)
+	if res.Status != filtereddiff.StatusReady {
+		t.Fatalf("result = %+v", res)
+	}
+	if res.Positions["greet.go"][5] != 3 || res.Positions["greet.go"][11] != 8 {
+		t.Fatalf("positions = %v, want greet.go rows 5 and 11 at 3 and 8", res.Positions)
+	}
+
+	raw, _ := json.Marshal(res)
+	if !strings.Contains(string(raw), `"positions":{"greet.go":{`) {
+		t.Fatalf("positions should serialize per file with string keys: %s", raw)
+	}
+
+	// Nothing to show, nothing to map: still an object, never null.
+	if err := db.UpsertPRReviews(fdNumber, fdRepo, "[]"); err != nil {
+		t.Fatal(err)
+	}
+	none := getFD(t, filtereddiff.SinceLastReview)
+	raw, _ = json.Marshal(none)
+	if none.Positions == nil || !strings.Contains(string(raw), `"positions":{}`) {
+		t.Fatalf("positions without a diff = %s, want {}", raw)
 	}
 }

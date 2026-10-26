@@ -85,6 +85,7 @@
                  crs--buffer-annotations crs--buffer-show-annotations
                  crs--buffer-images
                  crs--comment-owner crs--comment-filename crs--comment-position
+                 crs--comment-full-position
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map
                  crs--plugin-refreshing crs--plugin-runs-requested
                  crs-server-notification-functions crs-server-subscribed-hook
@@ -1274,18 +1275,20 @@ The buffer is bound to `buffer' and killed afterwards."
   (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
           "@@ -1,2 +1,3 @@\n one\n+two\n three\n"
           "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
-          "@@ -1 +1 @@\n-old b\n+new b\n")
-  "A PR's full diff: two files.")
+          "@@ -1,2 +1,3 @@\n first b\n-old b\n+new b\n+extra b\n")
+  "A PR's full diff: two files.  In b.txt, \"+new b\" is row 3, \"+extra b\" 4.")
 
 (defconst crs-test--pr-payload
   `((okay . t)
     (metadata . ((number . 42) (title . "Widgets")))
     (diff . ,crs-test--full-diff)
     (comments . [((id . "7") (author . "bob") (body . "two-nit")
-                  (path . "a.txt") (position . "2"))])
+                  (path . "a.txt") (position . "2"))
+                 ((id . "8") (author . "bob") (body . "extra-nit")
+                  (path . "b.txt") (position . "4"))])
     (reviews . [])
     (commits . []))
-  "A GetPR reply for acme/widgets #42 with one inline comment.")
+  "A GetPR reply for acme/widgets #42 with an inline comment on each file.")
 
 (defconst crs-test--filtered-reply
   '((filter . "since-last-review")
@@ -1294,8 +1297,11 @@ The buffer is bound to `buffer' and killed afterwards."
     (base_sha . "aaaaaaaaaa")
     (baseline . ((sha . "aaaaaaaaaa") (kind . "review")
                  (detail . "your approving review") (inferred . :json-false)))
-    (diff . "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old b\n+new b\n")
+    (diff . "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -2 +2,2 @@\n-newish b\n+new b\n+extra b\n")
     (commits . ["ffffffffff"])
+    ;; As json-parse-string reads the server's map: rows 2 and 3 here are
+    ;; rows 3 and 4 of the full diff; row 1, a removed line, maps nowhere.
+    (positions . ((b.txt . ((\0 . 0) (\2 . 3) (\3 . 4)))))
     (message . "")
     (computed_at . "2026-10-01T12:05:00Z"))
   "A GetFilteredDiff reply narrowing `crs-test--full-diff' to b.txt.")
@@ -1316,8 +1322,8 @@ The buffer is bound to `buffer' and killed afterwards."
   "The summary line names the range, or says why the full diff stays."
   (should (equal (crs--filtered-diff-summary crs-test--filtered-reply "Since my last review")
                  (concat "Since my last review: changes since your approving review,"
-                         " aaaaaaa -> fffffff, 1 new commit.  Comments are hidden;"
-                         " press F for the full diff.")))
+                         " aaaaaaa -> fffffff, 1 new commit.  Comments on lines outside"
+                         " this range are hidden.")))
   (let ((empty (append '((diff . "") (commits . [])) crs-test--filtered-reply)))
     (should (equal (crs--filtered-diff-summary empty "Since my last review")
                    "Since my last review: nothing has changed since your approving review (aaaaaaa).")))
@@ -1334,7 +1340,7 @@ The buffer is bound to `buffer' and killed afterwards."
   (should (eq (lookup-key my-code-review-mode-map (kbd "F")) #'crs-show-filtered-diff)))
 
 (ert-deftest crs-test-filtered-diff-swaps-and-restores ()
-  "A filter's diff replaces the full one without inline comments, and goes back."
+  "A filter's diff replaces the full one, its comments on their rows, and goes back."
   (crs-test--with-review-buffer nil
     (let ((crs-diff-filters crs-test--diff-filters)
           (sent '())
@@ -1360,11 +1366,11 @@ The buffer is bound to `buffer' and killed afterwards."
             (should (string-match-p "^\\+new b" text))
             (should-not (string-match-p "^\\+two" text))
             (should (string-match-p "Since my last review: changes since your approving review" text))
-            ;; The comment is no longer drawn inline (the conversation may
-            ;; still list it).
-            (should (< (crs-test--count "two-nit" text) (crs-test--count "two-nit" full-text))))
-          ;; Its position counts lines of the full diff: no new comments here.
-          (should-error (call-interactively #'crs-add-or-edit-comment) :type 'user-error))
+            ;; The comment on a line the filtered diff shows is drawn on its
+            ;; row there; the one on a line it doesn't show is not.
+            (should (string-match-p "^\\+extra b\n[^+]*extra-nit" text))
+            (should (= (crs-test--count "extra-nit" text) (crs-test--count "extra-nit" full-text)))
+            (should (< (crs-test--count "two-nit" text) (crs-test--count "two-nit" full-text)))))
 
         ;; A fresh payload keeps the filtered diff on screen and asks again.
         (setq sent '())
@@ -1381,6 +1387,80 @@ The buffer is bound to `buffer' and killed afterwards."
           (should (string-match-p "^\\+two" (buffer-string)))
           (should (= (crs-test--count "two-nit" (buffer-string))
                      (crs-test--count "two-nit" full-text))))))))
+
+(defmacro crs-test--with-filtered-review (&rest body)
+  "Run BODY with `buffer' showing `crs-test--filtered-reply' over the PR.
+Binds `sent' to the (METHOD PARAMS CALLBACK) of each request made in BODY,
+most recent first."
+  (declare (indent 0))
+  `(crs-test--with-review-buffer nil
+     (let ((crs-diff-filters crs-test--diff-filters)
+           (sent '()))
+       (cl-letf (((symbol-function 'crs--send-request)
+                  (lambda (method params callback)
+                    (push (list method params callback) sent))))
+         (crs--render-and-update buffer crs-test--pr-payload)
+         (with-current-buffer buffer
+           (crs-show-filtered-diff "since-last-review"))
+         (funcall (nth 2 (car sent)) crs-test--filtered-reply)
+         (setq sent '())
+         ,@body))))
+
+(ert-deftest crs-test-filtered-diff-positions ()
+  "Rows of a filtered diff map to full-diff positions, and comments back."
+  (crs-test--with-filtered-review
+    (with-current-buffer buffer
+      (should (equal (crs--full-diff-position "b.txt" 2) 3))
+      (should (equal (crs--full-diff-position "b.txt" 3) 4))
+      (should (equal (crs--full-diff-position "b.txt" 0) 0))
+      (should-not (crs--full-diff-position "b.txt" 1))
+      (should-not (crs--full-diff-position "a.txt" 2))
+      (should-error (crs--full-diff-position-or-refuse "b.txt" 1) :type 'user-error)
+      (let ((placed (append (crs--displayed-comments) nil)))
+        (should (= (length placed) 1))
+        (should (equal (cdr (assq 'body (car placed))) "extra-nit"))
+        (should (equal (cdr (assq 'position (car placed))) "3")))
+      ;; The buffer's own comments keep their full-diff positions.
+      (should (equal (cdr (assq 'position (seq-elt crs--buffer-comments 1))) "4"))
+      (crs-show-filtered-diff nil)
+      (should (equal (crs--full-diff-position "b.txt" 2) 2))
+      (should (eq (crs--displayed-comments) crs--buffer-comments)))))
+
+(ert-deftest crs-test-filtered-diff-comments-go-out-at-full-positions ()
+  "A comment started on a filtered diff's row is sent at the full-diff position."
+  (crs-test--with-filtered-review
+    (with-current-buffer buffer
+      (goto-char (point-min))
+      (search-forward "+new b")
+      (call-interactively #'crs-add-or-edit-comment))
+    (let ((edit-buffer (get-buffer "*Comment Edit acme/widgets #42*")))
+      (unwind-protect
+          (with-current-buffer edit-buffer
+            ;; The comment buffer keeps the row it was opened on...
+            (should (equal crs--comment-filename "b.txt"))
+            (should (equal crs--comment-position 2))
+            (insert "Rename it?")
+            ;; ...even if the review goes back to the full diff meanwhile...
+            (with-current-buffer buffer
+              (crs-show-filtered-diff nil))
+            (crs-submit-comment)
+            ;; ...and the request carries the same line's full-diff position.
+            (should (equal (nth 0 (car sent)) "RPCHandler.AddComment"))
+            (let ((args (aref (nth 1 (car sent)) 0)))
+              (should (equal (cdr (assq 'Filename args)) "b.txt"))
+              (should (equal (cdr (assq 'Position args)) 3))))
+        (when (buffer-live-p edit-buffer)
+          (kill-buffer edit-buffer))))))
+
+(ert-deftest crs-test-filtered-diff-refuses-a-row-the-full-diff-lacks ()
+  "A row of a filtered diff the full diff doesn't show takes no comment."
+  (crs-test--with-filtered-review
+    (with-current-buffer buffer
+      (goto-char (point-min))
+      (search-forward "-newish b")
+      (should-error (call-interactively #'crs-add-or-edit-comment) :type 'user-error)
+      (should-not (get-buffer "*Comment Edit acme/widgets #42*"))
+      (should-not sent))))
 
 (ert-deftest crs-test-filtered-diff-without-a-baseline-keeps-the-full-diff ()
   "A filter with nothing to start from leaves the full diff and its comments."

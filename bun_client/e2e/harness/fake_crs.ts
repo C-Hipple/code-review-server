@@ -45,6 +45,9 @@ interface State {
     holdNext: Set<string>;
     held: Map<string, () => void>;
     syncUpdated: boolean;
+    // Each PR's pushes (E2E.UpdatePR's `ReplaceInDiff` swaps), which its
+    // filtered diff takes too: both diffs end at the head.
+    pushes: Map<string, [string, string][]>;
     nextCommentId: number;
     nextReviewId: number;
     // AI features: whether comments-addressed is enabled, whether review-ease
@@ -112,6 +115,7 @@ function freshState(): State {
         holdNext: new Set(),
         held: new Map(),
         syncUpdated: false,
+        pushes: new Map(),
         nextCommentId: 9001,
         nextReviewId: 800,
         aiEnabled: true,
@@ -483,10 +487,42 @@ function fileLines(pr: PRFixture, filename: string): string[] {
     }
 }
 
-// A PR's filtered diff, as GetFilteredDiff serves it. On acme/widgets#42 the
-// reviewer last reviewed before src/main.ts changed, so "since my last
-// review" is that file's part of the diff; they never commented, so "since my
-// last interaction" has nothing to start from. No other PR has a baseline.
+// "Since my last review" on acme/widgets#42: at the reviewed commit the
+// Greeting interface lacked `punctuation`, and main.ts logged 'hi'. Its rows
+// sit at other positions than the same lines in the PR's full diff
+// (WIDGETS_DIFF), which FILTERED_POSITIONS maps them to, the way the server
+// does: head lines only, removed lines left out.
+const FILTERED_DIFF_42 = [
+    'diff --git a/src/greet.ts b/src/greet.ts',
+    'index 6d0e1f2..7a2b8f0 100644',
+    '--- a/src/greet.ts',
+    '+++ b/src/greet.ts',
+    '@@ -4,3 +4,4 @@',
+    '     name: string;',
+    '+    punctuation: string;',
+    ' }',
+    ' ',
+    'diff --git a/src/main.ts b/src/main.ts',
+    'index 2c7f9e0..a1c9d2f 100644',
+    '--- a/src/main.ts',
+    '+++ b/src/main.ts',
+    '@@ -2,2 +2,3 @@',
+    ' ',
+    "-console.log('hi');",
+    "+const message = formatGreeting({ name: 'world', punctuation: '!' });",
+    '+console.log(message);',
+    '',
+].join('\n');
+
+const FILTERED_POSITIONS_42 = {
+    'src/greet.ts': { '0': 0, '1': 2, '2': 3, '3': 4, '4': 5 },
+    'src/main.ts': { '0': 0, '1': 2, '3': 4, '4': 5 },
+};
+
+// A PR's filtered diff, as GetFilteredDiff serves it: FILTERED_DIFF_42, with
+// the PR's pushes, for "since my last review" on acme/widgets#42. The
+// reviewer never commented, so "since my last interaction" has nothing to
+// start from, and no other PR has a baseline.
 function filteredDiff(pr: PRFixture, filter: string): Record<string, unknown> {
     const result = {
         filter,
@@ -496,6 +532,7 @@ function filteredDiff(pr: PRFixture, filter: string): Record<string, unknown> {
         baseline: null as Record<string, unknown> | null,
         diff: '',
         commits: [] as string[],
+        positions: {} as Record<string, Record<string, number>>,
         message: "You haven't reviewed this PR yet.",
         computed_at: '0001-01-01T00:00:00Z',
     };
@@ -505,7 +542,6 @@ function filteredDiff(pr: PRFixture, filter: string): Record<string, unknown> {
         }
         return result;
     }
-    const mainSection = pr.diff.slice(pr.diff.indexOf('diff --git a/src/main.ts'));
     return {
         ...result,
         status: 'ready',
@@ -517,8 +553,12 @@ function filteredDiff(pr: PRFixture, filter: string): Record<string, unknown> {
             detail: 'your comment review',
             inferred: false,
         },
-        diff: mainSection,
+        diff: (state.pushes.get(key(pr.item.owner, pr.item.repo, pr.item.number)) ?? []).reduce(
+            (diff, [from, to]) => diff.replace(from, to),
+            FILTERED_DIFF_42
+        ),
         commits: ['e2e-head'],
+        positions: FILTERED_POSITIONS_42,
         message: '',
         computed_at: new Date().toISOString(),
     };
@@ -884,6 +924,11 @@ const handlers: Record<string, (args: any) => unknown> = {
         }
         if (Array.isArray(args.ReplaceInDiff)) {
             pr.diff = pr.diff.replace(args.ReplaceInDiff[0], args.ReplaceInDiff[1]);
+            const k = key(pr.item.owner, pr.item.repo, pr.item.number);
+            state.pushes.set(k, [
+                ...(state.pushes.get(k) ?? []),
+                [args.ReplaceInDiff[0], args.ReplaceInDiff[1]],
+            ]);
         }
         notify('Server.PRUpdated', {
             owner: pr.item.owner,

@@ -66,6 +66,9 @@
                 crs--annotation-comment-body crs--annotation-choice-label
                 crs--select-annotation
                 crs--insert-plugin-output-entry
+                crs--handle-notification crs--subscribe crs--server-same-pr-p
+                crs--refresh-plugin-buffer crs--plugin-on-notification
+                crs--ai-on-notification crs--ai-buffers
                 crs--insert-ai-output crs--ai-should-run-p crs--ai-pending-p
                 crs--ai-buffer-name crs--ai-choose-feature
                 crs--ai-report-features crs--ai-feature-buffer
@@ -84,8 +87,10 @@
                  crs--comment-owner crs--comment-filename crs--comment-position
                  crs--comment-full-position
                  crs--plugin-owner crs--plugin-name crs--plugin-output-map
+                 crs--plugin-refreshing crs--plugin-runs-requested
+                 crs-server-notification-functions crs-server-subscribed-hook
                  crs-ai-features crs--ai-owner crs--ai-feature crs--ai-output
-                 crs--ai-poll-timer crs--ai-insert-function
+                 crs--ai-insert-function
                  crs-change-diagram-feature-id
                  crs-diff-filters crs--buffer-diff-filter crs--buffer-full-diff
                  crs--buffer-filtered-diff))
@@ -703,21 +708,12 @@ OVERRIDES is a plist of field symbols and values."
   (should (eq (lookup-key crs-ai-output-mode-map (kbd "R")) #'crs-ai-rerun))
   (should (eq (lookup-key crs-ai-output-mode-map (kbd "q")) #'crs-quit-ai-output)))
 
-(ert-deftest crs-test-ai-killing-the-buffer-stops-polling ()
-  "A pending poll timer does not outlive its buffer."
-  (let ((buffer (generate-new-buffer "crs-ai-test")))
-    (with-current-buffer buffer
-      (crs-ai-output-mode)
-      (setq crs--ai-poll-timer (run-with-timer 3600 nil #'ignore)))
-    (let ((timer (buffer-local-value 'crs--ai-poll-timer buffer)))
-      (kill-buffer buffer)
-      (should-not (memq timer timer-list)))))
-
 (defmacro crs-test--with-fake-rpc (replies &rest body)
   "Run BODY with RPCs answered from REPLIES and timers recorded, not run.
-REPLIES maps a method name to the result its callback receives.  Binds
+REPLIES maps a method name to the result its callback receives; it is
+evaluated for each call, so a variable there can change mid-test.  Binds
 `calls' to the (METHOD . PARAMS) sent, most recent first, and `timers' to
-the functions scheduled."
+the functions scheduled: nothing should poll, so a test expects none."
   (declare (indent 1))
   `(let ((calls '())
          (timers '()))
@@ -734,8 +730,8 @@ the functions scheduled."
 
 (defconst crs-test--ai-feature '((id . "comments-addressed") (name . "Comments addressed?")))
 
-(ert-deftest crs-test-ai-runs-a-feature-that-never-ran-and-polls ()
-  "Opening a feature with no result asks for a run, then polls while pending."
+(ert-deftest crs-test-ai-runs-a-feature-that-never-ran ()
+  "Opening a feature with no result asks for a run, then waits to hear it land."
   (crs-test--with-fake-rpc
       `(("RPCHandler.GetAIOutput"
          . ((output . ((comments-addressed
@@ -754,13 +750,14 @@ the functions scheduled."
             ;; Not forced: the server may answer from its cache.
             (should (equal (json-encode (cdar calls))
                            "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"comments-addressed\"}]"))
-            (should (= (length timers) 1))
+            ;; Nothing polls: the server says when the run lands.
+            (should-not timers)
             (with-current-buffer buffer
               (should (string-match-p "Running" (buffer-string)))))
         (kill-buffer buffer)))))
 
 (ert-deftest crs-test-ai-current-report-needs-no-run ()
-  "A current report is shown without a run or a poll."
+  "A current report is shown without a run."
   (crs-test--with-fake-rpc
       `(("RPCHandler.GetAIOutput"
          . ((output . ((comments-addressed . ,(crs-test--ai-output)))))))
@@ -844,7 +841,7 @@ the functions scheduled."
     (let ((buffer (get-buffer (crs--diagram-buffer-name "acme" "widgets" 42))))
       (unwind-protect
           (progn
-            ;; A current diagram needs no run and no poll.
+            ;; A current diagram needs no run.
             (should (equal (mapcar #'car calls) '("RPCHandler.GetAIOutput")))
             (should (equal (json-encode (cdar calls))
                            "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,\"Feature\":\"change-diagram\"}]"))
@@ -862,7 +859,7 @@ the functions scheduled."
         (kill-buffer buffer)))))
 
 (ert-deftest crs-test-diagram-runs-when-never-drawn ()
-  "A PR with no diagram yet asks for a run and polls; the buffer stays Mermaid."
+  "A PR with no diagram yet asks for a run; the buffer stays Mermaid."
   (let ((none '((body_type . "markdown") (body_content . ""))))
     (crs-test--with-fake-rpc
         `(("RPCHandler.GetAIOutput"
@@ -877,7 +874,7 @@ the functions scheduled."
         (crs--ai-fetch buffer t)
         (should (equal (mapcar #'car (reverse calls))
                        '("RPCHandler.GetAIOutput" "RPCHandler.RunAIFeature")))
-        (should (= (length timers) 1))
+        (should-not timers)
         (should (string-match-p "\\`%% Drawing the diagram" (buffer-string)))
         (should (string-match-p "Status: pending" header-line-format))))))
 
@@ -952,15 +949,190 @@ the functions scheduled."
   (should (eq (lookup-key crs-diagram-view-mode-map (kbd "R")) #'crs-ai-rerun))
   (should (eq (lookup-key crs-diagram-view-mode-map (kbd "q")) #'crs-quit-ai-output)))
 
-(ert-deftest crs-test-diagram-killing-the-buffer-stops-polling ()
-  "A pending poll timer does not outlive the diagram buffer."
-  (let ((buffer (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
-                  (crs--diagram-open "acme" "widgets" 42))))
-    (with-current-buffer buffer
-      (setq crs--ai-poll-timer (run-with-timer 3600 nil #'ignore)))
-    (let ((timer (buffer-local-value 'crs--ai-poll-timer buffer)))
-      (kill-buffer buffer)
-      (should-not (memq timer timer-list)))))
+(ert-deftest crs-test-diagram-redraws-when-the-run-lands ()
+  "The diagram buffer redraws when the server announces the diagram's run."
+  (let ((replies `(("RPCHandler.GetAIOutput"
+                    . ((output . ((change-diagram
+                                   . ,(crs-test--diagram-output 'status "pending"
+                                                                'report nil 'updated_at "")))))))))
+    (crs-test--with-fake-rpc replies
+      (crs-test--in-diagram-buffer
+        (crs--ai-fetch buffer nil)
+        (should (string-match-p "\\`%% Drawing the diagram" (buffer-string)))
+        (setq replies `(("RPCHandler.GetAIOutput"
+                         . ((output . ((change-diagram . ,(crs-test--diagram-output))))))))
+        (crs--handle-notification
+         "Server.AIOutputChanged"
+         (vector '((owner . "acme") (repo . "widgets") (number . 42)
+                   (feature . "change-diagram") (status . "success"))))
+        (should (equal (buffer-string) (concat crs-test--diagram-source "\n")))
+        (should-not timers)))))
+
+;;; --- Server notifications ---
+
+(defun crs-test--notify (method data)
+  "Feed the filter a notification line naming METHOD with DATA, as the server writes it."
+  (crs--handle-response
+   (json-encode `((method . ,method) (params . ,(vector data)) (id . nil)))))
+
+(ert-deftest crs-test-notifications-reach-their-handlers ()
+  "A notification goes to the handlers; a reply still goes to its callback."
+  (let ((crs-server-notification-functions nil)
+        (crs--pending-requests (make-hash-table :test 'equal))
+        (heard '())
+        (replied nil))
+    (add-hook 'crs-server-notification-functions
+              (lambda (method data) (push (cons method data) heard)))
+    ;; One handler failing doesn't stop the others.
+    (add-hook 'crs-server-notification-functions
+              (lambda (&rest _) (error "Boom")))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (crs-test--notify "Server.PluginOutputChanged"
+                        '((owner . "acme") (repo . "widgets") (number . 42)
+                          (plugin . "lint") (status . "success"))))
+    (should (equal heard
+                   '(("Server.PluginOutputChanged"
+                      (owner . "acme") (repo . "widgets") (number . 42)
+                      (plugin . "lint") (status . "success")))))
+    (puthash 7 (lambda (result) (setq replied result)) crs--pending-requests)
+    (crs--handle-response "{\"id\":7,\"result\":{\"okay\":true},\"error\":null}")
+    (should (equal replied '((okay . t))))
+    (should (= (length heard) 1))))
+
+(ert-deftest crs-test-same-pr-ignores-case ()
+  "A notification names a PR as GitHub does: owner and repo in any case."
+  (let ((data '((owner . "Acme") (repo . "Widgets") (number . 42))))
+    (should (crs--server-same-pr-p data "acme" "widgets" 42))
+    (should-not (crs--server-same-pr-p data "acme" "widgets" 43))
+    (should-not (crs--server-same-pr-p data "acme" "gadgets" 42))
+    (should-not (crs--server-same-pr-p data nil nil 42))))
+
+(ert-deftest crs-test-ai-buffer-follows-announced-runs ()
+  "An AI buffer reads its output again when the server announces its feature's run."
+  (let ((replies `(("RPCHandler.GetAIOutput"
+                    . ((output . ((comments-addressed
+                                   . ,(crs-test--ai-output 'status "pending" 'report nil
+                                                           'body '((body_content . ""))))))))))
+        (change '((owner . "Acme") (repo . "widgets") (number . 42)
+                  (feature . "comments-addressed") (status . "success"))))
+    (crs-test--with-fake-rpc replies
+      (let ((buffer (crs--ai-open "acme" "widgets" 42 crs-test--ai-feature)))
+        (unwind-protect
+            (progn
+              (crs--ai-fetch buffer nil)
+              (should (string-match-p "Running" (with-current-buffer buffer (buffer-string))))
+              (setq calls nil
+                    replies `(("RPCHandler.GetAIOutput"
+                               . ((output . ((comments-addressed . ,(crs-test--ai-output))))))))
+              ;; Another feature, or another PR, is none of this buffer's business.
+              (crs-test--notify "Server.AIOutputChanged"
+                                '((owner . "acme") (repo . "widgets") (number . 42)
+                                  (feature . "feature-flags") (status . "success")))
+              (crs-test--notify "Server.AIOutputChanged"
+                                '((owner . "acme") (repo . "widgets") (number . 43)
+                                  (feature . "comments-addressed") (status . "success")))
+              (should-not calls)
+              (crs-test--notify "Server.AIOutputChanged" change)
+              (should (equal (mapcar #'car calls) '("RPCHandler.GetAIOutput")))
+              (with-current-buffer buffer
+                (should (string-match-p "1 outstanding of 1 item" (buffer-string))))
+              (should-not timers))
+          (kill-buffer buffer))))))
+
+(ert-deftest crs-test-ai-buffers-catch-up-with-a-new-server ()
+  "A new server's subscription has every AI buffer read its output again."
+  (crs-test--with-fake-rpc
+      `(("RPCHandler.Subscribe" . ((seq . 0)))
+        ("RPCHandler.GetAIOutput"
+         . ((output . ((comments-addressed . ,(crs-test--ai-output)))))))
+    (let ((buffer (crs--ai-open "acme" "widgets" 42 crs-test--ai-feature)))
+      (unwind-protect
+          (progn
+            (crs--subscribe)
+            (should (equal (json-encode (cdr (assoc "RPCHandler.Subscribe" calls)))
+                           "[{\"IntervalSeconds\":300}]"))
+            (should (member "RPCHandler.GetAIOutput" (mapcar #'car calls)))
+            (with-current-buffer buffer
+              (should (string-match-p "1 outstanding of 1 item" (buffer-string)))))
+        (kill-buffer buffer)))))
+
+(defun crs-test--plugin-reply (status content)
+  "A GetPluginOutput reply holding the `lint' plugin with STATUS and CONTENT."
+  `((output . ((lint . ((status . ,status) (result . ,content)
+                        (body . ((body_type . "markdown") (body_content . ,content)))
+                        (annotations . [])))))))
+
+(defmacro crs-test--in-plugin-buffer (&rest body)
+  "Run BODY in a plugin output buffer for acme/widgets #42, then kill it.
+The buffer is bound to `buffer'."
+  (declare (indent 0))
+  `(let ((buffer (get-buffer-create "* Plugin Output acme/widgets #42 *")))
+     (unwind-protect
+         (progn
+           (with-current-buffer buffer
+             (crs-plugin-output-mode)
+             (setq crs--plugin-owner "acme"
+                   crs--plugin-repo "widgets"
+                   crs--plugin-number 42))
+           ,@body)
+       (kill-buffer buffer))))
+
+(ert-deftest crs-test-plugin-buffer-follows-announced-changes ()
+  "A plugin output buffer reads its output again for each change to its PR's plugins."
+  (crs-test--with-held-rpc
+    (crs-test--in-plugin-buffer
+      (crs-test--notify "Server.PluginOutputChanged"
+                        '((owner . "acme") (repo . "gadgets") (number . 42)
+                          (plugin . "lint") (status . "pending")))
+      (should-not sent)
+      (crs-test--notify "Server.PluginOutputChanged"
+                        '((owner . "acme") (repo . "widgets") (number . 42)
+                          (plugin . "lint") (status . "pending")))
+      (should (equal (mapcar #'car sent) '("RPCHandler.GetPluginOutput")))
+      ;; A burst while that read is in flight asks for one more read, not one each.
+      (dolist (status '("success" "success"))
+        (crs-test--notify "Server.PluginOutputChanged"
+                          `((owner . "acme") (repo . "widgets") (number . 42)
+                            (plugin . "lint") (status . ,status))))
+      (should (= (length sent) 1))
+      (funcall (nth 2 (car sent)) (crs-test--plugin-reply "pending" ""))
+      (should (= (length sent) 2))
+      (funcall (nth 2 (car sent)) (crs-test--plugin-reply "success" "All clear."))
+      (should (= (length sent) 2))
+      (with-current-buffer buffer
+        (should (string-match-p "Status: success" (buffer-string)))
+        (should (string-match-p "All clear\\." (buffer-string))))
+      ;; Followed quietly: nothing was said in the echo area.
+      (should-not (assq 'message events))
+      ;; A refresh asked for by hand fetches even with a read in flight, so a
+      ;; reply that never came can't leave the buffer stuck.
+      (crs-test--notify "Server.PluginOutputChanged"
+                        '((owner . "acme") (repo . "widgets") (number . 42)
+                          (plugin . "lint") (status . "pending")))
+      (should (= (length sent) 3))
+      (with-current-buffer buffer
+        (crs-refresh-plugin-output))
+      (should (= (length sent) 4)))))
+
+(ert-deftest crs-test-plugin-run-asked-for-is-announced ()
+  "A plugin run asked for from here is announced when it lands, and only once."
+  (clrhash crs--plugin-runs-requested)
+  (puthash (crs--plugin-run-key "acme" "widgets" 42 "lint") t crs--plugin-runs-requested)
+  (crs-test--with-held-rpc
+    (crs-test--notify "Server.PluginOutputChanged"
+                      '((owner . "acme") (repo . "widgets") (number . 42)
+                        (plugin . "lint") (status . "pending")))
+    (should-not events)
+    (crs-test--notify "Server.PluginOutputChanged"
+                      '((owner . "acme") (repo . "widgets") (number . 42)
+                        (plugin . "lint") (status . "success")))
+    ;; `message' curves the quotes where `text-quoting-style' says to.
+    (should (string-match-p "\\`Plugin .lint. finished for acme/widgets #42"
+                            (cdr (assq 'message events))))
+    (crs-test--notify "Server.PluginOutputChanged"
+                      '((owner . "acme") (repo . "widgets") (number . 42)
+                        (plugin . "lint") (status . "success")))
+    (should (= (length events) 1))))
 
 ;;; --- Submitting a review ---
 

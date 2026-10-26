@@ -4,7 +4,7 @@
 // where GitHub put them.
 
 import type { Page } from '@playwright/test';
-import { FILE_ORDER } from './fixtures/data';
+import { FILE_ORDER, RERUN_FILE_ORDER } from './fixtures/data';
 import { expect, test } from './harness/test';
 
 /** A file the fixture report doesn't name: GitHub's order keeps it, so it stays last. */
@@ -68,6 +68,19 @@ test('GitHub re-rendering the diff list brings the stored order back', async ({ 
         document.dispatchEvent(new Event('turbo:load'));
     });
     await expect.poll(() => diffPaths(page)).toEqual([...FILE_ORDER, ...UNNAMED]);
+});
+
+test('a new order the server lands is laid over the open page', async ({ github, crs }) => {
+    const page = await github.open('/acme/widgets/pull/42/files');
+    await expect.poll(() => diffPaths(page)).toEqual([...FILE_ORDER, ...UNNAMED]);
+
+    // file-ordering runs again for the PR (a push, say) and lands another
+    // order. The service worker hears it land and tells the page, which asks
+    // for the order once more; it never asks on a timer.
+    crs.startServerRuns('file-ordering');
+    crs.finishRuns('file-ordering');
+    await expect.poll(() => diffPaths(page)).toEqual([...RERUN_FILE_ORDER, ...UNNAMED]);
+    expect(crs.calls('GetAIOutput')).toHaveLength(2);
 });
 
 test('elsewhere on the PR nothing is asked for or moved', async ({ github, crs }) => {

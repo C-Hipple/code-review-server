@@ -8,7 +8,6 @@ import {
     hasResult,
     isPending,
     itemLocation,
-    pollDelayMs,
     reportFeatures,
     reportImageName,
     shouldRunOnOpen,
@@ -225,10 +224,6 @@ describe('presentation', () => {
         expect(verdictVariant('all-addressed')).toBe('success');
         expect(verdictVariant('outstanding')).toBe('danger');
         expect(verdictLabel('no-comments')).toBe('No comments');
-    });
-
-    test('polling backs off', () => {
-        expect(pollDelayMs(0)).toBeLessThan(pollDelayMs(20));
     });
 });
 

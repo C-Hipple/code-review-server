@@ -355,6 +355,7 @@ function App() {
                         theme={theme}
                         reviewLocation={reviewLocation}
                         onThemeChange={setTheme}
+                        onToast={showToast}
                     />
                 )}
                 {view === 'REVIEW' && currentPR && (

@@ -93,9 +93,14 @@ export class FakeCrs {
         renameSync(`${path}.tmp`, path);
     }
 
-    /** Lets the named runs (AI feature ids, plugin names) land on their next read. */
+    /** Lets the named runs (AI feature ids, plugin names) land, announced. */
     finishRuns(...names: string[]): void {
         this.update({ finishRuns: names });
+    }
+
+    /** Has the server start runs of the named features or plugins for PR42 on its own. */
+    startServerRuns(...names: string[]): void {
+        this.update({ serverRuns: names });
     }
 
     /** Every request the fake received, oldest first; `method` without `RPCHandler.`. */

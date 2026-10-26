@@ -2,13 +2,16 @@ import { describe, expect, test } from 'bun:test';
 import type { PluginConfig, PluginOutput } from '../types';
 import {
     automaticPluginNames,
+    PENDING_PLUGIN,
     pluginRunAction,
     pluginStatus,
     pluginStatusLabel,
     pluginStatusTone,
+    rerunsStillAwaited,
     resolvePluginBody,
     severityTone,
     sortAnnotations,
+    withAwaitedReruns,
 } from './plugin_utils';
 
 function output(overrides: Partial<PluginOutput> = {}): PluginOutput {
@@ -117,5 +120,28 @@ describe('automaticPluginNames', () => {
 
     test('is empty when every plugin runs on demand', () => {
         expect(automaticPluginNames([plugin('style', true)])).toEqual([]);
+    });
+});
+
+describe('awaited reruns', () => {
+    test('a rerun missing from the output reads as running', () => {
+        const lint = output();
+        expect(withAwaitedReruns({ lint }, new Set(['summarize']))).toEqual({
+            lint,
+            summarize: PENDING_PLUGIN,
+        });
+        // Present (pending or landed) or not awaited: the output as read.
+        const outputs = { summarize: output({ status: 'pending' }) };
+        expect(withAwaitedReruns(outputs, new Set(['summarize']))).toBe(outputs);
+        expect(withAwaitedReruns(outputs, new Set())).toBe(outputs);
+    });
+
+    test('a rerun is awaited until a result that is not pending is read', () => {
+        const awaiting = new Set(['summarize', 'lint', 'style']);
+        const still = rerunsStillAwaited(awaiting, {
+            summarize: output({ status: 'pending' }),
+            lint: output({ status: 'error' }),
+        });
+        expect([...still].sort()).toEqual(['style', 'summarize']);
     });
 });

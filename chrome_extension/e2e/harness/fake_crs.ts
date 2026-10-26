@@ -7,9 +7,12 @@
 // log, like the server's own logging.
 //
 // The specs steer it through files in CRS_E2E_STATE_DIR (see scenario.ts):
-// scenario.json is re-read on every request, and every request is appended
-// to calls.jsonl before it is answered. Runs (RunAIFeature, RerunPlugins) are
-// kept in memory, which lives as long as the host's connection — one test.
+// scenario.json is re-read on every request and every few milliseconds, and
+// every request is appended to calls.jsonl before it is answered. Runs
+// (RunAIFeature, RerunPlugins, and the ones the scenario has the server start
+// on its own) are kept in memory, which lives as long as the host's
+// connection — one test. Once subscribed, the fake announces each run as it
+// starts and as it lands, as the server does; nothing lands on a read.
 
 import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -56,6 +59,8 @@ function scenario(): Scenario {
 
 const aiOutputs = new Map<string, Record<string, AIFeatureOutput>>();
 const pluginOutputs = new Map<string, Record<string, PluginOutput>>();
+/** Every PR asked about, by key, for the runs on them to land. */
+const prs = new Map<string, PR>();
 /** Runs started per PR and feature / plugin, to tell one run's result from the next. */
 const runCounts = new Map<string, number>();
 
@@ -70,6 +75,7 @@ function prArgs(args: Args): PR {
 }
 
 function aiFor(pr: PR): Record<string, AIFeatureOutput> {
+    prs.set(prKey(pr), pr);
     let outputs = aiOutputs.get(prKey(pr));
     if (!outputs) {
         outputs =
@@ -82,6 +88,7 @@ function aiFor(pr: PR): Record<string, AIFeatureOutput> {
 }
 
 function pluginsFor(pr: PR): Record<string, PluginOutput> {
+    prs.set(prKey(pr), pr);
     let outputs = pluginOutputs.get(prKey(pr));
     if (!outputs) {
         outputs = prKey(pr) === prKey(PR42) ? pr42PluginOutputs() : {};
@@ -97,22 +104,85 @@ function nextRun(pr: PR, name: string): number {
     return n;
 }
 
-/** Lands the runs the scenario says are finished. */
-function settleRuns(pr: PR): void {
-    const finish = new Set(scenario().finishRuns ?? []);
+// --- Notifications ------------------------------------------------------------------
+
+/** Set by RPCHandler.Subscribe: the server sends no notification before it. */
+let subscribed = false;
+
+function notify(method: string, params: unknown): void {
+    if (!subscribed) return;
+    process.stdout.write(`${JSON.stringify({ method, params: [params], id: null })}\n`);
+}
+
+function aiChanged(pr: PR, feature: string, status: string): void {
+    notify('Server.AIOutputChanged', { ...pr, feature, status });
+}
+
+function pluginChanged(pr: PR, plugin: string, status: string): void {
+    notify('Server.PluginOutputChanged', { ...pr, plugin, status });
+}
+
+// --- Runs ----------------------------------------------------------------------------
+
+const FEATURE_IDS = new Set(FEATURES.map(f => f.id));
+
+/** Starts a run of a feature or plugin: pending, and announced, until it lands. */
+function startRun(pr: PR, name: string): void {
+    nextRun(pr, name);
+    if (FEATURE_IDS.has(name)) {
+        const outputs = aiFor(pr);
+        // A run in flight still carries the previous result, as the server's does.
+        outputs[name] = { ...outputs[name], status: 'pending' };
+        aiChanged(pr, name, 'pending');
+        return;
+    }
+    pluginsFor(pr)[name] = {
+        result: '',
+        status: 'pending',
+        body: { body_type: 'markdown', body_content: '' },
+        annotations: null,
+    };
+    pluginChanged(pr, name, 'pending');
+}
+
+/** Lands the runs the scenario says are finished, announcing each. */
+function settleRuns(pr: PR, finish: Set<string>): void {
     const ai = aiFor(pr);
     for (const [id, output] of Object.entries(ai)) {
         if (output.status === 'pending' && finish.has(id)) {
             const run = runCounts.get(`${prKey(pr)}:${id}`) ?? 1;
             ai[id] = { ...output, ...aiRunResult(id, run), stale: false };
+            aiChanged(pr, id, ai[id].status);
         }
     }
     const plugins = pluginsFor(pr);
     for (const [name, output] of Object.entries(plugins)) {
         if (output.status === 'pending' && finish.has(name)) {
             plugins[name] = pluginRunResult(name, runCounts.get(`${prKey(pr)}:${name}`) ?? 1);
+            pluginChanged(pr, name, plugins[name].status);
         }
     }
+}
+
+/** The runs the scenario had the server start on its own, so each starts once. */
+const serverRunsStarted = new Set<string>();
+
+/**
+ * Does what the scenario asks of runs: starts the ones the server starts on
+ * its own, and lands the finished ones — by itself, as the server's runs
+ * land, whether or not anyone reads.
+ */
+function followScenario(): void {
+    if (exiting) return;
+    const current = scenario();
+    for (const name of current.serverRuns ?? []) {
+        if (serverRunsStarted.has(name)) continue;
+        serverRunsStarted.add(name);
+        startRun(PR42, name);
+    }
+    const finish = new Set(current.finishRuns ?? []);
+    if (finish.size === 0) return;
+    for (const pr of prs.values()) settleRuns(pr, finish);
 }
 
 // --- Methods ---------------------------------------------------------------------
@@ -129,11 +199,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
     'RPCHandler.ListPlugins': () => ({ plugins: PLUGINS }),
 
-    'RPCHandler.GetPluginOutput': args => {
-        const pr = prArgs(args);
-        settleRuns(pr);
-        return { output: pluginsFor(pr) };
-    },
+    'RPCHandler.GetPluginOutput': args => ({ output: pluginsFor(prArgs(args)) }),
 
     // Like the server: clears the named plugins' results (all of them without
     // `Plugins`) and runs them in the background.
@@ -144,13 +210,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
             : PLUGINS.filter(p => !p.OnlyOnDemand).map(p => p.Name);
         const outputs = pluginsFor(pr);
         for (const name of names) {
-            nextRun(pr, name);
-            outputs[name] = {
-                result: '',
-                status: 'pending',
-                body: { body_type: 'markdown', body_content: '' },
-                annotations: null,
-            };
+            delete outputs[name];
+            pluginChanged(pr, name, '');
+            startRun(pr, name);
         }
         return { okay: true, message: `Rerunning ${names.length} plugin(s)`, output: {} };
     },
@@ -160,7 +222,6 @@ const handlers: Record<string, (args: Args) => unknown> = {
     // Every enabled feature's output, or just `Feature`'s.
     'RPCHandler.GetAIOutput': args => {
         const pr = prArgs(args);
-        settleRuns(pr);
         const all = aiFor(pr);
         const wanted = args.Feature
             ? FEATURES.filter(f => f.id === args.Feature)
@@ -192,14 +253,24 @@ const handlers: Record<string, (args: Args) => unknown> = {
         if (!args.Force && current.status === 'success' && !current.stale) {
             return { okay: true, outcome: 'up-to-date', message: '', output: current };
         }
-        nextRun(pr, feature.id);
-        // A run in flight still carries the previous result, as the server's does.
-        outputs[feature.id] = { ...current, status: 'pending' };
+        startRun(pr, feature.id);
         return {
             okay: true,
             outcome: 'started',
             message: `Running ${feature.name} for PR ${pr.number}`,
             output: outputs[feature.id],
+        };
+    },
+
+    // The extension asks for the slowest heartbeat and never hears one here.
+    'RPCHandler.Subscribe': args => {
+        subscribed = true;
+        const now = new Date().toISOString();
+        return {
+            seq: 0,
+            time: now,
+            started_at: now,
+            interval_seconds: Number(args.IntervalSeconds) || 10,
         };
     },
 };
@@ -241,6 +312,8 @@ function handle(req: Request): void {
 }
 
 process.stderr.write(`fake crs: pid ${process.pid}, args ${process.argv.slice(2).join(' ')}\n`);
+
+setInterval(followScenario, 50);
 
 let buffer = '';
 process.stdin.setEncoding('utf-8');

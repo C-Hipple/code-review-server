@@ -105,6 +105,10 @@ What "matches" means is what the workflow's own run would decide: for a reposito
 
 This happens only while webhooks are trusted for the PR, and only when its caches hold its current head, so it never asks GitHub for anything. A delivery that lands while a cycle is refreshing everything is checked as soon as that cycle finishes. A delivery with no PR in it (a conversation comment, a check run, a commit status) is judged against the PR as the last listing or delivery showed it. If a cycle is writing sections when a delivery lands, the check waits for it to finish, so a cycle working from an older listing can't undo it. A burst of deliveries about one PR — a push sets off a check run delivery per check — is checked once.
 
+## Clients Follow Deliveries
+
+The server also tells a subscribed client about every PR a delivery changed — a [`Server.PRUpdated`](protocol.md#serverprupdated) notification naming the PR, what was rewritten and, in a few words, what happened — and again when the check above rewrites the PR's section rows. The web client takes it from there: an open review fetches the PR again from the caches and takes in the change where it stands, keeping the reader's place, and a toast says what happened (*alice approved*, *Checks failed: build*); the review list refreshes the PR's row and highlights it for a moment. CI is announced only as it settles — passing, or failing where it wasn't — though the CI line updates on every delivery; your own changes refresh without a toast. See [Live updates from webhooks](web_client_features.md) (§3.18).
+
 ## When the Server Still Polls
 
 Every PR is still polled, as without webhooks:

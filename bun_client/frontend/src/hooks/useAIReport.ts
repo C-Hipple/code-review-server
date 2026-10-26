@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { getAIOutput, runAIFeature } from '../api';
+import { isPending, shouldRunOnOpen, type AIFeatureOutput } from '../ai_utils';
 import {
-    isPending,
-    MAX_POLL_MS,
-    pollDelayMs,
-    shouldRunOnOpen,
-    type AIFeatureOutput,
-} from '../ai_utils';
+    AI_OUTPUT_CHANGED_EVENT,
+    isChangeFor,
+    parseAIOutputChanged,
+    serverEvents,
+    type ServerEvents,
+} from '../server_events';
+import { useServerChanges } from './useServerChanges';
 
 interface UseAIReportOptions {
     owner: string;
@@ -17,6 +19,7 @@ interface UseAIReportOptions {
     initialOutput?: AIFeatureOutput;
     /** Every output loaded, so a count shown elsewhere stays current. */
     onOutput?: (output: AIFeatureOutput) => void;
+    events?: ServerEvents;
 }
 
 export interface AIReportState {
@@ -25,8 +28,6 @@ export interface AIReportState {
     error: string | null;
     /** Why the server declined to run the feature. */
     notice: string | null;
-    /** Polling stopped with the run still pending. */
-    gaveUp: boolean;
     pending: boolean;
     /** Runs the feature again, even if nothing changed. */
     rerun: () => void;
@@ -39,8 +40,10 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
  *
  * Mounting asks the server for a run when there is no result yet or the
  * stored one no longer describes the PR (the server answers from its cache
- * when nothing changed), then polls while the run is pending. The previous
- * result stays in `output` until the new one lands.
+ * when nothing changed). The server announces each run of the feature for
+ * the PR as it starts and as it lands, and the output is read again on each,
+ * so a pending run shows its result without polling. The previous result
+ * stays in `output` until the new one lands.
  */
 export function useAIReport({
     owner,
@@ -49,13 +52,14 @@ export function useAIReport({
     feature,
     initialOutput,
     onOutput,
+    events = serverEvents,
 }: UseAIReportOptions): AIReportState {
     const [output, setOutput] = useState<AIFeatureOutput | null>(initialOutput ?? null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
-    const [gaveUp, setGaveUp] = useState(false);
     // Bumped by rerun(); each value is one forced run.
     const [rerunToken, setRerunToken] = useState(0);
+    const key = `${owner}/${repo}#${number}:${feature}`;
 
     // Read through a ref so a parent re-render (a new callback identity)
     // doesn't restart the run.
@@ -64,56 +68,45 @@ export function useAIReport({
         onOutputRef.current = onOutput;
     }, [onOutput]);
 
+    // Replies can arrive out of order — a run's reply, written before the
+    // run landed, after the read its landing prompted — so each request takes
+    // a ticket and only a reply newer than the last one shown is shown. The
+    // key guards against a reply for the feature or PR just switched away
+    // from.
+    const lastTicket = useRef(0);
+    const lastShown = useRef(0);
+    const keyRef = useRef(key);
+    const ticket = () => ({ seq: ++lastTicket.current, key });
+    const show = (t: { seq: number; key: string }, o: AIFeatureOutput | undefined) => {
+        if (!o || t.key !== keyRef.current || t.seq <= lastShown.current) return;
+        lastShown.current = t.seq;
+        setOutput(o);
+        onOutputRef.current?.(o);
+    };
+
+    const args = { Owner: owner, Repo: repo, Number: number, Feature: feature };
+
     useEffect(() => {
+        keyRef.current = key;
         let cancelled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const pr = { Owner: owner, Repo: repo, Number: number, Feature: feature };
-        const startedAt = Date.now();
-
-        const publish = (o: AIFeatureOutput) => {
-            setOutput(o);
-            onOutputRef.current?.(o);
-        };
-
-        const poll = async (attempt: number) => {
-            try {
-                const o = (await getAIOutput(pr))[feature];
-                if (cancelled || !o) return;
-                publish(o);
-                if (!isPending(o)) return;
-                if (Date.now() - startedAt > MAX_POLL_MS) {
-                    setGaveUp(true);
-                    return;
-                }
-                timer = setTimeout(() => poll(attempt + 1), pollDelayMs(attempt));
-            } catch (e) {
-                if (!cancelled) setError(errorText(e));
-            }
-        };
 
         const start = async () => {
             setError(null);
             setNotice(null);
-            setGaveUp(false);
             try {
                 let current: AIFeatureOutput | undefined;
                 if (rerunToken === 0) {
-                    current = (await getAIOutput(pr))[feature];
+                    const t = ticket();
+                    current = (await getAIOutput(args))[feature];
                     if (cancelled) return;
-                    if (current) publish(current);
+                    show(t, current);
                 }
                 if (rerunToken > 0 || shouldRunOnOpen(current)) {
-                    const reply = await runAIFeature({ ...pr, Force: rerunToken > 0 });
+                    const t = ticket();
+                    const reply = await runAIFeature({ ...args, Force: rerunToken > 0 });
                     if (cancelled) return;
-                    if (reply.output) publish(reply.output);
-                    if (!reply.okay) {
-                        setNotice(reply.message);
-                        return;
-                    }
-                    current = reply.output ?? current;
-                }
-                if (current && isPending(current)) {
-                    timer = setTimeout(() => poll(0), pollDelayMs(0));
+                    show(t, reply.output ?? undefined);
+                    if (!reply.okay) setNotice(reply.message);
                 }
             } catch (e) {
                 if (!cancelled) setError(errorText(e));
@@ -123,15 +116,36 @@ export function useAIReport({
         start();
         return () => {
             cancelled = true;
-            if (timer) clearTimeout(timer);
         };
     }, [owner, repo, number, feature, rerunToken]);
+
+    // Read again whenever the server says this feature's output for the PR
+    // changed: a run starting or landing, whoever asked for it.
+    useServerChanges(
+        AI_OUTPUT_CHANGED_EVENT,
+        data => {
+            const change = parseAIOutputChanged(data);
+            return (
+                !!change &&
+                change.feature === feature &&
+                isChangeFor(change, { owner, repo, number })
+            );
+        },
+        async () => {
+            const t = ticket();
+            try {
+                show(t, (await getAIOutput(args))[feature]);
+            } catch (e) {
+                if (t.key === keyRef.current) setError(errorText(e));
+            }
+        },
+        { key, events }
+    );
 
     return {
         output,
         error,
         notice,
-        gaveUp,
         pending: isPending(output),
         rerun: () => setRerunToken(t => t + 1),
     };

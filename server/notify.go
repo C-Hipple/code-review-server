@@ -1,10 +1,13 @@
 package server
 
 import (
+	"crs/config"
+	"crs/workflows"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,12 +21,27 @@ import (
 // that never subscribes never sees one, so a client that reads exactly one
 // line per call (the TUI) is unaffected.
 //
-// The one notification so far is the heartbeat, sent every interval while a
-// client is subscribed; Notifier.Notify is the seam the next event goes
-// through.
+// The heartbeat is sent every interval while a client is subscribed; events
+// go through Notifier.Notify as they happen: Server.PluginOutputChanged and
+// Server.AIOutputChanged, which let a client showing a PR's plugin output or
+// AI feature results read them again when they change instead of polling, and
+// Server.PRUpdated, sent when a GitHub webhook delivery has changed what the
+// server holds for a PR.
 
 // HeartbeatMethod is the method a heartbeat notification names.
 const HeartbeatMethod = "Server.Heartbeat"
+
+// PluginOutputChangedMethod is the method a notification names when a PR's
+// stored plugin output changes, so what GetPluginOutput returns for it has.
+const PluginOutputChangedMethod = "Server.PluginOutputChanged"
+
+// AIOutputChangedMethod is the method a notification names when an AI
+// feature's output for a PR changes as GetAIOutput reports it: a run starts,
+// or its result is stored.
+const AIOutputChangedMethod = "Server.AIOutputChanged"
+
+// PRUpdatedMethod is the method a PR-updated notification names.
+const PRUpdatedMethod = "Server.PRUpdated"
 
 const (
 	defaultHeartbeatInterval = 10 * time.Second
@@ -60,6 +78,132 @@ type Heartbeat struct {
 	// IntervalSeconds is how long until the next heartbeat. A client that
 	// hears nothing for a few intervals can take the server for gone.
 	IntervalSeconds int `json:"interval_seconds"`
+}
+
+// PluginOutputChanged is a Server.PluginOutputChanged notification's params.
+// It names what changed rather than carrying the output, which can be large:
+// a client showing the PR reads GetPluginOutput again.
+type PluginOutputChanged struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	// Plugin is the plugin whose result changed; empty when every plugin's
+	// result for the PR was cleared at once, for a rerun of them all.
+	Plugin string `json:"plugin"`
+	// Status is the plugin's status as GetPluginOutput now reports it
+	// (pending, success, error or deferred), or empty when its result was
+	// cleared for a rerun: the plugin is missing from the output until the
+	// run marks it pending.
+	Status string `json:"status"`
+}
+
+// notifyPluginOutputChanged tells a subscribed client that a PR's plugin
+// output changed. Without the stdio connection (a one-off command) or a
+// subscribed client it does nothing.
+func notifyPluginOutputChanged(owner, repo string, number int, plugin, status string) {
+	n := notifier
+	if n == nil {
+		return
+	}
+	n.Notify(PluginOutputChangedMethod, PluginOutputChanged{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Plugin: plugin,
+		Status: status,
+	})
+}
+
+// AIOutputChanged is a Server.AIOutputChanged notification's params. Like
+// PluginOutputChanged it names what changed; a client showing the feature
+// reads GetAIOutput again.
+type AIOutputChanged struct {
+	Owner   string `json:"owner"`
+	Repo    string `json:"repo"`
+	Number  int    `json:"number"`
+	Feature string `json:"feature"`
+	// Status is the feature's status as GetAIOutput now reports it: pending
+	// once a run is claimed (queued for a slot included), then the stored
+	// result's (success, error or insufficient-input) once it lands.
+	Status string `json:"status"`
+}
+
+// notifyAIOutputChanged tells a subscribed client that an AI feature's output
+// for a PR changed. It is the AI runner's OnChange in server mode.
+func notifyAIOutputChanged(owner, repo string, number int, feature, status string) {
+	n := notifier
+	if n == nil {
+		return
+	}
+	n.Notify(AIOutputChangedMethod, AIOutputChanged{
+		Owner:   owner,
+		Repo:    repo,
+		Number:  number,
+		Feature: feature,
+		Status:  status,
+	})
+}
+
+// PRUpdated is a PR-updated notification's params: a webhook delivery changed
+// what the server holds for the PR, so a client showing it can fetch it again
+// (GetPR, GetAllReviews) and find the change there.
+type PRUpdated struct {
+	// Owner, Repo and Number name the PR. Repo is the short name, as GetPR
+	// takes it; Owner is spelled as GitHub spells it, which may differ in case
+	// from the config.
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	// Event is the delivery's event and action
+	// ("pull_request_review.submitted"), or "sections" when what changed is
+	// the review list's rows for the PR rather than the PR.
+	Event string `json:"event"`
+	// Changes names what was rewritten: "head" (the head or base moved; the PR
+	// was fetched again in full, diff included), "pr" (the PR's title,
+	// description, state, labels, review requests), a cache field ("reviews",
+	// "comments", "review_threads", "ci_status", "metadata", ...), or
+	// "sections".
+	Changes []string `json:"changes"`
+	// HeadSHA is the PR's head as the delivery saw it; empty when the delivery
+	// carries no PR.
+	HeadSHA string `json:"head_sha,omitempty"`
+	// Actor is who did it; empty for CI.
+	Actor string `json:"actor,omitempty"`
+	// Own is true when Actor is the configured GithubUsername: the change is
+	// the user's own, made here or on GitHub.
+	Own bool `json:"own"`
+	// Summary says what happened in a few words ("alice approved", "Checks
+	// failed: build"), without naming the PR; empty for a change not worth
+	// announcing (a check starting, a row rewritten).
+	Summary string `json:"summary,omitempty"`
+	// Time is the server's clock when it was sent (RFC 3339).
+	Time string `json:"time"`
+}
+
+// NotifyPRChanged tells a subscribed client that a webhook delivery changed a
+// PR. It is the hook the workflow layer is wired to (see
+// workflows.SetPRChangedHook).
+func NotifyPRChanged(c workflows.PRChange) {
+	n := notifier
+	if n == nil {
+		return
+	}
+	n.Notify(PRUpdatedMethod, prUpdated(c, config.C().GithubUsername, time.Now()))
+}
+
+func prUpdated(c workflows.PRChange, me string, now time.Time) PRUpdated {
+	return PRUpdated{
+		Owner:   c.Key.Owner,
+		Repo:    c.Key.Repo,
+		Number:  c.Key.Number,
+		Event:   c.Event,
+		Changes: c.Changes,
+		HeadSHA: c.HeadSHA,
+		Actor:   c.Actor,
+		Own:     c.Actor != "" && strings.EqualFold(c.Actor, me),
+		Summary: c.Summary,
+		Time:    now.Format(time.RFC3339),
+	}
 }
 
 // notification is a JSON-RPC 1.0 notification as it goes on the wire.
@@ -192,7 +336,8 @@ type SubscribeReply struct {
 }
 
 // Subscribe turns on server notifications for this connection: a
-// Server.Heartbeat every interval, and whatever events the server sends.
+// Server.Heartbeat every interval, and whatever events the server sends — a
+// Server.PRUpdated for each PR a webhook delivery changes.
 // Calling it again changes the interval.
 func (h *RPCHandler) Subscribe(args *SubscribeArgs, reply *SubscribeReply) error {
 	if notifier == nil {

@@ -75,6 +75,34 @@ class Backend {
         return this.rpc('E2E.SetReviewEase', { enabled });
     }
 
+    /**
+     * Hold background runs (plugin re-runs, AI runs) short of landing, or,
+     * with `false`, land every run held.
+     */
+    holdRuns(held: boolean) {
+        return this.rpc('E2E.HoldRuns', { held });
+    }
+
+    /** Run a plugin for a PR as the server does on its own, announcing each step. */
+    runPlugin(plugin: string, pr: { owner: string; repo: string; number: number } = PR42) {
+        return this.rpc('E2E.RunPlugin', {
+            Owner: pr.owner,
+            Repo: pr.repo,
+            Number: pr.number,
+            Plugin: plugin,
+        });
+    }
+
+    /** Run an AI feature for a PR as the server does on its own, announcing each step. */
+    runAIFeature(feature: string, pr: { owner: string; repo: string; number: number } = PR42) {
+        return this.rpc('E2E.RunAIFeature', {
+            Owner: pr.owner,
+            Repo: pr.repo,
+            Number: pr.number,
+            Feature: feature,
+        });
+    }
+
     /** Stop or resume the backend's heartbeats. */
     setHeartbeat(beating: boolean) {
         return this.rpc('E2E.SetHeartbeat', { beating });
@@ -84,6 +112,31 @@ class Backend {
     setDiagram(enabled: boolean, mermaid?: string) {
         return this.rpc('E2E.SetDiagram', { enabled, mermaid });
     }
+
+    /**
+     * Change a PR as a webhook delivery would, and push the Server.PRUpdated
+     * notification the server sends for it.
+     */
+    updatePR(pr: { owner: string; repo: string; number: number }, update: PRUpdateFields) {
+        return this.rpc('E2E.UpdatePR', {
+            Owner: pr.owner,
+            Repo: pr.repo,
+            Number: pr.number,
+            ...update,
+        });
+    }
+}
+
+export interface PRUpdateFields {
+    Title?: string;
+    Comment?: { author: string; body: string };
+    /** Swap the first text for the second in the PR's diff. */
+    ReplaceInDiff?: [string, string];
+    Event?: string;
+    Changes?: string[];
+    Actor?: string;
+    Own?: boolean;
+    Summary?: string;
 }
 
 export interface LspMessage {

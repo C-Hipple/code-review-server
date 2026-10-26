@@ -4,7 +4,8 @@ import { expect, modal, openReview, test } from './harness/test';
 
 // The fake backend enables comments-addressed and serves a canned report for
 // acme/widgets#42: bob's thread on src/greet.ts is unresolved, with alice's
-// reply after the latest commit. A run reads "pending" for one poll first.
+// reply after the latest commit. A run reads "pending" until it lands a moment
+// later (or until a spec lifts backend.holdRuns), announcing both.
 
 const button = /Comments addressed\?/;
 
@@ -28,15 +29,13 @@ test.describe('AI report', () => {
         await openReview(page);
         const toolbarButton = page.getByRole('button', { name: button });
         await expect(toolbarButton).toBeEnabled();
-        const loads = (await backend.calls('GetAIOutput')).length;
 
-        // Held, the first poll keeps the run in flight until it's released.
-        await backend.holdNext('GetAIOutput');
+        // Held, the run stays in flight until it's released.
+        await backend.holdRuns(true);
         await toolbarButton.click();
 
         // Never run for this PR: the click asks for a run, and the button
         // spins until it lands rather than opening an empty report.
-        await expect.poll(async () => (await backend.calls('GetAIOutput')).length).toBe(loads + 1);
         await expect(toolbarButton).toBeDisabled();
         await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
         const runs = await backend.calls('RunAIFeature');
@@ -50,8 +49,16 @@ test.describe('AI report', () => {
             },
         ]);
 
+        // Nothing is asked of the server while the run is in flight: it says
+        // when the run lands.
+        await page.waitForTimeout(500);
+        const reads = (await backend.calls('GetAIOutput')).length;
+        await page.waitForTimeout(3000);
+        expect(await backend.calls('GetAIOutput')).toHaveLength(reads);
+        await expect(toolbarButton).toBeDisabled();
+
         // Once it lands, the toolbar says so and counts what needs attention.
-        await backend.release('GetAIOutput');
+        await backend.holdRuns(false);
         await expect(page.getByRole('status')).toHaveText('✦ Comments addressed? is ready');
         const counted = page.getByRole('button', { name: /Comments addressed\? \(1\)/ });
         await expect(counted).toBeEnabled();
@@ -76,6 +83,18 @@ test.describe('AI report', () => {
         await expect(
             page.locator('.hover-thread').filter({ hasText: 'Should punctuation have a default?' })
         ).toBeVisible();
+    });
+
+    test('counts a run the server started on its own', async ({ page, backend }) => {
+        await openReview(page);
+        await expect(page.getByRole('button', { name: button })).toBeEnabled();
+
+        // An automatic run: nothing on the page asked for it.
+        await backend.runAIFeature('comments-addressed');
+        await expect(
+            page.getByRole('button', { name: /Comments addressed\? \(1\)/ })
+        ).toBeEnabled();
+        expect(await backend.calls('RunAIFeature')).toHaveLength(0);
     });
 
     test('says so when the run cannot start', async ({ page, backend }) => {
@@ -133,7 +152,10 @@ test.describe('AI report', () => {
 test.describe('AI view', () => {
     const aiView = '/?owner=acme&repo=widgets&number=42&view=ai';
 
-    test('runs comments-addressed on open and polls', async ({ page, backend }) => {
+    test('runs comments-addressed on open and shows it once it lands', async ({
+        page,
+        backend,
+    }) => {
         await page.goto(aiView);
 
         await expect(page).toHaveTitle('AI acme/widgets::42');
@@ -145,7 +167,8 @@ test.describe('AI view', () => {
         // The open thread shows the code it was left on.
         await expect(page.getByTestId('ai-item-code')).toContainText('+    punctuation: string;');
 
-        // Never run for this PR, so opening the page asked for a run, then polled.
+        // Never run for this PR, so opening the page asked for a run, and read
+        // the result once the server announced it.
         const runs = await backend.calls('RunAIFeature');
         expect(runs.map(c => c.params)).toEqual([
             {

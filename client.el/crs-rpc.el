@@ -39,11 +39,48 @@ Returns the process handle."
         ;; Check if process is still alive after startup
         (unless (process-live-p crs--process)
           (let ((stderr-content (with-current-buffer stderr-buffer (buffer-string))))
-            (error "Server process died immediately. Stderr: %s" stderr-content)))))
+            (error "Server process died immediately. Stderr: %s" stderr-content)))
+
+        ;; Hear about plugin and AI runs as they start and land.
+        (crs--subscribe)))
 
     (message "Started crs JSON-RPC server")
     (crs-list-plugins)
     crs--process))
+
+(defun crs--subscribe ()
+  "Ask the server for its notifications.
+Runs `crs-server-subscribed-hook' once it has accepted.  A server from
+before notifications refuses, and buffers then show what they read when
+they were opened or refreshed by hand."
+  (crs--send-request
+   "RPCHandler.Subscribe"
+   (vector (list (cons 'IntervalSeconds crs--heartbeat-seconds)))
+   (lambda (result)
+     (unless (cdr (assq 'error result))
+       (run-hooks 'crs-server-subscribed-hook)))))
+
+(defun crs--server-same-pr-p (data owner repo number)
+  "Non-nil when notification DATA names PR OWNER/REPO #NUMBER.
+GitHub names ignore case."
+  (and (equal (cdr (assq 'number data)) number)
+       (stringp owner) (stringp repo)
+       (equal (downcase (or (cdr (assq 'owner data)) "")) (downcase owner))
+       (equal (downcase (or (cdr (assq 'repo data)) "")) (downcase repo))))
+
+(defun crs--handle-notification (method params)
+  "Hand the server's notification METHOD to `crs-server-notification-functions'.
+PARAMS is its params array; each function gets its one element.  One
+that fails is reported, and the rest still run."
+  (let ((data (and (vectorp params) (> (length params) 0) (aref params 0))))
+    (run-hook-wrapped
+     'crs-server-notification-functions
+     (lambda (fn)
+       (condition-case err
+           (funcall fn method data)
+         (error (message "crs: handling %s failed: %s"
+                         method (error-message-string err))))
+       nil))))
 
 ;;;###autoload
 (defun crs-shutdown-server ()
@@ -110,25 +147,32 @@ The keyword arguments reproduce `json-read-from-string' semantics exactly
     (json-read-from-string string)))
 
 (defun crs--handle-response (response-line)
-  "Handle a single JSON-RPC response line."
+  "Handle a single JSON-RPC line: a response, or a notification.
+A notification names a `method' and has no id; it goes to
+`crs--handle-notification'."
   (when crs-debug
     (message "DEBUG crs response: %s"
              (truncate-string-to-width response-line crs-debug-max-length nil nil t)))
   (condition-case err
       (let ((response (crs--parse-json response-line)))
         (let ((id (cdr (assq 'id response)))
+              (method (cdr (assq 'method response)))
               (result (cdr (assq 'result response)))
               (error (cdr (assq 'error response))))
-          (if error
-              (let ((callback (gethash id crs--pending-requests)))
-                (message "JSON-RPC Error: %s" (if (stringp error) error (cdr (assq 'message error))))
-                (when callback
-                  (remhash id crs--pending-requests)
-                  (funcall callback `((error . ,error)))))
+          (cond
+           ((and (stringp method) (null id))
+            (crs--handle-notification method (cdr (assq 'params response))))
+           (error
+            (let ((callback (gethash id crs--pending-requests)))
+              (message "JSON-RPC Error: %s" (if (stringp error) error (cdr (assq 'message error))))
+              (when callback
+                (remhash id crs--pending-requests)
+                (funcall callback `((error . ,error))))))
+           (t
             (let ((callback (gethash id crs--pending-requests)))
               (when callback
                 (remhash id crs--pending-requests)
-                (funcall callback result))))))
+                (funcall callback result)))))))
     (error
      (message "Error parsing JSON-RPC response: %s" err))))
 

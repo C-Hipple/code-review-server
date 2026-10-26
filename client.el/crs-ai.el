@@ -10,8 +10,10 @@
 ;;
 ;; A run happens in the background on the server.  Opening a feature's buffer
 ;; asks for one when the feature has never run for the PR or its result is
-;; stale (the server answers from its cache when nothing changed), and the
-;; buffer then polls while the output reads "pending".
+;; stale (the server answers from its cache when nothing changed).  The
+;; server announces every run of a feature as it starts and as it lands
+;; (Server.AIOutputChanged), whoever started it, and each open buffer showing
+;; that feature for the PR reads its output again then: nothing polls.
 ;;
 ;; The body the server sends is a complete markdown report, so this client
 ;; renders it as-is; a feature without a typed report also gets its line
@@ -106,12 +108,6 @@ BUFFER's `crs--ai-insert-function' inserts it, by default as a report."
         (goto-char (min pos (point-max))))
       (setq crs--ai-output output))))
 
-(defun crs--ai-cancel-poll ()
-  "Stop polling for the current AI output buffer."
-  (when (timerp crs--ai-poll-timer)
-    (cancel-timer crs--ai-poll-timer))
-  (setq crs--ai-poll-timer nil))
-
 (defun crs--ai-args (&optional force)
   "RPC arguments naming the current buffer's PR and feature.
 FORCE, when non-nil, adds Force for RunAIFeature."
@@ -127,31 +123,6 @@ FORCE, when non-nil, adds Force for RunAIFeature."
     (cond ((null err) nil)
           ((stringp err) err)
           (t (format "%s" (or (cdr (assq 'message err)) err))))))
-
-(defun crs--ai-continue (buffer output)
-  "Keep polling BUFFER while OUTPUT is pending, within `crs-ai-poll-timeout'."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (crs--ai-cancel-poll)
-      (when (crs--ai-pending-p output)
-        (unless crs--ai-poll-started
-          (setq crs--ai-poll-started (float-time)))
-        (if (> (- (float-time) crs--ai-poll-started) crs-ai-poll-timeout)
-            (progn
-              (setq crs--ai-poll-started nil)
-              (message "%s is still running; press r later to refresh."
-                       (cdr (assq 'name crs--ai-feature))))
-          (setq crs--ai-poll-timer
-                (run-with-timer crs-ai-poll-interval nil #'crs--ai-poll buffer))))
-      (unless (crs--ai-pending-p output)
-        (setq crs--ai-poll-started nil)))))
-
-(defun crs--ai-poll (buffer)
-  "Fetch the output shown in BUFFER again, if BUFFER still exists."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq crs--ai-poll-timer nil)
-      (crs--ai-fetch buffer nil))))
 
 (defun crs--ai-fetch (buffer run-if-needed)
   "Fetch and render the output for BUFFER's PR and feature.
@@ -170,13 +141,13 @@ With RUN-IF-NEEDED, start a run when there is no current result."
               ((null output) (message "The server returned no output for %s." feature-id))
               (t
                (crs--ai-render buffer output)
-               (if (and run-if-needed (crs--ai-should-run-p output))
-                   (crs--ai-run buffer nil)
-                 (crs--ai-continue buffer output)))))))))))
+               (when (and run-if-needed (crs--ai-should-run-p output))
+                 (crs--ai-run buffer nil)))))))))))
 
 (defun crs--ai-run (buffer force)
-  "Ask the server to run BUFFER's feature for its PR, then poll.
-With FORCE, run even when the stored result covers the PR's inputs."
+  "Ask the server to run BUFFER's feature for its PR.
+With FORCE, run even when the stored result covers the PR's inputs.  The
+server announces the run landing, and BUFFER reads it then."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (crs--send-request
@@ -191,9 +162,43 @@ With FORCE, run even when the stored result covers the PR's inputs."
              (when output
                (crs--ai-render buffer output))
              (unless (eq (cdr (assq 'okay result)) t)
-               (message "%s" (cdr (assq 'message result))))
-             (when output
-               (crs--ai-continue buffer output))))))))))
+               (message "%s" (cdr (assq 'message result))))))))))))
+
+(defun crs--ai-buffers (&optional owner repo number feature-id)
+  "Live buffers showing an AI feature, or only FEATURE-ID's for OWNER/REPO #NUMBER.
+That is report buffers and the change diagram's alike."
+  (seq-filter (lambda (buffer)
+                (let ((feature (buffer-local-value 'crs--ai-feature buffer)))
+                  (and feature
+                       (or (null number)
+                           (and (equal (cdr (assq 'id feature)) feature-id)
+                                (with-current-buffer buffer
+                                  (crs--server-same-pr-p
+                                   (list (cons 'owner owner) (cons 'repo repo)
+                                         (cons 'number number))
+                                   crs--ai-owner crs--ai-repo crs--ai-number)))))))
+              (buffer-list)))
+
+(defun crs--ai-on-notification (method data)
+  "Follow a Server.AIOutputChanged notification, METHOD with DATA.
+Each open buffer showing the feature for the PR reads its output again."
+  (when (equal method "Server.AIOutputChanged")
+    (let ((owner (cdr (assq 'owner data)))
+          (repo (cdr (assq 'repo data)))
+          (number (cdr (assq 'number data)))
+          (feature (cdr (assq 'feature data))))
+      (when (and (stringp owner) (stringp repo) (integerp number) (stringp feature))
+        (dolist (buffer (crs--ai-buffers owner repo number feature))
+          (crs--ai-fetch buffer nil))))))
+
+(defun crs--ai-on-subscribed ()
+  "Read every open AI buffer's output again, for a new server.
+A run the old one had in flight is gone with it, so none would land."
+  (dolist (buffer (crs--ai-buffers))
+    (crs--ai-fetch buffer nil)))
+
+(add-hook 'crs-server-notification-functions #'crs--ai-on-notification)
+(add-hook 'crs-server-subscribed-hook #'crs--ai-on-subscribed)
 
 (defun crs--ai-report-features (features)
   "The FEATURES, as ListAIFeatures lists them, that have a report to open.
@@ -269,7 +274,8 @@ report buffer."
 (defun crs-get-ai-output ()
   "Show an AI feature's report for the PR in the current review buffer.
 Starts a run when the feature has never run for the PR or its report is
-stale, and keeps the buffer updated while the run is pending."
+stale.  The buffer shows each run of the feature for the PR as it starts
+and lands."
   (interactive)
   (let* ((info (crs--get-current-review-info))
          (owner (nth 0 info))
@@ -327,8 +333,7 @@ already covers the PR."
   "Major mode for an AI feature's report on a PR.
 Inherits from `markdown-mode' and is read-only.
 \\{crs-ai-output-mode-map}"
-  (setq buffer-read-only t)
-  (add-hook 'kill-buffer-hook #'crs--ai-cancel-poll nil t))
+  (setq buffer-read-only t))
 
 (provide 'crs-ai)
 ;;; crs-ai.el ends here

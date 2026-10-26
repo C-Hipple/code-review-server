@@ -6,7 +6,7 @@ If you want to build a new client (e.g. for VS Code, Vim, or a TUI), you should 
 
 The server binary `crs` (installed by `go install ./...`; `codereviewserver` before the module was renamed) should be spawned as a child process by your client. Your client send requests to the server's `stdin` and reads responses from `stdout`.
 
-To hear from the server without polling it, call `RPCHandler.Subscribe`: the server then sends a `Server.Heartbeat` notification every interval (and any other event it pushes) on the same `stdout`. Tell a notification from a response by its `method`, and treat a run of missed heartbeats as the server being gone. See [Server Notifications](protocol.md#server-notifications).
+To hear from the server without polling it, call `RPCHandler.Subscribe`: the server then sends a `Server.Heartbeat` notification every interval, `Server.PluginOutputChanged` / `Server.AIOutputChanged` as each plugin or AI run for a PR starts and lands, and a `Server.PRUpdated` whenever a GitHub webhook delivery changes a PR (read it again with `GetPR` to show the change), on the same `stdout`. Tell a notification from a response by its `method`, read `GetPluginOutput` / `GetAIOutput` again when a change names the PR you are showing (and once after subscribing, to catch up), and treat a run of missed heartbeats as the server being gone. See [Server Notifications](protocol.md#server-notifications).
 
 If you are building a **web** client, [Web Client Features](web_client_features.md) inventories everything the shipped `bun_client` does — the HTTP/WebSocket bridge that fronts the stdio server, the full feature list, which protocol methods it uses (and which it doesn't), and the gotchas worth knowing before you reimplement diff parsing or comment positions.
 

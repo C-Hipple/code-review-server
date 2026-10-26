@@ -328,6 +328,57 @@ export interface FileOrderReply {
     files: string[] | null;
 }
 
+/**
+ * Service worker → content script: the file order stored for the tab's PR
+ * changed (a file-ordering run landed), so the page should ask for it again.
+ */
+export interface FileOrderChangedMessage {
+    type: 'crs-file-order-changed';
+}
+
+// --- The server's change events ------------------------------------------------
+
+/**
+ * The name of the port an extension page opens (chrome.runtime.connect) to
+ * hear the server's change events. The service worker answers only the
+ * extension's own pages, as it does for RPC.
+ */
+export const EVENTS_PORT = 'crs-events';
+
+/** A PR's stored plugin output changed (the server's Server.PluginOutputChanged). */
+export interface PluginOutputChanged {
+    owner: string;
+    repo: string;
+    number: number;
+    /** The plugin whose result changed; empty when a rerun cleared them all. */
+    plugin: string;
+    /** Its status now; empty when it was cleared for a rerun. */
+    status: string;
+}
+
+/** An AI feature's output for a PR changed (the server's Server.AIOutputChanged). */
+export interface AIOutputChanged {
+    owner: string;
+    repo: string;
+    number: number;
+    feature: string;
+    /** `pending` as a run starts, then the stored result's status. */
+    status: string;
+}
+
+/**
+ * Service worker → page, over an events port. Each names what changed, never
+ * the output, which the page reads again.
+ */
+export type ServerEventMessage =
+    | { type: 'plugin-output-changed'; change: PluginOutputChanged }
+    | { type: 'ai-output-changed'; change: AIOutputChanged }
+    /**
+     * A new server is listening: whatever happened before it subscribed was
+     * never announced, so a page reads everything it shows again.
+     */
+    | { type: 'resync' };
+
 export type ExtensionRequest =
     RpcRequestMessage | StatusRequestMessage | ToolsRequestMessage | FileOrderRequestMessage;
 

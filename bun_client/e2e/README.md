@@ -6,17 +6,30 @@ no GitHub token, network, or SQLite database:
 
 | Bridge spawns                              | E2E stand-in          | What it does                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crs --server` (Go backend)                | `harness/fake_crs.ts` | Newline-delimited JSON-RPC over stdio, serving the PRs in `fixtures/prs.ts`, with in-memory comments, reviews and feedback. Enables the comments-addressed AI feature, whose runs read `pending` for one poll; change-diagram is off unless a spec calls `backend.setDiagram`. Review-ease is on, rating three of the four PRs, unless a spec calls `backend.setReviewEase(false)`. |
+| `crs --server` (Go backend)                | `harness/fake_crs.ts` | Newline-delimited JSON-RPC over stdio, serving the PRs in `fixtures/prs.ts`, with in-memory comments, reviews and feedback. Enables the comments-addressed AI feature, whose runs read `pending` for a moment; change-diagram is off unless a spec calls `backend.setDiagram`. Review-ease is on, rating three of the four PRs, unless a spec calls `backend.setReviewEase(false)`. |
 | `diff-lsp`                                 | `harness/fake_lsp.ts` | Reads the bridge's tempfile like the real diff-lsp and resolves positions the same way (1-indexed tempfile line, raw diff column).                                                                                                                                                                                                                                                  |
 | `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`.                                                                                                                                                                                                                                                                                                                         |
 
 The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
 second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
-`backend.setHeartbeat(false)`, which `E2E.Reset` undoes.
+`backend.setHeartbeat(false)`, which `E2E.Reset` undoes. `backend.updatePR(pr, ...)`
+plays a webhook delivery: it changes the PR's fixture (a title, a conversation
+comment, text swapped in the diff) and sends the `Server.PRUpdated` the server would
+(`live_updates.e2e.ts`).
 
 It serves filtered diffs too (`ListDiffFilters`, `GetFilteredDiff`): on
 `acme/widgets#42`, "Since my last review" is the `src/main.ts` part of its diff;
 every other filter and PR has no baseline.
+
+It runs plugin re-runs and AI runs the way the server does: in the
+background, on a timer, announcing each step with a `Server.PluginOutputChanged`
+or `Server.AIOutputChanged` notification (a re-run is cleared, then marked
+pending, then lands; an AI run is pending, then lands). The pages read the
+output again on each announcement and never poll for it. `backend.holdRuns(true)`
+keeps runs short of landing until `backend.holdRuns(false)`, so a spec can look
+at a pending run, or check that nothing is asked for while one is in flight;
+`backend.runPlugin` and `backend.runAIFeature` start a run as the server would
+on its own, with nothing on the page asking for it.
 
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.

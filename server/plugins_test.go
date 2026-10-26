@@ -3,8 +3,10 @@ package server
 import (
 	"crs/config"
 	"crs/database"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -350,5 +352,203 @@ func TestRunPlugins_StoresAFailedRunWithItsOutput(t *testing.T) {
 		if !strings.Contains(got.Result, want) {
 			t.Errorf("stored result missing %q:\n%s", want, got.Result)
 		}
+	}
+}
+
+// subscribedNotifier stands a subscribed notifier in for the stdio
+// connection's for the rest of the test, and returns what it writes.
+func subscribedNotifier(t *testing.T) <-chan string {
+	t.Helper()
+	w, out := lines(t)
+	saved := notifier
+	notifier = newNotifier(w)
+	notifier.Subscribe(time.Hour)
+	t.Cleanup(func() {
+		notifier.Unsubscribe()
+		notifier = saved
+	})
+	return out
+}
+
+// pluginStatuses collects the Server.PluginOutputChanged notifications for
+// owner/repo#1 written until the output has been quiet for `quiet`, as each
+// plugin's statuses in order.
+func pluginStatuses(t *testing.T, out <-chan string, quiet time.Duration) map[string][]string {
+	t.Helper()
+	return prPluginStatuses(t, out, quiet, "owner", "repo", 1)
+}
+
+func prPluginStatuses(t *testing.T, out <-chan string, quiet time.Duration, owner, repo string, number int) map[string][]string {
+	t.Helper()
+	got := map[string][]string{}
+	for {
+		var line string
+		select {
+		case line = <-out:
+		case <-time.After(quiet):
+			return got
+		}
+		var n struct {
+			Method string                `json:"method"`
+			Params []PluginOutputChanged `json:"params"`
+			ID     any                   `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &n); err != nil {
+			t.Fatalf("not JSON: %s: %v", line, err)
+		}
+		if n.Method != PluginOutputChangedMethod || n.ID != nil || len(n.Params) != 1 {
+			t.Fatalf("not a %s notification: %s", PluginOutputChangedMethod, line)
+		}
+		p := n.Params[0]
+		if p.Owner != owner || p.Repo != repo || p.Number != number {
+			t.Errorf("notification names %s/%s#%d, want %s/%s#%d", p.Owner, p.Repo, p.Number, owner, repo, number)
+		}
+		got[p.Plugin] = append(got[p.Plugin], p.Status)
+	}
+}
+
+func TestRunPlugins_AnnouncesEachResultItStores(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	okScript := filepath.Join(dir, "ok.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho fine\n"), 0755)
+	brokenScript := filepath.Join(dir, "broken.sh")
+	os.WriteFile(brokenScript, []byte("#!/bin/sh\nexit 3\n"), 0755)
+	config.SetC(config.Config{
+		DB: db,
+		Plugins: []config.Plugin{
+			{Name: "ok", Command: okScript},
+			{Name: "broken", Command: brokenScript},
+			{Name: "expensive", Command: okScript, OnlyOnDemand: true},
+		},
+	})
+	out := subscribedNotifier(t)
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	got := pluginStatuses(t, out, 100*time.Millisecond)
+	want := map[string][]string{
+		"ok":        {"pending", "success"},
+		"broken":    {"pending", "error"},
+		"expensive": {"deferred"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("announced %v, want %v", got, want)
+	}
+
+	// Each announcement follows its write: what it says is what a client
+	// reading the output now sees.
+	results, err := db.GetPluginResults("owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("failed to get plugin results: %v", err)
+	}
+	for name, statuses := range want {
+		if last := statuses[len(statuses)-1]; results[name].Status != last {
+			t.Errorf("%s is stored %q, announced %q", name, results[name].Status, last)
+		}
+	}
+}
+
+func TestRunPlugins_AnnouncesNothingWhenNoRunIsNeeded(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ok.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\necho fine\n"), 0755)
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "ok", Command: script}},
+	})
+	if err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123"); err != nil {
+		t.Fatal(err)
+	}
+	out := subscribedNotifier(t)
+
+	// The stored result already covers this head, so nothing is written and
+	// a client has nothing to read again.
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	if got := pluginStatuses(t, out, 100*time.Millisecond); len(got) != 0 {
+		t.Errorf("announced %v for a run that was skipped", got)
+	}
+}
+
+func TestRunPluginsForce_AnnouncesTheRerun(t *testing.T) {
+	db := setupTestDB(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ok.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\necho again\n"), 0755)
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "ok", Command: script}},
+	})
+	if err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123"); err != nil {
+		t.Fatal(err)
+	}
+	out := subscribedNotifier(t)
+
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "main", true, []string{"ok"})
+
+	want := map[string][]string{"ok": {"pending", "success"}}
+	if got := pluginStatuses(t, out, 100*time.Millisecond); !reflect.DeepEqual(got, want) {
+		t.Errorf("announced %v, want %v", got, want)
+	}
+}
+
+func TestRerunPlugins_AnnouncesTheClearedResultThenTheRun(t *testing.T) {
+	tests := []struct {
+		name    string
+		plugins []string
+		want    map[string][]string
+	}{
+		{
+			name:    "one plugin",
+			plugins: []string{"ok"},
+			want:    map[string][]string{"ok": {"", "pending", "success"}},
+		},
+		{
+			// Every result is cleared at once, then each plugin is announced
+			// as its rerun goes.
+			name: "every plugin",
+			want: map[string][]string{
+				"":          {""},
+				"ok":        {"pending", "success"},
+				"expensive": {"deferred"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CRS_HOME", t.TempDir())
+			t.Setenv("CRS_GITHUB_TOKEN", "test-token")
+			db := setupTestDB(t)
+			script := filepath.Join(t.TempDir(), "ok.sh")
+			os.WriteFile(script, []byte("#!/bin/sh\necho again\n"), 0755)
+			config.SetC(config.Config{
+				DB:            db,
+				SleepDuration: 10 * time.Minute,
+				Plugins: []config.Plugin{
+					{Name: "ok", Command: script},
+					{Name: "expensive", Command: script, OnlyOnDemand: true},
+				},
+			})
+			t.Cleanup(func() { config.SetC(config.Config{}) })
+			// The rerun reads its inputs from the caches, never GitHub.
+			seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+			if err := db.UpsertPluginResult(aiOwner, aiRepo, aiNumber, "ok", "fine", "success", "sha-1"); err != nil {
+				t.Fatal(err)
+			}
+			out := subscribedNotifier(t)
+
+			var reply RerunPluginsReply
+			args := &RerunPluginsArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Plugins: tt.plugins}
+			if err := (&RPCHandler{}).RerunPlugins(args, &reply); err != nil || !reply.Okay {
+				t.Fatalf("RerunPlugins = %v, okay %v", err, reply.Okay)
+			}
+
+			got := prPluginStatuses(t, out, time.Second, aiOwner, aiRepo, aiNumber)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("announced %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

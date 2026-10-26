@@ -6,10 +6,13 @@
 // newline-delimited JSON-RPC. Each native message it sends is one of:
 //
 // - a JSON-RPC response `{id, result, error}`, forwarded verbatim;
+// - a JSON-RPC notification `{method, params, id: null}`, which the server
+//   sends unasked once subscribed (RPCHandler.Subscribe), also verbatim;
 // - a `crs_chunk`: a piece of a response too large for one native message
 //   (Chrome caps host → extension messages at 1 MB). A stream's chunks arrive
 //   contiguously and in order, since one writer serializes the host's output;
-//   concatenating their `data` and JSON.parse-ing the result gives the response;
+//   concatenating their `data` and JSON.parse-ing the result gives the response
+//   (or, should one ever be that large, the notification);
 // - a `crs_host` event: the server started (`ready`), could not be started
 //   (`error`), or died (`server_exited`). The host exits after the last two.
 
@@ -73,6 +76,15 @@ export interface JsonRpcResponse {
     error: unknown;
 }
 
+/**
+ * A JSON-RPC 1.0 notification: the server speaking unasked. Its data is
+ * `params[0]`; it has no id and wants no reply.
+ */
+export interface JsonRpcNotification {
+    method: string;
+    params: unknown[];
+}
+
 /** A JSON-RPC 1.0 request; Go's jsonrpc takes params as a one-element array. */
 export interface JsonRpcRequest {
     method: string;
@@ -82,6 +94,7 @@ export interface JsonRpcRequest {
 
 export type HostMessage =
     | { type: 'response'; response: JsonRpcResponse }
+    | { type: 'notification'; notification: JsonRpcNotification }
     | { type: 'chunk'; chunk: Chunk }
     | { type: 'host'; event: HostEvent }
     | { type: 'invalid'; reason: string };
@@ -142,7 +155,14 @@ export function classifyHostMessage(msg: unknown): HostMessage {
     if (typeof msg.id === 'number' && 'result' in msg && 'error' in msg) {
         return { type: 'response', response: msg as unknown as JsonRpcResponse };
     }
-    return { type: 'invalid', reason: 'neither a response, a chunk nor a host event' };
+    if (typeof msg.method === 'string' && (msg.id === null || msg.id === undefined)) {
+        const params = Array.isArray(msg.params) ? msg.params : [];
+        return { type: 'notification', notification: { method: msg.method, params } };
+    }
+    return {
+        type: 'invalid',
+        reason: 'neither a response, a notification, a chunk nor a host event',
+    };
 }
 
 /** A chunk stream that broke the protocol; the stream is dropped. */

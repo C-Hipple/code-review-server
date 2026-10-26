@@ -348,11 +348,23 @@ test.describe('review view', () => {
         await expect(page.getByText('PENDING', { exact: true })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Summary', exact: true })).toHaveCount(0);
 
-        // Polled until it lands, without closing and reopening the panel.
+        // Shown once the server announces it landed, without closing and
+        // reopening the panel.
         await expect(page.getByText('summarize ran again.')).toBeVisible();
         await expect(page.getByText('PENDING', { exact: true })).toHaveCount(0);
         const [rerun] = await backend.calls('RerunPlugins');
         expect(rerun.params).toMatchObject({ Plugins: ['summarize'] });
+    });
+
+    test('shows a plugin run the server started on its own', async ({ page, backend }) => {
+        await openReview(page);
+        await page.getByRole('button', { name: /^Plugins/ }).click();
+        await expect(page.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+
+        // A push, say: nothing on the page asked for this run.
+        await backend.runPlugin('summarize');
+        await expect(page.getByText('summarize ran again.')).toBeVisible();
+        expect(await backend.calls('RerunPlugins')).toHaveLength(0);
     });
 
     test('starts every plugin collapsed when the output is over 300 lines', async ({ page }) => {

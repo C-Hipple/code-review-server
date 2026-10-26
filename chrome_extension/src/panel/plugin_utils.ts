@@ -70,6 +70,45 @@ export function isPluginPending(output: PluginOutput | null | undefined): boolea
     return pluginStatus(output) === 'pending';
 }
 
+/** What a plugin reads as from the moment its rerun is accepted. */
+export const PENDING_PLUGIN: PluginOutput = {
+    result: '',
+    status: 'pending',
+    body: { body_type: 'markdown', body_content: '' },
+    annotations: null,
+};
+
+/**
+ * The output to show while reruns are awaited. A rerun deletes the plugin's
+ * stored result before the server gets round to marking it pending, so for a
+ * moment the plugin is missing from GetPluginOutput altogether; it reads as
+ * pending meanwhile rather than as never run.
+ */
+export function withAwaitedReruns(
+    outputs: Record<string, PluginOutput>,
+    awaiting: ReadonlySet<string>
+): Record<string, PluginOutput> {
+    const missing = [...awaiting].filter(name => !(name in outputs));
+    if (missing.length === 0) return outputs;
+    const merged = { ...outputs };
+    for (const name of missing) merged[name] = PENDING_PLUGIN;
+    return merged;
+}
+
+/**
+ * The reruns still awaited once `outputs` has arrived. The server deletes a
+ * plugin's result before it accepts the rerun, so any result read after that
+ * which isn't pending is the rerun's own.
+ */
+export function rerunsStillAwaited(
+    awaiting: ReadonlySet<string>,
+    outputs: Record<string, PluginOutput>
+): Set<string> {
+    return new Set(
+        [...awaiting].filter(name => !(name in outputs) || isPluginPending(outputs[name]))
+    );
+}
+
 /**
  * The body to render: the parsed body when it has a known type, else the raw
  * stdout as markdown (what a plugin printing plain text produces).

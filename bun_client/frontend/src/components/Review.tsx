@@ -29,6 +29,8 @@ import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import { usePluginOutputs } from '../hooks/usePluginOutputs';
+import { usePRUpdates } from '../hooks/usePRUpdates';
+import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff } from '../diff_utils';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
@@ -63,6 +65,19 @@ import {
     type PRMetadata,
     type PRResponse,
 } from './review/types';
+
+/** A state update to `next`, keeping the state as it is when they're the same. */
+function unlessSame<T>(next: T): (prev: T) => T {
+    return prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+}
+
+/** Whether two answers for a filtered diff show the same thing, whenever each was computed. */
+function sameFilteredDiff(a: FilteredDiffResult, b: FilteredDiffResult | null): boolean {
+    return (
+        b !== null &&
+        JSON.stringify({ ...a, computed_at: '' }) === JSON.stringify({ ...b, computed_at: '' })
+    );
+}
 
 // Comments are anchored by their position in the PR's full diff, so a row of
 // a filtered diff the full diff doesn't show can't take one.
@@ -103,6 +118,8 @@ export default function Review({
     const [diffFilter, setDiffFilter] = useState('');
     const diffFilterRef = useRef('');
     const [filteredDiff, setFilteredDiff] = useState<FilteredDiffResult | null>(null);
+    const filteredDiffRef = useRef(filteredDiff);
+    filteredDiffRef.current = filteredDiff;
     const [filterLoading, setFilterLoading] = useState(false);
     // A filtered diff is on screen. Its rows' positions are not the PR's, so
     // comments are placed on it, and started from it, through the server's
@@ -118,7 +135,8 @@ export default function Review({
     const [outdatedComments, setOutdatedComments] = useState<Comment[]>([]);
     const [reviews, setReviews] = useState<PRResponse['reviews']>([]);
     const [metadata, setMetadata] = useState<PRMetadata | null>(null);
-    // Loaded when the PR opens, and polled while any plugin is running.
+    // Loaded when the PR opens, and read again as the server announces plugins
+    // starting and finishing.
     const {
         outputs: pluginOutputs,
         executing: executingPlugins,
@@ -279,6 +297,7 @@ export default function Review({
         setFilteredDiff(null);
         loadPR();
         prKey.current = prRef;
+        deferredUpdates.current = null;
         setOpenAIFeature(null);
         setAIOutputs({});
         loadAIFeatures();
@@ -420,9 +439,12 @@ export default function Review({
         await loadFilteredDiff(filter);
     };
 
-    const loadFilteredDiff = async (filter: string) => {
+    // `quiet` is a live refresh asking again: no spinner, nothing said if it
+    // fails, and the diff on screen — expanded hunks and all — left as it is
+    // when the answer hasn't changed.
+    const loadFilteredDiff = async (filter: string, quiet = false) => {
         const key = prKey.current;
-        setFilterLoading(true);
+        if (!quiet) setFilterLoading(true);
         try {
             const res = await getFilteredDiff({
                 Owner: owner,
@@ -431,12 +453,13 @@ export default function Review({
                 Filter: filter,
             });
             if (prKey.current !== key || diffFilterRef.current !== filter) return;
+            if (quiet && sameFilteredDiff(res, filteredDiffRef.current)) return;
             setFilteredDiff(res);
             setDiff(showsFilteredDiff(res) ? res.diff : fullDiffRef.current);
             setExpandedLineIndices(new Set());
         } catch (e) {
             console.error(e);
-            if (prKey.current !== key || diffFilterRef.current !== filter) return;
+            if (quiet || prKey.current !== key || diffFilterRef.current !== filter) return;
             showToast(`Couldn't load the filtered diff: ${rpcErrorMessage(e)}`, 'danger');
             diffFilterRef.current = '';
             setDiffFilter('');
@@ -444,7 +467,7 @@ export default function Review({
             setDiff(fullDiffRef.current);
             setExpandedLineIndices(new Set());
         } finally {
-            if (prKey.current === key) setFilterLoading(false);
+            if (!quiet && prKey.current === key) setFilterLoading(false);
         }
     };
 
@@ -506,6 +529,80 @@ export default function Review({
             setLoading(false);
         }
     };
+
+    // A comment being written is anchored to a row of the diff on screen, so a
+    // live refresh that brings in a new diff waits until it is done.
+    const composing = activeLineIndex !== null || editingCommentId !== null;
+    const composingRef = useRef(composing);
+    composingRef.current = composing;
+    // The updates a live refresh held back for a comment being written.
+    const deferredUpdates = useRef<PRUpdate[] | null>(null);
+    // Bumped per live refresh, so a slow one can't land over a newer one.
+    const refreshSeq = useRef(0);
+
+    // A webhook delivery changed this PR (see server_events.ts): fetch it again
+    // — from the server's caches, which the delivery has just updated — and
+    // take in what changed without the loading state a sync shows. Open
+    // threads, expanded hunks, the comment being written and the feedback
+    // being typed are left as they are; only a new diff resets the expanded
+    // hunks, as a sync does. A toast says what happened.
+    const refreshLive = async (updates: PRUpdate[], held = false) => {
+        const key = prKey.current;
+        const seq = ++refreshSeq.current;
+        let res: PRResponse;
+        try {
+            res = await rpcCall<PRResponse>('RPCHandler.GetPR', [
+                { Owner: owner, Repo: repo, Number: number },
+            ]);
+        } catch (e) {
+            console.error('Could not refresh the PR after the server reported a change:', e);
+            return;
+        }
+        if (prKey.current !== key || refreshSeq.current !== seq) return;
+        const nextDiff = res.diff || '';
+        const diffChanged = nextDiff !== fullDiffRef.current;
+        if (diffChanged && composingRef.current) {
+            const holding = deferredUpdates.current !== null;
+            deferredUpdates.current = [...(deferredUpdates.current ?? []), ...updates];
+            if (!holding) {
+                const message = prUpdateMessage(updates) ?? 'This PR was updated';
+                showToast(`${message}\nIt will refresh once you finish your comment.`, 'info');
+            }
+            return;
+        }
+        if (diffChanged) applyFullDiff(nextDiff);
+        // A push moves the head a filtered diff runs to, and the user's own
+        // review or comment can move its baseline.
+        if (diffFilterRef.current && (diffChanged || updates.some(u => u.own))) {
+            loadFilteredDiff(diffFilterRef.current, true);
+        }
+        // Most deliveries change one thing (a check run, the CI line), so what
+        // came back unchanged keeps its identity and its memos stand.
+        setContent(res.content || '');
+        setComments(unlessSame(res.comments || []));
+        setOutdatedComments(unlessSame(res.outdated_comments || []));
+        setReviews(unlessSame(res.reviews || []));
+        setMetadata(unlessSame<PRMetadata | null>(res.metadata || null));
+        // Comments and a push can change what the AI features' results cover,
+        // which no AI change event reports. The plugins a push re-runs
+        // announce themselves (usePluginOutputs).
+        loadAIOutputs();
+        const message = held ? 'Refreshed with the latest changes' : prUpdateMessage(updates);
+        if (message) showToast(message, 'info');
+    };
+
+    usePRUpdates(
+        update => isChangeFor(update, { owner, repo, number }) && changesPR(update),
+        updates => refreshLive(updates)
+    );
+
+    // Take in what was held back once the comment is posted or cancelled.
+    useEffect(() => {
+        const held = deferredUpdates.current;
+        if (composing || !held) return;
+        deferredUpdates.current = null;
+        refreshLive(held, true);
+    }, [composing]);
 
     // Expand a hunk by fetching extra context lines from the server and
     // splicing them into the current diff text.

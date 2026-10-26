@@ -39,6 +39,8 @@ func RunServer() {
 	// Replies and notifications share stdout; out keeps their lines whole.
 	out := &syncWriter{w: os.Stdout}
 	notifier = newNotifier(out)
+	// A subscribed client hears each AI run start and land.
+	aiRunner.OnChange = notifyAIOutputChanged
 	server.ServeCodec(jsonrpc.NewServerCodec(&Stdio{out: out}))
 }
 
@@ -909,7 +911,8 @@ func (h *RPCHandler) ListPlugins(args *ListPluginsArgs, reply *ListPluginsReply)
 // PR, keyed by the head SHA plus a digest of the PR's discussion (the head SHA
 // alone for a feature that reads only the code, see ai.KeyDigest). A client
 // lists the features, asks for a run — which happens in the background, like a
-// plugin rerun — and polls GetAIOutput while the output reads "pending".
+// plugin rerun — and reads GetAIOutput again when a Server.AIOutputChanged
+// notification says the run started or landed.
 
 type ListAIFeaturesArgs struct{}
 
@@ -1031,7 +1034,8 @@ type AIFeatureOutput struct {
 }
 
 // GetAIOutput returns stored AI feature results for a PR. It is a pure read:
-// it never starts a run, so clients can poll it.
+// it never starts a run, so a client can read it whenever a
+// Server.AIOutputChanged notification names the PR.
 func (h *RPCHandler) GetAIOutput(args *GetAIOutputArgs, reply *GetAIOutputReply) error {
 	var features []ai.Feature
 	if args.Feature != "" {
@@ -1847,6 +1851,7 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 			slog.Error("Error clearing plugin results", "error", err)
 			return err
 		}
+		notifyPluginOutputChanged(args.Owner, args.Repo, args.Number, "", "")
 		slog.Info("Cleared all plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number)
 	} else {
 		// Clear only specified plugin results
@@ -1856,13 +1861,16 @@ func (h *RPCHandler) RerunPlugins(args *RerunPluginsArgs, reply *RerunPluginsRep
 				slog.Error("Error clearing plugin result", "plugin", pluginName, "error", err)
 				return err
 			}
+			notifyPluginOutputChanged(args.Owner, args.Repo, args.Number, pluginName, "")
 		}
 		slog.Info("Cleared specific plugin results for PR, triggering rerun", "repo", args.Repo, "pr", args.Number, "plugins", args.Plugins)
 	}
 
 	// Gather the plugin inputs and run them, all in the background: fetching
 	// the details can reach GitHub on a cache miss, and the caller only needs
-	// to know the rerun was accepted. Results arrive through GetPluginOutput.
+	// to know the rerun was accepted. Each result is announced with a
+	// Server.PluginOutputChanged notification as it lands; GetPluginOutput
+	// serves it.
 	go func() {
 		details, err := GetPRDetails(args.Owner, args.Repo, args.Number, false)
 		if err != nil {

@@ -165,23 +165,39 @@ While one is shown, `crs--buffer-diff' holds the filtered diff.")
 (defvar-local crs--plugin-name nil
   "If non-nil, this buffer displays output only for this plugin.")
 
+(defvar-local crs--plugin-refreshing nil
+  "Non-nil while this plugin output buffer is fetching its output again.
+It is `again' when another refresh was asked for meanwhile, which runs
+once the one in flight lands.")
+
+(defvar crs--plugin-runs-requested (make-hash-table :test 'equal)
+  "Plugin runs asked for from this Emacs, keyed \"OWNER/REPO#NUMBER:PLUGIN\".
+Each is announced in the echo area when the server says it landed.")
+
+;; Server notifications (crs-rpc.el).
+(defvar crs-server-notification-functions nil
+  "Functions called with each notification the server sends.
+Each is called with two arguments: the notification's METHOD, such as
+\"Server.PluginOutputChanged\", and its DATA, the notification's
+params[0] as an alist.  The server sends them once `crs-start-server'
+has subscribed (RPCHandler.Subscribe).")
+
+(defvar crs-server-subscribed-hook nil
+  "Hook run each time a newly started server accepts the subscription.
+Whatever it did before then was never announced, so buffers showing its
+output read it again.")
+
+(defconst crs--heartbeat-seconds 300
+  "The heartbeat interval asked for when subscribing.
+This client does nothing with the server's heartbeat, so it asks for the
+slowest one the server allows.")
+
 ;; AI features (crs-ai.el).
 (defvar crs-ai-features nil
   "The AI features the server has enabled, as ListAIFeatures reports them.
 Only those with a report to open: the ones the server applies itself
 are left out.  Each entry is an alist with at least `id' and `name'.
 Nil until fetched.")
-
-(defcustom crs-ai-poll-interval 2
-  "Seconds between polls of an AI feature run that is still pending."
-  :type 'number
-  :group 'crs)
-
-(defcustom crs-ai-poll-timeout 360
-  "Stop polling a pending AI feature run after this many seconds.
-The server gives a run five minutes, so this leaves room for one to land."
-  :type 'number
-  :group 'crs)
 
 ;; Buffer-local state for AI output buffers.
 (defvar-local crs--ai-owner nil
@@ -194,10 +210,6 @@ The server gives a run five minutes, so this leaves room for one to land."
   "The feature (an alist from ListAIFeatures) an AI output buffer shows.")
 (defvar-local crs--ai-output nil
   "The last output the AI output buffer rendered, from GetAIOutput.")
-(defvar-local crs--ai-poll-timer nil
-  "Timer polling a pending run for this AI output buffer.")
-(defvar-local crs--ai-poll-started nil
-  "When the current round of polling began, as a float time.")
 (defvar-local crs--ai-insert-function nil
   "Function inserting an output into this AI buffer, or nil for a report.
 It takes one argument, the feature's entry of a GetAIOutput reply.  Nil

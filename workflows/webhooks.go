@@ -64,12 +64,17 @@ type webhookDelivery struct {
 	event     any
 }
 
+// eventName is the delivery's event and action, "pull_request.synchronize".
+func (d webhookDelivery) eventName(action string) string {
+	if action == "" {
+		return d.eventType
+	}
+	return d.eventType + "." + action
+}
+
 // describe names the delivery for logs and the action log.
 func (d webhookDelivery) describe(action string) string {
-	name := d.eventType
-	if action != "" {
-		name += "." + action
-	}
+	name := d.eventName(action)
 	if d.id == "" {
 		return name
 	}

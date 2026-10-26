@@ -104,6 +104,51 @@ test.describe('live updates', () => {
         expect(await backend.calls('GetPR')).toHaveLength(2);
     });
 
+    test('a push re-reads the filtered diff on screen and stays on it', async ({
+        page,
+        backend,
+    }) => {
+        await openReview(page);
+        await connected(page);
+        const range = page.getByRole('combobox', { name: 'Diff range' });
+        await range.selectOption({ label: 'Since my last review' });
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+
+        await backend.updatePR(PR42, {
+            ReplaceInDiff: ["console.log('hello');", "console.log('hello, world');"],
+            Event: 'pull_request.synchronize',
+            Changes: ['pr', 'head'],
+            Actor: 'alice',
+            Summary: 'alice pushed new commits',
+        });
+
+        await expect(toast(page)).toHaveText('alice pushed new commits');
+        await expect(diffRow(page, "console.log('hello, world');")).toBeVisible();
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        await expect(range).toHaveValue('since-last-review');
+        expect(await backend.calls('GetFilteredDiff')).toHaveLength(2);
+    });
+
+    test("someone else's comment leaves the filtered diff be", async ({ page, backend }) => {
+        await openReview(page);
+        await connected(page);
+        await page
+            .getByRole('combobox', { name: 'Diff range' })
+            .selectOption({ label: 'Since my last review' });
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+
+        await backend.updatePR(PR42, {
+            Comment: { author: 'carol', body: 'Nice.' },
+            Actor: 'carol',
+            Summary: 'carol commented',
+        });
+
+        await expect(toast(page)).toHaveText('carol commented');
+        await expect(page.locator('.diff-file-row')).toHaveCount(1);
+        // Only the user's own review or comment can move its baseline.
+        expect(await backend.calls('GetFilteredDiff')).toHaveLength(1);
+    });
+
     test('the list refreshes a changed row and highlights it', async ({ page, backend }) => {
         await page.goto('/');
         await expect(page.getByText('Add greeting helper')).toBeVisible();

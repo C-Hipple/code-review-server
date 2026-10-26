@@ -612,6 +612,10 @@ type ReviewJSON struct {
 	// reactions cache rather than stored with the review, so a new thumbs-up
 	// does not have to invalidate the reviews cache.
 	Reactions []git_tools.Reaction `json:"reactions"`
+	// CommitID is the commit the review was submitted against: where the
+	// since-last-review filtered diff starts. Empty for a review cached before
+	// it was recorded.
+	CommitID string `json:"commit_id"`
 }
 
 type CommitJSON struct {
@@ -2584,6 +2588,7 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 			State:       r.GetState(),
 			SubmittedAt: submittedAt,
 			HTMLURL:     r.GetHTMLURL(),
+			CommitID:    r.GetCommitID(),
 		})
 	}
 

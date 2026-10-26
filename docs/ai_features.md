@@ -737,6 +737,19 @@ the plugin response contract (a body and annotations) plus an optional typed
 the in-flight guard, the automatic-run cap, storage and the RPCs come with the
 registration; a client renders any feature's markdown body without changes.
 
+A feature that should look only at what changed since the reviewer last looked
+asks `req.FilteredDiff(ctx, filtereddiff.SinceLastReview)` (or
+`filtereddiff.SinceLastInteraction`, or any filter registered with
+`filtereddiff.Register`) for the PR's [filtered diff](protocol.md#filtered-diffs):
+the same diff clients switch the review to, read from the `PRFilteredDiffs`
+cache the server warms after every fetch or update, and computed on a miss.
+Only a result whose `Status` is `filtereddiff.StatusReady` carries a `Diff`;
+`no-baseline` and `rebased` say there is no meaningful range, and the feature
+should fall back to `req.Diff`. A feature that reads it is not keyed by it: its
+result is keyed by the head SHA and discussion digest as usual, and a new review
+moves the baseline without moving the head, so a feature that depends on the
+range should say which `BaseSHA` its report covers.
+
 ## Decisions on the design's open questions
 
 - **Annotation source.** `PRAnnotation.source` sits beside `plugin` rather

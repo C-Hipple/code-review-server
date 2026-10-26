@@ -105,6 +105,8 @@ status 500).
 | `/api/run-ai-feature` | `RPCHandler.RunAIFeature` | |
 | `/api/get-ai-output` | `RPCHandler.GetAIOutput` | `GET` (query params `owner`/`repo`/`number`/`feature`) or `POST` |
 | `/api/get-hunk-context` | `RPCHandler.GetHunkContext` | |
+| `/api/list-diff-filters` | `RPCHandler.ListDiffFilters` | `GET` or `POST` |
+| `/api/get-filtered-diff` | `RPCHandler.GetFilteredDiff` | |
 | `/api/get-config` | `RPCHandler.GetConfig` | `GET` or `POST` |
 | `/api/update-config` | `RPCHandler.UpdateConfig` | |
 | `/api/rpc` | *any* | Generic escape hatch: `{ method, params, id }` |
@@ -346,6 +348,16 @@ misplaces comments:
 - **File index** — a pill bar above the diff listing every changed file with its
   status icon and `+/−` counts; clicking scrolls to that file, expanding it first,
   with a flash highlight on arrival.
+- **Diff range** (`FilteredDiffBanner.tsx`, `diff_filter_utils.ts`) — a toolbar
+  select, shown when the server answers `ListDiffFilters`, swaps the diff for a
+  [filtered one](protocol.md#filtered-diffs) (*Since my last review*, *Since my last
+  interaction*) from `GetFilteredDiff`, with a banner above the diff naming the range
+  and a way back. A filtered diff's positions aren't the PR's, so while one is shown
+  no comment threads render inline, clicking a line toasts instead of opening the
+  comment form, and the submit preview keeps anchoring local comments to the full
+  diff (kept in `fullDiff`). A result with no diff (`no-baseline`, `rebased`,
+  `error`) leaves the full diff, and its comments, on screen under a banner saying
+  why. Sync and submit re-request the filter, since either can move its baseline.
 - **Mobile layout** — the whole diff becomes a horizontally scrollable
   `width: max-content` block so long lines can be read; inline cards are pinned to
   the left edge with `position: sticky` so they stay readable while scrolled.
@@ -664,7 +676,10 @@ page refreshes once per burst and never waits longer than that.
   expanded hunk context stays unless the diff itself changed. A new diff while an
   inline comment is open or a comment is being edited would move the row it is
   anchored to, so it waits: a toast says the PR changed and will refresh once the
-  comment is done, and closing the form brings it in. A push also reloads the
+  comment is done, and closing the form brings it in. With a filtered diff on
+  screen the new full diff is kept for comment positions, and the filtered one is
+  asked for again after a push or the user's own review or comment (either can
+  move it), and swapped in only if the answer changed. A push also reloads the
   plugin outputs; every refresh reloads the AI outputs' counts.
 - **List** (`PRList.tsx`): any update re-calls `GetAllReviews` in place — filters,
   collapsed sections and scroll kept, no spinner, no plugin warm-up — and the rows

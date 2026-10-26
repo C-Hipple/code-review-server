@@ -17,6 +17,10 @@ plays a webhook delivery: it changes the PR's fixture (a title, a conversation
 comment, text swapped in the diff) and sends the `Server.PRUpdated` the server would
 (`live_updates.e2e.ts`).
 
+It serves filtered diffs too (`ListDiffFilters`, `GetFilteredDiff`): on
+`acme/widgets#42`, "Since my last review" is the `src/main.ts` part of its diff;
+every other filter and PR has no baseline.
+
 Both LSP roles answer hover / definition / references / typeDefinition from the
 declarations in `fixtures/repo`, the checkout PR `acme/widgets#42` points at.
 

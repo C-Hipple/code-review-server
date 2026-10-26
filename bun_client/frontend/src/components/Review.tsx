@@ -2,8 +2,10 @@ import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } fr
 import {
     getAIOutput,
     getConfig,
+    getFilteredDiff,
     getHunkContext,
     listAIFeatures,
+    listDiffFilters,
     rpcCall,
     rpcErrorMessage,
 } from '../api';
@@ -15,7 +17,12 @@ import {
     type AIFeatureOutput,
     type ReportItem,
 } from '../ai_utils';
-import { Button, Theme, StatusVariant } from '../design';
+import { Button, Select, Theme, StatusVariant } from '../design';
+import {
+    showsFilteredDiff,
+    type DiffFilterInfo,
+    type FilteredDiffResult,
+} from '../diff_filter_utils';
 import { useAIBackgroundRuns } from '../hooks/useAIBackgroundRuns';
 import { useLsp } from '../hooks/useLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -47,6 +54,7 @@ import CodeViewerModal from './CodeViewerModal';
 import AddCommentModal from './review/AddCommentModal';
 import DiffView from './review/DiffView';
 import FileIndex from './review/FileIndex';
+import FilteredDiffBanner from './review/FilteredDiffBanner';
 import MobileReviewBar from './review/MobileReviewBar';
 import OutdatedCommentsPanel from './review/OutdatedCommentsPanel';
 import PluginsPanel from './review/PluginsPanel';
@@ -66,6 +74,20 @@ import {
 function unlessSame<T>(next: T): (prev: T) => T {
     return prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
 }
+
+/** Whether two answers for a filtered diff show the same thing, whenever each was computed. */
+function sameFilteredDiff(a: FilteredDiffResult, b: FilteredDiffResult | null): boolean {
+    return (
+        b !== null &&
+        JSON.stringify({ ...a, computed_at: '' }) === JSON.stringify({ ...b, computed_at: '' })
+    );
+}
+
+// Comments are anchored by their position in the PR's full diff, which a
+// filtered diff doesn't share.
+const COMMENTS_NEED_FULL_DIFF =
+    'Comments anchor to the full diff: switch to "Full diff" to comment.';
+const NO_COMMENTS: Comment[] = [];
 
 interface ReviewProps {
     owner: string;
@@ -88,7 +110,25 @@ export default function Review({
     onToast: showToast,
 }: ReviewProps) {
     const [content, setContent] = useState<string>('');
+    // The diff on screen: the PR's full diff, or a filtered one (see
+    // diffFilter below). Hunk expansion splices context into whichever it is.
     const [diff, setDiff] = useState<string>('');
+    // The PR's full diff as the server last sent it. Comment positions count
+    // rows of this diff, so it stays at hand while a filtered one is shown.
+    const [fullDiff, setFullDiff] = useState<string>('');
+    const fullDiffRef = useRef('');
+    // Filtered diffs the server offers, the one picked ('' for the full
+    // diff), and the server's answer for it.
+    const [diffFilters, setDiffFilters] = useState<DiffFilterInfo[]>([]);
+    const [diffFilter, setDiffFilter] = useState('');
+    const diffFilterRef = useRef('');
+    const [filteredDiff, setFilteredDiff] = useState<FilteredDiffResult | null>(null);
+    const filteredDiffRef = useRef(filteredDiff);
+    filteredDiffRef.current = filteredDiff;
+    const [filterLoading, setFilterLoading] = useState(false);
+    // A filtered diff is on screen: its positions are not the PR's, so
+    // comments neither show inline nor start from it.
+    const filteredView = diffFilter !== '' && showsFilteredDiff(filteredDiff);
     // Indices (into diff.split('\n')) of context lines fetched on demand via
     // hunk expansion. These lines are NOT part of the PR's canonical diff, so
     // they must not consume a GitHub comment "position" — otherwise every line
@@ -255,6 +295,9 @@ export default function Review({
     const dockedTabs = allDockedTabs(dockState);
 
     useEffect(() => {
+        diffFilterRef.current = '';
+        setDiffFilter('');
+        setFilteredDiff(null);
         loadPR();
         prKey.current = prRef;
         deferredUpdates.current = null;
@@ -265,6 +308,22 @@ export default function Review({
             prKey.current = '';
         };
     }, [owner, repo, number]);
+
+    // Filtered diffs are optional too: an older server has no such RPC, and
+    // the toolbar then offers no choice of diff.
+    useEffect(() => {
+        let cancelled = false;
+        listDiffFilters()
+            .then(filters => {
+                if (!cancelled) setDiffFilters(filters);
+            })
+            .catch(e => {
+                console.error('Failed to load diff filters:', e);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         if (metadata?.title) {
@@ -356,19 +415,72 @@ export default function Review({
         onToast: showToast,
     });
 
-    // The diff as the server last sent it, before any hunk was expanded into
-    // it: what a live refresh compares a new payload's diff against.
-    const serverDiff = useRef('');
-    const applyServerDiff = (next: string) => {
-        serverDiff.current = next;
-        setDiff(next);
-        setExpandedLineIndices(new Set());
+    // Take the PR's full diff from a reply. It goes on screen unless a
+    // filtered diff is being shown, which stays put.
+    const applyFullDiff = (next: string) => {
+        fullDiffRef.current = next;
+        setFullDiff(next);
+        if (!diffFilterRef.current) {
+            setDiff(next);
+            setExpandedLineIndices(new Set());
+        }
+    };
+
+    // Show the full diff, or the diff a filter narrows it to. A filter that
+    // has no diff to show (no baseline, a rewritten history) leaves the full
+    // diff on screen under a banner saying why.
+    const selectDiffFilter = async (filter: string) => {
+        diffFilterRef.current = filter;
+        setDiffFilter(filter);
+        setActiveLineIndex(null);
+        if (!filter) {
+            setFilteredDiff(null);
+            setDiff(fullDiffRef.current);
+            setExpandedLineIndices(new Set());
+            return;
+        }
+        await loadFilteredDiff(filter);
+    };
+
+    // `quiet` is a live refresh asking again: no spinner, nothing said if it
+    // fails, and the diff on screen — expanded hunks and all — left as it is
+    // when the answer hasn't changed.
+    const loadFilteredDiff = async (filter: string, quiet = false) => {
+        const key = prKey.current;
+        if (!quiet) setFilterLoading(true);
+        try {
+            const res = await getFilteredDiff({
+                Owner: owner,
+                Repo: repo,
+                Number: number,
+                Filter: filter,
+            });
+            if (prKey.current !== key || diffFilterRef.current !== filter) return;
+            if (quiet && sameFilteredDiff(res, filteredDiffRef.current)) return;
+            setFilteredDiff(res);
+            setDiff(showsFilteredDiff(res) ? res.diff : fullDiffRef.current);
+            setExpandedLineIndices(new Set());
+        } catch (e) {
+            console.error(e);
+            if (quiet || prKey.current !== key || diffFilterRef.current !== filter) return;
+            showToast(`Couldn't load the filtered diff: ${rpcErrorMessage(e)}`, 'danger');
+            diffFilterRef.current = '';
+            setDiffFilter('');
+            setFilteredDiff(null);
+            setDiff(fullDiffRef.current);
+            setExpandedLineIndices(new Set());
+        } finally {
+            if (!quiet && prKey.current === key) setFilterLoading(false);
+        }
     };
 
     // Apply a PR response payload to component state.
     const applyPRResponse = (res: PRResponse) => {
         setContent(res.content || '');
-        applyServerDiff(res.diff || '');
+        applyFullDiff(res.diff || '');
+        // A sync or a submitted review can move the filter's baseline or
+        // the head it diffs to, so ask again.
+        if (diffFilterRef.current) loadFilteredDiff(diffFilterRef.current);
         setComments(res.comments || []);
         setOutdatedComments(res.outdated_comments || []);
         setReviews(res.reviews || []);
@@ -451,7 +563,7 @@ export default function Review({
         }
         if (prKey.current !== key || refreshSeq.current !== seq) return;
         const nextDiff = res.diff || '';
-        const diffChanged = nextDiff !== serverDiff.current;
+        const diffChanged = nextDiff !== fullDiffRef.current;
         if (diffChanged && composingRef.current) {
             const holding = deferredUpdates.current !== null;
             deferredUpdates.current = [...(deferredUpdates.current ?? []), ...updates];
@@ -461,7 +573,12 @@ export default function Review({
             }
             return;
         }
-        if (diffChanged) applyServerDiff(nextDiff);
+        if (diffChanged) applyFullDiff(nextDiff);
+        // A push moves the head a filtered diff runs to, and the user's own
+        // review or comment can move its baseline.
+        if (diffFilterRef.current && (diffChanged || updates.some(u => u.own))) {
+            loadFilteredDiff(diffFilterRef.current, true);
+        }
         // Most deliveries change one thing (a check run, the CI line), so what
         // came back unchanged keeps its identity and its memos stand.
         setContent(res.content || '');
@@ -611,7 +728,7 @@ export default function Review({
             }
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [params]);
             setContent(res.content || '');
-            applyServerDiff(res.diff || '');
+            applyFullDiff(res.diff || '');
             const prevIds = new Set(comments.map(c => c.id));
             const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
             if (newComments.length > 0) {
@@ -650,6 +767,10 @@ export default function Review({
         file: string,
         pos: number
     ) => {
+        if (filteredView) {
+            showToast(COMMENTS_NEED_FULL_DIFF, 'info');
+            return;
+        }
         setIsAddingComment(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [
@@ -714,7 +835,7 @@ export default function Review({
                 },
             ]);
             setContent(res.content || '');
-            applyServerDiff(res.diff || '');
+            applyFullDiff(res.diff || '');
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -855,6 +976,10 @@ export default function Review({
     };
 
     const handleCommentClick = (idx: number, file: string, pos: number) => {
+        if (filteredView) {
+            showToast(COMMENTS_NEED_FULL_DIFF, 'info');
+            return;
+        }
         if (activeLineIndex === idx) {
             setActiveLineIndex(null);
             setFilename('');
@@ -997,11 +1122,18 @@ export default function Review({
     // Custom Prism theme adjusted for diff context
     const customDiffTheme = useMemo(() => buildDiffTheme(theme), [theme]);
 
+    // The full diff's rows while a filtered diff is on screen: what comment
+    // positions count.
+    const fullParsedLines = useMemo(
+        () => (filteredView ? parseDiff(fullDiff) : null),
+        [filteredView, fullDiff]
+    );
+
     // What a submit would post: every comment left locally on this PR, each
     // anchored back to the diff rows it was left on.
     const pendingPreviews = useMemo(
-        () => buildPendingPreviews(comments, parsedLines),
-        [comments, parsedLines]
+        () => buildPendingPreviews(comments, fullParsedLines ?? parsedLines),
+        [comments, fullParsedLines, parsedLines]
     );
 
     const handleCancelInline = () => {
@@ -1073,8 +1205,8 @@ export default function Review({
         <DiffView
             parsedLines={parsedLines}
             filterFile={filterFile}
-            comments={comments}
-            outdatedComments={outdatedComments}
+            comments={filteredView ? NO_COMMENTS : comments}
+            outdatedComments={filteredView ? NO_COMMENTS : outdatedComments}
             collapsedFiles={collapsedFiles}
             visibleThreadIds={visibleThreadIds}
             annotations={annotationIndex}
@@ -1177,6 +1309,23 @@ export default function Review({
                 >
                     ↩ Wrap
                 </Button>
+                {diffFilters.length > 0 && (
+                    <Select
+                        aria-label="Diff range"
+                        title={
+                            diffFilters.find(f => f.id === diffFilter)?.description ??
+                            "The PR's whole diff"
+                        }
+                        value={diffFilter}
+                        disabled={loading || filterLoading}
+                        onChange={e => selectDiffFilter(e.target.value)}
+                        options={[
+                            { value: '', label: 'Full diff' },
+                            ...diffFilters.map(f => ({ value: f.id, label: f.name })),
+                        ]}
+                        style={{ minWidth: 0, fontSize: '13px' }}
+                    />
+                )}
                 <Button
                     onClick={() => {
                         setFilename('');
@@ -1542,6 +1691,16 @@ export default function Review({
                                     </div>
                                 )}
                             </div>
+                            {diffFilter && filteredDiff && (
+                                <FilteredDiffBanner
+                                    result={filteredDiff}
+                                    filterName={
+                                        diffFilters.find(f => f.id === diffFilter)?.name ??
+                                        diffFilter
+                                    }
+                                    onShowFullDiff={() => selectDiffFilter('')}
+                                />
+                            )}
                             <div
                                 style={{
                                     padding: '16px',

@@ -26,6 +26,7 @@
 (require 'crs-plugins)
 (require 'crs-ai)
 (require 'crs-diagram)
+(require 'crs-filtered-diff)
 
 
 ;;; Keybindings
@@ -66,6 +67,7 @@
   "M" #'crs-show-change-diagram
   "H" #'crs-toggle-comments
   "A" #'crs-toggle-annotations
+  "F" #'crs-show-filtered-diff
   "f" #'crs-set-review-feedback
   "RET" #'crs-visit-file
   "<return>" #'crs-visit-file
@@ -144,6 +146,7 @@
     "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
+    "F" #'crs-show-filtered-diff
     "f" #'crs-set-review-feedback
     (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before
@@ -174,6 +177,7 @@
     "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
     "A" #'crs-toggle-annotations
+    "F" #'crs-show-filtered-diff
     "f" #'crs-set-review-feedback
     (kbd "RET") #'crs-visit-file
     "O" #'crs-expand-hunk-before

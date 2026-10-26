@@ -8,6 +8,7 @@
 
 (require 'crs-vars)
 (require 'crs-html)
+(require 'crs-filtered-diff)
 (require 'washer)
 
 (declare-function crs--get-comment-context "crs-comments")
@@ -1023,6 +1024,8 @@ for more robust position restoration."
           (new-show-annotations (if (local-variable-p 'crs--buffer-show-annotations)
                                     crs--buffer-show-annotations
                                   nil))
+          ;; Set when a fresh payload arrives under a filtered diff.
+          (refresh-filter nil)
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
@@ -1070,6 +1073,15 @@ for more robust position restoration."
           (setq new-preamble preamble)
           (setq new-annotations (cdr (assq 'annotations content)))))
 
+      ;; A filtered diff (crs-filtered-diff.el) stays on screen through a
+      ;; fresh payload: the payload's full diff is kept for switching back,
+      ;; and the filter is asked again once this render is done.
+      (when (and new-diff crs--buffer-diff-filter)
+        (setq crs--buffer-full-diff new-diff
+              refresh-filter t)
+        (when (crs--filtered-diff-displayed-p)
+          (setq new-diff nil)))
+
       ;; Temporarily set for rendering (before mode change wipes them)
       (setq crs--buffer-diff (or new-diff existing-diff))
       (setq crs--buffer-comments (or new-comments existing-comments))
@@ -1105,8 +1117,11 @@ for more robust position restoration."
         ;; 3. Simplify Headers
         (crs--simplify-diff-headers)
 
-        ;; 4. Insert Comments (only regular comments in-line with diff)
-        (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments)
+        ;; 4. Insert Comments (only regular comments in-line with diff).
+        ;; Their positions count lines of the PR's full diff, so a filtered
+        ;; diff shows none.
+        (unless (crs--filtered-diff-displayed-p)
+          (crs--insert-comments-into-buffer crs--buffer-comments crs--buffer-show-comments))
 
         ;; 4.5. Insert plugin annotations (after comments so their line
         ;; positions account for the interleaved comment blocks)
@@ -1128,7 +1143,13 @@ for more robust position restoration."
                           (format "%d file%s changed, +%d addition%s, -%d deletion%s\n"
                                   nfiles (if (= nfiles 1) "" "s")
                                   adds (if (= adds 1) "" "s")
-                                  dels (if (= dels 1) "" "s")))))
+                                  dels (if (= dels 1) "" "s"))
+                          (if (and crs--buffer-diff-filter crs--buffer-filtered-diff)
+                              (concat (crs--filtered-diff-summary
+                                       crs--buffer-filtered-diff
+                                       (crs--diff-filter-name crs--buffer-diff-filter))
+                                      "\n")
+                            ""))))
                (preamble (concat header "\n" conversation changes-header "\n"))
                (feedback existing-review-feedback))
 
@@ -1201,7 +1222,9 @@ for more robust position restoration."
         ;; Also update point in any windows showing this buffer
         (dolist (win (get-buffer-window-list buffer nil t))
           (set-window-point win final-pos)))
-      (setq buffer-read-only t))))
+      (setq buffer-read-only t)
+      (when refresh-filter
+        (crs--refresh-diff-filter buffer)))))
 
 (provide 'crs-render)
 ;;; crs-render.el ends here

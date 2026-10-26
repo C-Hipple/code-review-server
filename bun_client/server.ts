@@ -412,6 +412,20 @@ Bun.serve<{
             return handleRpc('RPCHandler.GetAIOutput', [body]);
         }
 
+        // Filtered diffs: the PR's diff narrowed to the commits since a
+        // baseline (the reviewer's last review, say), served from the cache.
+        if (
+            url.pathname === '/api/list-diff-filters' &&
+            (req.method === 'POST' || req.method === 'GET')
+        ) {
+            return handleRpc('RPCHandler.ListDiffFilters', [{}]);
+        }
+
+        if (url.pathname === '/api/get-filtered-diff' && req.method === 'POST') {
+            const body = await req.json();
+            return handleRpc('RPCHandler.GetFilteredDiff', [body]);
+        }
+
         if (url.pathname === '/api/get-config' && (req.method === 'POST' || req.method === 'GET')) {
             return handleRpc('RPCHandler.GetConfig', [{}]);
         }

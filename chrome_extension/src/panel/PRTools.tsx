@@ -1,9 +1,10 @@
 // The PR tools view's data: GetPR first (it fills the server's caches for a
 // PR in no list and starts the PR's automatic plugins and applied AI
 // features, as opening a PR in any client does), the feature and plugin
-// lists alongside it, then the outputs — polled while anything runs.
+// lists alongside it, then the outputs — read again whenever the server
+// announces that one changed, never polled.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PullRef } from '../github_url';
 import {
     getAIOutput,
@@ -36,21 +37,19 @@ import {
     type ActionState,
 } from './actions';
 import { runOutcomeNote } from './ai_utils';
-import { automaticPluginNames } from './plugin_utils';
-import { REQUEST_GRACE_MS, shouldPoll } from './poll_utils';
+import { coalesce } from './coalesce';
+import {
+    automaticPluginNames,
+    PENDING_PLUGIN,
+    rerunsStillAwaited,
+    withAwaitedReruns,
+} from './plugin_utils';
 import { PRToolsView, type PRToolsHandlers } from './PRToolsView';
 import { failed, isFatal, loaded, loading, settled, toRpcError, type Resource } from './resource';
-import { useNow, usePolling } from './usePolling';
+import { useNow } from './useNow';
+import { usePRChanges } from './usePRChanges';
 
 type Outputs<T> = Resource<Record<string, T>>;
-
-/** What a plugin reads as from the moment its rerun is accepted. */
-const PENDING_PLUGIN: PluginOutput = {
-    result: '',
-    status: 'pending',
-    body: { body_type: 'markdown', body_content: '' },
-    annotations: null,
-};
 
 function withEntries<T>(prev: Outputs<T>, entries: Record<string, T>): Outputs<T> {
     return { ...prev, value: { ...(prev.value ?? {}), ...entries } };
@@ -74,9 +73,6 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
     const [aiOutputs, setAiOutputs] = useState<Outputs<AIFeatureOutput>>(() => loading());
     const [pluginOutputs, setPluginOutputs] = useState<Outputs<PluginOutput>>(() => loading());
     const [actions, setActions] = useState<ActionState>(NO_ACTIONS);
-    // Runs requested vs. runs whose grace period is over: polling continues
-    // while they differ, even before anything reads `pending`.
-    const [requests, setRequests] = useState({ made: 0, expired: 0 });
     const [attempt, setAttempt] = useState(0);
     const now = useNow();
 
@@ -93,27 +89,58 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
         activity.current = onActivity;
     });
 
-    const markRequested = useCallback(() => {
-        setRequests(r => ({ ...r, made: r.made + 1 }));
-    }, []);
+    // Reads of each kind of output, counted so only the latest one's reply is
+    // applied (replies can arrive out of order), and so a run's reply isn't
+    // applied over a read that started after the run did.
+    const aiReads = useRef(0);
+    const pluginReads = useRef(0);
+    // Plugin reruns accepted whose result hasn't been read yet.
+    const awaiting = useRef<Set<string>>(new Set());
 
-    useEffect(() => {
-        if (requests.made === requests.expired) return;
-        const made = requests.made;
-        const timer = setTimeout(
-            () => setRequests(r => ({ ...r, expired: Math.max(r.expired, made) })),
-            REQUEST_GRACE_MS
-        );
-        return () => clearTimeout(timer);
-    }, [requests.made, requests.expired]);
-
-    const fetchOutputs = useCallback(async () => {
-        const [ai, pl] = await Promise.allSettled([getAIOutput(pr), getPluginOutput(pr)]);
-        if (!alive.current) return;
+    const fetchAIOutputs = useCallback(async () => {
+        const read = ++aiReads.current;
+        const [ai] = await Promise.allSettled([getAIOutput(pr)]);
+        if (!alive.current || read !== aiReads.current) return;
         setAiOutputs(prev => settled(ai, prev));
+        activity.current?.();
+    }, [pr]);
+
+    const fetchPluginOutputs = useCallback(async () => {
+        const read = ++pluginReads.current;
+        let [pl] = await Promise.allSettled([getPluginOutput(pr)]);
+        if (!alive.current || read !== pluginReads.current) return;
+        if (pl.status === 'fulfilled') {
+            awaiting.current = rerunsStillAwaited(awaiting.current, pl.value);
+            pl = { status: 'fulfilled', value: withAwaitedReruns(pl.value, awaiting.current) };
+        }
         setPluginOutputs(prev => settled(pl, prev));
         activity.current?.();
     }, [pr]);
+
+    const fetchOutputs = useCallback(async () => {
+        await Promise.all([fetchAIOutputs(), fetchPluginOutputs()]);
+    }, [fetchAIOutputs, fetchPluginOutputs]);
+
+    // What the server's change events ask for: one read of a kind at a time,
+    // however many arrive while it's in flight.
+    const refreshAI = useMemo(() => coalesce(fetchAIOutputs), [fetchAIOutputs]);
+    const refreshPlugins = useMemo(() => coalesce(fetchPluginOutputs), [fetchPluginOutputs]);
+
+    usePRChanges(pr, change => {
+        switch (change.kind) {
+            case 'plugins':
+                void refreshPlugins();
+                return;
+            case 'ai':
+                void refreshAI();
+                return;
+            case 'resync':
+                // A new server ran nothing the old one was running.
+                awaiting.current = new Set();
+                void refreshAI();
+                void refreshPlugins();
+        }
+    });
 
     const fetchPR = useCallback(async () => {
         try {
@@ -127,11 +154,10 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
         } finally {
             activity.current?.();
         }
-        // GetPR has started the automatic runs; read the outputs, and keep
-        // reading for a while in case those runs haven't been marked yet.
-        markRequested();
+        // GetPR has started the automatic runs; read the outputs. Each run
+        // is announced as it starts and lands, and read again then.
         await fetchOutputs();
-    }, [pr, fetchOutputs, markRequested]);
+    }, [pr, fetchOutputs]);
 
     const fetchFeatures = useCallback(() => {
         listAIFeatures().then(
@@ -153,27 +179,22 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
         fetchPlugins();
     }, [fetchPR, fetchFeatures, fetchPlugins, attempt]);
 
-    usePolling(
-        shouldPoll({
-            aiOutputs: aiOutputs.value,
-            pluginOutputs: pluginOutputs.value,
-            justRequested: requests.made > requests.expired,
-        }),
-        fetchOutputs
-    );
-
     const runFeature = useCallback(
         async (feature: AIFeature, force: boolean) => {
             const key = aiKey(feature.id);
             setActions(a => begin(a, key));
+            const reads = aiReads.current;
             try {
                 const reply = await runAIFeature(pr, feature.id, { force });
                 if (!alive.current) return;
                 const output = reply.output;
-                if (output) setAiOutputs(prev => withEntries(prev, { [feature.id]: output }));
+                // A read that started since (the run's own start, announced)
+                // has the newer word.
+                if (output && reads === aiReads.current) {
+                    setAiOutputs(prev => withEntries(prev, { [feature.id]: output }));
+                }
                 if (reply.okay) {
                     setActions(a => finish(a, key, runOutcomeNote(reply.outcome)));
-                    markRequested();
                 } else {
                     setActions(a =>
                         fail(a, key, new RpcError('rpc', reply.message || reply.outcome))
@@ -183,12 +204,13 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
                 if (alive.current) setActions(a => fail(a, key, toRpcError(e)));
             }
         },
-        [pr, markRequested]
+        [pr]
     );
 
     const runPlugins = useCallback(
         async (names: string[], key: string) => {
             setActions(a => begin(a, key));
+            const reads = pluginReads.current;
             try {
                 const reply = await rerunPlugins(pr, names);
                 if (!alive.current) return;
@@ -196,17 +218,21 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
                     setActions(a => fail(a, key, new RpcError('rpc', reply.message)));
                     return;
                 }
-                // The server clears the results and runs them in the background.
-                setPluginOutputs(prev =>
-                    withEntries(prev, Object.fromEntries(names.map(n => [n, PENDING_PLUGIN])))
-                );
+                // The server cleared the results and runs the plugins in the
+                // background, announcing each as it starts and lands. Until a
+                // read shows one landed, it reads as running.
+                for (const name of names) awaiting.current.add(name);
+                if (reads === pluginReads.current) {
+                    setPluginOutputs(prev =>
+                        withEntries(prev, Object.fromEntries(names.map(n => [n, PENDING_PLUGIN])))
+                    );
+                }
                 setActions(a => finish(a, key));
-                markRequested();
             } catch (e) {
                 if (alive.current) setActions(a => fail(a, key, toRpcError(e)));
             }
         },
-        [pr, markRequested]
+        [pr]
     );
 
     const sync = useCallback(async () => {
@@ -224,14 +250,11 @@ export function PRTools({ pr, focus, listItem, extensionId, onActivity }: PRTool
                         : 'Synced: already up to date with GitHub.'
                 )
             );
-            if (reply.updated) {
-                markRequested();
-                await fetchOutputs();
-            }
+            if (reply.updated) await fetchOutputs();
         } catch (e) {
             if (alive.current) setActions(a => fail(a, SYNC, toRpcError(e)));
         }
-    }, [pr, fetchOutputs, markRequested]);
+    }, [pr, fetchOutputs]);
 
     const handlers: PRToolsHandlers = {
         onRetryAll: () => {

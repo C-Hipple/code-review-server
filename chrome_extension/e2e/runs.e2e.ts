@@ -1,6 +1,7 @@
 // Run / Re-run: AI features through RunAIFeature, plugins through
 // RerunPlugins, each reading `pending` until the fake lets the run land
-// (crs.finishRuns), which the panel picks up by polling.
+// (crs.finishRuns). The fake announces each run as it starts and lands, as
+// the server does, and the panel reads the output again then: it never polls.
 
 import { card, expect, statusChip, test } from './harness/test';
 
@@ -95,4 +96,40 @@ test('Run an on-demand plugin, then Re-run all', async ({ github, crs }) => {
         'Run 1 of security_check: no new findings.'
     );
     await expect(doc.getByRole('heading', { name: 'Style guide findings (run 1)' })).toBeVisible();
+});
+
+test('runs the server starts on its own show up and land, with nothing polled', async ({
+    github,
+    crs,
+}) => {
+    const page = await github.open('/acme/widgets/pull/42');
+    const panel = await github.openPanel(page);
+    const security = card(panel, 'security_check');
+    const flags = card(panel, 'Behind a flag?');
+    await expect(statusChip(security)).toHaveText('Success');
+    await expect(statusChip(flags)).toHaveText('Not run');
+
+    // A push, say: nothing in the browser asked for these runs.
+    crs.startServerRuns('security_check', 'feature-flags');
+    await expect(statusChip(security)).toHaveText('Running');
+    await expect(statusChip(flags)).toHaveText('Running');
+    expect(crs.calls('RerunPlugins')).toEqual([]);
+    expect(crs.calls('RunAIFeature')).toEqual([]);
+
+    // While they run, the panel asks the server nothing.
+    const reads = () => crs.calls('GetPluginOutput').length + crs.calls('GetAIOutput').length;
+    await page.waitForTimeout(500);
+    const before = reads();
+    await page.waitForTimeout(4000);
+    expect(reads()).toBe(before);
+
+    crs.finishRuns('security_check', 'feature-flags');
+    await expect(statusChip(security)).toHaveText('Success');
+    await expect(security.locator('.card-summary')).toHaveText(
+        'Run 1 of security_check: no new findings.'
+    );
+    await expect(statusChip(flags)).toHaveText('Success');
+    await expect(flags.locator('.card-summary')).toHaveText(
+        'Run 1: feature-flags found 2 of 5 logic changes outside a flag.'
+    );
 });

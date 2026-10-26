@@ -1,21 +1,26 @@
 // Service worker: owns the connection to the server (through the native host,
 // see native_client.ts), answers extension pages' RPC and status requests,
-// and turns a toolbar click into the modal on github.com or a popup window
-// anywhere else.
+// relays the server's change events to them, and turns a toolbar click into
+// the modal on github.com or a popup window anywhere else.
 
 import { isGitHubUrl, parsePullUrl, type PullRef } from './github_url';
 import { fileOrderingFiles } from './file_order';
 import { NativeClient } from './native_client';
-import type { ErrorInfo } from './native_protocol';
+import type { ErrorInfo, JsonRpcNotification } from './native_protocol';
+import { isChangeFor, toServerEvent } from './server_events';
 import { chipsFor } from './tool_chips';
 import {
+    EVENTS_PORT,
     FILE_ORDERING,
     isRpcMethod,
     type AIFeature,
     type AIFeatureOutput,
+    type AIOutputChanged,
+    type FileOrderChangedMessage,
     type FileOrderReply,
     type PluginConfig,
     type RpcReply,
+    type ServerEventMessage,
     type ToggleMessage,
     type ToolsReply,
 } from './types';
@@ -27,6 +32,10 @@ const STANDALONE_PATH = 'panel.html?standalone=1';
 const client = new NativeClient({
     connect: () => chrome.runtime.connectNative(HOST_NAME),
     lastError: () => chrome.runtime.lastError?.message,
+    onNotification,
+    // A new server: pages read what they show again, since whatever it did
+    // before it subscribed was never announced.
+    onSubscribed: () => broadcast({ type: 'resync' }),
 });
 
 // --- Messages from extension pages -------------------------------------------
@@ -90,6 +99,70 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
     return false;
 });
+
+// --- The server's change events -------------------------------------------------
+
+/**
+ * Extension pages listening for change events, each on a port of its own
+ * (EVENTS_PORT). A page that goes away takes its port with it.
+ */
+const eventPorts = new Set<chrome.runtime.Port>();
+
+chrome.runtime.onConnect.addListener(port => {
+    if (port.name !== EVENTS_PORT) return;
+    if (!port.sender || !isExtensionPage(port.sender)) {
+        port.disconnect();
+        return;
+    }
+    eventPorts.add(port);
+    port.onDisconnect.addListener(() => eventPorts.delete(port));
+});
+
+function broadcast(message: ServerEventMessage): void {
+    for (const port of eventPorts) {
+        try {
+            port.postMessage(message);
+        } catch {
+            // Closed without a disconnect event reaching us yet.
+            eventPorts.delete(port);
+        }
+    }
+}
+
+function onNotification(notification: JsonRpcNotification): void {
+    const event = toServerEvent(notification);
+    if (!event) return;
+    broadcast(event);
+    if (
+        event.type === 'ai-output-changed' &&
+        event.change.feature === FILE_ORDERING &&
+        event.change.status !== 'pending'
+    ) {
+        void tellFileOrderChanged(event.change);
+    }
+}
+
+/**
+ * A file order landed for a PR: tells the content script on each of its tabs,
+ * which asks for it again (fileOrderFor) and lays it over a Files changed
+ * view. The message says only that, never the order.
+ */
+async function tellFileOrderChanged(change: AIOutputChanged): Promise<void> {
+    let tabs: chrome.tabs.Tab[];
+    try {
+        tabs = await chrome.tabs.query({ url: 'https://github.com/*' });
+    } catch {
+        return;
+    }
+    const message: FileOrderChangedMessage = { type: 'crs-file-order-changed' };
+    for (const tab of tabs) {
+        const pr = tab.url ? parsePullUrl(tab.url) : null;
+        if (tab.id === undefined || !pr || !isChangeFor(change, pr)) continue;
+        chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // No content script there (yet): it asks when it loads.
+        });
+    }
+}
 
 // --- The chips a PR page draws ------------------------------------------------
 

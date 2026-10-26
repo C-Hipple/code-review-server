@@ -670,7 +670,8 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   tab the content script also reorders GitHub's own diffs and file tree to match
   that order. Opening the view calls `GetPR`, which
   requests the applied features and runs the `Automatic` ones as any client
-  does, and the view polls `GetAIOutput` while anything is pending.
+  does, and the view reads `GetAIOutput` again as the server announces each
+  run starting and landing, without polling.
 
 The web and Emacs clients run a feature on open when it never ran or went
 stale; the extension runs one only when asked.

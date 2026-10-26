@@ -17,11 +17,17 @@ export interface Scenario {
     /** GetAllReviews serves the fixture list, or no PRs at all. Default `fixtures`. */
     reviews?: 'fixtures' | 'empty';
     /**
-     * AI feature ids and plugin names whose runs in flight land the next time
-     * their output is read. A run started with RunAIFeature / RerunPlugins
-     * reads `pending` until its name is listed here.
+     * AI feature ids and plugin names whose runs in flight land, by
+     * themselves and at once, announced as the server announces its runs. A
+     * run reads `pending` until its name is listed here.
      */
     finishRuns?: string[];
+    /**
+     * AI feature ids and plugin names the server starts a run of for PR42 on
+     * its own (a push, a workflow cycle), once each: nothing in the browser
+     * asks for them.
+     */
+    serverRuns?: string[];
     /**
      * Exit with `code`, after writing `stderr` to stderr, on receiving
      * `method` (without answering it) — a server dying under the host.

@@ -230,7 +230,7 @@ An extension can't start processes, so the extension starts the server through a
 
 Press the toolbar button or `Alt+Shift+R`:
 
-- **On a pull request**, a modal opens over the page on that PR's tools: a summary with the review-ease rating and **Sync**, a card per enabled AI feature with a report (the [change diagram](ai_features.md#change-diagram) drawn inline), a card for [file-ordering](ai_features.md#file-ordering) listing the suggested order, and a card per plugin with **Re-run all**. Results are polled while anything runs. Annotations link to their line in GitHub's Files changed tab.
+- **On a pull request**, a modal opens over the page on that PR's tools: a summary with the review-ease rating and **Sync**, a card per enabled AI feature with a report (the [change diagram](ai_features.md#change-diagram) drawn inline), a card for [file-ordering](ai_features.md#file-ordering) listing the suggested order, and a card per plugin with **Re-run all**. Results are read again as the server announces each run starting and landing; nothing is polled. Annotations link to their line in GitHub's Files changed tab.
 - **Anywhere else on github.com**, the modal opens on the review list, grouped by section, with a filter. Clicking a PR takes the tab to it on GitHub; its **Tools** button opens the PR's tools in the modal instead, and **Back** returns to the list.
 - **Off GitHub**, the same panel opens in a popup window, where PR links open in a new tab.
 

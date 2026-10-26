@@ -58,6 +58,29 @@ class FakePort {
     receive(m: unknown) {
         for (const cb of this.onMessage.listeners) (cb as (m: unknown) => void)(m);
     }
+    drop() {
+        for (const cb of this.onDisconnect.listeners) (cb as () => void)();
+    }
+}
+
+/** A page's events port, as the service worker's onConnect sees it. */
+class FakeEventsPort {
+    posted: unknown[] = [];
+    disconnected = false;
+    onDisconnect = event();
+    constructor(
+        readonly name: string,
+        readonly sender: object
+    ) {}
+    postMessage(m: unknown) {
+        this.posted.push(m);
+    }
+    disconnect() {
+        this.disconnected = true;
+    }
+    close() {
+        for (const cb of this.onDisconnect.listeners) (cb as () => void)();
+    }
 }
 
 const ports: FakePort[] = [];
@@ -74,6 +97,7 @@ const fake = {
         getContexts: mock(async (_filter: unknown): Promise<unknown[]> => []),
         ContextType: { TAB: 'TAB' },
         onMessage: event(),
+        onConnect: event(),
         onInstalled: event(),
         onStartup: event(),
     },
@@ -391,5 +415,136 @@ describe('button title', () => {
     test('ignores updates that change neither URL nor load state', () => {
         update(1, { title: 'x' }, { url: 'https://github.com/o/r/pull/1' });
         expect(fake.action.setTitle).not.toHaveBeenCalled();
+    });
+});
+
+describe('change events', () => {
+    /** Opens an events port as `sender` would. */
+    function connect(sender: object = EXTENSION_PAGE, name = 'crs-events') {
+        const port = new FakeEventsPort(name, sender);
+        for (const cb of fake.runtime.onConnect.listeners) (cb as (p: unknown) => void)(port);
+        return port;
+    }
+
+    /** The native port, opened by a call if none is open yet. */
+    async function nativePort(): Promise<FakePort> {
+        const reply = sendAs(EXTENSION_PAGE, {
+            type: 'crs-rpc',
+            method: 'RPCHandler.ListPlugins',
+            params: {},
+        });
+        const port = ports[ports.length - 1];
+        const request = port.sent[port.sent.length - 1] as { id: number };
+        port.receive({ id: request.id, result: { plugins: [] }, error: null });
+        await reply;
+        return port;
+    }
+
+    const PR = { owner: 'o', repo: 'r', number: 1 };
+
+    test("relays the server's plugin and AI changes to extension pages", async () => {
+        const native = await nativePort();
+        const page = connect();
+        native.receive({
+            method: 'Server.PluginOutputChanged',
+            params: [{ ...PR, plugin: 'lint', status: 'success' }],
+            id: null,
+        });
+        native.receive({
+            method: 'Server.AIOutputChanged',
+            params: [{ ...PR, feature: 'comments-addressed', status: 'pending' }],
+            id: null,
+        });
+        // Pages have no use for the heartbeat, or a method they don't know.
+        native.receive({ method: 'Server.Heartbeat', params: [{ seq: 1 }], id: null });
+        native.receive({ method: 'Server.Other', params: [PR], id: null });
+
+        expect(page.posted).toEqual([
+            {
+                type: 'plugin-output-changed',
+                change: { ...PR, plugin: 'lint', status: 'success' },
+            },
+            {
+                type: 'ai-output-changed',
+                change: { ...PR, feature: 'comments-addressed', status: 'pending' },
+            },
+        ]);
+
+        // A page that went away hears nothing more.
+        page.close();
+        native.receive({
+            method: 'Server.PluginOutputChanged',
+            params: [{ ...PR, plugin: 'lint', status: 'pending' }],
+            id: null,
+        });
+        expect(page.posted).toHaveLength(2);
+    });
+
+    test('content scripts may not listen', () => {
+        const port = connect(CONTENT_SCRIPT);
+        expect(port.disconnected).toBe(true);
+        // Nor may another extension.
+        expect(connect({ ...EXTENSION_PAGE, id: 'someoneelse' }).disconnected).toBe(true);
+    });
+
+    test('a port of another name is left alone', async () => {
+        const native = await nativePort();
+        const port = connect(EXTENSION_PAGE, 'something-else');
+        native.receive({
+            method: 'Server.PluginOutputChanged',
+            params: [{ ...PR, plugin: 'lint', status: 'success' }],
+            id: null,
+        });
+        expect(port.disconnected).toBe(false);
+        expect(port.posted).toEqual([]);
+    });
+
+    test('a new server tells every page to read again', async () => {
+        const page = connect();
+        (await nativePort()).drop();
+
+        // The next call starts a new server, subscribed first.
+        const reply = sendAs(EXTENSION_PAGE, {
+            type: 'crs-rpc',
+            method: 'RPCHandler.ListPlugins',
+            params: {},
+        });
+        const native = ports[ports.length - 1];
+        const [subscribe, call] = native.sent as { id: number; method: string }[];
+        expect(subscribe.method).toBe('RPCHandler.Subscribe');
+        native.receive({ id: subscribe.id, result: { seq: 0 }, error: null });
+        native.receive({ id: call.id, result: { plugins: [] }, error: null });
+        await reply;
+        await settle();
+        expect(page.posted).toEqual([{ type: 'resync' }]);
+    });
+
+    test("a landed file order tells its PR's tabs to ask again", async () => {
+        const native = await nativePort();
+        fake.tabs.query.mockResolvedValueOnce([
+            { id: 1, url: 'https://github.com/o/r/pull/1/files' },
+            { id: 2, url: 'https://github.com/O/R/pull/1' },
+            { id: 3, url: 'https://github.com/o/r/pull/2/files' },
+            { id: 4, url: 'https://github.com/o/r' },
+        ]);
+        native.receive({
+            method: 'Server.AIOutputChanged',
+            params: [{ ...PR, feature: 'file-ordering', status: 'success' }],
+            id: null,
+        });
+        await settle();
+        expect(fake.tabs.sendMessage.mock.calls).toEqual([
+            [1, { type: 'crs-file-order-changed' }],
+            [2, { type: 'crs-file-order-changed' }],
+        ]);
+
+        // A run starting changes no order yet.
+        native.receive({
+            method: 'Server.AIOutputChanged',
+            params: [{ ...PR, feature: 'file-ordering', status: 'pending' }],
+            id: null,
+        });
+        await settle();
+        expect(fake.tabs.query).toHaveBeenCalledTimes(1);
     });
 });

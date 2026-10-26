@@ -1,7 +1,8 @@
 // The service worker's connection to the native host: one port, opened on the
 // first call and reused, carrying JSON-RPC requests out and responses (whole
-// or chunked) and host events back. The port is injected so tests can drive
-// it without Chrome; background.ts passes chrome.runtime.connectNative.
+// or chunked), the server's notifications and host events back. The port is
+// injected so tests can drive it without Chrome; background.ts passes
+// chrome.runtime.connectNative.
 //
 // One open port is one running server: the host starts `crs --server` when
 // Chrome connects and stops it when the port closes. An open
@@ -19,12 +20,22 @@ import {
     type ErrorInfo,
     type HostFailure,
     type HostReady,
+    type JsonRpcNotification,
     type JsonRpcResponse,
 } from './native_protocol';
 import type { HostStatus, RpcReply } from './types';
 
 /** GetPR on a cache miss goes to GitHub, so be generous. */
 export const DEFAULT_TIMEOUT_MS = 120_000;
+
+export const SUBSCRIBE_METHOD = 'RPCHandler.Subscribe';
+
+/**
+ * What a new server is asked to subscribe with. The extension follows the
+ * server's change events and has no use for its heartbeat, so it asks for the
+ * slowest one the server allows.
+ */
+export const SUBSCRIBE_PARAMS = { IntervalSeconds: 300 };
 
 /** The parts of chrome.runtime.Port the client uses. */
 export interface NativePort {
@@ -42,6 +53,16 @@ export interface NativeClientOptions {
      */
     lastError: () => string | undefined;
     timeoutMs?: number;
+    /**
+     * Receives each notification the server sends. When set, every new port —
+     * every new server — starts by subscribing, so that it sends them.
+     */
+    onNotification?: (notification: JsonRpcNotification) => void;
+    /**
+     * Called each time a new server accepts the subscription. Anything it
+     * announced before then was missed, so this is when to catch up.
+     */
+    onSubscribed?: () => void;
 }
 
 interface Pending {
@@ -53,6 +74,8 @@ export class NativeClient {
     private readonly connect: () => NativePort;
     private readonly readLastError: () => string | undefined;
     private readonly timeoutMs: number;
+    private readonly onNotification?: (notification: JsonRpcNotification) => void;
+    private readonly onSubscribed?: () => void;
 
     private port: NativePort | null = null;
     private nextId = 1;
@@ -69,6 +92,8 @@ export class NativeClient {
         this.connect = options.connect;
         this.readLastError = options.lastError;
         this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        this.onNotification = options.onNotification;
+        this.onSubscribed = options.onSubscribed;
     }
 
     /**
@@ -136,7 +161,23 @@ export class NativeClient {
         port.onDisconnect.addListener(() => {
             if (this.port === port) this.onDisconnect();
         });
+        // Ahead of the call that opened the port, so the server is subscribed
+        // before that call can start anything it would announce.
+        if (this.onNotification) this.subscribe(port);
         return port;
+    }
+
+    private subscribe(port: NativePort): void {
+        void this.call(SUBSCRIBE_METHOD, SUBSCRIBE_PARAMS).then(reply => {
+            if (this.port !== port) return;
+            if (reply.ok) {
+                this.onSubscribed?.();
+            } else if (reply.error.kind === 'rpc') {
+                // A server from before notifications: views never hear of a
+                // change, and show what they read when they open.
+                console.warn('crs: the server does not send change events:', reply.error.message);
+            }
+        });
     }
 
     private onMessage(msg: unknown): void {
@@ -144,6 +185,9 @@ export class NativeClient {
         switch (classified.type) {
             case 'response':
                 this.onResponse(classified.response);
+                return;
+            case 'notification':
+                this.onNotification?.(classified.notification);
                 return;
             case 'chunk':
                 this.onChunk(classified.chunk);
@@ -192,8 +236,10 @@ export class NativeClient {
         const inner = classifyHostMessage(parsed);
         if (inner.type === 'response') {
             this.onResponse(inner.response);
+        } else if (inner.type === 'notification') {
+            this.onNotification?.(inner.notification);
         } else {
-            console.error('crs: a chunked message is not a JSON-RPC response');
+            console.error('crs: a chunked message is not a JSON-RPC response or notification');
         }
     }
 

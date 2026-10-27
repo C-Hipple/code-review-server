@@ -10,14 +10,17 @@ import (
 //
 // Status is the filtereddiff status the pair resolved to — ready, rebased (the
 // baseline is no longer in the PR's history) or error — and Message explains
-// anything but ready. The diff is GitHub's, unrendered: the server renders it
-// when serving, since the file order it applies can change after the fact.
+// anything but ready. The diff is unrendered: the server renders it when
+// serving, since the file order it applies can change after the fact.
+// Version is the server's way of computing it, so a row computed an older
+// way can be told apart and computed again.
 type FilteredDiff struct {
 	BaseSHA   string
 	HeadSHA   string
 	Status    string
 	Diff      string
 	Message   string
+	Version   int
 	UpdatedAt time.Time
 }
 
@@ -39,14 +42,15 @@ func (db *DB) UpsertFilteredDiff(owner, repo string, prNumber int, d FilteredDif
 		return err
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO PRFilteredDiffs (owner, repo, pr_number, base_sha, head_sha, status, diff, message, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`INSERT INTO PRFilteredDiffs (owner, repo, pr_number, base_sha, head_sha, status, diff, message, version, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(owner, repo, pr_number, base_sha, head_sha) DO UPDATE SET
 			status = excluded.status,
 			diff = excluded.diff,
 			message = excluded.message,
+			version = excluded.version,
 			updated_at = excluded.updated_at`,
-		owner, repo, prNumber, d.BaseSHA, d.HeadSHA, d.Status, d.Diff, d.Message,
+		owner, repo, prNumber, d.BaseSHA, d.HeadSHA, d.Status, d.Diff, d.Message, d.Version,
 	); err != nil {
 		return err
 	}
@@ -58,11 +62,11 @@ func (db *DB) UpsertFilteredDiff(owner, repo string, prNumber int, d FilteredDif
 func (db *DB) GetFilteredDiff(owner, repo string, prNumber int, baseSHA, headSHA string) (d FilteredDiff, ok bool, err error) {
 	var updatedAt sql.NullString
 	err = db.conn.QueryRow(
-		`SELECT base_sha, head_sha, status, diff, message, updated_at
+		`SELECT base_sha, head_sha, status, diff, message, version, updated_at
 		 FROM PRFilteredDiffs
 		 WHERE owner = ? AND repo = ? AND pr_number = ? AND base_sha = ? AND head_sha = ?`,
 		owner, repo, prNumber, baseSHA, headSHA,
-	).Scan(&d.BaseSHA, &d.HeadSHA, &d.Status, &d.Diff, &d.Message, &updatedAt)
+	).Scan(&d.BaseSHA, &d.HeadSHA, &d.Status, &d.Diff, &d.Message, &d.Version, &updatedAt)
 	if err == sql.ErrNoRows {
 		return FilteredDiff{}, false, nil
 	}

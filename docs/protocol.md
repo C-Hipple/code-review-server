@@ -446,6 +446,7 @@ Represents a submitted review (e.g. APPROVED, CHANGES_REQUESTED).
 | `author`  | string | Commit author                      |
 | `date`    | string | Commit date                        |
 | `url`     | string | Link to the commit on GitHub       |
+| `parents` | []string | The parents' SHAs (a merge has two); absent for a commit cached before they were recorded |
 
 ---
 
@@ -1042,7 +1043,9 @@ A filtered diff is the PR's diff narrowed to the commits after a **baseline** th
 
 "You" is the server's `GithubUsername` (resolved from the token when unset). More filters can be registered server-side (`filtereddiff.Register`); `ListDiffFilters` lists whatever is.
 
-GitHub only compares three-dot (head against its merge base with the baseline), which is the diff wanted only while the baseline is still in the PR's history. When it isn't — a force-push or rebase rewrote it — the answer is `rebased`, with no diff, rather than a diff that would mix in the base branch's changes. Commits merged in from the base branch after the baseline do show up in the diff, as they do on GitHub.
+GitHub only compares three-dot (head against its merge base with the baseline), which is the diff wanted only while the baseline is still in the PR's history. When it isn't — a force-push or rebase rewrote it — the answer is `rebased`, with no diff, rather than a diff that would mix in the base branch's changes.
+
+**Merging the base branch in doesn't show up.** When the author merged the base branch into the PR after the baseline, the compare from the baseline carries everything the base branch changed in between. The server leaves that out: the diff is the one from the baseline *with the same base branch commits merged in* to the head, so it shows the PR's own changes since the baseline — including how the merge's conflicts were resolved, edits to lines the merge brought in, and any base branch change the PR undid — and nothing else. It tells the merge apart from the cached commits' parents (a parent outside the PR's commits is a base branch commit merged in), and then takes one more compare, the PR's diff at the baseline, to set against its diff at the head line by line. A line the merge brought that the PR left alone is context; a file only the merge touched is left out.
 
 The diff is rendered like `GetPR`'s, but **its positions are its own**: a comment's `position` counts rows of the PR's full diff. The reply's `positions` bridges the two. Both diffs end at the head, so a line the filtered diff shows with a head-side line number is the same line wherever the full diff shows that number. For each file, `positions` maps such a row's position in `diff` to that line's position in the full diff, both counted the way comment positions are: from the row after the file's first hunk header, with each later hunk header taking a position of its own. Position `0` (the file itself) maps to `0` for each file both diffs touch. A client draws a comment on the filtered row its position maps from, and sends a comment started on a filtered row at the position that row maps to. A row with no entry takes no comment: a line removed since the baseline, or one the full diff doesn't show (a change since the review that was later undone).
 

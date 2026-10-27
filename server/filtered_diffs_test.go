@@ -39,13 +39,18 @@ index 1111111..2222222 100644
 type fakeCompare struct {
 	diff    string
 	diffErr error
-	status  string
+	// diffs, when set, answers Diff by "base..head" ahead of diff.
+	diffs  map[string]string
+	status string
+	// commits answers Commits.
+	commits []filtereddiff.Commit
 	// release, when set, holds each Diff call until it is closed.
-	release     chan struct{}
-	diffCalls   atomic.Int32
-	statusCalls atomic.Int32
-	mu          sync.Mutex
-	bases       []string
+	release      chan struct{}
+	diffCalls    atomic.Int32
+	statusCalls  atomic.Int32
+	commitsCalls atomic.Int32
+	mu           sync.Mutex
+	bases        []string
 }
 
 func (f *fakeCompare) Diff(_ context.Context, owner, repo, base, head string) (string, error) {
@@ -56,12 +61,20 @@ func (f *fakeCompare) Diff(_ context.Context, owner, repo, base, head string) (s
 	if f.release != nil {
 		<-f.release
 	}
+	if d, ok := f.diffs[base+".."+head]; ok {
+		return d, nil
+	}
 	return f.diff, f.diffErr
 }
 
 func (f *fakeCompare) Status(_ context.Context, owner, repo, base, head string) (string, error) {
 	f.statusCalls.Add(1)
 	return f.status, nil
+}
+
+func (f *fakeCompare) Commits(_ context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error) {
+	f.commitsCalls.Add(1)
+	return f.commits, nil
 }
 
 func useFakeCompare(t *testing.T, f *fakeCompare) {
@@ -71,8 +84,8 @@ func useFakeCompare(t *testing.T, f *fakeCompare) {
 	t.Cleanup(func() { filteredDiffSource = orig })
 }
 
-// fdSetup seeds a PR whose head is c4, with commits c1..c4 and the given
-// reviews and comments, reviewed as "me".
+// fdSetup seeds a PR whose head is c4, with commits c1..c4 one after another
+// and the given reviews and comments, reviewed as "me".
 func fdSetup(t *testing.T, reviews []ReviewJSON, comments []*github.PullRequestComment) *database.DB {
 	t.Helper()
 	t.Setenv("CRS_HOME", t.TempDir())
@@ -88,8 +101,10 @@ func fdSetup(t *testing.T, reviews []ReviewJSON, comments []*github.PullRequestC
 	}
 	must(db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", "full diff"))
 	var commits []CommitJSON
+	parent := "m1"
 	for i, sha := range []string{"c1", "c2", "c3", "c4"} {
-		commits = append(commits, CommitJSON{SHA: sha, Date: fdAt(10 * i).Format(time.RFC3339)})
+		commits = append(commits, CommitJSON{SHA: sha, Date: fdAt(10 * i).Format(time.RFC3339), Parents: []string{parent}})
+		parent = sha
 	}
 	raw, _ := json.Marshal(commits)
 	must(db.UpsertPRCommits(fdNumber, fdRepo, string(raw)))
@@ -534,5 +549,181 @@ func TestFilteredDiffCarriesItsPositionsOntoTheFullDiff(t *testing.T) {
 	raw, _ = json.Marshal(none)
 	if none.Positions == nil || !strings.Contains(string(raw), `"positions":{}`) {
 		t.Fatalf("positions without a diff = %s, want {}", raw)
+	}
+}
+
+// A PR reviewed at c2 (pr2), which then merged main (main8, through c3) and
+// changed l5 (c4). mergeSinceDiff is GitHub's compare from c2 to the head,
+// main's change and all; mergeBeforeDiff the PR's diff at c2, against its
+// merge base with main; mergeFullDiff the PR's diff at the head.
+const mergeSinceDiff = `diff --git a/a.txt b/a.txt
+index 2222222..4444444 100644
+--- a/a.txt
++++ b/a.txt
+@@ -2,9 +2,9 @@ l1
+ pr2
+ l3
+ l4
+-l5
++pr5
+ l6
+ l7
+-l8
++main8
+ l9
+ l10
+diff --git a/main.txt b/main.txt
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/main.txt
+@@ -0,0 +1 @@
++only on main
+`
+
+const mergeBeforeDiff = `diff --git a/a.txt b/a.txt
+index 1111111..2222222 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,5 +1,5 @@
+ l1
+-l2
++pr2
+ l3
+ l4
+ l5
+`
+
+const mergeFullDiff = `diff --git a/a.txt b/a.txt
+index 3333333..4444444 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,8 +1,8 @@
+ l1
+-l2
++pr2
+ l3
+ l4
+-l5
++pr5
+ l6
+ l7
+ main8
+`
+
+// mergeSetup seeds the PR above: c3 merges main's x2 into it.
+func mergeSetup(t *testing.T, withParents bool) *database.DB {
+	t.Helper()
+	db := fdSetup(t, []ReviewJSON{myReview(fdAt(12), "c2")}, nil)
+	if err := db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", mergeFullDiff); err != nil {
+		t.Fatal(err)
+	}
+	commits := []CommitJSON{
+		{SHA: "c1", Parents: []string{"x1"}},
+		{SHA: "c2", Parents: []string{"c1"}},
+		{SHA: "c3", Parents: []string{"c2", "x2"}},
+		{SHA: "c4", Parents: []string{"c3"}},
+	}
+	for i := range commits {
+		commits[i].Date = fdAt(10 * i).Format(time.RFC3339)
+		if !withParents {
+			commits[i].Parents = nil
+		}
+	}
+	raw, _ := json.Marshal(commits)
+	if err := db.UpsertPRCommits(fdNumber, fdRepo, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func mergeCompare() *fakeCompare {
+	return &fakeCompare{diffs: map[string]string{"c2..c4": mergeSinceDiff, "x2..c2": mergeBeforeDiff}}
+}
+
+func wantOnlyThePRsChange(t *testing.T, res filtereddiff.Result) {
+	t.Helper()
+	if res.Status != filtereddiff.StatusReady {
+		t.Fatalf("result = %+v, want ready", res)
+	}
+	// Rendered the way GetPR renders a diff: the prefix, a space, the line.
+	if !strings.Contains(res.Diff, "+ pr5\n") || !strings.Contains(res.Diff, "- l5\n") {
+		t.Fatalf("diff = %q, want the PR's change since the review", res.Diff)
+	}
+	for _, merged := range []string{"+ main8", "- l8", "main.txt", "only on main"} {
+		if strings.Contains(res.Diff, merged) {
+			t.Fatalf("diff = %q, want what merging main brought (%q) left out", res.Diff, merged)
+		}
+	}
+	// main8 stays as context, so the line still maps onto the full diff.
+	if res.Positions["a.txt"] == nil {
+		t.Fatalf("positions = %v, want a.txt mapped", res.Positions)
+	}
+}
+
+func TestFilteredDiffLeavesOutWhatMergingTheBaseBranchBrought(t *testing.T) {
+	mergeSetup(t, true)
+	fake := mergeCompare()
+	useFakeCompare(t, fake)
+
+	wantOnlyThePRsChange(t, getFD(t, filtereddiff.SinceLastReview))
+	// The range diff and the PR's diff at the review; the head's is cached,
+	// and the cached parents name the merge.
+	if fake.diffCalls.Load() != 2 || fake.commitsCalls.Load() != 0 {
+		t.Fatalf("diff calls = %d, commit listings = %d; want 2 and 0", fake.diffCalls.Load(), fake.commitsCalls.Load())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.bases[1] != "x2" {
+		t.Fatalf("compared from %v, want the PR's diff at the review taken from main's merged commit x2", fake.bases)
+	}
+}
+
+func TestFilteredDiffListsTheCommitsWhenTheCacheHasNoParents(t *testing.T) {
+	mergeSetup(t, false)
+	fake := mergeCompare()
+	fake.commits = []filtereddiff.Commit{
+		{SHA: "c1", Parents: []string{"x1"}},
+		{SHA: "c2", Parents: []string{"c1"}},
+		{SHA: "c3", Parents: []string{"c2", "x2"}},
+		{SHA: "c4", Parents: []string{"c3"}},
+	}
+	useFakeCompare(t, fake)
+
+	wantOnlyThePRsChange(t, getFD(t, filtereddiff.SinceLastReview))
+	if fake.commitsCalls.Load() != 1 {
+		t.Fatalf("commit listings = %d, want 1", fake.commitsCalls.Load())
+	}
+}
+
+func TestFilteredDiffStoredByAnOlderServerIsComputedAgain(t *testing.T) {
+	db := mergeSetup(t, true)
+	// What the server stored before it left merges out: GitHub's compare as is.
+	if err := db.UpsertFilteredDiff(fdOwner, fdRepo, fdNumber, database.FilteredDiff{
+		BaseSHA: "c2", HeadSHA: "c4", Status: filtereddiff.StatusReady, Diff: mergeSinceDiff,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake := mergeCompare()
+	useFakeCompare(t, fake)
+
+	wantOnlyThePRsChange(t, getFD(t, filtereddiff.SinceLastReview))
+	if row, _, _ := db.GetFilteredDiff(fdOwner, fdRepo, fdNumber, "c2", "c4"); row.Version != filteredDiffVersion {
+		t.Fatalf("stored version = %d, want %d", row.Version, filteredDiffVersion)
+	}
+	getFD(t, filtereddiff.SinceLastReview)
+	if fake.diffCalls.Load() != 2 {
+		t.Fatalf("diff calls = %d, want the recomputed row served from then on", fake.diffCalls.Load())
+	}
+}
+
+func TestFilteredDiffFailsWhenThePRsDiffAtTheBaselineCantBeFetched(t *testing.T) {
+	mergeSetup(t, true)
+	fake := &fakeCompare{diffs: map[string]string{"c2..c4": mergeSinceDiff}, diffErr: errors.New("GitHub is down")}
+	useFakeCompare(t, fake)
+
+	res := getFD(t, filtereddiff.SinceLastReview)
+	if res.Status != filtereddiff.StatusError || res.Diff != "" || !strings.Contains(res.Message, "GitHub is down") {
+		t.Fatalf("result = %+v, want an error rather than a diff with main's changes in it", res)
 	}
 }

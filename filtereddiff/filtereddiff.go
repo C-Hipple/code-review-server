@@ -109,6 +109,9 @@ type Commit struct {
 	// cache holds. It stands in for when the commit reached the PR, which
 	// GitHub doesn't report.
 	At time.Time
+	// Parents are the commit's parents' SHAs; nil when the cache predates
+	// recording them. A merge has more than one.
+	Parents []string
 }
 
 // Baseline is the commit a filtered diff starts after, and the interaction

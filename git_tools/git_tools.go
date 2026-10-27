@@ -1407,6 +1407,16 @@ func ListAllPRCommits(ctx context.Context, client *github.Client, owner, repo st
 	})
 }
 
+// ParentSHAs returns a commit's parents' SHAs, never nil: a merge has more
+// than one, which is how the filtered diffs tell a base branch was merged in.
+func ParentSHAs(c *github.RepositoryCommit) []string {
+	parents := make([]string, 0, len(c.Parents))
+	for _, p := range c.Parents {
+		parents = append(parents, p.GetSHA())
+	}
+	return parents
+}
+
 // ListAllRequestedReviewers returns every pending reviewer on a PR. The endpoint
 // returns a struct holding two slices rather than a single list, so it needs its
 // own accumulation loop instead of ListAllPages.

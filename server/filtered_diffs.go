@@ -19,10 +19,13 @@ import (
 // filter picks (filtereddiff): the changes since the reviewer's last review,
 // or since they last took part. Picking the baseline reads the DB caches
 // only; the diff from it to the head is one GitHub compare, stored in
-// PRFilteredDiffs keyed by the commit pair. The post-update hooks warm every
-// filter's diff in the background whenever a PR is fetched, updated or opened
-// (warmFilteredDiffs), so GetFilteredDiff is a cache read — it computes a
-// diff itself only when a client asks before the warm has stored it.
+// PRFilteredDiffs keyed by the commit pair. When the author merged the base
+// branch in since the baseline, that compare carries the base branch's
+// changes too, and they are taken out (withoutBaseMerges) at the cost of one
+// more compare. The post-update hooks warm every filter's diff in the
+// background whenever a PR is fetched, updated or opened (warmFilteredDiffs),
+// so GetFilteredDiff is a cache read — it computes a diff itself only when a
+// client asks before the warm has stored it.
 
 const (
 	// filteredDiffTimeout bounds the GitHub calls behind one diff.
@@ -34,6 +37,10 @@ const (
 	// maxConcurrentFilteredDiffs caps the compares in flight: a workflow cycle
 	// that picks up many updated PRs warms them all at once.
 	maxConcurrentFilteredDiffs = 4
+	// filteredDiffVersion is how stored diffs are computed; a row stored
+	// with another is computed again. 1 leaves out what merging the base
+	// branch in brought.
+	filteredDiffVersion = 1
 )
 
 // rangeDiffSource is the GitHub seam the filtered diffs fetch through; tests
@@ -44,6 +51,8 @@ type rangeDiffSource interface {
 	Diff(ctx context.Context, owner, repo, base, head string) (string, error)
 	// Status reports how head relates to base, as git_tools.CompareStatus.
 	Status(ctx context.Context, owner, repo, base, head string) (string, error)
+	// Commits lists the PR's commits with their parents, oldest first.
+	Commits(ctx context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error)
 }
 
 var filteredDiffSource rangeDiffSource = githubCompare{}
@@ -64,6 +73,21 @@ func (githubCompare) Status(ctx context.Context, owner, repo, base, head string)
 		return "", errNoToken
 	}
 	return git_tools.CompareStatus(ctx, git_tools.GetGithubClient(), owner, repo, base, head)
+}
+
+func (githubCompare) Commits(ctx context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error) {
+	if !git_tools.HasToken() {
+		return nil, errNoToken
+	}
+	listed, err := git_tools.ListAllPRCommits(ctx, git_tools.GetGithubClient(), owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	commits := make([]filtereddiff.Commit, 0, len(listed))
+	for _, c := range listed {
+		commits = append(commits, filtereddiff.Commit{SHA: c.GetSHA(), Parents: git_tools.ParentSHAs(c)})
+	}
+	return commits, nil
 }
 
 // GetFilteredDiff returns the PR's diff narrowed by the filter registered
@@ -117,7 +141,7 @@ func filteredDiff(db *database.DB, owner, repo string, number int, f filtereddif
 		return result
 	}
 
-	stored := rangeDiff(db, owner, repo, number, in, baseline.SHA)
+	stored := rangeDiff(db, owner, repo, number, in, baseline.SHA, fullDiff)
 	result.Status = stored.Status
 	result.Message = stored.Message
 	result.ComputedAt = stored.UpdatedAt
@@ -159,18 +183,20 @@ func filteredDiffInputs(db *database.DB, repo string, number int) (filtereddiff.
 
 // rangeDiff returns the PR's diff from base to its head: the stored one when
 // there is one, else a fresh one, which it stores. A stored failure stands for
-// filteredDiffErrorRetry before it is tried again.
-func rangeDiff(db *database.DB, owner, repo string, number int, in filtereddiff.Inputs, base string) database.FilteredDiff {
+// filteredDiffErrorRetry before it is tried again. fullDiff is the PR's
+// cached diff, raw.
+func rangeDiff(db *database.DB, owner, repo string, number int, in filtereddiff.Inputs, base, fullDiff string) database.FilteredDiff {
 	stored, ok, err := db.GetFilteredDiff(owner, repo, number, base, in.HeadSHA)
 	if err != nil {
 		slog.Warn("Error reading a stored filtered diff", "repo", repo, "pr", number, "error", err)
 	}
-	if ok && (stored.Status != filtereddiff.StatusError || time.Since(stored.UpdatedAt) < filteredDiffErrorRetry) {
+	if ok && stored.Version == filteredDiffVersion &&
+		(stored.Status != filtereddiff.StatusError || time.Since(stored.UpdatedAt) < filteredDiffErrorRetry) {
 		return stored
 	}
 	key := fmt.Sprintf("%s/%s#%d@%s..%s", owner, repo, number, base, in.HeadSHA)
 	return rangeDiffFlights.do(key, func() database.FilteredDiff {
-		return computeRangeDiff(db, owner, repo, number, in, base)
+		return computeRangeDiff(db, owner, repo, number, in, base, fullDiff)
 	})
 }
 
@@ -184,14 +210,14 @@ var rangeDiffSlots = make(chan struct{}, maxConcurrentFilteredDiffs)
 // list answers that for free; a base missing from it is asked about, since
 // the list stops at 250 commits, and one GitHub confirms is no longer in the
 // history — a force-push rewrote it — is stored as rebased, with no diff.
-func computeRangeDiff(db *database.DB, owner, repo string, number int, in filtereddiff.Inputs, base string) database.FilteredDiff {
+func computeRangeDiff(db *database.DB, owner, repo string, number int, in filtereddiff.Inputs, base, fullDiff string) database.FilteredDiff {
 	rangeDiffSlots <- struct{}{}
 	defer func() { <-rangeDiffSlots }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), filteredDiffTimeout)
 	defer cancel()
 
-	row := database.FilteredDiff{BaseSHA: base, HeadSHA: in.HeadSHA}
+	row := database.FilteredDiff{BaseSHA: base, HeadSHA: in.HeadSHA, Version: filteredDiffVersion}
 	rebased := func() {
 		row.Status = filtereddiff.StatusRebased
 		row.Message = fmt.Sprintf("Commit %s is no longer part of this PR's history (it was force-pushed or rebased away), so there's no diff since it.", shortSHA(base))
@@ -222,6 +248,17 @@ func computeRangeDiff(db *database.DB, owner, repo string, number int, in filter
 		}
 	}
 
+	if row.Status == filtereddiff.StatusReady {
+		diff, err := withoutBaseMerges(ctx, owner, repo, number, in, base, row.Diff, fullDiff)
+		if err != nil {
+			row.Status = filtereddiff.StatusError
+			row.Diff = ""
+			row.Message = fmt.Sprintf("Couldn't leave out the changes merging the base branch brought in: %v", err)
+		} else {
+			row.Diff = diff
+		}
+	}
+
 	if row.Status == filtereddiff.StatusError {
 		slog.Warn("Filtered diff failed", "repo", repo, "pr", number, "base", base, "head", in.HeadSHA, "error", row.Message)
 	} else {
@@ -233,6 +270,46 @@ func computeRangeDiff(db *database.DB, owner, repo string, number int, in filter
 		slog.Error("Error storing a filtered diff", "repo", repo, "pr", number, "error", err)
 	}
 	return row
+}
+
+// withoutBaseMerges takes what merging the base branch in brought out of
+// diff, the PR's diff from base to its head, leaving the PR's own changes
+// since base (filtereddiff.WithoutMerged). Without such a merge after base the
+// diff stands as it is, which the cached commits say for free; when they
+// can't — cached before parents were recorded, or a stale list — GitHub is
+// asked for the commits. A merge costs one more compare: the PR's diff at
+// base, from its merge base with the base branch commit merged in last.
+// fullDiff, GitHub's diff of the PR at the head, is the other side; a cache
+// without one costs a compare for it too.
+func withoutBaseMerges(ctx context.Context, owner, repo string, number int, in filtereddiff.Inputs, base, diff, fullDiff string) (string, error) {
+	merged, known := in.MergedAfter(base)
+	if !known {
+		commits, err := filteredDiffSource.Commits(ctx, owner, repo, number)
+		if err != nil {
+			return "", fmt.Errorf("listing the PR's commits: %w", err)
+		}
+		in.Commits = commits
+		if merged, known = in.MergedAfter(base); !known {
+			// Past the 250 commits GitHub lists: no telling.
+			slog.Debug("Can't tell whether the base branch was merged in", "repo", repo, "pr", number, "base", base)
+			return diff, nil
+		}
+	}
+	if len(merged) == 0 {
+		return diff, nil
+	}
+	from := merged[len(merged)-1]
+	before, err := filteredDiffSource.Diff(ctx, owner, repo, from, base)
+	if err != nil {
+		return "", fmt.Errorf("fetching the PR's diff at %s: %w", shortSHA(base), err)
+	}
+	if strings.TrimSpace(fullDiff) == "" {
+		if fullDiff, err = filteredDiffSource.Diff(ctx, owner, repo, from, in.HeadSHA); err != nil {
+			return "", fmt.Errorf("fetching the PR's diff: %w", err)
+		}
+	}
+	slog.Debug("Leaving the base branch's changes out of a filtered diff", "repo", repo, "pr", number, "base", base, "merged", from)
+	return filtereddiff.WithoutMerged(diff, before, fullDiff), nil
 }
 
 // renderFilteredDiff renders a stored diff the way GetPRDetails renders the
@@ -327,7 +404,7 @@ func warmFilteredDiffs(owner, repo string, number int) {
 	if db == nil {
 		return
 	}
-	in, _, err := filteredDiffInputs(db, repo, number)
+	in, fullDiff, err := filteredDiffInputs(db, repo, number)
 	if err != nil {
 		// Nothing to warm from yet: the PR's caches aren't there.
 		slog.Debug("Not warming filtered diffs", "repo", repo, "pr", number, "reason", err)
@@ -338,7 +415,7 @@ func warmFilteredDiffs(owner, repo string, number int) {
 		if err != nil || baseline.SHA == in.HeadSHA {
 			continue
 		}
-		rangeDiff(db, owner, repo, number, in, baseline.SHA)
+		rangeDiff(db, owner, repo, number, in, baseline.SHA, fullDiff)
 	}
 }
 

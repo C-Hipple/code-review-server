@@ -254,6 +254,7 @@ func (db *DB) initSchema() error {
 		status TEXT NOT NULL DEFAULT '',
 		diff TEXT NOT NULL DEFAULT '',
 		message TEXT NOT NULL DEFAULT '',
+		version INTEGER NOT NULL DEFAULT 0,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(owner, repo, pr_number, base_sha, head_sha)
 	);
@@ -451,6 +452,17 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE PRMetadataCache ADD COLUMN release_status TEXT DEFAULT ''")
 		if err != nil {
 			slog.Warn("Error adding release_status column to PRMetadataCache", "error", err)
+		}
+	}
+
+	// Migration: Add version column to PRFilteredDiffs if it doesn't exist.
+	// The rows already there read as version 0, which the server computes
+	// again.
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PRFilteredDiffs') WHERE name='version'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE PRFilteredDiffs ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+		if err != nil {
+			slog.Warn("Error adding version column to PRFilteredDiffs", "error", err)
 		}
 	}
 

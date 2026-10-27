@@ -1486,6 +1486,7 @@ func persistPRCacheData(workflowName string, key PRKey, pr *github.PullRequest,
 				Author:  c.Commit.Author.GetName(),
 				Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
 				URL:     c.GetHTMLURL(),
+				Parents: git_tools.ParentSHAs(c),
 			}
 			if committed := c.Commit.GetCommitter().GetDate(); !committed.IsZero() {
 				commit.CommittedAt = committed.Format(time.RFC3339)
@@ -1578,12 +1579,13 @@ type cachedReview struct {
 // reads (see latestCachedCommitTime). Date is when the commit was authored,
 // which a rebase leaves alone; CommittedAt moves with it.
 type cachedCommit struct {
-	SHA         string `json:"sha"`
-	Message     string `json:"message"`
-	Author      string `json:"author"`
-	Date        string `json:"date"`
-	URL         string `json:"url"`
-	CommittedAt string `json:"committed_at,omitempty"`
+	SHA         string   `json:"sha"`
+	Message     string   `json:"message"`
+	Author      string   `json:"author"`
+	Date        string   `json:"date"`
+	URL         string   `json:"url"`
+	CommittedAt string   `json:"committed_at,omitempty"`
+	Parents     []string `json:"parents,omitempty"`
 }
 
 // cachedCIRow is a commit's CI as the CIStatus cache stores it — the JSON shape

@@ -36,7 +36,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
     export CRS_GITHUB_TOKEN="Github Token"  # Required.
     export GEMINI_API_KEY="Gemini Token"  # Only for plugins and AI features on the gemini provider.
     export OPENROUTER_API_KEY="OpenRouter Key"  # Only for AI features and plugins configured to use the openrouter provider.
-    export CRS_WEBHOOK_SECRET="Webhook secret"  # Only for GitHub webhooks (docs/webhooks.md).
+    export CRS_WEBHOOK_SECRET="Webhook secret"  # Only for GitHub webhooks posted straight to the server, not ones pulled from Pub/Sub (docs/webhooks.md).
     ```
 
     That token is the only required setup. With no config file, the server runs a built-in default configuration — a **Waiting On Me** section and a **Review Requested** section, found through GitHub search and identified by whoever the token belongs to. No repo list, no username.

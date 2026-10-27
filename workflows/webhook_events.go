@@ -195,6 +195,13 @@ func logWebhookWrite(key PRKey, sha string, written []string, detail string) {
 // comments' positions, so a review or comment delivery that finds the head
 // moved (its push's delivery missed, or still queued) takes the full fetch,
 // which picks up its own change along with the rest.
+//
+// A delivery sent before a later push can also arrive after it — Pub/Sub
+// promises no order — and what it says about its own head (a comment's
+// position, that head's CI) is no use against the cached one. It is fetched
+// the same way, but as the newest the PR has been seen at (newestPR):
+// fetching it as the delivery's head would cache the current diff under a
+// head the PR has moved on from.
 func refetchIfHeadMoved(db *database.DB, key PRKey, pr *github.PullRequest, detail string) bool {
 	sha := pr.GetHead().GetSHA()
 	if sha == "" {
@@ -204,8 +211,19 @@ func refetchIfHeadMoved(db *database.DB, key PRKey, pr *github.PullRequest, deta
 	if err != nil || cachedSHA == sha {
 		return false
 	}
-	refetchPR(key, pr, detail)
+	refetchPR(key, newestPR(key, pr), detail)
 	return true
+}
+
+// newestPR is pr, a delivery's PR, unless a listing or delivery has since
+// shown it with a later updated_at (rememberPR) — Pub/Sub promises no order,
+// and webhook deliveries can be retried — in which case it is that.
+func newestPR(key PRKey, pr *github.PullRequest) *github.PullRequest {
+	held := rememberedPRFor(key)
+	if held != nil && held.UpdatedAt != nil && pr.UpdatedAt != nil && held.UpdatedAt.After(pr.UpdatedAt.Time) {
+		return held
+	}
+	return pr
 }
 
 func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullRequestEvent) []heldPR {
@@ -219,6 +237,11 @@ func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullReq
 	}
 	detail := d.describe(e.GetAction())
 	held := heldPR{key: key, pr: pr, changes: []string{ChangePR}, summary: pullRequestSummary(e)}
+	// What the PR object says is written from the newest seen (newestPR): a
+	// late delivery's title, state and reviewers are already out of date.
+	// Unless the PR is fetched in full, only from one at the delivery's head,
+	// which is the cached one.
+	newest, latest := newestPR(key, pr), pr
 
 	// A synchronize is a push, and a new base branch changes the diff as surely
 	// as one: both need a fetch. Everything else this event reports — title,
@@ -226,19 +249,24 @@ func applyPullRequestEvent(db *database.DB, d webhookDelivery, e *github.PullReq
 	// payload.
 	switch {
 	case refetchIfHeadMoved(db, key, pr, detail):
+		latest = newest
 		held.changes = append(held.changes, ChangeHead)
 	case e.GetChanges().GetBase() != nil:
-		refetchPR(key, pr, detail)
+		latest = newest
+		refetchPR(key, latest, detail)
 		held.changes = append(held.changes, ChangeHead)
 	default:
+		if newest.GetHead().GetSHA() == pr.GetHead().GetSHA() {
+			latest = newest
+		}
 		unlock := lockPR(key)
-		written := refreshFromPRPayload(db, key, pr)
+		written := refreshFromPRPayload(db, key, latest)
 		unlock()
-		logWebhookWrite(key, pr.GetHead().GetSHA(), written, detail)
+		logWebhookWrite(key, latest.GetHead().GetSHA(), written, detail)
 		held.changes = append(held.changes, written...)
 	}
-	recordPayloadMergeability(db, key, pr)
-	updateItemSummaries(db, key, pr)
+	recordPayloadMergeability(db, key, latest)
+	updateItemSummaries(db, key, latest)
 	return []heldPR{held}
 }
 
@@ -348,8 +376,14 @@ func applyReviewEvent(db *database.DB, d webhookDelivery, e *github.PullRequestR
 		return []heldPR{held}
 	}
 	// A review clears its author's review request, approves or blocks the PR,
-	// and may settle a required team: everything that reads the reviews.
-	written := append([]string{"reviews"}, refreshFromPRPayload(db, key, pr)...)
+	// and may settle a required team: everything that reads the reviews. The
+	// PR is taken as last seen at this head (newestPR): a late review's title
+	// and reviewers are out of date, and a newer PR already reflects it.
+	src := pr
+	if newest := newestPR(key, pr); newest.GetHead().GetSHA() == pr.GetHead().GetSHA() {
+		src = newest
+	}
+	written := append([]string{"reviews"}, refreshFromPRPayload(db, key, src)...)
 	logWebhookWrite(key, pr.GetHead().GetSHA(), written, detail)
 	held.changes = written
 	return []heldPR{held}

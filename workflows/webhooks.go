@@ -25,6 +25,10 @@ import (
 // whose caches are current from those caches (webhook_cache.go) instead of
 // GitHub, and fetches in full only the PRs it is adding or whose head moved.
 //
+// Deliveries arrive over HTTP, at the listener here, or from a Pub/Sub
+// subscription another service publishes them to (webhook_pubsub.go); either
+// way they go through webhookQueue.
+//
 // Only PRs in the repositories [Webhooks] Repos covers are left to webhooks; a
 // PR anywhere else is polled as before. Every cycle is a polling cycle until
 // the listener is up, again for the first cycle after it comes up (anything
@@ -92,27 +96,35 @@ var webhookListener struct {
 	server *http.Server
 	addr   string
 	since  time.Time
-	// warnedNoSecret keeps a missing secret to one warning rather than one a
-	// cycle.
-	warnedNoSecret bool
+	// warnedNoSecret and warnedPubSub keep a ListenAddress that can't be
+	// listened on — no secret, or a Pub/Sub subscription set as well — to one
+	// warning rather than one a cycle.
+	warnedNoSecret, warnedPubSub bool
 }
 
-// webhooksListeningSince reports whether deliveries are being received, and
-// since when.
+// webhooksListeningSince reports whether deliveries are being received — by
+// the HTTP listener, or from Pub/Sub — and since when.
 func webhooksListeningSince() (time.Time, bool) {
 	webhookListener.mu.Lock()
-	defer webhookListener.mu.Unlock()
-	return webhookListener.since, webhookListener.server != nil
+	since, listening := webhookListener.since, webhookListener.server != nil
+	webhookListener.mu.Unlock()
+	if listening {
+		return since, true
+	}
+	return pubsubReceivingSince()
 }
 
-// syncWebhookListener starts, moves or stops the listener to match cfg. The
-// manager calls it before every cycle, after reloading the config, so editing
-// [Webhooks] takes effect without a restart. When the listener can't start —
-// no secret, the port taken — it logs why and every PR goes on being polled;
-// the next cycle tries again.
+// syncWebhookListener starts, moves or stops what receives deliveries to match
+// cfg: the HTTP listener, or the Pub/Sub subscriber when [Webhooks.PubSub]
+// names a subscription (webhook_pubsub.go). The manager calls it before every
+// cycle, after reloading the config, so editing [Webhooks] takes effect
+// without a restart. When the listener can't start — no secret, the port
+// taken — it logs why and every PR goes on being polled; the next cycle tries
+// again.
 func syncWebhookListener(cfg config.Config) {
+	syncPubSubSubscriber(cfg)
 	want := ""
-	if cfg.WebhooksConfigured() {
+	if cfg.WebhooksConfigured() && !cfg.PubSubConfigured() {
 		want = strings.TrimSpace(cfg.Webhooks.ListenAddress)
 	}
 
@@ -129,14 +141,22 @@ func syncWebhookListener(cfg config.Config) {
 		activeCoverage.Store(nil)
 	}
 	if want == "" {
-		if strings.TrimSpace(cfg.Webhooks.ListenAddress) != "" && !l.warnedNoSecret {
+		switch {
+		case strings.TrimSpace(cfg.Webhooks.ListenAddress) == "":
+		case cfg.PubSubConfigured():
+			if !l.warnedPubSub {
+				slog.Warn("[Webhooks] sets both a ListenAddress and a Pub/Sub subscription; deliveries are pulled from the subscription and nothing listens",
+					"subscription", cfg.PubSubSubscription())
+				l.warnedPubSub = true
+			}
+		case !l.warnedNoSecret:
 			slog.Warn("[Webhooks] sets a ListenAddress but there is no secret to verify deliveries with, so nothing listens and every PR is polled",
 				"set", "Webhooks.Secret or "+config.WebhookSecretEnv)
 			l.warnedNoSecret = true
 		}
 		return
 	}
-	l.warnedNoSecret = false
+	l.warnedNoSecret, l.warnedPubSub = false, false
 
 	ln, err := net.Listen("tcp", want)
 	if err != nil {
@@ -151,11 +171,7 @@ func syncWebhookListener(cfg config.Config) {
 		IdleTimeout:       2 * time.Minute,
 	}
 	l.server, l.addr, l.since = srv, want, time.Now()
-	webhookWorkerOnce.Do(func() {
-		go runWebhookWorker()
-		go runReevaluations()
-	})
-	git_tools.SetPRStateSource(webhookPRState{})
+	startWebhookWorker()
 	go func() {
 		err := srv.Serve(ln)
 		if errors.Is(err, http.ErrServerClosed) {
@@ -214,26 +230,22 @@ func serveWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventType := github.WebHookType(r)
-	if eventType == "ping" {
-		slog.Info("GitHub webhook ping received", "delivery", deliveryID)
+	d, ok, err := parseWebhookDelivery(eventType, deliveryID, payload)
+	switch {
+	case err != nil:
+		webhookActivity.rejected.Add(1)
+		http.Error(w, "malformed payload", http.StatusBadRequest)
+		return
+	case !ok && eventType == "ping":
 		fmt.Fprintln(w, "pong")
 		return
-	}
-	if !handledWebhookEvents[eventType] {
-		slog.Debug("Ignoring webhook event", "event", eventType, "delivery", deliveryID)
+	case !ok:
 		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	event, err := github.ParseWebHook(eventType, payload)
-	if err != nil {
-		webhookActivity.rejected.Add(1)
-		slog.Warn("Failed to parse webhook delivery", "event", eventType, "delivery", deliveryID, "error", err)
-		http.Error(w, "malformed payload", http.StatusBadRequest)
 		return
 	}
 
 	select {
-	case webhookQueue <- webhookDelivery{eventType: eventType, id: deliveryID, event: event}:
+	case webhookQueue <- d:
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		webhookActivity.rejected.Add(1)
@@ -242,9 +254,40 @@ func serveWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseWebhookDelivery parses a delivery for the worker to apply, however it
+// arrived. It returns false, with no error, for one there is nothing to apply
+// from — a ping, or an event applyWebhookEvent doesn't act on — and logs a
+// payload that doesn't parse.
+func parseWebhookDelivery(eventType, deliveryID string, payload []byte) (webhookDelivery, bool, error) {
+	if eventType == "ping" {
+		slog.Info("GitHub webhook ping received", "delivery", deliveryID)
+		return webhookDelivery{}, false, nil
+	}
+	if !handledWebhookEvents[eventType] {
+		slog.Debug("Ignoring webhook event", "event", eventType, "delivery", deliveryID)
+		return webhookDelivery{}, false, nil
+	}
+	event, err := github.ParseWebHook(eventType, payload)
+	if err != nil {
+		slog.Warn("Failed to parse webhook delivery", "event", eventType, "delivery", deliveryID, "error", err)
+		return webhookDelivery{}, false, err
+	}
+	return webhookDelivery{eventType: eventType, id: deliveryID, event: event}, true, nil
+}
+
+// startWebhookWorker has queued deliveries applied, and the filters read PR
+// state from the caches they keep, once something is receiving deliveries.
+func startWebhookWorker() {
+	webhookWorkerOnce.Do(func() {
+		go runWebhookWorker(webhookQueue)
+		go runReevaluations()
+	})
+	git_tools.SetPRStateSource(webhookPRState{})
+}
+
 // runWebhookWorker applies queued deliveries one at a time, in arrival order.
-func runWebhookWorker() {
-	for d := range webhookQueue {
+func runWebhookWorker(queue <-chan webhookDelivery) {
+	for d := range queue {
 		applyWebhookDelivery(d)
 	}
 }
@@ -333,28 +376,46 @@ func beginWebhookCycle(cfg config.Config, now time.Time) string {
 		return database.CycleModeFullRefresh
 	}
 	repos := cfg.WebhookRepos()
-	activeCoverage.Store(newWebhookCoverage(repos))
+	if !trustWebhooks(newWebhookCoverage(repos), since) {
+		return database.CycleModePolling
+	}
 	slog.Info("Webhook cycle: PRs in covered repositories are listed but not re-fetched", "repos", repos)
 	return database.CycleModeWebhook
 }
 
+// trustWebhooks leaves the PRs cov covers to webhooks, unless deliveries
+// stopped being received since since — a Pub/Sub subscriber goes down from its
+// own goroutine, which could otherwise land between deciding and storing — and
+// reports whether it did.
+func trustWebhooks(cov *webhookCoverage, since time.Time) bool {
+	activeCoverage.Store(cov)
+	if again, listening := webhooksListeningSince(); !listening || !again.Equal(since) {
+		activeCoverage.CompareAndSwap(cov, nil)
+		return false
+	}
+	return true
+}
+
 // endWebhookCycle closes the cycle beginWebhookCycle opened. A webhook cycle
-// leaves webhooks trusted. A full refresh that started while the listener was
-// up, and refreshed everything it meant to, is what webhook cycles count from,
-// so it starts trusting them; one that didn't finish leaves them untrusted
-// until one does.
+// leaves webhooks trusted. A cycle that refreshed every PR, started once
+// deliveries were being received and finished everything it meant to is what
+// webhook cycles count from, so it starts trusting them; one that didn't
+// finish leaves them untrusted until one does. That is usually a full
+// refresh, but can be a polling cycle that started before a Pub/Sub
+// subscriber's first pull came back, since the subscriber counts from when it
+// started.
 func endWebhookCycle(cfg config.Config, start time.Time, mode string, complete bool) {
 	if mode == database.CycleModeWebhook {
 		return
 	}
 	since, listening := webhooksListeningSince()
-	if mode == database.CycleModePolling || !complete || !listening || start.Before(since) {
+	if !complete || !listening || start.Before(since) {
 		return
 	}
 	lastFullRefresh.mu.Lock()
 	lastFullRefresh.at = start
 	lastFullRefresh.mu.Unlock()
-	activeCoverage.Store(newWebhookCoverage(cfg.WebhookRepos()))
+	trustWebhooks(newWebhookCoverage(cfg.WebhookRepos()), since)
 	pruneWebhookMemory(start)
 }
 

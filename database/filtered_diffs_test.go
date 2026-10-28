@@ -9,7 +9,7 @@ func TestFilteredDiffRoundTrip(t *testing.T) {
 		t.Fatalf("expected nothing stored, got ok=%v err=%v", ok, err)
 	}
 
-	want := FilteredDiff{BaseSHA: "base-1", HeadSHA: "head-1", Status: "ready", Diff: "diff --git a/x b/x\n"}
+	want := FilteredDiff{BaseSHA: "base-1", HeadSHA: "head-1", Status: "ready", Diff: "diff --git a/x b/x\n", Version: 3}
 	if err := db.UpsertFilteredDiff("acme", "widgets", 42, want); err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestFilteredDiffRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected the stored diff, got ok=%v err=%v", ok, err)
 	}
-	if got.Status != want.Status || got.Diff != want.Diff || got.UpdatedAt.IsZero() {
+	if got.Status != want.Status || got.Diff != want.Diff || got.Version != want.Version || got.UpdatedAt.IsZero() {
 		t.Fatalf("got %+v, want %+v with an updated_at", got, want)
 	}
 

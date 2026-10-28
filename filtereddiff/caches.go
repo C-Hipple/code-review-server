@@ -30,9 +30,10 @@ type cachedComment struct {
 }
 
 type cachedCommit struct {
-	SHA         string `json:"sha"`
-	Date        string `json:"date"`
-	CommittedAt string `json:"committed_at"`
+	SHA         string   `json:"sha"`
+	Date        string   `json:"date"`
+	CommittedAt string   `json:"committed_at"`
+	Parents     []string `json:"parents"`
 }
 
 // InputsFromCaches builds a filter's inputs from the raw cache rows. An empty
@@ -81,7 +82,7 @@ func InputsFromCaches(me, headSHA, reviewsJSON, commentsJSON, commitsJSON string
 			return Inputs{}, fmt.Errorf("decoding cached commits: %w", err)
 		}
 		for _, c := range commits {
-			commit := Commit{SHA: c.SHA}
+			commit := Commit{SHA: c.SHA, Parents: c.Parents}
 			for _, raw := range []string{c.CommittedAt, c.Date} {
 				if t, err := time.Parse(time.RFC3339, raw); err == nil {
 					commit.At = t

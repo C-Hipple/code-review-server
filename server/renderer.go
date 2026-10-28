@@ -624,6 +624,10 @@ type CommitJSON struct {
 	Author  string `json:"author"`
 	Date    string `json:"date"`
 	URL     string `json:"url"`
+	// Parents are the parents' SHAs, which tell the filtered diffs whether
+	// the base branch was merged in. Absent for a commit cached before they
+	// were recorded.
+	Parents []string `json:"parents,omitempty"`
 }
 
 type PRMetadata struct {
@@ -1446,6 +1450,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 					Author:  c.Commit.Author.GetName(),
 					Date:    c.Commit.Author.GetDate().Format(time.RFC3339),
 					URL:     c.GetHTMLURL(),
+					Parents: git_tools.ParentSHAs(c),
 				})
 			}
 

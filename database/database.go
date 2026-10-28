@@ -696,20 +696,44 @@ func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]Plu
 	return results, nil
 }
 
-// GetPluginResultSHA retrieves the SHA for which a plugin was last run
-func (db *DB) GetPluginResultSHA(owner, repo string, prNumber int, pluginName string) (string, error) {
-	var sha string
-	err := db.conn.QueryRow(
-		"SELECT sha FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+// GetPluginResultState retrieves the SHA a plugin's stored result is for and
+// its status, both empty when there is none.
+func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName string) (sha, status string, err error) {
+	err = db.conn.QueryRow(
+		"SELECT sha, COALESCE(status, '') FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
 		owner, repo, prNumber, pluginName,
-	).Scan(&sha)
+	).Scan(&sha, &status)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return sha, nil
+	return sha, status, nil
+}
+
+// MarkPluginDeferred records the "deferred" placeholder for a plugin nobody
+// has asked to run at sha, unless a result for sha is already stored: a run
+// someone asked for (or one still going) is kept. Checked and written in one
+// statement, so a run that starts meanwhile isn't overwritten. It reports
+// whether it wrote the row.
+func (db *DB) MarkPluginDeferred(owner, repo string, prNumber int, pluginName, sha string) (bool, error) {
+	res, err := db.conn.Exec(
+		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, updated_at)
+		 VALUES (?, ?, ?, ?, '', 'deferred', ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(owner, repo, pr_number, plugin_name) DO UPDATE SET
+			result = excluded.result,
+			status = excluded.status,
+			sha = excluded.sha,
+			updated_at = excluded.updated_at
+		 WHERE PluginResults.sha != excluded.sha`,
+		owner, repo, prNumber, pluginName, sha,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // DeletePluginResultsForPR clears plugin results for a PR to force rerun
@@ -1190,6 +1214,32 @@ func (db *DB) GetItemsBySection(sectionID int64) ([]*Item, error) {
 		items = append(items, &item)
 	}
 	return items, rows.Err()
+}
+
+// SectionsHoldingItem returns the names of the sections an item is in, where
+// some workflow still claims it (what PruneOrphanedItems keeps). The identifier is matched regardless of case:
+// a client may spell the owner and repo in lower case.
+func (db *DB) SectionsHoldingItem(identifier string) ([]string, error) {
+	rows, err := db.conn.Query(
+		`SELECT s.section_name FROM items i JOIN sections s ON s.id = i.section_id
+		 WHERE i.identifier = ? COLLATE NOCASE AND COALESCE(i.workflows, '') NOT IN ('', '[]')
+		 ORDER BY s.section_name`,
+		identifier,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sections []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		sections = append(sections, name)
+	}
+	return sections, rows.Err()
 }
 
 func (db *DB) GetAllItems() ([]*Item, error) {

@@ -52,11 +52,12 @@ func TestUpdateRenderReplacesWorkflowsAndKeepsEverythingElse(t *testing.T) {
 	useTempConfig(t, sampleConfig)
 
 	newWorkflows := []RawWorkflow{{
-		WorkflowType: "SyncReviewRequestsWorkflow",
-		Name:         "Team Reviews",
-		SectionTitle: "Needs Review",
-		Filters:      []string{"FilterNotDraft", "FilterByLabel:bug"},
-		Teams:        []string{"my-team"},
+		WorkflowType:     "SyncReviewRequestsWorkflow",
+		Name:             "Team Reviews",
+		SectionTitle:     "Needs Review",
+		Filters:          []string{"FilterNotDraft", "FilterByLabel:bug"},
+		Teams:            []string{"my-team"},
+		AlwaysRunPlugins: []string{"Style"},
 	}}
 	data, cfg, err := Update{Workflows: &newWorkflows}.Render()
 	if err != nil {
@@ -65,6 +66,9 @@ func TestUpdateRenderReplacesWorkflowsAndKeepsEverythingElse(t *testing.T) {
 
 	if len(cfg.RawWorkflows) != 1 || cfg.RawWorkflows[0].Name != "Team Reviews" {
 		t.Errorf("expected the rendered config to hold only the new workflow, got %+v", cfg.RawWorkflows)
+	}
+	if got := cfg.RawWorkflows[0].AlwaysRunPlugins; len(got) != 1 || got[0] != "Style" {
+		t.Errorf("AlwaysRunPlugins did not round-trip: %v", got)
 	}
 	if len(cfg.Repos) != 1 || cfg.Repos[0] != "owner/repo" {
 		t.Errorf("Repos should be untouched, got %v", cfg.Repos)

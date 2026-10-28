@@ -45,6 +45,44 @@ func SetPRUpdatedHook(fn func(owner, repo string, number int)) {
 	prUpdatedHook.Store(&fn)
 }
 
+// sectionPluginsHook is called for each PR an item change writes into a
+// section that always runs some deferred plugins (a workflow's
+// AlwaysRunPlugins). The server registers server.RunSectionPlugins, which runs
+// those that haven't run at the PR's head yet. prUpdatedHook can't cover it:
+// it fires before the cycle writes its sections, so a PR the cycle is adding
+// isn't in one yet. Nil when nothing is registered, for the same reason as
+// prUpdatedHook.
+var sectionPluginsHook atomic.Pointer[func(owner, repo string, number int)]
+
+// SetSectionPluginsHook registers the callback invoked for each PR written
+// into a section that always runs deferred plugins. Call it during startup,
+// before the manager runs. A nil fn clears any registered hook.
+func SetSectionPluginsHook(fn func(owner, repo string, number int)) {
+	if fn == nil {
+		sectionPluginsHook.Store(nil)
+		return
+	}
+	sectionPluginsHook.Store(&fn)
+}
+
+// runSectionPlugins fires the section-plugins hook for an item just written,
+// when its section always runs deferred plugins. Every cycle rewrites the
+// items of open PRs, so a PR that joined such a section, or whose section
+// gained one, gets its run within a cycle. The hook gets its own goroutine:
+// applyChange runs on the cycle's change listener and on the webhook worker,
+// and neither may wait on a plugin.
+func runSectionPlugins(change *FileChanges) {
+	hook := sectionPluginsHook.Load()
+	if hook == nil || len(config.C().SectionPlugins()[change.SectionName]) == 0 {
+		return
+	}
+	owner, repo, number, ok := parsePRIdentifier(change.Identifier)
+	if !ok {
+		return
+	}
+	go (*hook)(owner, repo, number)
+}
+
 // apiCallCounter tracks GitHub API calls by type for a single RunOnce cycle.
 type apiCallCounter struct {
 	PRList         atomic.Int64
@@ -234,6 +272,7 @@ func applyChange(deserializedChange SerializedFileChange, detail string) {
 		} else {
 			logItemAction(deserializedChange.FileChange,
 				[]string{"status", "title", "details", "tags", "workflows"}, detail)
+			runSectionPlugins(deserializedChange.FileChange)
 		}
 		if deserializedChange.FileChange.ChangeType == "Addition" && deserializedChange.FileChange.NotifyOnAdd {
 			notifyPRAdded(deserializedChange.FileChange.SectionName, deserializedChange.FileChange.Title)

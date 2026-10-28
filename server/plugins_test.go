@@ -4,6 +4,7 @@ import (
 	"crs/config"
 	"crs/database"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,6 +129,9 @@ func TestCallTypeFor(t *testing.T) {
 		{"normal plugin, unforced", config.Plugin{Name: "p"}, false, PluginCallAutomatic},
 		{"normal plugin, forced", config.Plugin{Name: "p"}, true, PluginCallRerun},
 		{"deferred plugin, forced", config.Plugin{Name: "p", OnlyOnDemand: true}, true, PluginCallExplicit},
+		// Only a section that always runs it gets a deferred plugin an
+		// unforced run, and it runs as though someone had asked for it.
+		{"deferred plugin, unforced", config.Plugin{Name: "p", OnlyOnDemand: true}, false, PluginCallExplicit},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -550,5 +554,192 @@ func TestRerunPlugins_AnnouncesTheClearedResultThenTheRun(t *testing.T) {
 				t.Errorf("announced %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// runLogScript writes a plugin that appends its arguments to a log, one line
+// per run, and returns the plugin's path and the log's.
+func runLogScript(t *testing.T, name string) (script, log string) {
+	t.Helper()
+	dir := t.TempDir()
+	log = filepath.Join(dir, name+".log")
+	script = filepath.Join(dir, name+".sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+log+"\necho report\n"), 0o755); err != nil {
+		t.Fatalf("failed to write plugin script: %v", err)
+	}
+	return script, log
+}
+
+// runs returns the arguments of each run a runLogScript plugin logged.
+func runs(t *testing.T, log string) []string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// putInSection writes owner/repo#number into a section the way a workflow
+// does, under the identifier the workflows give a PR's item.
+func putInSection(t *testing.T, db *database.DB, section, owner, repo string, number int) {
+	t.Helper()
+	s, err := db.GetOrCreateSection(section, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identifier := fmt.Sprintf("%s/%s-%d", owner, repo, number)
+	if _, err := db.UpsertItemWithWorkflow(s.ID, identifier, "TODO", "A PR", nil, nil, 0, section+" workflow"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sectionPluginConfig configures a deferred plugin "style" that the "Team"
+// section always runs, and a deferred plugin "costly" that nothing does.
+func sectionPluginConfig(db *database.DB, style, costly string) config.Config {
+	return config.Config{
+		DB:            db,
+		SleepDuration: 10 * time.Minute,
+		Plugins: []config.Plugin{
+			{Name: "style", Command: style, IncludeBranch: true, OnlyOnDemand: true},
+			{Name: "costly", Command: costly, OnlyOnDemand: true},
+		},
+		RawWorkflows: []config.RawWorkflow{
+			{WorkflowType: "SyncReviewRequestsWorkflow", Name: "Team workflow", SectionTitle: "Team", AlwaysRunPlugins: []string{"style"}},
+			{WorkflowType: "SyncReviewRequestsWorkflow", Name: "Mine workflow", SectionTitle: "Mine"},
+		},
+	}
+}
+
+func TestRunPlugins_RunsTheDeferredPluginsThePRsSectionAlwaysRuns(t *testing.T) {
+	db := setupTestDB(t)
+	style, styleLog := runLogScript(t, "style")
+	costly, costlyLog := runLogScript(t, "costly")
+	config.SetC(sectionPluginConfig(db, style, costly))
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	putInSection(t, db, "Team", "owner", "repo", 1)
+	putInSection(t, db, "Mine", "owner", "repo", 2)
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+	RunPlugins("owner", "repo", 2, "sha123", "", "", "", "main")
+
+	// The section's plugin runs as though it had been asked for by name.
+	got := runs(t, styleLog)
+	if len(got) != 1 || !strings.Contains(got[0], "--number 1 ") || !strings.Contains(got[0], "--call-type explicit") {
+		t.Fatalf("style ran %q, want once for PR 1 with --call-type explicit", got)
+	}
+	if got := runs(t, costlyLog); len(got) != 0 {
+		t.Errorf("costly ran %q; no section always runs it", got)
+	}
+	results, _ := db.GetPluginResults("owner", "repo", 1)
+	if results["style"].Status != "success" || results["costly"].Status != "deferred" {
+		t.Errorf("PR 1 results = %+v, want style succeeded and costly deferred", results)
+	}
+	results, _ = db.GetPluginResults("owner", "repo", 2)
+	if results["style"].Status != "deferred" {
+		t.Errorf("PR 2 style = %+v, want deferred outside the section", results["style"])
+	}
+
+	// Once per head, like any plugin that runs on its own.
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+	if got := runs(t, styleLog); len(got) != 1 {
+		t.Errorf("style ran %d times at one head, want 1", len(got))
+	}
+	RunPlugins("owner", "repo", 1, "sha456", "", "", "", "main")
+	if got := runs(t, styleLog); len(got) != 2 {
+		t.Errorf("style ran %d times after a push, want 2", len(got))
+	}
+}
+
+func TestRunPlugins_KeepsADeferredPluginsResultForTheSameHead(t *testing.T) {
+	// A deferred plugin someone ran isn't put back to "deferred" when the
+	// post-update hooks next run for the same head - say when the PR is
+	// opened again.
+	db := setupTestDB(t)
+	script, log := runLogScript(t, "costly")
+	config.SetC(config.Config{
+		DB:      db,
+		Plugins: []config.Plugin{{Name: "costly", Command: script, OnlyOnDemand: true}},
+	})
+	if err := db.UpsertPluginResult("owner", "repo", 1, "costly", "report", "success", "sha123"); err != nil {
+		t.Fatal(err)
+	}
+	out := subscribedNotifier(t)
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+
+	if got := pluginStatuses(t, out, 100*time.Millisecond); len(got) != 0 {
+		t.Errorf("announced %v, want nothing", got)
+	}
+	results, _ := db.GetPluginResults("owner", "repo", 1)
+	if got := results["costly"]; got.Status != "success" || got.Result != "report" {
+		t.Errorf("costly = %+v, want the run kept", got)
+	}
+	if got := runs(t, log); len(got) != 0 {
+		t.Errorf("costly ran %q", got)
+	}
+}
+
+func TestRunPluginsForce_RerunningEveryPluginIncludesTheSectionsDeferredOnes(t *testing.T) {
+	db := setupTestDB(t)
+	style, styleLog := runLogScript(t, "style")
+	costly, costlyLog := runLogScript(t, "costly")
+	config.SetC(sectionPluginConfig(db, style, costly))
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	putInSection(t, db, "Team", "owner", "repo", 1)
+	if err := db.UpsertPluginResult("owner", "repo", 1, "style", "old report", "success", "sha123"); err != nil {
+		t.Fatal(err)
+	}
+
+	RunPluginsForce("owner", "repo", 1, "sha123", "", "", "", "main", true, nil)
+
+	if got := runs(t, styleLog); len(got) != 1 || !strings.Contains(got[0], "--call-type explicit") {
+		t.Errorf("style ran %q, want one explicit rerun", got)
+	}
+	if got := runs(t, costlyLog); len(got) != 0 {
+		t.Errorf("costly ran %q; only naming it reruns it", got)
+	}
+}
+
+func TestRunSectionPlugins_RunsWhatHasntRunAtTheHeadFromTheCaches(t *testing.T) {
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("CRS_GITHUB_TOKEN", "test-token")
+	db := setupTestDB(t)
+	style, styleLog := runLogScript(t, "style")
+	costly, costlyLog := runLogScript(t, "costly")
+	config.SetC(sectionPluginConfig(db, style, costly))
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	// Its inputs come from the caches, never GitHub.
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	// The post-update hooks ran before the cycle put the PR in the section.
+	RunPlugins(aiOwner, aiRepo, aiNumber, "sha-1", "", "", "", "alice/greeting")
+	putInSection(t, db, "Team", aiOwner, aiRepo, aiNumber)
+
+	RunSectionPlugins(aiOwner, aiRepo, aiNumber)
+
+	got := runs(t, styleLog)
+	if len(got) != 1 {
+		t.Fatalf("style ran %d times, want once", len(got))
+	}
+	for _, want := range []string{fmt.Sprintf("--number %d ", aiNumber), "--call-type explicit", "--branch alice/greeting"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("style ran with %q, want %q in it", got[0], want)
+		}
+	}
+	if got := runs(t, costlyLog); len(got) != 0 {
+		t.Errorf("costly ran %q", got)
+	}
+	results, _ := db.GetPluginResults(aiOwner, aiRepo, aiNumber)
+	if results["style"].Status != "success" || results["costly"].Status != "deferred" {
+		t.Errorf("results = %+v, want style succeeded and costly still deferred", results)
+	}
+
+	// Every cycle rewrites the PR's item; a run at this head isn't repeated.
+	RunSectionPlugins(aiOwner, aiRepo, aiNumber)
+	if got := runs(t, styleLog); len(got) != 1 {
+		t.Errorf("style ran %d times at one head, want 1", len(got))
 	}
 }

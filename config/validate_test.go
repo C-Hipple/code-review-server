@@ -95,6 +95,23 @@ func TestValidate(t *testing.T) {
 			wantMessage: "duplicates",
 		},
 		{
+			name: "always running a plugin that isn't configured",
+			mutate: func(c *Config) {
+				c.RawWorkflows[0].AlwaysRunPlugins = []string{"Style"}
+			},
+			wantField:   "AlwaysRunPlugins",
+			wantMessage: "[[Plugins]]",
+		},
+		{
+			name: "always running a plugin that already runs on every PR",
+			mutate: func(c *Config) {
+				c.Plugins = []Plugin{{Name: "Style", Command: "style_guidelines"}}
+				c.RawWorkflows[0].AlwaysRunPlugins = []string{"Style"}
+			},
+			wantField:   "AlwaysRunPlugins",
+			wantMessage: "OnlyOnDemand",
+		},
+		{
 			// The capitalized spelling is the likely mistake: it is how the
 			// API is written everywhere but here.
 			name:        "unknown GitHub API",

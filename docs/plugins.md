@@ -62,7 +62,7 @@ Model = "anthropic/claude-sonnet-4.5"    # The OpenRouter model to ask for
 - `IncludeHeaders` (bool, optional): Pass PR metadata via `--headers` flag (includes `head_ref` among other fields)
 - `IncludeComments` (bool, optional): Pass PR comments via `--comments` flag
 - `IncludeBranch` (bool, optional): Pass the PR's head branch name via `--branch` flag
-- `OnlyOnDemand` (bool, optional, default: false): If true, plugin only runs when explicitly requested via RerunPlugins
+- `OnlyOnDemand` (bool, optional, default: false): If true, plugin only runs when explicitly requested via RerunPlugins, or on the PRs of a section that always runs it (see [Always running a deferred plugin in a section](#always-running-a-deferred-plugin-in-a-section))
 - `Provider` (string, optional): The LLM backend the plugin should call — `gemini` or `openrouter`. See [Choosing a Model](#choosing-a-model)
 - `Model` (string, required with `Provider = "openrouter"`): The model to ask OpenRouter for, as OpenRouter names it (e.g. `anthropic/claude-sonnet-4.5`)
 
@@ -129,7 +129,7 @@ Every invocation carries a `--call-type` flag naming why the plugin is being run
 | Value       | When it's passed                                                                       |
 |-------------|----------------------------------------------------------------------------------------|
 | `automatic` | The server triggered the run itself, because a PR was fetched or its head SHA changed. |
-| `explicit`  | A deferred (`OnlyOnDemand = true`) plugin was requested by name via `RerunPlugins`. These plugins never run automatically, so any run of one is an explicit request. |
+| `explicit`  | A deferred (`OnlyOnDemand = true`) plugin was requested by name via `RerunPlugins`, or runs because the PR is in a section that always runs it (`AlwaysRunPlugins`). These plugins never run automatically, so any run of one is an explicit request. |
 | `rerun`     | A plugin that would otherwise run automatically was rerun via `RerunPlugins`. |
 
 `--call-type` is passed on **every** invocation, alongside `--owner`, `--repo` and `--number`, with no configuration option to turn it off. A plugin that rejects unknown flags — anything using Go's `flag` package, Python's `argparse`, or similar — must therefore declare it, even if it ignores the value. Plugins that parse flags loosely need no change.
@@ -259,6 +259,46 @@ To avoid unnecessary costs, you can mark a plugin as `OnlyOnDemand = true` in th
 
 This allows cost control while keeping expensive plugins available for on-demand use.
 
+### Always Running a Deferred Plugin in a Section
+
+Some sections are worth the cost: a deferred plugin can run on every PR in a
+section without anyone asking, while staying deferred everywhere else. Name it
+in `AlwaysRunPlugins` on the workflow that defines the section:
+
+```toml
+[[Plugins]]
+Name = "Style Guidelines"
+Command = "style_guidelines"
+IncludeDiff = true
+OnlyOnDemand = true
+
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Payments Reviews"
+Repos = ["myorg/payments"]
+SectionTitle = "Payments"
+AlwaysRunPlugins = ["Style Guidelines"]
+```
+
+Every PR in the Payments section then gets the plugin run as though you had
+clicked Run on it: invoked with `--call-type explicit`, its result stored like
+any other run. It runs once per head SHA, like the plugins that run on their
+own: in the cycle that puts the PR in the section (or, for a PR already there
+when you add the setting, the next cycle that refreshes it, or when it is
+opened), and again after each push. Nobody is waiting on these runs, so they
+queue behind the other background plugin runs (at most four run at once). A
+run someone asked for at the same head counts: the plugin isn't run again.
+
+`AlwaysRunPlugins` belongs to the section: when several workflows write into
+one `SectionTitle`, every PR in it gets the plugins any of them name. A result
+belongs to the PR, not the section, so a PR that is also listed elsewhere shows
+it there too. `RerunPlugins` with no names reruns these plugins as well, for a
+PR in such a section.
+
+Each name must be the `Name` of a `[[Plugins]]` entry with `OnlyOnDemand =
+true`; a config naming any other plugin is logged at startup and rejected by
+`UpdateConfig`.
+
 ## Rerunning Plugins
 
 By default, plugins only run once per PR commit (SHA). To force plugins to rerun for a PR, use the `RerunPlugins` RPC method.
@@ -278,7 +318,7 @@ By default, plugins only run once per PR commit (SHA). To force plugins to rerun
 
 **Plugin Behavior:**
 - **With specific plugin names**: Only those plugins are rerun, regardless of their `OnlyOnDemand` setting. This allows you to explicitly trigger expensive plugins.
-- **With empty/omitted array**: Reruns all normal plugins (those with `OnlyOnDemand = false`). On-demand plugins are skipped unless explicitly named.
+- **With empty/omitted array**: Reruns all normal plugins (those with `OnlyOnDemand = false`). On-demand plugins are skipped unless explicitly named, or always run by a section the PR is in (`AlwaysRunPlugins`).
 
 **Example: Rerun specific plugins (including an on-demand one):**
 ```json

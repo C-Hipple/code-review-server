@@ -1356,6 +1356,7 @@ func normalizeWorkflows(wfs *[]config.RawWorkflow) *[]config.RawWorkflow {
 		wf.Repos = trimList(wf.Repos)
 		wf.Filters = trimList(wf.Filters)
 		wf.Teams = trimList(wf.Teams)
+		wf.AlwaysRunPlugins = trimList(wf.AlwaysRunPlugins)
 		cleaned = append(cleaned, wf)
 	}
 	return &cleaned

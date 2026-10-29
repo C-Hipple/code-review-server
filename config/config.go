@@ -37,10 +37,11 @@ type RawWorkflow struct {
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
 	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
-	// AlwaysRunPlugins names deferred (OnlyOnDemand) plugins that run on every
-	// PR in this workflow's section anyway, once per head SHA, as though
-	// someone had asked for each by name: with --call-type explicit. See
-	// SectionPlugins.
+	// AlwaysRunPlugins names plugins that run on every PR in this workflow's
+	// section once per head SHA, as though someone had asked for each by
+	// name: with --call-type explicit. A deferred (OnlyOnDemand) one runs there
+	// anyway; one that runs on its own gets that run in place of its automatic
+	// one. See SectionPlugins.
 	AlwaysRunPlugins []string `toml:"AlwaysRunPlugins,omitempty"`
 }
 
@@ -71,10 +72,10 @@ type Plugin struct {
 	Model    string `toml:"Model,omitempty"`
 }
 
-// SectionPlugins maps each section title to the deferred plugins that run on
+// SectionPlugins maps each section title to the plugins that always run on
 // every PR in it: the AlwaysRunPlugins of each workflow writing into it, in
 // file order without repeats. Sections none of them name are left out, so an
-// empty map means no section runs a deferred plugin.
+// empty map means no section always runs a plugin.
 func (c Config) SectionPlugins() map[string][]string {
 	sections := map[string][]string{}
 	for _, wf := range c.RawWorkflows {

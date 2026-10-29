@@ -37,6 +37,21 @@ func TestValidateAcceptsEveryGitHubAPI(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsAlwaysRunningAnyPlugin(t *testing.T) {
+	// A deferred plugin runs in the section and nowhere else unasked; one
+	// that runs on its own gets an explicit run there instead of its
+	// automatic one.
+	cfg := validConfig()
+	cfg.Plugins = []Plugin{
+		{Name: "Style", Command: "style_guidelines", OnlyOnDemand: true},
+		{Name: "Validator", Command: "cb-pr-validator"},
+	}
+	cfg.RawWorkflows[0].AlwaysRunPlugins = []string{"Style", "Validator"}
+	if problems := Validate(cfg); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -101,15 +116,6 @@ func TestValidate(t *testing.T) {
 			},
 			wantField:   "AlwaysRunPlugins",
 			wantMessage: "[[Plugins]]",
-		},
-		{
-			name: "always running a plugin that already runs on every PR",
-			mutate: func(c *Config) {
-				c.Plugins = []Plugin{{Name: "Style", Command: "style_guidelines"}}
-				c.RawWorkflows[0].AlwaysRunPlugins = []string{"Style"}
-			},
-			wantField:   "AlwaysRunPlugins",
-			wantMessage: "OnlyOnDemand",
 		},
 		{
 			// The capitalized spelling is the likely mistake: it is how the

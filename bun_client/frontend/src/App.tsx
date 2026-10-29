@@ -4,6 +4,7 @@ import Review from './components/Review';
 import PluginOutput from './components/PluginOutput';
 import AIOutput from './components/AIOutput';
 import ConfigManager from './components/ConfigManager';
+import DeviceQRCode from './components/DeviceQRCode';
 import RateLimitHistory from './components/RateLimitHistory';
 import ServerStatus from './components/ServerStatus';
 import { rpcCall } from './api';
@@ -56,7 +57,9 @@ function App() {
     const [view, setView] = useState<View>('LIST');
     const [currentPR, setCurrentPR] = useState<PRParams | null>(null);
     const [showPrefs, setShowPrefs] = useState(false);
-    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit'>('appearance');
+    const [prefsTab, setPrefsTab] = useState<'appearance' | 'server' | 'ratelimit' | 'devices'>(
+        'appearance'
+    );
     const [navigating, setNavigating] = useState(false);
     const isMobile = useIsMobile();
     const serverHeartbeat = useServerHeartbeat();
@@ -401,6 +404,8 @@ function App() {
                         gap: '4px',
                         borderBottom: '1px solid var(--border)',
                         marginBottom: '16px',
+                        // Four tabs are wider than a phone.
+                        overflowX: 'auto',
                     }}
                 >
                     {(
@@ -408,6 +413,7 @@ function App() {
                             ['appearance', 'Appearance'],
                             ['server', 'Server Configuration'],
                             ['ratelimit', 'Rate Limit'],
+                            ['devices', 'Other Devices'],
                         ] as const
                     ).map(([tab, label]) => (
                         <button
@@ -427,6 +433,8 @@ function App() {
                                 fontSize: '14px',
                                 fontWeight: prefsTab === tab ? 600 : 400,
                                 cursor: 'pointer',
+                                whiteSpace: 'nowrap',
+                                flexShrink: 0,
                             }}
                         >
                             {label}
@@ -437,6 +445,8 @@ function App() {
                 {prefsTab === 'server' && <ConfigManager />}
 
                 {prefsTab === 'ratelimit' && <RateLimitHistory />}
+
+                {prefsTab === 'devices' && <DeviceQRCode />}
 
                 <div
                     style={{

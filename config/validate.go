@@ -94,6 +94,7 @@ func Validate(cfg *Config) []ValidationError {
 		if strings.TrimSpace(wf.SectionTitle) == "" {
 			problems = append(problems, workflowError(i, "SectionTitle", "is required"))
 		}
+		problems = append(problems, validateAlwaysRunPlugins(cfg, i, wf)...)
 	}
 
 	problems = append(problems, validateLegacyLLM(cfg)...)
@@ -258,6 +259,25 @@ func validatePlugins(cfg *Config) []ValidationError {
 		if p.Provider == PluginProviderOpenRouter && strings.TrimSpace(p.Model) == "" {
 			problems = append(problems, rootError(field("Model"),
 				"the openrouter provider needs a model, e.g. \"anthropic/claude-sonnet-4.5\""))
+		}
+	}
+	return problems
+}
+
+// validateAlwaysRunPlugins checks that each plugin a workflow always runs in
+// its section is a deferred one: a name with no [[Plugins]] entry runs
+// nothing, and a plugin without OnlyOnDemand already runs on every PR.
+func validateAlwaysRunPlugins(cfg *Config, index int, wf RawWorkflow) []ValidationError {
+	var problems []ValidationError
+	for _, name := range wf.AlwaysRunPlugins {
+		i := slices.IndexFunc(cfg.Plugins, func(p Plugin) bool { return p.Name == name })
+		switch {
+		case i < 0:
+			problems = append(problems, workflowError(index, "AlwaysRunPlugins",
+				"%q is not the Name of a [[Plugins]] entry", name))
+		case !cfg.Plugins[i].OnlyOnDemand:
+			problems = append(problems, workflowError(index, "AlwaysRunPlugins",
+				"%q already runs on every PR; AlwaysRunPlugins is for plugins with OnlyOnDemand = true", name))
 		}
 	}
 	return problems

@@ -106,6 +106,9 @@ func main() {
 		// workflow-only process exits when its cycle ends and would kill the
 		// hooks mid-run.
 		workflows.SetPRUpdatedHook(server.WarmPRAnalysis)
+		// Run the deferred plugins a section always runs (AlwaysRunPlugins)
+		// for each PR a workflow writes into it.
+		workflows.SetSectionPluginsHook(server.RunSectionPlugins)
 		// Tell a subscribed client — the web client's bridge — about each PR
 		// a webhook delivery changes, so a page showing it can refresh.
 		workflows.SetPRChangedHook(server.NotifyPRChanged)

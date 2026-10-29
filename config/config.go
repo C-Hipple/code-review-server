@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,11 @@ type RawWorkflow struct {
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
 	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
+	// AlwaysRunPlugins names deferred (OnlyOnDemand) plugins that run on every
+	// PR in this workflow's section anyway, once per head SHA, as though
+	// someone had asked for each by name: with --call-type explicit. See
+	// SectionPlugins.
+	AlwaysRunPlugins []string `toml:"AlwaysRunPlugins,omitempty"`
 }
 
 // RepoConfig holds per-repository configuration settings.
@@ -63,6 +69,22 @@ type Plugin struct {
 	// leaves the variables to whatever the server's own environment says.
 	Provider string `toml:"Provider,omitempty"`
 	Model    string `toml:"Model,omitempty"`
+}
+
+// SectionPlugins maps each section title to the deferred plugins that run on
+// every PR in it: the AlwaysRunPlugins of each workflow writing into it, in
+// file order without repeats. Sections none of them name are left out, so an
+// empty map means no section runs a deferred plugin.
+func (c Config) SectionPlugins() map[string][]string {
+	sections := map[string][]string{}
+	for _, wf := range c.RawWorkflows {
+		for _, name := range wf.AlwaysRunPlugins {
+			if !slices.Contains(sections[wf.SectionTitle], name) {
+				sections[wf.SectionTitle] = append(sections[wf.SectionTitle], name)
+			}
+		}
+	}
+	return sections
 }
 
 // LLM backends a [[Plugins]] entry can name. A plugin is itself a command, so

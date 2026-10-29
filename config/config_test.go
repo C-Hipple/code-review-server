@@ -1,8 +1,10 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -266,5 +268,51 @@ Mergeability = "rest"
 	}
 	if routes := got.GitHubAPI.Routes(); routes["ReviewRequestHistory"] != "" {
 		t.Errorf("ReviewRequestHistory = %q, want unset", routes["ReviewRequestHistory"])
+	}
+}
+
+func TestSectionPluginsCollectsEachSectionsAlwaysRunPlugins(t *testing.T) {
+	got, err := parseConfig([]byte(`
+[[Plugins]]
+Name = "Style"
+Command = "style_guidelines"
+OnlyOnDemand = true
+
+[[Plugins]]
+Name = "Security"
+Command = "security_check"
+OnlyOnDemand = true
+
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Team PRs"
+SectionTitle = "Team"
+AlwaysRunPlugins = ["Style"]
+
+[[Workflows]]
+WorkflowType = "WaitingOnMeWorkflow"
+Name = "Team PRs waiting on me"
+SectionTitle = "Team"
+AlwaysRunPlugins = ["Security", "Style"]
+
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Mine"
+SectionTitle = "My PRs"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if want := []string{"Style"}; !slices.Equal(got.RawWorkflows[0].AlwaysRunPlugins, want) {
+		t.Errorf("AlwaysRunPlugins = %v, want %v", got.RawWorkflows[0].AlwaysRunPlugins, want)
+	}
+	// Workflows writing into one section pool their plugins; a section that
+	// names none is left out.
+	want := map[string][]string{"Team": {"Style", "Security"}}
+	if sections := got.SectionPlugins(); !maps.EqualFunc(sections, want, slices.Equal) {
+		t.Errorf("SectionPlugins() = %v, want %v", sections, want)
+	}
+	if problems := Validate(got); len(problems) != 0 {
+		t.Errorf("expected no problems, got %v", problems)
 	}
 }

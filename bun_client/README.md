@@ -18,7 +18,12 @@
     ./start_server.sh
     ```
 
-    This runs on `http://localhost:5172`.
+    This runs on `http://localhost:5172` (`CRS_PORT` changes the port). It
+    listens on every interface, so a phone or tablet on the same Wi-Fi can open
+    it too: the startup log prints the machine's network addresses, and
+    **Preferences (⚙️) → Other Devices** shows a QR code that opens the page
+    you're on at one of them. The server has no login, so anyone on the network
+    can use it; `CRS_HOST=127.0.0.1` keeps it to this machine.
 
 2. Start the Frontend (Development Mode):
     ```bash

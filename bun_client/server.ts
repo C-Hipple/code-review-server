@@ -1,4 +1,5 @@
 import { readdir } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { spawn } from 'bun';
 import { type GetImageReply, parseGitHubImageUrl } from './github_images';
@@ -10,6 +11,7 @@ import {
     LspSessionPool,
     startLspServer,
 } from './lsp_pool';
+import { lanAddresses, type NetworkInfo } from './network_addresses';
 import { JsonRpcLineParser } from './rpc_framing';
 import { isNotification, type JsonRpcNotification, ServerEventHub } from './server_events';
 
@@ -187,6 +189,9 @@ const CORS_HEADERS = {
 };
 
 const SERVER_PORT = parseInt(process.env.CRS_PORT || '5172', 10);
+// Every interface, so a phone on the same Wi-Fi can open the UI (Preferences
+// shows a QR code for it). CRS_HOST=127.0.0.1 keeps it to this machine.
+const SERVER_HOST = process.env.CRS_HOST || '0.0.0.0';
 
 Bun.serve<{
     // Which session the socket can share, and how to start one if none can.
@@ -197,6 +202,7 @@ Bun.serve<{
     peerId?: number;
 }>({
     port: SERVER_PORT,
+    hostname: SERVER_HOST,
     async fetch(req, server) {
         const url = new URL(req.url);
 
@@ -433,6 +439,17 @@ Bun.serve<{
         if (url.pathname === '/api/update-config' && req.method === 'POST') {
             const body = await req.json();
             return handleRpc('RPCHandler.UpdateConfig', [body]);
+        }
+
+        // Where another device on the network can open the UI.
+        if (url.pathname === '/api/network' && req.method === 'GET') {
+            const info: NetworkInfo = {
+                port: server.port ?? SERVER_PORT,
+                addresses: lanAddresses(networkInterfaces(), SERVER_HOST),
+            };
+            return new Response(JSON.stringify(info), {
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+            });
         }
 
         if (url.pathname === '/api/check-lsp' && req.method === 'GET') {
@@ -722,3 +739,6 @@ Type: ${type}
 });
 
 console.log(`Bun server running on http://localhost:${SERVER_PORT}`);
+for (const { address, interface: name } of lanAddresses(networkInterfaces(), SERVER_HOST)) {
+    console.log(`  on the network: http://${address}:${SERVER_PORT}${name ? ` (${name})` : ''}`);
+}

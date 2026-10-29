@@ -1161,7 +1161,7 @@ Field names match the TOML keys. See [Configuration](configuration.md) for what 
 | `IncludeDiff`          | bool      | Include the full diff in the section body                                 |
 | `GithubUsername`       | string    | Per-workflow username; inherits the root-level one when empty             |
 | `DesktopNotifications` | bool/null | Per-workflow override; `null` inherits the global setting                 |
-| `AlwaysRunPlugins`     | []string  | Deferred (`OnlyOnDemand`) plugins run on every PR in the section, as an explicit run (see [Plugins](plugins.md#always-running-a-deferred-plugin-in-a-section)) |
+| `AlwaysRunPlugins`     | []string  | Plugins run on every PR in the section as an explicit run, deferred (`OnlyOnDemand`) ones included (see [Plugins](plugins.md#always-running-a-plugin-in-a-section)) |
 
 #### `WorkflowTypeInfo` Object
 

@@ -265,19 +265,16 @@ func validatePlugins(cfg *Config) []ValidationError {
 }
 
 // validateAlwaysRunPlugins checks that each plugin a workflow always runs in
-// its section is a deferred one: a name with no [[Plugins]] entry runs
-// nothing, and a plugin without OnlyOnDemand already runs on every PR.
+// its section is configured: a name with no [[Plugins]] entry runs nothing.
+// Any plugin will do. A deferred one runs there and nowhere else unasked, and
+// one that runs on its own gets an explicit run there in place of its
+// automatic one, which a plugin can treat differently (--call-type).
 func validateAlwaysRunPlugins(cfg *Config, index int, wf RawWorkflow) []ValidationError {
 	var problems []ValidationError
 	for _, name := range wf.AlwaysRunPlugins {
-		i := slices.IndexFunc(cfg.Plugins, func(p Plugin) bool { return p.Name == name })
-		switch {
-		case i < 0:
+		if !slices.ContainsFunc(cfg.Plugins, func(p Plugin) bool { return p.Name == name }) {
 			problems = append(problems, workflowError(index, "AlwaysRunPlugins",
 				"%q is not the Name of a [[Plugins]] entry", name))
-		case !cfg.Plugins[i].OnlyOnDemand:
-			problems = append(problems, workflowError(index, "AlwaysRunPlugins",
-				"%q already runs on every PR; AlwaysRunPlugins is for plugins with OnlyOnDemand = true", name))
 		}
 	}
 	return problems

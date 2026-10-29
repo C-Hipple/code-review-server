@@ -97,7 +97,7 @@ Per workflow:
 Plugins and AI features:
 
 - A plugin is missing its `Name` or `Command`, two plugins share a `Name`, a plugin's `Provider` is not `gemini` or `openrouter`, or it names `openrouter` without a `Model`.
-- A workflow's `AlwaysRunPlugins` names a plugin that isn't configured, or one without `OnlyOnDemand = true` (it already runs on every PR).
+- A workflow's `AlwaysRunPlugins` names a plugin that isn't configured.
 - See [AI Features](ai_features.md#enabling-a-feature) for what an `[AI]` table or an `[[AIFeatures]]` entry is rejected for.
 
 ## Workflows
@@ -121,7 +121,7 @@ The `GithubUsername` can be set at the top level of the config file. If a workfl
 
 `DesktopNotifications` on a workflow overrides the top-level `DesktopNotifications` setting for that workflow only. Omit it to inherit the global value; set it to `true` or `false` to force notifications on or off for this workflow. This lets you keep notifications globally off but opt in on a specific workflow (e.g. review requests) — or vice versa.
 
-`AlwaysRunPlugins` names deferred plugins (`OnlyOnDemand = true`) to run on every PR in the workflow's section anyway, as though you had clicked Run on each — see [Always running a deferred plugin in a section](plugins.md#always-running-a-deferred-plugin-in-a-section).
+`AlwaysRunPlugins` names plugins to run on every PR in the workflow's section as though you had clicked Run on each (`--call-type explicit`): a deferred plugin (`OnlyOnDemand = true`) runs there anyway, and one that runs on its own gets an explicit run there instead of an automatic one — see [Always running a plugin in a section](plugins.md#always-running-a-plugin-in-a-section).
 
 ### Workflow Types
 

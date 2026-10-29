@@ -19,17 +19,19 @@ const pluginTimeout = 5 * time.Minute
 // each competing for CPU and for the server's single SQLite connection with
 // the request the reviewer is actually waiting on. Explicit runs (a rerun, or
 // an on-demand plugin someone asked for by name) are never queued behind this
-// - someone is watching those. A deferred plugin a section always runs is
-// fan-out work too, so its unforced runs queue here like automatic ones.
+// - someone is watching those. A plugin a section always runs is fan-out work
+// too, so its unforced runs queue here like automatic ones.
 const maxAutomaticPluginProcs = 4
 
 var automaticPluginSlots = make(chan struct{}, maxAutomaticPluginProcs)
 
 // queuedPluginRuns holds the unforced runs claimed and not finished yet, keyed
-// by PR, plugin and head SHA. Such a run writes "pending" only once it has a
-// slot, so without this a second dispatch for the same head - the workflow
-// writing the PR into a section while its post-update hooks run - would find
-// nothing stored and start the plugin again.
+// by PR, plugin, head SHA and call type. Such a run writes "pending" only once
+// it has a slot, so without this a second dispatch for the same head - the
+// workflow writing the PR into a section while its post-update hooks run -
+// would find nothing stored and start the plugin again. The call type is in
+// the key because a section's explicit run isn't the automatic one the PR got
+// before joining it (see runSettled).
 var queuedPluginRuns sync.Map
 
 // PluginCallType describes why a plugin is being executed. It is handed to the
@@ -43,9 +45,9 @@ const (
 	// was fetched or its head SHA changed.
 	PluginCallAutomatic PluginCallType = "automatic"
 	// PluginCallExplicit is a run of a deferred (OnlyOnDemand) plugin, which
-	// only ever executes because someone asked for it by name, or because the
-	// PR is in a section that always runs it as though someone had
-	// (AlwaysRunPlugins).
+	// only ever executes because someone asked for it by name, or a run of any
+	// plugin because the PR is in a section that always runs it as though
+	// someone had (AlwaysRunPlugins).
 	PluginCallExplicit PluginCallType = "explicit"
 	// PluginCallRerun is a requested rerun of a plugin that would otherwise
 	// have run automatically.
@@ -56,10 +58,12 @@ const (
 // call type reported to the plugin. A deferred plugin never runs
 // automatically - it runs because someone asked for it, or because its PR's
 // section always runs it as though someone had - so every run of one is an
-// explicit request for it.
-func callTypeFor(plugin config.Plugin, force bool) PluginCallType {
+// explicit request for it. section says the PR is in a section that always
+// runs the plugin: there the run a plugin would otherwise make automatically
+// is an explicit one too, while a rerun someone asked for stays a rerun.
+func callTypeFor(plugin config.Plugin, force, section bool) PluginCallType {
 	switch {
-	case plugin.OnlyOnDemand:
+	case plugin.OnlyOnDemand, section && !force:
 		return PluginCallExplicit
 	case force:
 		return PluginCallRerun
@@ -79,6 +83,8 @@ func RunPlugins(owner, repo string, number int, sha string, diff string, comment
 // force=true bypasses the SHA check and reruns plugins even if SHA hasn't changed.
 // plugins=nil or empty means run all configured plugins, apart from the deferred
 // ones the PR's sections don't always run; otherwise run only the specified ones.
+// A plugin the PR's sections always run gets an explicit run in place of an
+// automatic one (callTypeFor).
 func RunPluginsForce(owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, force bool, plugins []string) {
 	var wg sync.WaitGroup
 	pluginMap := make(map[string]bool)
@@ -87,12 +93,10 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 			pluginMap[p] = true
 		}
 	}
-	// The deferred plugins the PR's sections always run, which run with the
-	// rest when nobody named which plugins to run.
-	var sectionRuns map[string]bool
-	if len(pluginMap) == 0 {
-		sectionRuns = sectionPlugins(owner, repo, number)
-	}
+	// The plugins the PR's sections always run: the deferred ones among them
+	// run with the rest when nobody named which plugins to run, and none of
+	// them runs automatically.
+	sectionRuns := sectionPlugins(owner, repo, number)
 
 	for _, plugin := range config.C().Plugins {
 		// If specific plugins requested, skip if not in the list
@@ -113,7 +117,7 @@ func RunPluginsForce(owner, repo string, number int, sha string, diff string, co
 					slog.Error("Plugin runner panicked", "plugin", p.Name, "panic", r)
 				}
 			}()
-			executePlugin(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, callTypeFor(p, force), force)
+			executePlugin(p, owner, repo, number, sha, diff, commentsJSON, metadataJSON, branch, callTypeFor(p, force, sectionRuns[p.Name]), force)
 		}(plugin)
 	}
 
@@ -134,8 +138,8 @@ func markPluginDeferred(owner, repo string, number int, plugin, sha string) {
 	}
 }
 
-// sectionPlugins returns the deferred plugins the sections holding a PR always
-// run (a workflow's AlwaysRunPlugins), as a set. It is nil without reading
+// sectionPlugins returns the plugins the sections holding a PR always run (a
+// workflow's AlwaysRunPlugins), as a set. It is nil without reading
 // the DB when no section names any.
 func sectionPlugins(owner, repo string, number int) map[string]bool {
 	cfg := config.C()
@@ -159,14 +163,15 @@ func sectionPlugins(owner, repo string, number int) map[string]bool {
 	return plugins
 }
 
-// RunSectionPlugins runs the deferred plugins the sections holding a PR always
-// run, each that hasn't run at the PR's head yet, as RunPlugins would run them
-// with the rest. The workflow layer calls it as it writes a PR into such a
-// section (see workflows.SetSectionPluginsHook): a PR's post-update hooks run
-// before a cycle has written its sections, so a PR the cycle is adding isn't
-// in one yet when they look. Inputs come from the DB caches, the same ones a
-// manual run reads; it blocks while the plugins run, so callers run it in a
-// goroutine.
+// RunSectionPlugins runs the plugins the sections holding a PR always run,
+// each that hasn't had an explicit run at the PR's head yet, as RunPlugins
+// would run them with the rest. The workflow layer calls it as it writes a PR
+// into such a section (see workflows.SetSectionPluginsHook): a PR's
+// post-update hooks run before a cycle has written its sections, so a PR the
+// cycle is adding isn't in one yet when they look - and a plugin that isn't
+// deferred has had its automatic run by then, which the explicit one replaces.
+// Inputs come from the DB caches, the same ones a manual run reads; it blocks
+// while the plugins run, so callers run it in a goroutine.
 func RunSectionPlugins(owner, repo string, number int) {
 	always := sectionPlugins(owner, repo, number)
 	if len(always) == 0 {
@@ -176,10 +181,10 @@ func RunSectionPlugins(owner, repo string, number int) {
 	head, _, _ := db.GetPullRequestSHAs(number, repo)
 	var due []string
 	for _, plugin := range config.C().Plugins {
-		if !plugin.OnlyOnDemand || !always[plugin.Name] {
+		if !always[plugin.Name] {
 			continue
 		}
-		if sha, status, _ := db.GetPluginResultState(owner, repo, number, plugin.Name); head == "" || sha != head || status == "deferred" {
+		if head == "" || !runSettled(owner, repo, number, plugin.Name, head, PluginCallExplicit) {
 			due = append(due, plugin.Name)
 		}
 	}
@@ -201,32 +206,46 @@ func RunSectionPlugins(owner, repo string, number int) {
 	if err != nil {
 		metadataJSON = []byte("{}")
 	}
-	slog.Info("Running the deferred plugins the PR's sections always run", "repo", repo, "pr", number, "plugins", due)
+	slog.Info("Running the plugins the PR's sections always run", "repo", repo, "pr", number, "plugins", due)
 	RunPluginsForce(owner, repo, number, sha, details.Diff, commentsJSON, string(metadataJSON), details.Metadata.HeadRef, false, due)
+}
+
+// runSettled reports whether the stored result for a plugin settles an
+// unforced run of callType at sha, so that run isn't made: any result at sha
+// does - pending, success or error - apart from the "deferred" placeholder,
+// except that an automatic result doesn't settle a requested run. That is the
+// run a section that always runs the plugin makes in place of the automatic
+// one, which a PR new to the section has had by the time the section is
+// written. A result stored before call types were (an empty one) settles
+// either, as it did then. A failed read settles nothing: the plugin runs.
+func runSettled(owner, repo string, number int, plugin, sha string, callType PluginCallType) bool {
+	storedSHA, status, storedCallType, err := config.C().DB.GetPluginResultState(owner, repo, number, plugin)
+	if err != nil {
+		slog.Error("Failed to get stored SHA for plugin", "plugin", plugin, "error", err)
+		return false
+	}
+	if storedSHA == "" || storedSHA != sha || status == "deferred" {
+		return false
+	}
+	return callType == PluginCallAutomatic || storedCallType != string(PluginCallAutomatic)
 }
 
 // executePlugin runs a single plugin binary and stores its result. callType
 // says why the run was triggered and is what the plugin is told. force says
 // someone is waiting on the run: it executes at once, even when a result for
-// this SHA is stored. An unforced run executes once per SHA - a stored
-// "deferred" placeholder doesn't count as a run - and waits its turn behind
-// the other background runs.
+// this SHA is stored. An unforced run executes once per SHA (see runSettled)
+// and waits its turn behind the other background runs.
 func executePlugin(plugin config.Plugin, owner, repo string, number int, sha string, diff string, commentsJSON string, metadataJSON string, branch string, callType PluginCallType, force bool) {
 	if !force {
-		key := fmt.Sprintf("%s/%s#%d/%s@%s", owner, repo, number, plugin.Name, sha)
+		key := fmt.Sprintf("%s/%s#%d/%s@%s/%s", owner, repo, number, plugin.Name, sha, callType)
 		if _, queued := queuedPluginRuns.LoadOrStore(key, struct{}{}); queued {
-			slog.Debug("Skipping plugin execution - already queued for this SHA", "plugin", plugin.Name, "sha", sha)
+			slog.Debug("Skipping plugin execution - already queued for this SHA", "plugin", plugin.Name, "sha", sha, "call_type", callType)
 			return
 		}
 		defer queuedPluginRuns.Delete(key)
 
-		storedSHA, status, err := config.C().DB.GetPluginResultState(owner, repo, number, plugin.Name)
-		if err != nil {
-			slog.Error("Failed to get stored SHA for plugin", "plugin", plugin.Name, "error", err)
-			// Continue anyway - we'll run the plugin
-		}
-		if storedSHA != "" && storedSHA == sha && status != "deferred" {
-			slog.Debug("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha)
+		if runSettled(owner, repo, number, plugin.Name, sha, callType) {
+			slog.Debug("Skipping plugin execution - SHA unchanged", "plugin", plugin.Name, "sha", sha, "call_type", callType)
 			return
 		}
 	}
@@ -238,12 +257,23 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 		// foreground. The slot is held only for the subprocess itself.
 		automaticPluginSlots <- struct{}{}
 		defer func() { <-automaticPluginSlots }()
+		// Look again: while this run waited, one that settles it may have
+		// started - a section's explicit run overtaking the automatic one,
+		// or another crs process's run of the plugin.
+		if runSettled(owner, repo, number, plugin.Name, sha, callType) {
+			slog.Debug("Skipping plugin execution - settled while queued", "plugin", plugin.Name, "sha", sha, "call_type", callType)
+			return
+		}
 	}
 
 	// Set status to pending
-	err := storePluginResult(owner, repo, number, plugin.Name, "", "pending", sha)
+	written, err := storePluginResult(owner, repo, number, plugin.Name, "", "pending", sha, callType)
 	if err != nil {
 		slog.Error("Failed to set plugin status to pending", "plugin", plugin.Name, "error", err)
+	} else if !written {
+		// A requested run for this head started since runSettled looked.
+		slog.Debug("Skipping plugin execution - a requested run took over", "plugin", plugin.Name, "sha", sha)
+		return
 	}
 
 	// Construct command using CLI arguments
@@ -279,7 +309,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	}
 	if err != nil {
 		slog.Error("Plugin execution failed", "plugin", plugin.Name, "error", err, "call_type", callType, "stderr", out.Stderr)
-		if upsertErr := storePluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, out.Stderr, resultStr), "error", sha); upsertErr != nil {
+		if _, upsertErr := storePluginResult(owner, repo, number, plugin.Name, fmt.Sprintf("Error: %v\nStderr: %s\nStdout: %s", err, out.Stderr, resultStr), "error", sha, callType); upsertErr != nil {
 			slog.Error("Failed to store plugin error result", "plugin", plugin.Name, "error", upsertErr)
 		}
 		return
@@ -288,7 +318,7 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 	slog.Info("Plugin executed", "plugin", plugin.Name, "result_len", len(resultStr), "sha", sha, "call_type", callType)
 
 	// Store result
-	err = storePluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha)
+	_, err = storePluginResult(owner, repo, number, plugin.Name, resultStr, "success", sha, callType)
 	if err != nil {
 		slog.Error("Failed to store plugin result", "plugin", plugin.Name, "error", err)
 	}
@@ -296,11 +326,15 @@ func executePlugin(plugin config.Plugin, owner, repo string, number int, sha str
 
 // storePluginResult writes a plugin's result for a PR and tells a subscribed
 // client its plugin output changed. Every write of a result goes through
-// here, so a client showing the output never has to poll for it.
-func storePluginResult(owner, repo string, number int, plugin, result, status, sha string) error {
-	if err := config.C().DB.UpsertPluginResult(owner, repo, number, plugin, result, status, sha); err != nil {
-		return err
+// here, so a client showing the output never has to poll for it. An automatic
+// run's result that a requested run's for the same head keeps out (see
+// database.UpsertPluginResult) is neither stored nor announced; written says
+// whether it was.
+func storePluginResult(owner, repo string, number int, plugin, result, status, sha string, callType PluginCallType) (written bool, err error) {
+	written, err = config.C().DB.UpsertPluginResult(owner, repo, number, plugin, result, status, sha, string(callType))
+	if err != nil || !written {
+		return written, err
 	}
 	notifyPluginOutputChanged(owner, repo, number, plugin, status)
-	return nil
+	return true, nil
 }

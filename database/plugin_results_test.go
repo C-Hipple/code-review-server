@@ -9,7 +9,7 @@ func TestMarkPluginDeferredKeepsAResultForTheSameHead(t *testing.T) {
 	db := newTestDB(t)
 	state := func() (string, string) {
 		t.Helper()
-		sha, status, err := db.GetPluginResultState("owner", "repo", 1, "style")
+		sha, status, _, err := db.GetPluginResultState("owner", "repo", 1, "style")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +28,7 @@ func TestMarkPluginDeferredKeepsAResultForTheSameHead(t *testing.T) {
 	}
 
 	// A run someone asked for at this head is kept...
-	if err := db.UpsertPluginResult("owner", "repo", 1, "style", "report", "success", "sha-1"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "style", "report", "success", "sha-1", "explicit"); err != nil {
 		t.Fatal(err)
 	}
 	if written, err := db.MarkPluginDeferred("owner", "repo", 1, "style", "sha-1"); err != nil || written {
@@ -85,5 +85,45 @@ func TestSectionsHoldingItem(t *testing.T) {
 	}
 	if got, _ := db.SectionsHoldingItem("C-Hipple/code-review-server-8"); len(got) != 0 {
 		t.Errorf("another PR is in %v, want none", got)
+	}
+}
+
+func TestUpsertPluginResultKeepsARequestedRunFromAnAutomaticOne(t *testing.T) {
+	db := newTestDB(t)
+	upsert := func(result, sha, callType string) bool {
+		t.Helper()
+		written, err := db.UpsertPluginResult("owner", "repo", 1, "validator", result, "success", sha, callType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return written
+	}
+	stored := func() string {
+		t.Helper()
+		results, _ := db.GetPluginResults("owner", "repo", 1)
+		return results["validator"].Result
+	}
+
+	// An automatic run that finishes after the explicit one a section made
+	// in its place at the same head doesn't replace it...
+	if !upsert("started", "sha-1", "explicit") {
+		t.Fatal("the first write wasn't written")
+	}
+	if upsert("report", "sha-1", "automatic") {
+		t.Error("an automatic result replaced an explicit one at the same head")
+	}
+	if got := stored(); got != "started" {
+		t.Errorf("result = %q, want the explicit run's kept", got)
+	}
+	// ...though anything else for that head does,
+	if !upsert("rerun", "sha-1", "rerun") || stored() != "rerun" {
+		t.Errorf("a rerun at the same head wasn't written: %q", stored())
+	}
+	// and an automatic result for a new head does.
+	if !upsert("next", "sha-2", "automatic") || stored() != "next" {
+		t.Errorf("an automatic result for a new head wasn't written: %q", stored())
+	}
+	if _, _, callType, _ := db.GetPluginResultState("owner", "repo", 1, "validator"); callType != "automatic" {
+		t.Errorf("call type = %q, want automatic", callType)
 	}
 }

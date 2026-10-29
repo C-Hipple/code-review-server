@@ -11,8 +11,9 @@ const (
 	// fetched or its head SHA changed.
 	CallTypeAutomatic CallType = "automatic"
 	// CallTypeExplicit is a run of a deferred (OnlyOnDemand) plugin, which only
-	// ever executes because someone asked for it by name, or because the PR is
-	// in a section that always runs it as though someone had.
+	// ever executes because someone asked for it by name, or a run of any
+	// plugin because the PR is in a section that always runs it as though
+	// someone had.
 	CallTypeExplicit CallType = "explicit"
 	// CallTypeRerun is a requested rerun of a plugin that would otherwise have
 	// run automatically.

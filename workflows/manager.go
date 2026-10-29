@@ -46,16 +46,16 @@ func SetPRUpdatedHook(fn func(owner, repo string, number int)) {
 }
 
 // sectionPluginsHook is called for each PR an item change writes into a
-// section that always runs some deferred plugins (a workflow's
-// AlwaysRunPlugins). The server registers server.RunSectionPlugins, which runs
-// those that haven't run at the PR's head yet. prUpdatedHook can't cover it:
+// section that always runs some plugins (a workflow's AlwaysRunPlugins). The
+// server registers server.RunSectionPlugins, which runs those that haven't had
+// an explicit run at the PR's head yet. prUpdatedHook can't cover it:
 // it fires before the cycle writes its sections, so a PR the cycle is adding
 // isn't in one yet. Nil when nothing is registered, for the same reason as
 // prUpdatedHook.
 var sectionPluginsHook atomic.Pointer[func(owner, repo string, number int)]
 
 // SetSectionPluginsHook registers the callback invoked for each PR written
-// into a section that always runs deferred plugins. Call it during startup,
+// into a section that always runs some plugins. Call it during startup,
 // before the manager runs. A nil fn clears any registered hook.
 func SetSectionPluginsHook(fn func(owner, repo string, number int)) {
 	if fn == nil {
@@ -66,7 +66,7 @@ func SetSectionPluginsHook(fn func(owner, repo string, number int)) {
 }
 
 // runSectionPlugins fires the section-plugins hook for an item just written,
-// when its section always runs deferred plugins. Every cycle rewrites the
+// when its section always runs some plugins. Every cycle rewrites the
 // items of open PRs, so a PR that joined such a section, or whose section
 // gained one, gets its run within a cycle. The hook gets its own goroutine:
 // applyChange runs on the cycle's change listener and on the webhook worker,

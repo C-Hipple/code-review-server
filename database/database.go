@@ -221,6 +221,7 @@ func (db *DB) initSchema() error {
 		result TEXT NOT NULL,
 		status TEXT DEFAULT 'success',
 		sha TEXT DEFAULT '',
+		call_type TEXT DEFAULT '',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(owner, repo, pr_number, plugin_name)
 	);
@@ -403,6 +404,15 @@ func (db *DB) initSchema() error {
 			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN sha TEXT DEFAULT ''")
 			if err != nil {
 				slog.Warn("Error adding sha column to PluginResults", "error", err)
+			}
+		}
+		// The call type of the run that wrote the row. Rows written before
+		// it existed keep '': not known to be an automatic run.
+		err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('PluginResults') WHERE name='call_type'").Scan(&count)
+		if err == nil && count == 0 {
+			_, err = db.conn.Exec("ALTER TABLE PluginResults ADD COLUMN call_type TEXT DEFAULT ''")
+			if err != nil {
+				slog.Warn("Error adding call_type column to PluginResults", "error", err)
 			}
 		}
 	}
@@ -651,18 +661,33 @@ func (db *DB) RemoveWorktreeRecord(prNumber int, repo, owner string) error {
 	return err
 }
 
-func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName string, result string, status string, sha string) error {
-	_, err := db.conn.Exec(
-		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+// UpsertPluginResult writes a plugin's result for a PR at sha, along with the
+// call type of the run that produced it (automatic, explicit or rerun), and
+// reports whether it wrote the row. An automatic run's write never replaces a
+// result for the same head from a run someone asked for (explicit or rerun),
+// pending or finished: the two can overlap when a section that always runs the
+// plugin takes over from the automatic run it got before joining the section.
+// Checked and written in one statement, like MarkPluginDeferred.
+func (db *DB) UpsertPluginResult(owner, repo string, prNumber int, pluginName, result, status, sha, callType string) (bool, error) {
+	res, err := db.conn.Exec(
+		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, call_type, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(owner, repo, pr_number, plugin_name) DO UPDATE SET
 			result = excluded.result,
 			status = excluded.status,
 			sha = excluded.sha,
-			updated_at = excluded.updated_at`,
-		owner, repo, prNumber, pluginName, result, status, sha,
+			call_type = excluded.call_type,
+			updated_at = excluded.updated_at
+		 WHERE NOT (excluded.call_type = 'automatic'
+			AND PluginResults.sha = excluded.sha
+			AND PluginResults.call_type IN ('explicit', 'rerun'))`,
+		owner, repo, prNumber, pluginName, result, status, sha, callType,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 type PluginResult struct {
@@ -696,20 +721,21 @@ func (db *DB) GetPluginResults(owner, repo string, prNumber int) (map[string]Plu
 	return results, nil
 }
 
-// GetPluginResultState retrieves the SHA a plugin's stored result is for and
-// its status, both empty when there is none.
-func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName string) (sha, status string, err error) {
+// GetPluginResultState retrieves the SHA a plugin's stored result is for, its
+// status and the call type of the run that wrote it, all empty when there is
+// none. A row written before call types were stored has an empty call type.
+func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName string) (sha, status, callType string, err error) {
 	err = db.conn.QueryRow(
-		"SELECT sha, COALESCE(status, '') FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
+		"SELECT sha, COALESCE(status, ''), COALESCE(call_type, '') FROM PluginResults WHERE owner = ? AND repo = ? AND pr_number = ? AND plugin_name = ?",
 		owner, repo, prNumber, pluginName,
-	).Scan(&sha, &status)
+	).Scan(&sha, &status, &callType)
 	if err == sql.ErrNoRows {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return sha, status, nil
+	return sha, status, callType, nil
 }
 
 // MarkPluginDeferred records the "deferred" placeholder for a plugin nobody
@@ -719,12 +745,13 @@ func (db *DB) GetPluginResultState(owner, repo string, prNumber int, pluginName 
 // whether it wrote the row.
 func (db *DB) MarkPluginDeferred(owner, repo string, prNumber int, pluginName, sha string) (bool, error) {
 	res, err := db.conn.Exec(
-		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, updated_at)
-		 VALUES (?, ?, ?, ?, '', 'deferred', ?, CURRENT_TIMESTAMP)
+		`INSERT INTO PluginResults (owner, repo, pr_number, plugin_name, result, status, sha, call_type, updated_at)
+		 VALUES (?, ?, ?, ?, '', 'deferred', ?, '', CURRENT_TIMESTAMP)
 		 ON CONFLICT(owner, repo, pr_number, plugin_name) DO UPDATE SET
 			result = excluded.result,
 			status = excluded.status,
 			sha = excluded.sha,
+			call_type = excluded.call_type,
 			updated_at = excluded.updated_at
 		 WHERE PluginResults.sha != excluded.sha`,
 		owner, repo, prNumber, pluginName, sha,

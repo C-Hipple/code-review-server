@@ -108,15 +108,15 @@ func TestCollectPluginAnnotations_OnlySuccessfulPluginsTagged(t *testing.T) {
 			{"filename": "test.py", "line": 75, "severity": "warning", "content": "this line looks wrong"}
 		]
 	}`
-	if err := db.UpsertPluginResult("owner", "repo", 1, "b-linter", conforming, "success", "sha1"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "b-linter", conforming, "success", "sha1", "automatic"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
 	// Legacy plain-text plugin: contributes no annotations.
-	if err := db.UpsertPluginResult("owner", "repo", 1, "a-summarizer", "plain summary", "success", "sha1"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "a-summarizer", "plain summary", "success", "sha1", "automatic"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
 	// Failed plugin with annotation-shaped output must be excluded.
-	if err := db.UpsertPluginResult("owner", "repo", 1, "c-broken", conforming, "error", "sha1"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "c-broken", conforming, "error", "sha1", "automatic"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestCollectPluginAnnotations_NoResults(t *testing.T) {
 func TestParsePluginOutputs_KeepsRawResultAlongsideParsed(t *testing.T) {
 	db := setupTestDB(t)
 	raw := `{"body": {"body_type": "html", "body_content": "<b>done</b>"}}`
-	if err := db.UpsertPluginResult("owner", "repo", 2, "renderer", raw, "success", "sha2"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 2, "renderer", raw, "success", "sha2", "automatic"); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
 	results, err := db.GetPluginResults("owner", "repo", 2)

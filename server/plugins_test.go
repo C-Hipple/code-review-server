@@ -121,21 +121,27 @@ func TestRunPluginsForce_EmptyListSkipsOnDemandPlugins(t *testing.T) {
 
 func TestCallTypeFor(t *testing.T) {
 	tests := []struct {
-		name   string
-		plugin config.Plugin
-		force  bool
-		want   PluginCallType
+		name    string
+		plugin  config.Plugin
+		force   bool
+		section bool
+		want    PluginCallType
 	}{
-		{"normal plugin, unforced", config.Plugin{Name: "p"}, false, PluginCallAutomatic},
-		{"normal plugin, forced", config.Plugin{Name: "p"}, true, PluginCallRerun},
-		{"deferred plugin, forced", config.Plugin{Name: "p", OnlyOnDemand: true}, true, PluginCallExplicit},
+		{"normal plugin, unforced", config.Plugin{Name: "p"}, false, false, PluginCallAutomatic},
+		{"normal plugin, forced", config.Plugin{Name: "p"}, true, false, PluginCallRerun},
+		// A section that always runs a plugin that runs on its own runs it
+		// as though someone had asked for it, in place of the automatic run;
+		// a rerun someone asked for there is still a rerun.
+		{"normal plugin, unforced, in its section", config.Plugin{Name: "p"}, false, true, PluginCallExplicit},
+		{"normal plugin, forced, in its section", config.Plugin{Name: "p"}, true, true, PluginCallRerun},
+		{"deferred plugin, forced", config.Plugin{Name: "p", OnlyOnDemand: true}, true, false, PluginCallExplicit},
 		// Only a section that always runs it gets a deferred plugin an
 		// unforced run, and it runs as though someone had asked for it.
-		{"deferred plugin, unforced", config.Plugin{Name: "p", OnlyOnDemand: true}, false, PluginCallExplicit},
+		{"deferred plugin, unforced", config.Plugin{Name: "p", OnlyOnDemand: true}, false, true, PluginCallExplicit},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := callTypeFor(tt.plugin, tt.force); got != tt.want {
+			if got := callTypeFor(tt.plugin, tt.force, tt.section); got != tt.want {
 				t.Errorf("callTypeFor() = %q, want %q", got, tt.want)
 			}
 		})
@@ -462,7 +468,7 @@ func TestRunPlugins_AnnouncesNothingWhenNoRunIsNeeded(t *testing.T) {
 		DB:      db,
 		Plugins: []config.Plugin{{Name: "ok", Command: script}},
 	})
-	if err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123", "automatic"); err != nil {
 		t.Fatal(err)
 	}
 	out := subscribedNotifier(t)
@@ -485,7 +491,7 @@ func TestRunPluginsForce_AnnouncesTheRerun(t *testing.T) {
 		DB:      db,
 		Plugins: []config.Plugin{{Name: "ok", Command: script}},
 	})
-	if err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "ok", "fine", "success", "sha123", "automatic"); err != nil {
 		t.Fatal(err)
 	}
 	out := subscribedNotifier(t)
@@ -538,7 +544,7 @@ func TestRerunPlugins_AnnouncesTheClearedResultThenTheRun(t *testing.T) {
 			t.Cleanup(func() { config.SetC(config.Config{}) })
 			// The rerun reads its inputs from the caches, never GitHub.
 			seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
-			if err := db.UpsertPluginResult(aiOwner, aiRepo, aiNumber, "ok", "fine", "success", "sha-1"); err != nil {
+			if _, err := db.UpsertPluginResult(aiOwner, aiRepo, aiNumber, "ok", "fine", "success", "sha-1", "automatic"); err != nil {
 				t.Fatal(err)
 			}
 			out := subscribedNotifier(t)
@@ -664,7 +670,7 @@ func TestRunPlugins_KeepsADeferredPluginsResultForTheSameHead(t *testing.T) {
 		DB:      db,
 		Plugins: []config.Plugin{{Name: "costly", Command: script, OnlyOnDemand: true}},
 	})
-	if err := db.UpsertPluginResult("owner", "repo", 1, "costly", "report", "success", "sha123"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "costly", "report", "success", "sha123", "explicit"); err != nil {
 		t.Fatal(err)
 	}
 	out := subscribedNotifier(t)
@@ -690,7 +696,7 @@ func TestRunPluginsForce_RerunningEveryPluginIncludesTheSectionsDeferredOnes(t *
 	config.SetC(sectionPluginConfig(db, style, costly))
 	t.Cleanup(func() { config.SetC(config.Config{}) })
 	putInSection(t, db, "Team", "owner", "repo", 1)
-	if err := db.UpsertPluginResult("owner", "repo", 1, "style", "old report", "success", "sha123"); err != nil {
+	if _, err := db.UpsertPluginResult("owner", "repo", 1, "style", "old report", "success", "sha123", "explicit"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -741,5 +747,119 @@ func TestRunSectionPlugins_RunsWhatHasntRunAtTheHeadFromTheCaches(t *testing.T) 
 	RunSectionPlugins(aiOwner, aiRepo, aiNumber)
 	if got := runs(t, styleLog); len(got) != 1 {
 		t.Errorf("style ran %d times at one head, want 1", len(got))
+	}
+}
+
+// sectionNormalPluginConfig configures a plugin "validator" that runs on its
+// own, which the "Team" section always runs.
+func sectionNormalPluginConfig(db *database.DB, validator string) config.Config {
+	return config.Config{
+		DB:            db,
+		SleepDuration: 10 * time.Minute,
+		Plugins:       []config.Plugin{{Name: "validator", Command: validator}},
+		RawWorkflows: []config.RawWorkflow{
+			{WorkflowType: "SyncReviewRequestsWorkflow", Name: "Team workflow", SectionTitle: "Team", AlwaysRunPlugins: []string{"validator"}},
+			{WorkflowType: "SyncReviewRequestsWorkflow", Name: "Mine workflow", SectionTitle: "Mine"},
+		},
+	}
+}
+
+func TestRunPlugins_ASectionRunsAPluginThatRunsOnItsOwnExplicitly(t *testing.T) {
+	db := setupTestDB(t)
+	validator, log := runLogScript(t, "validator")
+	config.SetC(sectionNormalPluginConfig(db, validator))
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	putInSection(t, db, "Team", "owner", "repo", 1)
+	putInSection(t, db, "Mine", "owner", "repo", 2)
+
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+	RunPlugins("owner", "repo", 2, "sha123", "", "", "", "main")
+
+	// In the section it runs as though someone had asked for it; elsewhere
+	// it still runs on its own.
+	got := runs(t, log)
+	if len(got) != 2 ||
+		!strings.Contains(got[0], "--number 1 ") || !strings.Contains(got[0], "--call-type explicit") ||
+		!strings.Contains(got[1], "--number 2 ") || !strings.Contains(got[1], "--call-type automatic") {
+		t.Fatalf("validator ran %q, want an explicit run for PR 1 and an automatic one for PR 2", got)
+	}
+
+	// Once per head.
+	RunPlugins("owner", "repo", 1, "sha123", "", "", "", "main")
+	if got := runs(t, log); len(got) != 2 {
+		t.Errorf("validator ran %d times, want no second run at one head", len(got))
+	}
+	RunPlugins("owner", "repo", 1, "sha456", "", "", "", "main")
+	if got := runs(t, log); len(got) != 3 || !strings.Contains(got[2], "--call-type explicit") {
+		t.Errorf("validator ran %q after a push, want a third, explicit run", got)
+	}
+}
+
+func TestRunSectionPlugins_ReplacesTheAutomaticRunAPRHadBeforeJoining(t *testing.T) {
+	t.Setenv("CRS_HOME", t.TempDir())
+	t.Setenv("CRS_GITHUB_TOKEN", "test-token")
+	db := setupTestDB(t)
+	validator, log := runLogScript(t, "validator")
+	config.SetC(sectionNormalPluginConfig(db, validator))
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	// The post-update hooks ran before the cycle put the PR in the section,
+	// so it had an automatic run.
+	RunPlugins(aiOwner, aiRepo, aiNumber, "sha-1", "", "", "", "alice/greeting")
+	putInSection(t, db, "Team", aiOwner, aiRepo, aiNumber)
+
+	RunSectionPlugins(aiOwner, aiRepo, aiNumber)
+
+	got := runs(t, log)
+	if len(got) != 2 || !strings.Contains(got[0], "--call-type automatic") || !strings.Contains(got[1], "--call-type explicit") {
+		t.Fatalf("validator ran %q, want the automatic run, then the section's explicit one", got)
+	}
+	if _, status, callType, _ := db.GetPluginResultState(aiOwner, aiRepo, aiNumber, "validator"); status != "success" || callType != "explicit" {
+		t.Errorf("stored %s/%s, want the explicit run's success", status, callType)
+	}
+
+	// Neither the next cycle nor the post-update hooks run it again at this
+	// head.
+	RunSectionPlugins(aiOwner, aiRepo, aiNumber)
+	RunPlugins(aiOwner, aiRepo, aiNumber, "sha-1", "", "", "", "alice/greeting")
+	if got := runs(t, log); len(got) != 2 {
+		t.Errorf("validator ran %d times at one head, want 2", len(got))
+	}
+}
+
+func TestRunSettled(t *testing.T) {
+	db := setupTestDB(t)
+	config.SetC(config.Config{DB: db})
+	t.Cleanup(func() { config.SetC(config.Config{}) })
+	tests := []struct {
+		name           string
+		sha, status    string
+		storedCallType string
+		callType       PluginCallType
+		want           bool
+	}{
+		{"nothing stored", "", "", "", PluginCallAutomatic, false},
+		{"an older head", "sha-0", "success", "explicit", PluginCallExplicit, false},
+		{"the deferred placeholder", "sha-1", "deferred", "", PluginCallExplicit, false},
+		{"an automatic run, for an automatic run", "sha-1", "success", "automatic", PluginCallAutomatic, true},
+		{"an automatic run still going, for an automatic run", "sha-1", "pending", "automatic", PluginCallAutomatic, true},
+		{"an automatic run, for a section's run", "sha-1", "success", "automatic", PluginCallExplicit, false},
+		{"an explicit run, for an automatic run", "sha-1", "pending", "explicit", PluginCallAutomatic, true},
+		{"an explicit run that failed, for a section's run", "sha-1", "error", "explicit", PluginCallExplicit, true},
+		{"a rerun, for a section's run", "sha-1", "success", "rerun", PluginCallExplicit, true},
+		// Stored before call types were: a section's run had it settled.
+		{"a run of unknown type, for a section's run", "sha-1", "success", "", PluginCallExplicit, true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.sha != "" {
+				if _, err := db.UpsertPluginResult("owner", "repo", i, "p", "out", tt.status, tt.sha, tt.storedCallType); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := runSettled("owner", "repo", i, "p", "sha-1", tt.callType); got != tt.want {
+				t.Errorf("runSettled() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

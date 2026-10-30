@@ -56,3 +56,10 @@ backend and fake language servers, so it needs no GitHub token.
   the Go server (which holds `CRS_GITHUB_TOKEN`) for the copy it downloaded.
 - **Add Comments**: Add inline comments by specifying filename and position.
 - **Submit Review**: Approve, Comment, or Request Changes.
+- **PR list for other tools**: `GET /api/prs` answers with the review list as
+  `{ "items": [...] }` (the `GetAllReviews` items, see `docs/protocol.md`), so a
+  script or status bar on this machine can read it from the running bridge
+  instead of starting its own `crs`:
+    ```bash
+    curl -s localhost:5172/api/prs | jq '.items[] | {title, url, section}'
+    ```

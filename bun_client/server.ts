@@ -280,11 +280,16 @@ Bun.serve<{
             });
         }
 
-        // Helper to handle RPC calls
-        const handleRpc = async (method: string, params: unknown[]) => {
+        // Helper to handle RPC calls. `reply` shapes the body a successful
+        // call answers with: `{ result }` unless an endpoint says otherwise.
+        const handleRpc = async (
+            method: string,
+            params: unknown[],
+            reply: (result: unknown) => unknown = result => ({ result })
+        ) => {
             try {
                 const result = await bridge.call(method, params);
-                return new Response(JSON.stringify({ result }), {
+                return new Response(JSON.stringify(reply(result)), {
                     headers: {
                         ...CORS_HEADERS,
                         'Content-Type': 'application/json',
@@ -340,6 +345,16 @@ Bun.serve<{
 
         if (url.pathname === '/api/reviews' && req.method === 'POST') {
             return handleRpc('RPCHandler.GetAllReviews', [{}]);
+        }
+
+        // The review list for other local tools (scripts, status bars,
+        // editors), so they can read it from this bridge instead of starting
+        // a `crs` of their own: `curl localhost:5172/api/prs`. Just the items,
+        // as `{ "items": [...] }`, without the org-mode rendering.
+        if (url.pathname === '/api/prs' && req.method === 'GET') {
+            return handleRpc('RPCHandler.GetAllReviews', [{}], result => ({
+                items: (result as { items: unknown[] }).items,
+            }));
         }
 
         if (url.pathname === '/api/set-feedback' && req.method === 'POST') {

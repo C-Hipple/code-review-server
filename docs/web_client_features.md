@@ -111,6 +111,16 @@ status 500).
 | `/api/update-config` | `RPCHandler.UpdateConfig` | |
 | `/api/rpc` | *any* | Generic escape hatch: `{ method, params, id }` |
 
+`GET /api/prs` is the review list for other local tools (scripts, status bars,
+editors) that want it without starting a `crs` of their own. It calls
+`GetAllReviews` and answers with just its items, as `{ "items": [ReviewItem, …] }`
+(fields in [protocol.md](protocol.md#reviewitem-object)), leaving out the org-mode
+`content`; a failure is `{ "error": … }` with status 500:
+
+```bash
+curl -s localhost:5172/api/prs | jq -r '.items[] | select(.status == "TODO") | .url'
+```
+
 The frontend's `api.ts` routes known methods to their specialized path and falls back
 to `/api/rpc` for anything else, so **any** protocol method is reachable from the
 browser without touching `server.ts`. If you build a bridge, `/api/rpc` alone is a

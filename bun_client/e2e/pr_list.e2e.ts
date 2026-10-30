@@ -333,4 +333,39 @@ test.describe('PR list', () => {
             .toBeGreaterThan(0);
         await expect(row.getByRole('button', { name: 'AI', exact: true })).toHaveCount(0);
     });
+
+    test('serves the list as JSON to other local tools', async ({ request, backend }) => {
+        const res = await request.get('/api/prs');
+
+        expect(res.status()).toBe(200);
+        expect(res.headers()['content-type']).toContain('application/json');
+        const body = await res.json();
+        // The items alone: no `result` wrapper, no org-mode `content`.
+        expect(Object.keys(body)).toEqual(['items']);
+        expect(
+            body.items.map((i: { owner: string; repo: string; number: number }) =>
+                [i.owner, i.repo, i.number].join(' ')
+            )
+        ).toEqual(['acme widgets 42', 'acme widgets 43', 'acme gadgets 7', 'acme widgets 40']);
+        expect(body.items[0]).toMatchObject({
+            section: 'Needs Review',
+            title: 'Add greeting helper',
+            url: expect.stringContaining('/acme/widgets/pull/42'),
+        });
+        expect(await backend.calls('GetAllReviews')).toEqual([
+            { method: 'RPCHandler.GetAllReviews', params: {} },
+        ]);
+    });
+
+    test('answers a tool with the error when the list fails to load', async ({
+        request,
+        backend,
+    }) => {
+        await backend.failNext('GetAllReviews', 'database is locked');
+
+        const res = await request.get('/api/prs');
+
+        expect(res.status()).toBe(500);
+        expect(await res.json()).toEqual({ error: 'database is locked' });
+    });
 });

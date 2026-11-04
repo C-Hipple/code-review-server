@@ -395,7 +395,7 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			if _, statErr := os.Stat(existingPath); statErr == nil {
 				// Already tracked: keep it in sync with the PR head so the
 				// LSPs aren't looking at stale code after a push.
-				refreshWorktree(repoDir, branchName, existingPath, sha)
+				refreshWorktree(repoDir, branchName, existingPath, sha, prNumber)
 				return
 			}
 			// The directory was deleted out from under us; drop the record
@@ -407,9 +407,9 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			}
 		}
 
-		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath); err != nil {
+		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath, prNumber); err != nil {
 			// If it fails, we log it but don't stop the workflow
-			slog.Error("Failed to create worktree", "error", err)
+			slog.Error("Failed to create worktree", "pr", prNumber, "repo", repoName, "path", worktreePath, "error", err)
 		} else {
 			if err := db.AddWorktree(prNumber, repoName, ownerName, worktreePath, branchName); err != nil {
 				slog.Error("Failed to record worktree in DB", "error", err)
@@ -469,11 +469,11 @@ func expandedRepoLocation() string {
 // refreshWorktree moves a review worktree to headSHA, the PR head the cached
 // diff was built from. A worktree already there is left alone without a
 // fetch, so a cycle costs a rev-parse per PR rather than a network round trip.
-func refreshWorktree(repoDir, branch, path, headSHA string) {
+func refreshWorktree(repoDir, branch, path, headSHA string, number int) {
 	if head, err := git_tools.HeadSHA(path); err == nil && head == headSHA {
 		return
 	}
-	if err := git_tools.UpdateWorktree(repoDir, branch, path); err != nil {
+	if err := git_tools.UpdateWorktree(repoDir, branch, path, number); err != nil {
 		slog.Warn("Failed to update worktree", "path", path, "error", err)
 	}
 }
@@ -497,7 +497,7 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 	if sha == "" || branch == "" {
 		return
 	}
-	refreshWorktree(filepath.Join(expandedRepoLocation(), repo), branch, path, sha)
+	refreshWorktree(filepath.Join(expandedRepoLocation(), repo), branch, path, sha, number)
 }
 
 // prClaimedElsewhere reports whether the PR a Delete releases is still listed

@@ -864,24 +864,58 @@ func HeadSHA(dir string) (string, error) {
 	return runGit(dir, "rev-parse", "HEAD")
 }
 
-func CreateWorktree(repoDir, branch, worktreePath string) error {
+// fetchPRHead fetches the PR's head and returns the ref to check it out
+// from: origin/<branch>, or, once the branch is gone from origin (a merged
+// PR whose branch was deleted) or never was there (a fork's PR),
+// origin/pr/<number> from GitHub's refs/pull/<number>/head, which it keeps
+// for every PR. Best-effort — offline it returns origin/<branch>, which
+// still works when the ref is already present.
+func fetchPRHead(repoDir, branch string, number int) string {
+	branchRef := "origin/" + branch
+	out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/"+branchRef)
+	if err == nil {
+		return branchRef
+	}
+	if number > 0 {
+		pullRef := fmt.Sprintf("origin/pr/%d", number)
+		pullOut, pullErr := runGit(repoDir, "fetch", "origin", fmt.Sprintf("+refs/pull/%d/head:refs/remotes/%s", number, pullRef))
+		if pullErr == nil {
+			slog.Debug("PR branch not on origin, using the pull ref", "repo", repoDir, "branch", branch, "ref", pullRef)
+			return pullRef
+		}
+		out += "; " + pullOut
+	}
+	slog.Warn("Failed to fetch PR head", "repo", repoDir, "branch", branch, "pr", number, "output", out, "error", err)
+	return branchRef
+}
+
+// CreateWorktree checks the PR out at worktreePath: on its branch when
+// origin still has it, otherwise detached at the PR head.
+func CreateWorktree(repoDir, branch, worktreePath string, number int) error {
 	// Registrations for worktrees whose directories were deleted by hand
 	// block re-adding at the same path, so clear them first.
 	if out, err := runGit(repoDir, "worktree", "prune"); err != nil {
 		slog.Warn("Failed to prune worktrees", "repo", repoDir, "output", out, "error", err)
 	}
 
-	// A PR branch usually only exists on the remote: fetch it so
-	// origin/<branch> resolves. Best-effort — offline still works when the
-	// refs are already present.
-	if out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
-		slog.Warn("Failed to fetch branch before creating worktree", "repo", repoDir, "branch", branch, "output", out, "error", err)
-	}
+	// A PR branch usually only exists on the remote: fetch it so the ref
+	// resolves.
+	ref := fetchPRHead(repoDir, branch, number)
 
-	// git worktree add <path> <branch>. When <branch> is not a local branch
-	// but origin/<branch> exists, git creates a tracking branch for it.
-	output, err := runGit(repoDir, "worktree", "add", worktreePath, branch)
-	if err != nil {
+	if ref == "origin/"+branch {
+		// git worktree add <path> <branch>. When <branch> is not a local
+		// branch but origin/<branch> exists, git creates a tracking branch
+		// for it.
+		output, err := runGit(repoDir, "worktree", "add", worktreePath, branch)
+		if err == nil {
+			// If the local branch already existed it may be behind the PR
+			// head; fast-forward it to origin best-effort.
+			if out, err := runGit(worktreePath, "merge", "--ff-only", ref); err != nil {
+				slog.Warn("Could not fast-forward worktree to origin", "path", worktreePath, "branch", branch, "output", out, "error", err)
+			}
+			slog.Info("Created worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
+			return nil
+		}
 		if strings.Contains(output, "already exists") {
 			slog.Info("Worktree already exists, skipping creation", "repo", repoDir, "branch", branch, "path", worktreePath)
 			return nil
@@ -889,31 +923,32 @@ func CreateWorktree(repoDir, branch, worktreePath string) error {
 		// The branch being checked out in the main repo (or another
 		// worktree), or a stale local ref, still shouldn't stop the review
 		// worktree: check out the PR head detached instead.
-		detachOutput, detachErr := runGit(repoDir, "worktree", "add", "--detach", worktreePath, "origin/"+branch)
+		detachOutput, detachErr := runGit(repoDir, "worktree", "add", "--detach", worktreePath, ref)
 		if detachErr != nil {
-			slog.Error("Failed to create worktree", "repo", repoDir, "branch", branch, "path", worktreePath, "output", output, "detach_output", detachOutput, "error", err)
-			return fmt.Errorf("git worktree add failed: %s: %w", output, err)
+			return fmt.Errorf("git worktree add %s failed: %s; detached at %s: %s: %w", branch, output, ref, detachOutput, err)
 		}
 		slog.Info("Created detached worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
 		return nil
 	}
 
-	// If the local branch already existed it may be behind the PR head;
-	// fast-forward it to origin best-effort.
-	if out, err := runGit(worktreePath, "merge", "--ff-only", "origin/"+branch); err != nil {
-		slog.Warn("Could not fast-forward worktree to origin", "path", worktreePath, "branch", branch, "output", out, "error", err)
+	// The branch is gone from origin, so a local branch of that name is at
+	// best stale: check out the PR head detached.
+	output, err := runGit(repoDir, "worktree", "add", "--detach", worktreePath, ref)
+	if err != nil {
+		if strings.Contains(output, "already exists") {
+			slog.Info("Worktree already exists, skipping creation", "repo", repoDir, "branch", branch, "path", worktreePath)
+			return nil
+		}
+		return fmt.Errorf("git worktree add --detach %s failed: %s: %w", ref, output, err)
 	}
-
-	slog.Info("Created worktree", "repo", repoDir, "branch", branch, "path", worktreePath)
+	slog.Info("Created detached worktree", "repo", repoDir, "branch", branch, "ref", ref, "path", worktreePath)
 	return nil
 }
 
 // UpdateWorktree brings an existing review worktree up to date with the PR
 // head. Best-effort: a dirty worktree (someone is using it) is left alone.
-func UpdateWorktree(repoDir, branch, worktreePath string) error {
-	if out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
-		slog.Warn("Failed to fetch branch before updating worktree", "repo", repoDir, "branch", branch, "output", out, "error", err)
-	}
+func UpdateWorktree(repoDir, branch, worktreePath string, number int) error {
+	ref := fetchPRHead(repoDir, branch, number)
 
 	// Only edits to tracked files count: git never removes an untracked
 	// file on a fast-forward or reset, and a stray build output or scratch
@@ -927,20 +962,24 @@ func UpdateWorktree(repoDir, branch, worktreePath string) error {
 
 	if _, err := runGit(worktreePath, "symbolic-ref", "-q", "HEAD"); err != nil {
 		// Detached worktree: move it to the new PR head.
-		if out, err := runGit(worktreePath, "checkout", "--detach", "origin/"+branch); err != nil {
+		if out, err := runGit(worktreePath, "checkout", "--detach", ref); err != nil {
 			return fmt.Errorf("failed to update detached worktree %s: %s: %w", worktreePath, out, err)
 		}
 	} else {
 		// On a branch: fast-forward it. A force-pushed PR branch won't
 		// fast-forward; reset to the PR head then, but never throw away
 		// commits someone made locally in the worktree.
-		if out, err := runGit(worktreePath, "merge", "--ff-only", "origin/"+branch); err != nil {
-			if ahead, err := runGit(worktreePath, "rev-list", "--count", "origin/"+branch+"..HEAD"); err != nil || ahead != "0" {
+		if out, err := runGit(worktreePath, "merge", "--ff-only", ref); err != nil {
+			ahead, aheadErr := runGit(worktreePath, "rev-list", "--count", ref+"..HEAD")
+			if aheadErr != nil {
+				return fmt.Errorf("cannot compare worktree %s with %s: %s: %w", worktreePath, ref, ahead, aheadErr)
+			}
+			if ahead != "0" {
 				slog.Info("Worktree has local commits, skipping update", "path", worktreePath, "branch", branch, "ahead", ahead)
 				return nil
 			}
 			slog.Info("Fast-forward failed (force push?), resetting worktree to PR head", "path", worktreePath, "branch", branch, "output", out)
-			if out, err := runGit(worktreePath, "reset", "--hard", "origin/"+branch); err != nil {
+			if out, err := runGit(worktreePath, "reset", "--hard", ref); err != nil {
 				return fmt.Errorf("failed to reset worktree %s: %s: %w", worktreePath, out, err)
 			}
 		}

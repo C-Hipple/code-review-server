@@ -1468,3 +1468,22 @@ func TestApplyReactionsToleratesAMissingFetch(t *testing.T) {
 		t.Errorf("review = %+v, want it untouched with no reactions", reviews[0])
 	}
 }
+
+func TestPRState(t *testing.T) {
+	mergedAt := &github.Timestamp{Time: time.Now()}
+	cases := []struct {
+		name string
+		pr   *github.PullRequest
+		want string
+	}{
+		{"open", &github.PullRequest{State: github.Ptr("open")}, "open"},
+		{"closed unmerged", &github.PullRequest{State: github.Ptr("closed")}, "closed"},
+		{"merged", &github.PullRequest{State: github.Ptr("closed"), Merged: github.Ptr(true)}, "merged"},
+		{"merged from a listing", &github.PullRequest{State: github.Ptr("closed"), MergedAt: mergedAt}, "merged"},
+	}
+	for _, c := range cases {
+		if got := prState(c.pr); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

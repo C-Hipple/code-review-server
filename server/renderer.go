@@ -636,7 +636,7 @@ type PRMetadata struct {
 	Author             string   `json:"author"`
 	BaseRef            string   `json:"base_ref"`
 	HeadRef            string   `json:"head_ref"`
-	State              string   `json:"state"`
+	State              string   `json:"state"` // "open", "closed" or "merged" (prState)
 	Milestone          string   `json:"milestone"`
 	Labels             []string `json:"labels"`
 	Assignees          []string `json:"assignees"`
@@ -828,6 +828,16 @@ func (c *LocalPRComment) GetReviewID() int64 {
 
 func (c *LocalPRComment) GetHTMLURL() string {
 	return ""
+}
+
+// prState is a PR's state as clients show it: GitHub's "open" or "closed",
+// except "merged" for a closed PR that was merged. A listing's PR objects
+// carry merged_at but not merged, so either marks it.
+func prState(pr *github.PullRequest) string {
+	if pr.GetState() == "closed" && (pr.GetMerged() || pr.MergedAt != nil) {
+		return "merged"
+	}
+	return pr.GetState()
 }
 
 // convertToPRComments converts a slice of *github.PullRequestComment to []PRComment
@@ -1262,7 +1272,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 				Author:             pr.User.GetLogin(),
 				BaseRef:            pr.Base.GetRef(),
 				HeadRef:            pr.Head.GetRef(),
-				State:              pr.GetState(),
+				State:              prState(pr),
 				Labels:             labels,
 				Assignees:          assignees,
 				Reviewers:          reviewerLogins,

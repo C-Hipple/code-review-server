@@ -356,6 +356,12 @@ misplaces comments:
   `expandedLineIndices` and passed back into `parseDiff`, where they render and
   advance the line-number gutters but **do not consume a comment position** — they
   aren't in the canonical diff, so counting them would shift every position below.
+  An expansion asks for no more than the lines between the hunk and its neighbour
+  (`planHunkExpansion`): the server reads them from the file and would hand back the
+  neighbour's lines too. Two hunks it leaves touching are drawn as one, under the
+  first header, rewritten to span both (`ParsedLine.coalesced`). The second header
+  stays in the diff text, where it still takes the position GitHub counts for it, so
+  comments below it keep theirs; ↓ on the joined hunk grows its last part.
 - **File index** — a pill bar above the diff listing every changed file with its
   status icon and `+/−` counts; clicking scrolls to that file, expanding it first,
   with a flash highlight on arrival.

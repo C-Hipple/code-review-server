@@ -152,6 +152,34 @@ export const WIDGETS_DIFF = [
     '',
 ].join('\n');
 
+// Two bumps in deps.txt, far enough apart for a hunk each, with lines 10–16
+// of the file between the hunks: fewer than the 20 an expansion asks for.
+const DEPS_DIFF = [
+    'diff --git a/deps.txt b/deps.txt',
+    'index 4e1d0b7..c8a3f52 100644',
+    '--- a/deps.txt',
+    '+++ b/deps.txt',
+    '@@ -3,7 +3,7 @@',
+    ' balanced-match 1.0.2',
+    ' brace-expansion 2.0.1',
+    ' chalk 5.3.0',
+    '-commander 11.1.0',
+    '+commander 12.1.0',
+    ' debug 4.3.7',
+    ' diff 7.0.0',
+    ' escape-string-regexp 5.0.0',
+    '@@ -17,7 +17,7 @@',
+    ' minimatch 10.0.1',
+    ' ms 2.1.3',
+    ' picomatch 4.0.2',
+    '-semver 7.6.0',
+    '+semver 7.6.3',
+    ' strip-json-comments 5.0.1',
+    ' supports-color 9.4.0',
+    ' to-regex-range 5.0.1',
+    '',
+].join('\n');
+
 const GADGETS_DIFF = [
     'diff --git a/overflow.go b/overflow.go',
     'index 0a1b2c3..3c2b1a0 100644',
@@ -304,7 +332,7 @@ export function buildFixtures(): PRFixture[] {
             baseRef: 'main',
             headRef: 'erin/deps',
             repoPath: FIXTURE_REPO,
-            diff: WIDGETS_DIFF,
+            diff: DEPS_DIFF,
             comments: [],
             reviews: [],
             plugins: {},

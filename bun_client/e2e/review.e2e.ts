@@ -288,6 +288,58 @@ test.describe('review view', () => {
         });
     });
 
+    test('joins a hunk an expansion runs into, keeping its positions', async ({
+        page,
+        backend,
+    }) => {
+        await openReview(page, { owner: 'acme', repo: 'widgets', number: 40 }, 'Bump dependencies');
+        const hunks = page.locator('.diff-hunk-row');
+        await expect(hunks).toHaveCount(2);
+        await expect(page.getByTitle('Add comment to deps.txt:14')).toHaveCount(1);
+
+        // Only lines 10–16 of deps.txt lie between its hunks, so growing the
+        // first one down asks for those and no more: the second hunk's lines
+        // don't show up again as context above it.
+        await hunks
+            .filter({ hasText: '@@ -3,7 +3,7 @@' })
+            .getByTitle('Expand 20 lines after this hunk')
+            .click();
+        await expect(page.getByText('fast-glob 3.3.2')).toBeVisible();
+        const [first] = await backend.calls('GetHunkContext');
+        expect(first.params).toMatchObject({
+            Filename: 'deps.txt',
+            Direction: 'after',
+            AnchorLine: 9,
+            Count: 7,
+        });
+        await expect(page.getByText('minimatch 10.0.1')).toHaveCount(1);
+
+        // With nothing between them, the two read as one hunk.
+        await expect(hunks).toHaveCount(1);
+        await expect(hunks).toContainText('@@ -3,21 +3,21 @@');
+
+        // Growing that one down grows its second part, to the end of the file.
+        await hunks.getByTitle('Expand 20 lines after this hunk').click();
+        await expect(page.getByText('zod 3.23.8')).toBeVisible();
+        await expect(hunks).toContainText('@@ -3,28 +3,28 @@');
+        const [, second] = await backend.calls('GetHunkContext');
+        expect(second.params).toMatchObject({
+            Direction: 'after',
+            AnchorLine: 23,
+            Count: 20,
+            NewStart: 17,
+            NewLength: 7,
+        });
+
+        // The second hunk's header still counts toward positions, so a
+        // comment below it lands where GitHub has that line.
+        await page.getByTitle('Add comment to deps.txt:14').click();
+        await page.getByPlaceholder('Write a comment...').fill('Changelog?');
+        await page.getByRole('button', { name: 'Add Comment' }).click();
+        const [add] = await backend.calls('AddComment');
+        expect(add.params).toMatchObject({ Filename: 'deps.txt', Position: 14 });
+    });
+
     test('adds a comment from the general comment dialog', async ({ page, backend }) => {
         await openReview(page);
 

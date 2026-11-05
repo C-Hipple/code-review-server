@@ -388,6 +388,12 @@ export default function DiffView({
             return null;
         }
 
+        // A hunk joined onto the one above it draws no header of its own: its
+        // lines carry on under that hunk's, whose ↓ grows the joined run.
+        if (isHunkHeader && item.coalesced) {
+            return null;
+        }
+
         // Render file header with clean styling
         if (isFileHeader) {
             const statusInfo = getFileStatusInfo(item.fileStatus);

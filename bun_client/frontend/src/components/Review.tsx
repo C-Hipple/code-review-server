@@ -32,7 +32,7 @@ import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import { usePRUpdates } from '../hooks/usePRUpdates';
 import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
-import { parseDiff } from '../diff_utils';
+import { parseDiff, planHunkExpansion } from '../diff_utils';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
@@ -108,6 +108,10 @@ export default function Review({
     // The diff on screen: the PR's full diff, or a filtered one (see
     // diffFilter below). Hunk expansion splices context into whichever it is.
     const [diff, setDiff] = useState<string>('');
+    // The diff as last set, ahead of the render that shows it: an expansion
+    // checks it once its context arrives, and drops a splice planned against
+    // a diff that has changed since.
+    const diffRef = useRef('');
     // The PR's full diff as the server last sent it. Comment positions count
     // rows of this diff, so it stays at hand while a filtered one is shown.
     const [fullDiff, setFullDiff] = useState<string>('');
@@ -412,15 +416,19 @@ export default function Review({
         onToast: showToast,
     });
 
+    // Put a diff on screen, with no hunk expanded.
+    const showDiff = (next: string) => {
+        diffRef.current = next;
+        setDiff(next);
+        setExpandedLineIndices(new Set());
+    };
+
     // Take the PR's full diff from a reply. It goes on screen unless a
     // filtered diff is being shown, which stays put.
     const applyFullDiff = (next: string) => {
         fullDiffRef.current = next;
         setFullDiff(next);
-        if (!diffFilterRef.current) {
-            setDiff(next);
-            setExpandedLineIndices(new Set());
-        }
+        if (!diffFilterRef.current) showDiff(next);
     };
 
     // Show the full diff, or the diff a filter narrows it to. A filter that
@@ -432,8 +440,7 @@ export default function Review({
         setActiveLineIndex(null);
         if (!filter) {
             setFilteredDiff(null);
-            setDiff(fullDiffRef.current);
-            setExpandedLineIndices(new Set());
+            showDiff(fullDiffRef.current);
             return;
         }
         await loadFilteredDiff(filter);
@@ -455,8 +462,7 @@ export default function Review({
             if (prKey.current !== key || diffFilterRef.current !== filter) return;
             if (quiet && sameFilteredDiff(res, filteredDiffRef.current)) return;
             setFilteredDiff(res);
-            setDiff(showsFilteredDiff(res) ? res.diff : fullDiffRef.current);
-            setExpandedLineIndices(new Set());
+            showDiff(showsFilteredDiff(res) ? res.diff : fullDiffRef.current);
         } catch (e) {
             console.error(e);
             if (quiet || prKey.current !== key || diffFilterRef.current !== filter) return;
@@ -464,8 +470,7 @@ export default function Review({
             diffFilterRef.current = '';
             setDiffFilter('');
             setFilteredDiff(null);
-            setDiff(fullDiffRef.current);
-            setExpandedLineIndices(new Set());
+            showDiff(fullDiffRef.current);
         } finally {
             if (!quiet && prKey.current === key) setFilterLoading(false);
         }
@@ -605,27 +610,25 @@ export default function Review({
     }, [composing]);
 
     // Expand a hunk by fetching extra context lines from the server and
-    // splicing them into the current diff text.
+    // splicing them into the current diff text. The context stops at the
+    // neighbouring hunk (see planHunkExpansion); a hunk it reaches is then
+    // drawn together with this one.
     const handleExpandHunk = async (
         hunkLineIndex: number,
         file: string,
         direction: 'before' | 'after',
         count: number = 20
     ) => {
-        const lines = diff.split('\n');
-        const hunkLine = lines[hunkLineIndex];
-        if (!hunkLine) return;
-        const hunkMatch = hunkLine.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
-        if (!hunkMatch) return;
-        const origStart = parseInt(hunkMatch[1], 10);
-        const origLength = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-        const newStart = parseInt(hunkMatch[3], 10);
-        const newLength = hunkMatch[4] !== undefined ? parseInt(hunkMatch[4], 10) : 1;
-        const hunkHeader = hunkMatch[5].replace(/^\s+/, '');
+        const base = diffRef.current;
+        const lines = base.split('\n');
+        const plan = planHunkExpansion(lines, hunkLineIndex, direction, count);
+        if (!plan) return;
+        const { hunk, headerIndex, insertAt } = plan;
 
         // Anchor: for "before", the first new-side line of the hunk; for "after",
         // the last new-side line of the hunk.
-        const anchorLine = direction === 'before' ? newStart : newStart + newLength - 1;
+        const anchorLine =
+            direction === 'before' ? hunk.newStart : hunk.newStart + hunk.newLines - 1;
         if (anchorLine < 1) return;
 
         try {
@@ -637,14 +640,19 @@ export default function Review({
                 Side: 'new',
                 AnchorLine: anchorLine,
                 Direction: direction,
-                Count: count,
-                OrigStart: origStart,
-                OrigLength: origLength,
-                NewStart: newStart,
-                NewLength: newLength,
-                HunkHeader: hunkHeader,
+                Count: plan.count,
+                OrigStart: hunk.oldStart,
+                OrigLength: hunk.oldLines,
+                NewStart: hunk.newStart,
+                NewLength: hunk.newLines,
+                HunkHeader: hunk.context,
             });
 
+            // The plan's line indices are into `base`. Another expansion (a
+            // double click) or a new diff may have landed while this one was
+            // in flight; splicing into that would misplace the lines and
+            // mark the wrong ones expanded.
+            if (diffRef.current !== base) return;
             if (!res.lines || res.lines.length === 0) return;
 
             // Prefix each context line with a single space (diff convention for
@@ -654,21 +662,7 @@ export default function Review({
             const newLines = lines.slice();
             // Replace the hunk header with the updated range header from the server.
             if (res.range_header) {
-                newLines[hunkLineIndex] = res.range_header;
-            }
-
-            let insertAt: number;
-            if (direction === 'before') {
-                insertAt = hunkLineIndex + 1;
-            } else {
-                // Find the end of this hunk: next hunk header, next file, or EOF.
-                let endIdx = hunkLineIndex + 1;
-                while (endIdx < newLines.length) {
-                    const l = newLines[endIdx];
-                    if (l.startsWith('@@ ') || l.startsWith('diff --git ')) break;
-                    endIdx++;
-                }
-                insertAt = endIdx;
+                newLines[headerIndex] = res.range_header;
             }
             newLines.splice(insertAt, 0, ...contextLines);
 
@@ -688,7 +682,8 @@ export default function Review({
                 return next;
             });
 
-            setDiff(newLines.join('\n'));
+            diffRef.current = newLines.join('\n');
+            setDiff(diffRef.current);
         } catch (e) {
             console.error('Failed to expand hunk context:', e);
         }

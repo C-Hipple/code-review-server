@@ -569,6 +569,8 @@ The lines come back as plain text, without the leading space that marks a contex
 
 The four range fields and `HunkHeader` describe the hunk as it currently stands; the server uses them to compute the header the hunk should carry once expanded.
 
+The server reads the lines from the file and knows nothing of the diff's other hunks: asked for more lines than lie between this hunk and the next one in that direction, it returns some of that hunk's lines as well. A client that doesn't want those shown twice asks for no more than the gap. The web client does, and draws two hunks left touching as one, keeping the second header in the diff, since it still counts toward comment positions.
+
 **Reply** (`GetHunkContextReply`):
 | Field          | Type     | Description                                                        |
 |----------------|----------|--------------------------------------------------------------------|

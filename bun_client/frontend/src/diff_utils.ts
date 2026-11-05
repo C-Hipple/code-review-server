@@ -14,7 +14,76 @@ export interface ParsedLine {
     newLineNo?: number | null;
     // For hunk headers: parsed function/context that appears after "@@".
     hunkContext?: string;
+    // For hunk headers: this hunk picks up on the line right after the one
+    // above it ends (see coalesceTouchingHunks), so the diff view draws the
+    // two as one hunk, under the first one's header, whose `text` then spans
+    // them both. The header still holds its comment position: GitHub counts
+    // it, and the comments below it are anchored by that count.
+    coalesced?: boolean;
 }
+
+// A hunk header's two ranges, `@@ -oldStart,oldLines +newStart,newLines @@`,
+// and the text git puts after it (the enclosing function, say), without its
+// leading space. A range that leaves out its length is one line long.
+export interface HunkRange {
+    oldStart: number;
+    oldLines: number;
+    newStart: number;
+    newLines: number;
+    context: string;
+}
+
+export const parseHunkHeader = (line: string): HunkRange | null => {
+    const m = line.replace(/\r$/, '').match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
+    if (!m) return null;
+    return {
+        oldStart: parseInt(m[1], 10),
+        oldLines: m[2] !== undefined ? parseInt(m[2], 10) : 1,
+        newStart: parseInt(m[3], 10),
+        newLines: m[4] !== undefined ? parseInt(m[4], 10) : 1,
+        context: m[5].replace(/^\s+/, ''),
+    };
+};
+
+// A header for `hunk`, written the way the server writes them.
+const formatHunkHeader = (hunk: HunkRange): string =>
+    `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@` +
+    (hunk.context ? ` ${hunk.context}` : '');
+
+// Whether `below` starts on the line right after `above` ends, on both sides:
+// no line lies between them, so together they read as one hunk.
+const hunksTouch = (above: HunkRange, below: HunkRange): boolean =>
+    above.oldStart + above.oldLines === below.oldStart &&
+    above.newStart + above.newLines === below.newStart;
+
+/**
+ * Join each run of touching hunks into one, in place. Git never writes two
+ * hunks with nothing between them, but expanding one hunk's context up to its
+ * neighbour leaves them so (see planHunkExpansion). Every header after the
+ * first in a run is marked `coalesced`, and the first one's text is rewritten
+ * to span the run; positions are left alone.
+ */
+const coalesceTouchingHunks = (rows: ParsedLine[]) => {
+    let run: { head: ParsedLine; range: HunkRange } | null = null;
+    for (const row of rows) {
+        if (row.lineType !== 'hunk') {
+            if (row.lineType === 'file-header') run = null;
+            continue;
+        }
+        const hunk = parseHunkHeader(row.text);
+        if (hunk && run && hunksTouch(run.range, hunk)) {
+            row.coalesced = true;
+            run.range = {
+                ...run.range,
+                oldLines: hunk.oldStart + hunk.oldLines - run.range.oldStart,
+                newLines: hunk.newStart + hunk.newLines - run.range.newStart,
+            };
+            run.head.text = formatHunkHeader(run.range);
+        } else {
+            run = hunk ? { head: row, range: hunk } : null;
+        }
+    }
+};
 
 /**
  * Parse a unified diff into renderable lines, tracking each line's GitHub
@@ -26,6 +95,9 @@ export interface ParsedLine {
  * otherwise every line below an expansion shifts and comments created while a
  * hunk is expanded are stored at a position that no longer exists once the
  * canonical diff is restored.
+ *
+ * Expansion can also close the gap between two hunks; those are drawn as one
+ * (see ParsedLine.coalesced), though the second header still counts.
  */
 export const parseDiff = (
     diff: string,
@@ -219,11 +291,11 @@ export const parseDiff = (
 
                         // Seed per-side line cursors from the hunk header so we can
                         // render real line numbers alongside the diff.
-                        const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
-                        if (m) {
-                            oldLineCursor = parseInt(m[1], 10);
-                            newLineCursor = parseInt(m[3], 10);
-                            currentHunkContext = (m[5] || '').replace(/^\s+/, '');
+                        const hunk = parseHunkHeader(line);
+                        if (hunk) {
+                            oldLineCursor = hunk.oldStart;
+                            newLineCursor = hunk.newStart;
+                            currentHunkContext = hunk.context;
                         }
                     } else if (isAddition || isDeletion || isContextLine) {
                         file = currentFile;
@@ -286,7 +358,81 @@ export const parseDiff = (
         }
     }
 
+    coalesceTouchingHunks(parsedLines);
     return parsedLines;
+};
+
+export interface HunkExpansion {
+    // Index into the diff's lines of the hunk header to grow, and its ranges.
+    headerIndex: number;
+    hunk: HunkRange;
+    // How many lines of context to ask for.
+    count: number;
+    // Where in the diff's lines the fetched lines go.
+    insertAt: number;
+}
+
+/**
+ * Plan growing the hunk headed at `lines[hunkLineIndex]` by up to `count`
+ * lines of context `direction`-wards.
+ *
+ * That is a header the diff view draws: the first of a run of touching hunks,
+ * which it shows as one (see coalesceTouchingHunks). Growing the run downward
+ * grows its last hunk, upward its first.
+ *
+ * The context stops where the next hunk that way begins. The server reads it
+ * from the file and knows nothing of other hunks, so asking for more would
+ * show that hunk's lines a second time; asking for exactly the lines between
+ * leaves the two touching, to be drawn as one. null when there is nothing to
+ * fetch: no hunk header there, or no line between it and its neighbour.
+ */
+export const planHunkExpansion = (
+    lines: string[],
+    hunkLineIndex: number,
+    direction: 'before' | 'after',
+    count: number
+): HunkExpansion | null => {
+    const step = direction === 'after' ? 1 : -1;
+    // The closest line to `from` that way heading a hunk or a file, or -1 /
+    // lines.length past the diff's edge.
+    const nextHeader = (from: number): number => {
+        let i = from + step;
+        while (
+            i >= 0 &&
+            i < lines.length &&
+            !lines[i].startsWith('@@ ') &&
+            !lines[i].startsWith('diff --git ')
+        ) {
+            i += step;
+        }
+        return i;
+    };
+
+    let headerIndex = hunkLineIndex;
+    let hunk = parseHunkHeader(lines[headerIndex] ?? '');
+    if (!hunk) return null;
+    let room = Infinity;
+    for (;;) {
+        const next = nextHeader(headerIndex);
+        const neighbour = lines[next]?.startsWith('@@ ') ? parseHunkHeader(lines[next]) : null;
+        if (!neighbour) break;
+        const [above, below] = direction === 'after' ? [hunk, neighbour] : [neighbour, hunk];
+        if (!hunksTouch(above, below)) {
+            room = below.newStart - (above.newStart + above.newLines);
+            break;
+        }
+        headerIndex = next;
+        hunk = neighbour;
+    }
+    if (room <= 0) return null;
+
+    return {
+        headerIndex,
+        hunk,
+        count: Math.min(count, room),
+        // Right under the header going up; after the hunk's last line going down.
+        insertAt: direction === 'before' ? headerIndex + 1 : nextHeader(headerIndex),
+    };
 };
 
 export const isTestFile = (filename: string): boolean =>

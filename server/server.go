@@ -1683,13 +1683,6 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	if args.AnchorLine < 1 {
 		return fmt.Errorf("AnchorLine must be >= 1, got %d", args.AnchorLine)
 	}
-	count := args.Count
-	if count <= 0 {
-		count = 20
-	}
-	if count > 100 {
-		count = 100
-	}
 
 	// Determine the ref to use.
 	// For "new" side, use the PR's head SHA; for "old" side, use the base SHA.
@@ -1729,39 +1722,38 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 		}
 	}
 
-	fileLines := strings.Split(content, "\n")
-	totalLines := len(fileLines)
+	*reply = hunkContext(content, args)
+	return nil
+}
+
+// hunkContext is the rest of GetHunkContext once the file's content is read:
+// up to Count lines (default 20, at most 100) above or below AnchorLine, and
+// the hunk header grown to take them in. When the file has none that way it
+// returns no lines and no header.
+func hunkContext(content string, args *GetHunkContextArgs) GetHunkContextReply {
+	count := args.Count
+	if count <= 0 {
+		count = 20
+	}
+	if count > 100 {
+		count = 100
+	}
+
+	fileLines := splitFileLines(content)
 
 	var startLine, endLine int // 1-based, inclusive
 	if args.Direction == "before" {
-		endLine = args.AnchorLine - 1
-		startLine = endLine - count + 1
-		if startLine < 1 {
-			startLine = 1
-		}
-		if endLine < 1 {
-			reply.Lines = []string{}
-			reply.StartLine = 0
-			reply.EndLine = 0
-			return nil
-		}
+		startLine, endLine = args.AnchorLine-count, args.AnchorLine-1
 	} else { // "after"
-		startLine = args.AnchorLine + 1
-		endLine = startLine + count - 1
-		if startLine > totalLines {
-			reply.Lines = []string{}
-			reply.StartLine = 0
-			reply.EndLine = 0
-			return nil
-		}
-		if endLine > totalLines {
-			endLine = totalLines
-		}
+		startLine, endLine = args.AnchorLine+1, args.AnchorLine+count
 	}
-
-	reply.Lines = fileLines[startLine-1 : endLine]
-	reply.StartLine = startLine
-	reply.EndLine = endLine
+	// Keep to the lines the file has. A "before" anchor can lie past the end
+	// too, when the client's diff predates the head the file was read at.
+	startLine = max(startLine, 1)
+	endLine = min(endLine, len(fileLines))
+	if startLine > endLine {
+		return GetHunkContextReply{Lines: []string{}}
+	}
 
 	// Compute the updated hunk header reflecting the expansion.
 	// The extra lines are context (unchanged), so they increase both orig and new lengths equally.
@@ -1787,9 +1779,22 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	if args.HunkHeader != "" {
 		headerSuffix = " " + args.HunkHeader
 	}
-	reply.RangeHeader = fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix)
+	return GetHunkContextReply{
+		Lines:       fileLines[startLine-1 : endLine],
+		StartLine:   startLine,
+		EndLine:     endLine,
+		RangeHeader: fmt.Sprintf("@@ -%d,%d +%d,%d @@%s", origStart, origLength, newStart, newLength, headerSuffix),
+	}
+}
 
-	return nil
+// splitFileLines splits a file's content into its lines. The newline most
+// files end in ends their last line; it doesn't start an empty one past it.
+// An empty last line the file really has ("a\n\n") is kept.
+func splitFileLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 }
 
 type GetPluginOutputArgs struct {

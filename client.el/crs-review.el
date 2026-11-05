@@ -36,6 +36,8 @@
   (highlight-at-at-lines-blue)
   (highlight-review-comments)
   (add-to-invisibility-spec '(codereview-hide . t))
+  ;; Headers of hunks drawn as part of the one above (`crs--show-hunk-expansions').
+  (add-to-invisibility-spec 'crs-joined-hunk)
   (add-hook 'post-command-hook #'crs--maybe-show-collapsed-comments nil t))
 
 

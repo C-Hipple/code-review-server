@@ -44,6 +44,32 @@ not the buffer has been washed by git-delta:
    ((string-prefix-p " " line) ?\s)
    (t nil)))
 
+(defun crs--parse-hunk-header (line)
+  "Parse a diff \"@@ -a,b +c,d @@\" header LINE.
+Returns a plist (:orig-start :orig-length :new-start :new-length :suffix)
+or nil if LINE does not match."
+  (when (string-match
+         "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@\\(.*\\)$"
+         line)
+    (list :orig-start (string-to-number (match-string 1 line))
+          :orig-length (if (match-string 2 line)
+                           (string-to-number (match-string 2 line))
+                         1)
+          :new-start (string-to-number (match-string 3 line))
+          :new-length (if (match-string 4 line)
+                          (string-to-number (match-string 4 line))
+                        1)
+          :suffix (or (match-string 5 line) ""))))
+
+(defun crs--hunks-touch-p (above below)
+  "Non-nil when hunk BELOW picks up on the line right after hunk ABOVE ends.
+Both are `crs--parse-hunk-header' plists.  No line lies between them on
+either side, so together they read as one hunk."
+  (and (= (+ (plist-get above :orig-start) (plist-get above :orig-length))
+          (plist-get below :orig-start))
+       (= (+ (plist-get above :new-start) (plist-get above :new-length))
+          (plist-get below :new-start))))
+
 (defun crs-toggle-section ()
   "Toggle visibility of the section under the current header."
   (interactive)
@@ -570,6 +596,11 @@ SHOW-FULL-COMMENTS if non-nil shows full comment blocks, otherwise shows compact
               (setq position (1+ position)))
             (with-current-buffer result-buffer (insert line "\n")))
 
+           ;; Context a hunk expansion spliced in isn't in the PR's diff, so
+           ;; it takes no position.
+           ((and first-hunk-seen (get-text-property 0 'crs-expanded line))
+            (with-current-buffer result-buffer (insert line "\n")))
+
            ;; Content Line
            ((and first-hunk-seen
                  (or (string-prefix-p "+" line)
@@ -679,6 +710,112 @@ This must be called after delta-wash."
                   (insert (format "%s%s%s\n" type pad filename))))
             (message "Could not find end of header for %s" filename)))))))
 
+;;; Hunk expansions
+;;
+;; Expanding a hunk (`crs-expand-hunk-before' / `crs-expand-hunk-after',
+;; crs-comments.el) splices lines of the file, fetched with GetHunkContext,
+;; into `crs--buffer-diff' as context.  They aren't in the PR's diff, so they
+;; take no comment position: counting them would move every comment below
+;; them.  Each carries a `crs-expanded' text property in the diff string,
+;; which goes wherever the string does (to a filtered diff and back); a diff
+;; from the server has none.  The washer rewrites the buffer's text, so the
+;; render marks them again by their line in the PR's head, and the functions
+;; counting positions skip the lines that carry the mark.
+;;
+;; An expansion stops at the neighbouring hunk, and one that gets there
+;; leaves the two touching: no line lies between them.  Those are drawn as
+;; one hunk, under the first header rewritten to span both.  The second
+;; header is hidden but stays in the buffer: GitHub counts it as a position.
+
+(defun crs--expanded-diff-lines (diff)
+  "The context lines hunk expansions spliced into DIFF, or nil for none.
+A hash table keyed \"FILE:LINE\", LINE being the line's number in the PR's
+head, which still names it once the diff has been washed."
+  (when (and diff (text-property-not-all 0 (length diff) 'crs-expanded nil diff))
+    (let ((expanded (make-hash-table :test 'equal))
+          (file nil)
+          (new-line nil))
+      (dolist (line (split-string diff "\n"))
+        (cond
+         ((string-match "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" line)
+          (setq file (if (string= (match-string 2 line) "dev/null")
+                         (match-string 1 line)
+                       (match-string 2 line))
+                new-line nil))
+         ((string-match "^\\+\\+\\+ b/\\(.*\\)$" line)
+          (setq file (match-string 1 line)
+                new-line nil))
+         ((string-prefix-p "@@ " line)
+          (setq new-line (plist-get (crs--parse-hunk-header line) :new-start)))
+         ;; Removed lines aren't in the head; added and context lines are.
+         ((and new-line (string-prefix-p " " line))
+          (when (get-text-property 0 'crs-expanded line)
+            (puthash (format "%s:%d" file new-line) t expanded))
+          (setq new-line (1+ new-line)))
+         ((and new-line (string-prefix-p "+" line))
+          (setq new-line (1+ new-line)))))
+      expanded)))
+
+(defun crs--show-hunk-expansions (expanded)
+  "Draw the hunk expansions in the current buffer's washed diff.
+EXPANDED is `crs--expanded-diff-lines' of the diff the buffer shows.  Each
+of its lines gets a `crs-expanded' text property, which keeps it out of
+comment positions.  Each run of touching hunks is drawn as one: its first
+header is rewritten to span the run, and the others are made invisible,
+though they stay in the buffer, where they still count as positions.  Runs
+after `crs--simplify-diff-headers' and before comments are inserted."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((file nil)
+          (new-line nil)
+          ;; The ranges the run of touching hunks above spans so far, and
+          ;; where its first header starts.
+          (run nil)
+          (run-start nil))
+      (while (not (eobp))
+        (let* ((start (line-beginning-position))
+               (end (line-end-position))
+               (line (buffer-substring-no-properties start end))
+               (hunk (crs--parse-hunk-header line))
+               (marker (unless hunk (crs--diff-line-marker line))))
+          (cond
+           ((string-match "^\\(modified\\|deleted\\|new file\\|renamed\\)[[:space:]]+\\(.*\\)$" line)
+            (setq file (match-string 2 line) new-line nil run nil))
+           ((string-prefix-p "diff " line)
+            (setq file nil new-line nil run nil))
+           ((string-match "^\\+\\+\\+ b/\\(.*\\)" line)
+            (setq file (match-string 1 line) new-line nil run nil))
+           ((and hunk run (crs--hunks-touch-p run hunk))
+            (setq new-line (plist-get hunk :new-start))
+            ;; Hide this header, newline and all, and stretch the run's first
+            ;; header over its lines.
+            (put-text-property start (min (1+ end) (point-max)) 'invisible 'crs-joined-hunk)
+            (setq run (list :orig-start (plist-get run :orig-start)
+                            :orig-length (- (+ (plist-get hunk :orig-start) (plist-get hunk :orig-length))
+                                            (plist-get run :orig-start))
+                            :new-start (plist-get run :new-start)
+                            :new-length (- (+ (plist-get hunk :new-start) (plist-get hunk :new-length))
+                                           (plist-get run :new-start))))
+            (save-excursion
+              (goto-char run-start)
+              (when (looking-at "@@ -[0-9]+\\(?:,[0-9]+\\)? \\+[0-9]+\\(?:,[0-9]+\\)? @@")
+                (replace-match (format "@@ -%d,%d +%d,%d @@"
+                                       (plist-get run :orig-start) (plist-get run :orig-length)
+                                       (plist-get run :new-start) (plist-get run :new-length))
+                               t t))))
+           (hunk
+            (setq new-line (plist-get hunk :new-start)
+                  run hunk
+                  run-start start))
+           ;; Content line (raw or delta-washed).  Removed lines aren't in
+           ;; the head, so they neither match nor advance NEW-LINE.
+           ((and new-line marker (not (eq marker ?-)))
+            (when (and expanded (eq marker ?\s)
+                       (gethash (format "%s:%d" file new-line) expanded))
+              (put-text-property start end 'crs-expanded t))
+            (setq new-line (1+ new-line)))))
+        (forward-line 1)))))
+
 (defun crs--render-from-stored-data ()
   "Render the buffer content from stored diff, comments, and preamble.
 Uses `crs--buffer-show-comments' to determine whether to show full comments or compact indicators."
@@ -745,6 +882,11 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
                           ;; Compact: append to line
                           (push (cons line-end (list 'append (crs--format-compact-comment-indicator file-comments))) insertions))))))
               (setq position (1+ position))))
+
+           ;; Context a hunk expansion spliced in isn't in the PR's diff, so
+           ;; it takes no position (see `crs--show-hunk-expansions').
+           ((get-text-property line-start 'crs-expanded)
+            nil)
 
            ;; Content Line (raw or delta-washed)
            ((and first-hunk-seen
@@ -988,6 +1130,10 @@ Returns the line number, or nil if not found."
              ((string-match-p "^[[:space:]]*[│┌└]" line)
               nil)
 
+             ;; Skip context a hunk expansion spliced in: it has no position
+             ((get-text-property line-start 'crs-expanded)
+              nil)
+
              ;; Content line (raw or delta-washed)
              ((and first-hunk-seen
                    (string= target-file filename)
@@ -1116,6 +1262,11 @@ for more robust position restoration."
 
         ;; 3. Simplify Headers
         (crs--simplify-diff-headers)
+
+        ;; 3.5. Mark the context hunk expansions spliced in, which the
+        ;; position counting below skips, and draw the hunks they left
+        ;; touching as one.
+        (crs--show-hunk-expansions (crs--expanded-diff-lines crs--buffer-diff))
 
         ;; 4. Insert Comments (only regular comments in-line with diff).
         ;; Their positions count rows of the PR's full diff; on a filtered

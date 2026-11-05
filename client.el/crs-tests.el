@@ -1522,5 +1522,175 @@ most recent first."
         (should (equal (nth 0 (car sent)) "RPCHandler.GetFilteredDiff"))
         (should (equal (cdr (assq 'Filter (aref (nth 1 (car sent)) 0))) "since-last-interaction"))))))
 
+;;; --- Comment blocks beside expanded annotations ---
+;;
+;; An expanded plugin annotation is drawn with the same "│┌└" lines as a
+;; comment block, so `c' and `d' tell them apart by the block's header.
+
+(defconst crs-test--annotated-pr-payload
+  `((okay . t)
+    (metadata . ((number . 42) (title . "Widgets")))
+    (diff . ,crs-test--full-diff)
+    (comments . [((id . "7") (author . "bob") (body . "two-nit")
+                  (path . "a.txt") (position . "2"))
+                 ((id . "9") (author . "local") (body . "local-nit")
+                  (path . "b.txt") (position . "1"))])
+    (reviews . [])
+    (commits . [])
+    (annotations . [((filename . "a.txt") (line . 2) (severity . "info")
+                     (content . "two-lint") (plugin . "Lint"))
+                    ((filename . "a.txt") (line . 3) (severity . "info")
+                     (content . "three-lint") (plugin . "Lint"))
+                    ((filename . "b.txt") (line . 2) (severity . "info")
+                     (content . "new-lint") (plugin . "Lint"))]))
+  "A GetPR reply for acme/widgets #42 with annotations beside comments.
+Expanded, a.txt's \"+two\" (row 2) has its annotation block, then bob's
+comment 7, and \" three\" (row 3) an annotation below that comment.
+b.txt's \" first b\" (row 1) has local comment 9, and \"+new b\" (row 3)
+an annotation below it.")
+
+(defmacro crs-test--with-annotated-review (&rest body)
+  "Run BODY in `buffer' showing `crs-test--annotated-pr-payload', expanded."
+  (declare (indent 0))
+  `(crs-test--with-review-buffer nil
+     (with-current-buffer buffer
+       (setq crs--buffer-show-annotations t))
+     (crs--render-and-update buffer crs-test--annotated-pr-payload)
+     (with-current-buffer buffer
+       ,@body)))
+
+(defun crs-test--on-block-lines (text fn)
+  "Call FN on each line of the block holding TEXT, and return its values.
+FN runs with point at the start of each line drawn as part of the block
+\(\"│┌└\"), from its header down to its footer."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward (concat "^    │.*" (regexp-quote text)))
+    (re-search-backward "^    ┌─")
+    (let ((values nil)
+          (footer nil))
+      (while (not footer)
+        (setq footer (looking-at "    └"))
+        (when (looking-at "    [│┌└]")
+          (push (save-excursion (funcall fn)) values))
+        (forward-line 1))
+      (nreverse values))))
+
+(defun crs-test--comment-target ()
+  "What `c' at point comments on: (FILE POSITION REPLY-TO-ID LOCAL-ID)."
+  (let ((ctx (crs--get-comment-context)))
+    (list (nth 3 ctx) (nth 4 ctx) (nth 5 ctx) (nth 6 ctx))))
+
+(ert-deftest crs-test-comment-context-by-block-header ()
+  "Each kind of comment block is replied to from its own lines; an annotation block is not."
+  (with-temp-buffer
+    (insert " context\n"
+            (crs--render-comment-tree
+             '(((id . "5") (author . "bob") (body . "live-body")
+                (path . "a.txt") (position . "1"))))
+            (crs--render-comment-tree
+             '(((id . "6") (author . "bob") (body . "outdated-body")
+                (path . "a.txt") (outdated . t))))
+            (crs--render-comment-tree
+             '(((id . "7") (author . "bob") (body . "file-body") (path . "a.txt"))))
+            (crs--render-annotation-block
+             '(((plugin . "Lint") (severity . "info") (content . "lint-body")))))
+    (crs--process-html-placeholders)
+    (let ((reply-to (lambda () (nth 5 (crs--get-comment-context)))))
+      (should (equal (seq-uniq (crs-test--on-block-lines "live-body" reply-to)) '(5)))
+      (should (equal (seq-uniq (crs-test--on-block-lines "outdated-body" reply-to)) '(6)))
+      (should (equal (seq-uniq (crs-test--on-block-lines "file-body" reply-to)) '(7)))
+      (should (equal (seq-uniq (crs-test--on-block-lines "lint-body" reply-to)) '(nil))))))
+
+(ert-deftest crs-test-comment-on-annotation-block-targets-its-line ()
+  "On any line of an annotation block, `c' takes the line the block hangs off.
+Not a reply to a comment drawn above the block, nor an edit of a local one."
+  (crs-test--with-annotated-review
+    (should (equal (crs-test--on-block-lines "two-lint" #'crs-test--comment-target)
+                   (make-list 4 '("a.txt" 2 nil nil))))
+    (should (equal (crs-test--on-block-lines "three-lint" #'crs-test--comment-target)
+                   (make-list 4 '("a.txt" 3 nil nil))))
+    (should (equal (crs-test--on-block-lines "new-lint" #'crs-test--comment-target)
+                   (make-list 4 '("b.txt" 3 nil nil))))))
+
+(ert-deftest crs-test-comment-block-beside-annotations-keeps-its-thread ()
+  "A comment block drawn beside annotation blocks is still replied to, or edited."
+  (crs-test--with-annotated-review
+    ;; Bob's comment starts on the line under "+two"'s annotation block.
+    (should (equal (seq-uniq (crs-test--on-block-lines "two-nit" #'crs-test--comment-target))
+                   '(("a.txt" 2 7 nil))))
+    (should (equal (seq-uniq (crs-test--on-block-lines "local-nit" #'crs-test--comment-target))
+                   '(("b.txt" 1 nil 9))))))
+
+(ert-deftest crs-test-comment-on-annotation-block-is-a-new-comment ()
+  "`c' on an annotation block opens a new comment on its line, and sends it so."
+  (crs-test--with-annotated-review
+    (let ((sent '()))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        ;; Below bob's comment on another line, then below a local comment.
+        (pcase-dolist (`(,text ,file ,position) '(("three-lint" "a.txt" 3)
+                                                  ("new-lint" "b.txt" 3)))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (re-search-forward (concat "^    │.*" text))
+            (call-interactively #'crs-add-or-edit-comment))
+          (let ((edit-buffer (get-buffer "*Comment Edit acme/widgets #42*")))
+            (unwind-protect
+                (with-current-buffer edit-buffer
+                  (should-not crs--comment-reply-to-id)
+                  (should-not crs--comment-editing-id)
+                  (should (equal (buffer-string) ""))
+                  (insert "Why?")
+                  (crs-submit-comment)
+                  (should (equal (nth 0 (car sent)) "RPCHandler.AddComment"))
+                  (let ((args (aref (nth 1 (car sent)) 0)))
+                    (should (equal (list (cdr (assq 'Filename args))
+                                         (cdr (assq 'Position args))
+                                         (cdr (assq 'ReplyToID args)))
+                                   (list file position nil)))))
+              (kill-buffer edit-buffer))))))))
+
+(ert-deftest crs-test-delete-on-annotation-block-finds-no-local-comment ()
+  "`d' finds a local comment in its own block, not from an annotation below it."
+  (crs-test--with-annotated-review
+    (should (equal (seq-uniq (crs-test--on-block-lines
+                              "local-nit"
+                              (lambda () (plist-get (crs--get-local-comment-at-point) :id))))
+                   '(9)))
+    (should (equal (crs-test--on-block-lines "new-lint" #'crs--get-local-comment-at-point)
+                   (make-list 4 nil)))
+    (goto-char (point-min))
+    (re-search-forward "^    │   new-lint")
+    (let ((shown nil))
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (&rest _) (ert-fail "should not offer to delete a comment")))
+                ((symbol-function 'crs--send-request)
+                 (lambda (&rest _) (ert-fail "should not send a request")))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq shown (apply #'format-message format-string args)))))
+        (crs-delete-local-comment))
+      (should (equal shown "Not on a local comment")))))
+
+(ert-deftest crs-test-add-annotation-as-comment-from-a-block-below-a-comment ()
+  "`a' in an expanded block adds its annotation on its own line, replying to nothing."
+  (crs-test--with-annotated-review
+    (let ((sent nil))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params &optional _callback)
+                   (setq sent (list method params)))))
+        (goto-char (point-min))
+        (re-search-forward "^    │   three-lint")
+        (crs-add-annotation-as-comment))
+      (should (equal (nth 0 sent) "RPCHandler.AddComment"))
+      (let ((args (aref (nth 1 sent) 0)))
+        (should (equal (cdr (assq 'Filename args)) "a.txt"))
+        (should (equal (cdr (assq 'Position args)) 3))
+        (should-not (cdr (assq 'ReplyToID args)))
+        (should (equal (cdr (assq 'Body args))
+                       "Automated comment by Lint\n\nthree-lint"))))))
+
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

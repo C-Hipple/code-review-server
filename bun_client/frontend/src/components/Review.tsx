@@ -34,6 +34,7 @@ import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../serve
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
 import { parseDiff, planHunkExpansion } from '../diff_utils';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
+import { clearReviewDraft, loadReviewDraft, saveReviewDraft } from '../review_draft_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
 import {
     dockViewer as dockViewerState,
@@ -849,6 +850,25 @@ export default function Review({
     // The submit runs in the background: the modal closes at once and a toast
     // reports how it went, so the reviewer can read on — or move to the next
     // PR — while GitHub takes the review and the server refetches the PR.
+    // Opens the Submit Review modal on the PR's saved draft when there is one,
+    // else on the review feedback. `event` is the verdict the mobile bar picked.
+    const openSubmitModal = (event?: string) => {
+        const draft = loadReviewDraft(prRef);
+        setReviewBody(draft ? draft.body : feedbackBody);
+        setReviewEvent(event ?? draft?.event ?? reviewEvent);
+        setSubmitting(true);
+    };
+
+    const changeReviewBody = (body: string) => {
+        setReviewBody(body);
+        saveReviewDraft(prRef, { body, event: reviewEvent });
+    };
+
+    const changeReviewEvent = (event: string) => {
+        setReviewEvent(event);
+        saveReviewDraft(prRef, { body: reviewBody, event });
+    };
+
     const handleSubmitReview = async () => {
         const key = prRef;
         const event = reviewEvent;
@@ -869,6 +889,7 @@ export default function Review({
                     Body: body,
                 },
             ]);
+            clearReviewDraft(key);
             // Only a view still showing this PR takes the refreshed payload;
             // one the reviewer has moved on from gets just the toast.
             if (prKey.current === key) {
@@ -1347,10 +1368,7 @@ export default function Review({
                     + Comment
                 </Button>
                 <Button
-                    onClick={() => {
-                        setReviewBody(feedbackBody);
-                        setSubmitting(true);
-                    }}
+                    onClick={() => openSubmitModal()}
                     style={{ background: 'var(--success)' }}
                     disabled={loading}
                     loading={isSubmittingReview}
@@ -1944,8 +1962,8 @@ export default function Review({
                 pendingPreviews={pendingPreviews}
                 username={githubUsername}
                 diffTheme={customDiffTheme}
-                onChangeReviewEvent={setReviewEvent}
-                onChangeReviewBody={setReviewBody}
+                onChangeReviewEvent={changeReviewEvent}
+                onChangeReviewBody={changeReviewBody}
                 onClose={() => setSubmitting(false)}
                 onSubmit={handleSubmitReview}
             />
@@ -2007,11 +2025,7 @@ export default function Review({
             {isMobile && metadata && (
                 <MobileReviewBar
                     loading={loading || isSubmittingReview}
-                    onAction={event => {
-                        setReviewEvent(event);
-                        setReviewBody(feedbackBody);
-                        setSubmitting(true);
-                    }}
+                    onAction={openSubmitModal}
                 />
             )}
         </div>

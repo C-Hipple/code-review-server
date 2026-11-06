@@ -621,7 +621,39 @@ func (db *DB) initSchema() error {
 		}
 	}
 
+	db.backfillItemCreatedAt(workflowActionLogExists > 0)
+
 	return nil
+}
+
+// backfillItemCreatedAt stamps the items written before UpsertItemWithWorkflow
+// recorded created_at (the column was migrated in without a default, so every
+// such row is NULL and was read back as the current time). The best record of
+// when one entered its section is the earliest WorkflowActionLog row for the PR
+// in that section, else for the PR at all; an item with neither is stamped
+// now, so it at least ages from here on. A no-op once no row is NULL.
+func (db *DB) backfillItemCreatedAt(haveActionLog bool) {
+	now := time.Now().UTC().Format(sqliteTimeLayout)
+	query := `UPDATE items SET created_at = ? WHERE created_at IS NULL OR created_at = ''`
+	if haveActionLog {
+		query = `UPDATE items SET created_at = COALESCE(
+			(SELECT MIN(l.created_at) FROM WorkflowActionLog l JOIN sections s ON s.id = items.section_id
+			 WHERE l.owner || '/' || l.repo || '-' || l.pr_number = items.identifier COLLATE NOCASE
+			   AND l.section_name = s.section_name AND l.created_at != ''),
+			(SELECT MIN(l.created_at) FROM WorkflowActionLog l
+			 WHERE l.owner || '/' || l.repo || '-' || l.pr_number = items.identifier COLLATE NOCASE
+			   AND l.created_at != ''),
+			?)
+		WHERE created_at IS NULL OR created_at = ''`
+	}
+	res, err := db.conn.Exec(query, now)
+	if err != nil {
+		slog.Warn("Error backfilling items.created_at", "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("Backfilled items.created_at", "items", n)
+	}
 }
 
 func (db *DB) AddWorktree(prNumber int, repo, owner, path, branch string) error {
@@ -973,8 +1005,11 @@ func (db *DB) UpsertItemWithWorkflow(sectionID int64, identifier, status, title 
 	}
 
 	result, err := tx.Exec(
-		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, ttl, workflows)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		// created_at is when the item entered the section: written on insert
+		// only, never by the update branch, and explicitly because the migrated
+		// column has no default.
+		`INSERT INTO items (section_id, identifier, status, title, details_json, tags, ttl, workflows, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(section_id, identifier) DO UPDATE SET
 			status = excluded.status,
 			title = excluded.title,
@@ -983,6 +1018,7 @@ func (db *DB) UpsertItemWithWorkflow(sectionID int64, identifier, status, title 
 			ttl = excluded.ttl,
 			workflows = excluded.workflows`,
 		sectionID, identifier, status, title, string(detailsJSON), tagsStr, ttl, string(workflowsJSON),
+		time.Now().UTC().Format(sqliteTimeLayout),
 	)
 	if err != nil {
 		return nil, err

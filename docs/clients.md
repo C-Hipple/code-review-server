@@ -174,6 +174,13 @@ the PR, or a force-push rewrote the commit you last saw), the full diff stays
 and the header says why. Syncing or submitting a review keeps the filter and
 asks for it again.
 
+`o` and `O` in a review buffer (`crs-expand-hunk-after` and
+`crs-expand-hunk-before`) show more of the file below or above the hunk at
+point: 20 lines, or as many as a numeric prefix asks for. They stop at the next
+hunk, and once they reach it the two are shown as one, under a header spanning
+both. The lines they add aren't part of the PR's diff, so they can't take a
+comment, and the comments below them stay on their lines.
+
 The client follows the server's runs rather than polling for them:
 `crs-start-server` subscribes to the server's
 [notifications](protocol.md#server-notifications), and each time the server

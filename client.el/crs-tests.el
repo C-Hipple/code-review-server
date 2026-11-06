@@ -54,6 +54,9 @@
   (dolist (fn '(crs--send-request crs--render-and-update crs--render-diff
                 crs--get-comment-context crs--get-current-review-info
                 crs--review-buffer-name crs--parse-hunk-header
+                crs--hunks-touch-p crs--file-hunk-headers crs--plan-hunk-expansion
+                crs--expand-hunk-in-diff crs--expanded-diff-lines
+                crs--show-hunk-expansions crs--refuse-expanded-line
                 crs--ensure-html crs--make-html-placeholder
                 crs--localize-image-srcs crs--image-cache-path
                 crs--process-html-placeholders crs--strip-comments-tree
@@ -1691,6 +1694,336 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
         (should-not (cdr (assq 'ReplyToID args)))
         (should (equal (cdr (assq 'Body args))
                        "Automated comment by Lint\n\nthree-lint"))))))
+
+;;; --- Hunk expansion ---
+
+(defconst crs-test--hunks-diff
+  (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+          "@@ -1,3 +1,4 @@\n a1\n+a2\n a3\n a4\n"
+          "@@ -9,3 +10,3 @@ section\n a10\n-a11 old\n+a11\n a12\n"
+          "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
+          "@@ -1,2 +1,3 @@\n b1\n+b2\n b3\n")
+  "A diff whose a.txt has two hunks with lines 5-9 of the head between them.
+In a.txt, \"+a2\" is row 2, the second header 5 and \"+a11\" 8.")
+
+(defconst crs-test--hunks-payload
+  `((okay . t)
+    (metadata . ((number . 42) (title . "Widgets")))
+    (diff . ,crs-test--hunks-diff)
+    (comments . [((id . "1") (author . "bob") (body . "a2-nit")
+                  (path . "a.txt") (position . "2"))
+                 ((id . "2") (author . "bob") (body . "a11-nit")
+                  (path . "a.txt") (position . "8"))
+                 ((id . "3") (author . "bob") (body . "b2-nit")
+                  (path . "b.txt") (position . "2"))])
+    (annotations . [((filename . "a.txt") (line . 6) (severity . "info")
+                     (content . "between the hunks") (plugin . "Lint"))])
+    (reviews . [])
+    (commits . []))
+  "A GetPR reply for acme/widgets #42 over `crs-test--hunks-diff'.
+Its annotation is on a line only an expansion shows.")
+
+(defun crs-test--wash ()
+  "Rewrite the buffer's text without its properties, as delta's washer does."
+  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+    (erase-buffer)
+    (insert text)))
+
+(defmacro crs-test--with-hunks-review (&rest body)
+  "Run BODY with `buffer' showing `crs-test--hunks-payload'.
+Binds `sent' to the (METHOD PARAMS CALLBACK) of each request made in BODY,
+most recent first.  The washer is `crs-test--wash', which drops the text
+properties of the diff it is handed."
+  (declare (indent 0))
+  `(crs-test--with-review-buffer nil
+     (let ((sent '()))
+       (cl-letf (((symbol-function 'crs--send-request)
+                  (lambda (method params callback)
+                    (push (list method params callback) sent)))
+                 ((symbol-function 'delta-wash) #'crs-test--wash))
+         (crs--render-and-update buffer crs-test--hunks-payload)
+         ,@body))))
+
+(defun crs-test--goto-line-matching (regexp)
+  "Move point to the start of the buffer's first line matching REGEXP."
+  (goto-char (point-min))
+  (re-search-forward regexp)
+  (beginning-of-line))
+
+(defun crs-test--hunk-context-reply (lines range)
+  "A GetHunkContext reply carrying LINES and the RANGE header."
+  `((lines . ,(vconcat lines)) (start_line . 0) (end_line . 0) (range_header . ,range)))
+
+(ert-deftest crs-test-hunk-expansion-plan ()
+  "An expansion stops at the next hunk, and runs of touching hunks grow at their ends."
+  ;; Lines 5-9 of the head lie between a.txt's hunks.
+  (let ((plan (crs--plan-hunk-expansion crs-test--hunks-diff "a.txt" 0 "after" 20)))
+    (should (equal (plist-get plan :hunk-index) 0))
+    (should (equal (plist-get plan :hunk) (crs--parse-hunk-header "@@ -1,3 +1,4 @@")))
+    (should (equal (plist-get plan :count) 5)))
+  (should (equal (plist-get (crs--plan-hunk-expansion crs-test--hunks-diff "a.txt" 1 "before" 20)
+                            :count)
+                 5))
+  (should (equal (plist-get (crs--plan-hunk-expansion crs-test--hunks-diff "a.txt" 0 "after" 3)
+                            :count)
+                 3))
+  ;; A file's last hunk has nothing below it: b.txt's hunks aren't a.txt's.
+  (should (equal (plist-get (crs--plan-hunk-expansion crs-test--hunks-diff "a.txt" 1 "after" 20)
+                            :count)
+                 20))
+  ;; The first two hunks touch, and seven lines lie between them and the third.
+  (let ((diff (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                      "@@ -1,8 +1,9 @@\n a1\n+a2\n a3\n a4\n a5\n a6\n a7\n a8\n a9\n"
+                      "@@ -9,3 +10,3 @@ section\n a10\n-a11 old\n+a11\n a12\n"
+                      "@@ -19,2 +20,2 @@\n-a20 old\n+a20\n a21\n")))
+    (let ((plan (crs--plan-hunk-expansion diff "a.txt" 0 "after" 20)))
+      (should (equal (plist-get plan :hunk-index) 1))
+      (should (equal (plist-get plan :count) 7)))
+    (let ((plan (crs--plan-hunk-expansion diff "a.txt" 1 "before" 20)))
+      (should (equal (plist-get plan :hunk-index) 0))
+      (should (equal (plist-get plan :count) 20)))
+    (should (equal (plist-get (crs--plan-hunk-expansion diff "a.txt" 2 "before" 20) :count) 7)))
+  ;; No line between a hunk and the next: nothing to ask for.
+  (should-not (crs--plan-hunk-expansion
+               (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                       "@@ -1,3 +1,4 @@\n a1\n+a2\n a3\n a4\n"
+                       "@@ -6,2 +5,2 @@\n a5\n a6\n")
+               "a.txt" 0 "after" 20)))
+
+(ert-deftest crs-test-hunk-expansion-asks-for-the-lines-between-hunks ()
+  "GetHunkContext is asked for no more lines than lie between two hunks."
+  (crs-test--with-hunks-review
+    (with-current-buffer buffer
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after)
+      (should (equal (nth 0 (car sent)) "RPCHandler.GetHunkContext"))
+      ;; The ranges and HunkHeader come from the diff, not the header as drawn,
+      ;; which carries the <A: Lint> of the annotation it can't show yet.
+      (should (equal (json-encode (nth 1 (car sent)))
+                     (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
+                             "\"Filename\":\"a.txt\",\"Side\":\"new\",\"AnchorLine\":4,"
+                             "\"Direction\":\"after\",\"Count\":5,\"OrigStart\":1,\"OrigLength\":3,"
+                             "\"NewStart\":1,\"NewLength\":4,\"HunkHeader\":\"\"}]")))
+      (crs-test--goto-line-matching "^ a10$")
+      (crs-expand-hunk-before)
+      (should (equal (json-encode (nth 1 (car sent)))
+                     (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
+                             "\"Filename\":\"a.txt\",\"Side\":\"new\",\"AnchorLine\":10,"
+                             "\"Direction\":\"before\",\"Count\":5,\"OrigStart\":9,\"OrigLength\":3,"
+                             "\"NewStart\":10,\"NewLength\":3,\"HunkHeader\":\"section\"}]")))
+      ;; Fewer lines than that are asked for as they are, and the file's last
+      ;; hunk is stopped only by the end of the file.
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after 2)
+      (should (equal (cdr (assq 'Count (aref (nth 1 (car sent)) 0))) 2))
+      (crs-test--goto-line-matching "^ a12$")
+      (crs-expand-hunk-after)
+      (should (equal (cdr (assq 'AnchorLine (aref (nth 1 (car sent)) 0))) 12))
+      (should (equal (cdr (assq 'Count (aref (nth 1 (car sent)) 0))) 20)))))
+
+(ert-deftest crs-test-hunk-expansion-without-room-asks-for-nothing ()
+  "With no line between two hunks, or a count below 1, nothing is sent.
+Count 0 least of all: the server reads it as 20."
+  (crs-test--with-review-buffer nil
+    (let ((sent '()))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        (crs--render-and-update
+         buffer
+         `((okay . t)
+           (metadata . ((number . 42) (title . "Widgets")))
+           ;; The two hunks' head sides meet.
+           (diff . ,(concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                            "@@ -1,3 +1,4 @@\n a1\n+a2\n a3\n a4\n"
+                            "@@ -6,2 +5,2 @@\n a5\n a6\n"))
+           (comments . [])
+           (reviews . [])
+           (commits . [])))
+        (with-current-buffer buffer
+          (crs-test--goto-line-matching "^ a3$")
+          (should-error (crs-expand-hunk-after) :type 'user-error)
+          (should-error (crs-expand-hunk-before 0) :type 'user-error))
+        (should-not sent)))))
+
+(ert-deftest crs-test-hunk-expansion-takes-no-positions ()
+  "Lines an expansion splices in take no position: comments stay on their lines."
+  (crs-test--with-hunks-review
+    (with-current-buffer buffer
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after 3)
+      (funcall (nth 2 (car sent))
+               (crs-test--hunk-context-reply '("a5" "a6" "a7") "@@ -1,6 +1,7 @@"))
+      (let ((text (buffer-string)))
+        (should (string-match-p "^ a4\n a5\n a6 *<A: Lint>\n a7\n@@ -9,3 \\+10,3 @@ section$" text))
+        (should (string-match-p "^\\+a2\n[^+]*a2-nit" text))
+        (should (string-match-p "^\\+a11\n[^+]*a11-nit" text)))
+      ;; A spliced line is marked, and has a line in the head but no position.
+      (crs-test--goto-line-matching "^ a6")
+      (should (get-text-property (point) 'crs-expanded))
+      (let ((ctx (crs--get-comment-context)))
+        (should-not (nth 4 ctx))
+        (should (equal (nth 8 ctx) 6))
+        (should (nth 9 ctx)))
+      ;; The lines below it keep theirs.
+      (crs-test--goto-line-matching "^\\+a11$")
+      (let ((ctx (crs--get-comment-context)))
+        (should (equal (nth 4 ctx) 8))
+        (should (equal (nth 8 ctx) 11))
+        (should-not (nth 9 ctx)))
+      (should (equal (crs--find-position-in-diff "a.txt" 8) (line-number-at-pos)))
+      (crs-test--goto-line-matching "^ a10$")
+      (should (equal (crs--find-position-in-diff "a.txt" 6) (line-number-at-pos))))))
+
+(ert-deftest crs-test-hunk-expansion-lines-take-no-comments ()
+  "A spliced line refuses a comment; one below it goes out at its own position."
+  (crs-test--with-hunks-review
+    (with-current-buffer buffer
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after 3)
+      (funcall (nth 2 (car sent))
+               (crs-test--hunk-context-reply '("a5" "a6" "a7") "@@ -1,6 +1,7 @@"))
+      (setq sent '())
+      (crs-test--goto-line-matching "^ a6")
+      (should-error (call-interactively #'crs-add-or-edit-comment) :type 'user-error)
+      (should-not (get-buffer "*Comment Edit acme/widgets #42*"))
+      ;; The annotation an expansion uncovered stays an annotation.
+      (should (crs--annotations-on-current-line))
+      (should-error (crs-add-annotation-as-comment) :type 'user-error)
+      (should-not sent)
+      (crs-test--goto-line-matching "^\\+a11$")
+      (call-interactively #'crs-add-or-edit-comment))
+    (let ((edit-buffer (get-buffer "*Comment Edit acme/widgets #42*")))
+      (unwind-protect
+          (with-current-buffer edit-buffer
+            (should (equal crs--comment-position 8))
+            (insert "Why the rename?")
+            (crs-submit-comment)
+            (should (equal (nth 0 (car sent)) "RPCHandler.AddComment"))
+            (let ((args (aref (nth 1 (car sent)) 0)))
+              (should (equal (cdr (assq 'Filename args)) "a.txt"))
+              (should (equal (cdr (assq 'Position args)) 8))))
+        (when (buffer-live-p edit-buffer)
+          (kill-buffer edit-buffer))))))
+
+(ert-deftest crs-test-hunk-expansion-joins-touching-hunks ()
+  "An expansion reaching the next hunk shows the two as one; positions hold."
+  (crs-test--with-hunks-review
+    (with-current-buffer buffer
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after)
+      (funcall (nth 2 (car sent))
+               (crs-test--hunk-context-reply '("a5" "a6" "a7" "a8" "a9") "@@ -1,8 +1,9 @@"))
+      (setq sent '())
+      ;; The diff keeps both headers...
+      (should (string-match-p "^@@ -1,8 \\+1,9 @@\n a1\n" crs--buffer-diff))
+      (should (string-match-p "^ a9\n@@ -9,3 \\+10,3 @@ section\n" crs--buffer-diff))
+      ;; ...and the buffer shows one, spanning both, over the second, hidden.
+      (crs-test--goto-line-matching "^@@ -1,")
+      (should (looking-at-p "@@ -1,11 \\+1,12 @@$"))
+      (crs-test--goto-line-matching "^@@ -9,3 \\+10,3 @@ section$")
+      (should (invisible-p (point)))
+      (should (invisible-p (line-end-position)))
+      (forward-line -1)
+      (should (looking-at-p " a9$"))
+      ;; GitHub counts the hidden header, and so do comments below it.
+      (crs-test--goto-line-matching "^\\+a11$")
+      (should (equal (nth 4 (crs--get-comment-context)) 8))
+      (should (string-match-p "^\\+a11\n[^+]*a11-nit" (buffer-string)))
+      ;; Growing the joined hunk upward grows its first part...
+      (crs-test--goto-line-matching "^ a10$")
+      (crs-expand-hunk-before)
+      (should (equal (json-encode (nth 1 (car sent)))
+                     (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
+                             "\"Filename\":\"a.txt\",\"Side\":\"new\",\"AnchorLine\":1,"
+                             "\"Direction\":\"before\",\"Count\":20,\"OrigStart\":1,\"OrigLength\":8,"
+                             "\"NewStart\":1,\"NewLength\":9,\"HunkHeader\":\"\"}]")))
+      ;; ...and downward its last.
+      (crs-test--goto-line-matching "^ a3$")
+      (crs-expand-hunk-after)
+      (should (equal (json-encode (nth 1 (car sent)))
+                     (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
+                             "\"Filename\":\"a.txt\",\"Side\":\"new\",\"AnchorLine\":12,"
+                             "\"Direction\":\"after\",\"Count\":20,\"OrigStart\":9,\"OrigLength\":3,"
+                             "\"NewStart\":10,\"NewLength\":3,\"HunkHeader\":\"section\"}]")))
+      (funcall (nth 2 (car sent))
+               (crs-test--hunk-context-reply '("a13") "@@ -9,4 +10,4 @@ section"))
+      (should (string-match-p "^ a12\n a13\n" (buffer-string)))
+      (crs-test--goto-line-matching "^@@ -1,")
+      (should (looking-at-p "@@ -1,12 \\+1,13 @@$"))
+      (crs-test--goto-line-matching "^\\+a11$")
+      (should (equal (nth 4 (crs--get-comment-context)) 8)))))
+
+(ert-deftest crs-test-hunk-expansion-dropped-once-the-diff-changed ()
+  "Context arriving after the diff changed is dropped, not spliced into the old one."
+  (crs-test--with-hunks-review
+    (let ((synced (replace-regexp-in-string "^\\+a2$" "+a2 again" crs-test--hunks-diff)))
+      (with-current-buffer buffer
+        (crs-test--goto-line-matching "^ a3$")
+        (crs-expand-hunk-after)
+        ;; A sync brings a new diff before the context arrives.
+        (crs--render-and-update buffer (cons (cons 'diff synced) crs-test--hunks-payload))
+        (funcall (nth 2 (car sent))
+                 (crs-test--hunk-context-reply '("a5" "a6" "a7" "a8" "a9") "@@ -1,8 +1,9 @@"))
+        (should (equal crs--buffer-diff synced))
+        (should (string-match-p "^\\+a2 again$" (buffer-string)))
+        (should-not (string-match-p "^ a5$" (buffer-string)))))))
+
+(ert-deftest crs-test-hunk-expansion-survives-a-filtered-diff ()
+  "An expanded full diff keeps its expansions through a filtered diff and back."
+  (crs-test--with-hunks-review
+    (let ((crs-diff-filters crs-test--diff-filters))
+      (with-current-buffer buffer
+        (crs-test--goto-line-matching "^ a3$")
+        (crs-expand-hunk-after 3)
+        (funcall (nth 2 (car sent))
+                 (crs-test--hunk-context-reply '("a5" "a6" "a7") "@@ -1,6 +1,7 @@"))
+        (crs-show-filtered-diff "since-last-review")
+        (funcall (nth 2 (car sent)) crs-test--filtered-reply)
+        (should (crs--filtered-diff-displayed-p))
+        (crs-show-filtered-diff nil)
+        (crs-test--goto-line-matching "^ a6")
+        (should (get-text-property (point) 'crs-expanded))
+        (crs-test--goto-line-matching "^\\+a11$")
+        (should (equal (nth 4 (crs--get-comment-context)) 8))))))
+
+(ert-deftest crs-test-hunk-expansion-marks-washed-lines ()
+  "Spliced lines are found again by their line in the head, in either layout."
+  (let ((expanded (crs--expanded-diff-lines
+                   (crs--expand-hunk-in-diff crs-test--hunks-diff "a.txt" 0 "after"
+                                             '("a5" "a6") "@@ -1,5 +1,6 @@"))))
+    (should (equal (sort (hash-table-keys expanded) #'string<) '("a.txt:5" "a.txt:6")))
+    (should-not (crs--expanded-diff-lines crs-test--hunks-diff))
+    ;; delta's line-number gutter.
+    (with-temp-buffer
+      (insert "modified a.txt\n"
+              "@@ -1,5 +1,6 @@\n"
+              "  1 ⋮  1 │ a1\n"
+              "    ⋮  2 │+a2\n"
+              "  2 ⋮  3 │ a3\n"
+              "  3 ⋮  4 │ a4\n"
+              "  4 ⋮  5 │ a5\n"
+              "  5 ⋮  6 │ a6\n"
+              "@@ -9,3 +10,3 @@ section\n"
+              "  9 ⋮ 10 │ a10\n")
+      (crs--show-hunk-expansions expanded)
+      (let ((marked nil))
+        (goto-char (point-min))
+        (while (not (eobp))
+          (when (get-text-property (point) 'crs-expanded)
+            (push (buffer-substring-no-properties (point) (line-end-position)) marked))
+          (forward-line 1))
+        (should (equal (nreverse marked) '("  4 ⋮  5 │ a5" "  5 ⋮  6 │ a6")))))))
+
+(ert-deftest crs-test-render-diff-skips-expanded-lines ()
+  "The string renderer counts positions past spliced lines as the buffer does."
+  (let* ((diff (crs--expand-hunk-in-diff crs-test--hunks-diff "a.txt" 0 "after"
+                                         '("a5" "a6") "@@ -1,5 +1,6 @@"))
+         (comments (crs--index-comments (cdr (assq 'comments crs-test--hunks-payload))))
+         (text (crs--render-diff diff comments)))
+    (should (string-match-p "^\\+a11 +<C: bob>$" text))
+    (should (string-match-p "^ a6$" text))
+    (should (= (crs-test--count "<C: bob>" text) 3))))
 
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

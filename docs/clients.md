@@ -181,6 +181,14 @@ hunk, and once they reach it the two are shown as one, under a header spanning
 both. The lines they add aren't part of the PR's diff, so they can't take a
 comment, and the comments below them stay on their lines.
 
+`L` in a review buffer (`crs-copy-github-line-link`) copies the GitHub link to
+the diff line at point to the kill ring — the link GitHub's Files changed view
+copies when you click a line number, `…/pull/N/files#diff-<sha256 of the path>R12`.
+A removed line links by its base line number (`L`), any other by its head one
+(`R`); on a comment block it links the line the block hangs off, and on a file or
+hunk header, the file. On a filtered diff a removed line's base number is read
+from the full diff, since the filtered one counts the baseline's lines.
+
 The client follows the server's runs rather than polling for them:
 `crs-start-server` subscribes to the server's
 [notifications](protocol.md#server-notifications), and each time the server

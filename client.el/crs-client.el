@@ -66,6 +66,7 @@
   "C" #'crs-get-ai-output
   "M" #'crs-show-change-diagram
   "H" #'crs-toggle-comments
+  "L" #'crs-copy-github-line-link
   "A" #'crs-toggle-annotations
   "F" #'crs-show-filtered-diff
   "f" #'crs-set-review-feedback
@@ -145,6 +146,7 @@
     "C" #'crs-get-ai-output
     "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
+    "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
     "F" #'crs-show-filtered-diff
     "f" #'crs-set-review-feedback
@@ -176,6 +178,7 @@
     "C" #'crs-get-ai-output
     "M" #'crs-show-change-diagram
     "H" #'crs-toggle-comments
+    "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
     "F" #'crs-show-filtered-diff
     "f" #'crs-set-review-feedback

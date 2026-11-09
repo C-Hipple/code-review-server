@@ -114,6 +114,31 @@ test.describe('review view', () => {
         expect(await backend.calls('AddComment')).toHaveLength(0);
     });
 
+    test('copies the GitHub link to a line from its line numbers', async ({ page, context }) => {
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        await openReview(page);
+        const prFiles = 'https://github.com/acme/widgets/pull/42/files';
+        // sha256('src/main.ts'), the anchor GitHub names the file by.
+        const mainTs = 'diff-4fab5baaca5c14d2de62d8d2fceef376ddddcc8e9509d86cfa5643f51b89ce3d';
+
+        // The new line's number links the head side...
+        const row = diffRow(page, 'const message = formatGreeting(');
+        const head = row.getByTitle(/^Copy GitHub link to src\/main\.ts:R\d+$/);
+        const n = (await head.textContent())!.trim();
+        await head.click();
+        await expect(page.getByText(`Copied GitHub link to src/main.ts:R${n}`)).toBeVisible();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+            `${prFiles}#${mainTs}R${n}`
+        );
+        // ...and an old line number the base side.
+        const base = page.getByTitle(/^Copy GitHub link to src\/main\.ts:L\d+$/).first();
+        const m = (await base.textContent())!.trim();
+        await base.click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+            `${prFiles}#${mainTs}L${m}`
+        );
+    });
+
     test('submits a review with its pending comments', async ({ page, backend }) => {
         await openReview(page);
 

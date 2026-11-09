@@ -5,6 +5,7 @@ import { fileAnnotationKey, lineAnnotationKey, type AnnotationIndex } from '../.
 import { type ParsedLine, sortParsedLinesTestsLast } from '../../diff_utils';
 import { groupIntoThreads } from '../../discussion_utils';
 import { getClickColumn } from '../../utils/dom';
+import type { DiffSide } from '../../github_links';
 import type { PRAnnotation } from '../../plugin_utils';
 import type { LspData } from '../../hooks/useLsp';
 import LspPopover from '../LspPopover';
@@ -67,6 +68,8 @@ export interface DiffViewProps {
     onShowOutdated: (file: string) => void;
     onDockDiffFile: (file: string) => void;
     onExpandHunk: (hunkLineIndex: number, file: string, direction: 'before' | 'after') => void;
+    // Copy the GitHub link to `line`'s number on `side` (L base, R head).
+    onCopyLineLink: (line: ParsedLine, side: DiffSide) => void;
     onOpenCodeViewer: (filePath: string, line: number, position: { x: number; y: number }) => void;
     // Close the LSP popover shown inline in the comment form (clears data only).
     onClearLspData: () => void;
@@ -111,6 +114,7 @@ export default function DiffView({
     onShowOutdated,
     onDockDiffFile,
     onExpandHunk,
+    onCopyLineLink,
     onOpenCodeViewer,
     onClearLspData,
     onCloseLsp,
@@ -257,6 +261,20 @@ export default function DiffView({
 
     // Indicator badge shown next to a commented line/file; toggles all of that
     // line's threads open/closed together and previews them all on hover.
+    // A line number copies the GitHub link to its line when clicked, as on
+    // GitHub: the old number links the base side (L), the new one the head (R).
+    const lineNumberLink = (item: ParsedLine, side: DiffSide) => {
+        const n = side === 'L' ? item.oldLineNo : item.newLineNo;
+        if (n == null || !item.file) return {};
+        return {
+            title: `Copy GitHub link to ${item.file}:${side}${n}`,
+            onClick: (e: React.MouseEvent) => {
+                e.stopPropagation();
+                onCopyLineLink(item, side);
+            },
+        };
+    };
+
     const commentIndicatorForLine = (item: ParsedLine) => {
         const threads = threadsOnLine(item);
         if (threads.length === 0) return null;
@@ -720,24 +738,28 @@ export default function DiffView({
                     {isCodeLine && !isHunkHeader && !isMobile && (
                         <>
                             <span
-                                className="diff-line-no"
+                                className={
+                                    'diff-line-no' +
+                                    (item.oldLineNo != null ? ' diff-line-no-link' : '')
+                                }
                                 aria-hidden="true"
                                 style={{
-                                    background: isDeletion
-                                        ? colors.diffDelGutterBg
-                                        : isAddition
-                                          ? undefined
-                                          : undefined,
+                                    background: isDeletion ? colors.diffDelGutterBg : undefined,
                                 }}
+                                {...lineNumberLink(item, 'L')}
                             >
                                 {item.oldLineNo ?? ''}
                             </span>
                             <span
-                                className="diff-line-no"
+                                className={
+                                    'diff-line-no' +
+                                    (item.newLineNo != null ? ' diff-line-no-link' : '')
+                                }
                                 aria-hidden="true"
                                 style={{
                                     background: isAddition ? colors.diffAddGutterBg : undefined,
                                 }}
+                                {...lineNumberLink(item, 'R')}
                             >
                                 {item.newLineNo ?? ''}
                             </span>

@@ -32,7 +32,8 @@ import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import { usePRUpdates } from '../hooks/usePRUpdates';
 import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
-import { parseDiff, planHunkExpansion } from '../diff_utils';
+import { parseDiff, planHunkExpansion, type ParsedLine } from '../diff_utils';
+import { copyText, githubDiffLink, lineLinkTarget, type DiffSide } from '../github_links';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
 import { clearReviewDraft, loadReviewDraft, saveReviewDraft } from '../review_draft_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
@@ -1167,6 +1168,32 @@ export default function Review({
         [comments, fullParsedLines, parsedLines]
     );
 
+    // Copy the GitHub link to the line whose number was clicked, as GitHub's
+    // own Files changed view does: L for the base side's number, R for the
+    // head's.
+    const handleCopyLineLink = (row: ParsedLine, side: DiffSide) => {
+        if (!metadata?.url || !row.file) return;
+        const target = lineLinkTarget(
+            row,
+            side,
+            filteredView && fullParsedLines
+                ? {
+                      fullRows: fullParsedLines,
+                      toFullRow: (file, pos) => toFullPosition(filteredDiff, file, pos),
+                  }
+                : undefined
+        );
+        const url = githubDiffLink(metadata.url, row.file, target.side ?? undefined, target.line);
+        const where = target.line != null ? `${row.file}:${target.side}${target.line}` : row.file;
+        copyText(url).then(
+            () => showToast(`Copied GitHub link to ${where}`, 'success'),
+            e => {
+                console.error(e);
+                showToast(`Couldn't copy the link: ${url}`, 'danger');
+            }
+        );
+    };
+
     const handleCancelInline = () => {
         setActiveLineIndex(null);
         setReplyToId(null);
@@ -1264,6 +1291,7 @@ export default function Review({
             onShowOutdated={setActiveOutdatedFile}
             onDockDiffFile={handleDockDiffFile}
             onExpandHunk={handleExpandHunk}
+            onCopyLineLink={handleCopyLineLink}
             onOpenCodeViewer={handleOpenCodeViewer}
             onClearLspData={() => lsp.clearData()}
             onCloseLsp={() => {

@@ -1004,6 +1004,15 @@ body {
     justify-content: flex-end;
 }
 
+/* A line number that copies the GitHub link to its line (see DiffView). */
+.diff-line-no-link {
+    cursor: pointer;
+}
+.diff-line-no-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
 /* Sticky file headers — the file you are reading stays named in a bar
    directly under the toolbar, with its hunk header pinned right below it
    (see .diff-hunk-row). Both are bounded by their file's section wrapper

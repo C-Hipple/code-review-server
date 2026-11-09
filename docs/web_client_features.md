@@ -341,6 +341,14 @@ misplaces comments:
   `*.d.ts`). Files with more than `MAX_HIGHLIGHT_LINES_PER_FILE` (2000) changed lines
   fall back to plain text so large diffs stay responsive.
 - Old/new line-number gutters, a `+`/`−` gutter, and per-file `+n/−m` counts.
+- **Copy a GitHub line link** — clicking a line number copies the link GitHub's own
+  line numbers copy, `…/pull/N/files#diff-<sha256(path)>R12` (`github_links.ts`):
+  the old number links the base side (`L`), the new one the head (`R`). On a
+  filtered diff a base-side link takes the line from the same row of the full diff,
+  through `positions`, since the filtered diff's old numbers count the baseline's
+  lines. The hash and the copy work over plain http (a phone on the LAN): a pure-JS
+  SHA-256 and a textarea fallback, as `crypto.subtle` and `navigator.clipboard` need
+  a secure context.
 - Test files sort last (`sortParsedLinesTestsLast`) — `*.test.*`, `*.spec.*`,
   `*_test.go`, `__tests__/`.
 - Per-file collapse — clicking anywhere on a file header toggles it — plus Collapse

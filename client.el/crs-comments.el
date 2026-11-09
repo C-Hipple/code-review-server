@@ -123,11 +123,13 @@ COMMENT, outdated or not, or a FILE COMMENT (`crs--render-comment-tree')."
 (defun crs--get-comment-context ()
   "Extract the review context of the line at point, for a comment on it.
 Returns a list: (owner repo number filename position reply-to-id
-local-comment-id local-comment-body file-line expanded).
+local-comment-id local-comment-body file-line expanded base-line marker).
 If on a local comment, local-comment-id and local-comment-body will be set.
 FILE-LINE is the line's number in the PR's head.  EXPANDED is non-nil on
 context a hunk expansion fetched, which isn't in the PR's diff, so its
-position is nil."
+position is nil.  BASE-LINE is the line's number on the diff's base side
+\(nil on an added line), and MARKER its `crs--diff-line-marker' (nil on a
+hunk header)."
   (interactive)
   (let ((owner nil)
         (repo nil)
@@ -138,6 +140,8 @@ position is nil."
         (local-comment-id nil)
         (local-comment-body nil)
         (target-file-line nil)
+        (target-base-line nil)
+        (target-marker nil)
         (expanded nil)
         (target-line (line-number-at-pos))
         (first-hunk-line-num nil))
@@ -228,6 +232,7 @@ position is nil."
         (forward-line (1- first-hunk-line-num))
         (let ((count 0)
               (file-line nil)
+              (base-line nil)
               (first-hunk-counted nil))
           (while (<= (line-number-at-pos) target-line)
             (let* ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
@@ -246,20 +251,27 @@ position is nil."
                ;; first hunk header anchors position 0; every later hunk header
                ;; advances the position by 1, as GitHub counts them.  (delta
                ;; leaves hunk headers ungutted, so this matches either layout.)
-               ((string-match "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,[0-9]+\\)? @@" line-content)
+               ((string-match "^@@ -\\([0-9]+\\)\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,[0-9]+\\)? @@" line-content)
                 (if (not first-hunk-counted)
                     (setq first-hunk-counted t)
                   (setq count (1+ count)))
-                (setq file-line (string-to-number (match-string 1 line-content)))
+                (setq file-line (string-to-number (match-string 2 line-content)))
+                (setq base-line (string-to-number (match-string 1 line-content)))
                 (setq target-file-line file-line)
+                (setq target-base-line nil)
+                (setq target-marker nil)
                 (setq expanded nil))
                ;; Context a hunk expansion spliced in (marked by
                ;; `crs--show-hunk-expansions') isn't in the PR's diff, so it
                ;; takes no position; nor does a block drawn under it.
                ((get-text-property (line-beginning-position) 'crs-expanded)
                 (setq target-file-line file-line)
+                (setq target-base-line base-line)
+                (setq target-marker ?\s)
                 (when file-line
                   (setq file-line (1+ file-line)))
+                (when base-line
+                  (setq base-line (1+ base-line)))
                 (setq expanded t))
                ;; Skip interleaved review-comment blocks (drawn with "│┌└" but
                ;; no "⋮", so they never look like a gutter content line).
@@ -271,17 +283,21 @@ position is nil."
                (marker
                 (setq count (1+ count))
                 (setq target-file-line file-line)
+                (setq target-base-line (unless (eq marker ?+) base-line))
+                (setq target-marker marker)
                 (setq expanded nil)
                 ;; Removed lines do not exist in the new file, so do not advance
-                ;; the file-line counter for them.
+                ;; the file-line counter for them; nor added ones the base's.
                 (when (and file-line (not (eq marker ?-)))
-                  (setq file-line (1+ file-line))))
+                  (setq file-line (1+ file-line)))
+                (when (and base-line (not (eq marker ?+)))
+                  (setq base-line (1+ base-line))))
                ;; Anything else is not part of the diff position; skip it.
                (t nil)))
             (forward-line 1))
           (setq position (unless expanded count)))))
 
-    (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body target-file-line expanded)))
+    (let ((ctx (list owner repo number filename position reply-to-id local-comment-id local-comment-body target-file-line expanded target-base-line target-marker)))
       (message "Context extracted: %S" ctx)
       (message (concat "Position:" (prin1-to-string position)))
       ctx)))

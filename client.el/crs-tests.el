@@ -1552,6 +1552,75 @@ comment 7, and \" three\" (row 3) an annotation below that comment.
 b.txt's \" first b\" (row 1) has local comment 9, and \"+new b\" (row 3)
 an annotation below it.")
 
+;;; --- GitHub line links ---
+
+(defconst crs-test--a-anchor
+  "diff-18b7cb099a9ea3f50ba899b5ba81e0d377a5f3b16f8f6eeb8b3e58cd4692b993"
+  "GitHub's anchor for a.txt: the hex SHA-256 of its path.")
+(defconst crs-test--b-anchor
+  "diff-ffa0da5d885fba09d903c782713b6b098c8cf21f56a3a35d9aa920613220d2e1"
+  "GitHub's anchor for b.txt.")
+
+(defun crs-test--line-link-at (regexp)
+  "The link `crs-copy-github-line-link' copies on the first line matching REGEXP."
+  (crs-test--goto-line-matching regexp)
+  (let ((kill-ring nil))
+    (crs-copy-github-line-link)
+    (car kill-ring)))
+
+(ert-deftest crs-test-github-diff-link ()
+  "Links name the file by its path's SHA-256, and a side and line when given."
+  (should (equal (crs--github-diff-link "https://github.com/acme/widgets/pull/42" "a.txt" "R" 3)
+                 (concat "https://github.com/acme/widgets/pull/42/files#"
+                         crs-test--a-anchor "R3")))
+  (should (equal (crs--github-diff-link "https://github.com/acme/widgets/pull/42/files/" "a.txt")
+                 (concat "https://github.com/acme/widgets/pull/42/files#" crs-test--a-anchor))))
+
+(ert-deftest crs-test-diff-base-line-at-position ()
+  "A diff row's base line, counted the way GitHub counts positions."
+  (should (equal (crs--diff-base-line-at-position crs-test--full-diff "a.txt" 1) 1))
+  (should-not (crs--diff-base-line-at-position crs-test--full-diff "a.txt" 2))
+  (should (equal (crs--diff-base-line-at-position crs-test--full-diff "a.txt" 3) 2))
+  (should (equal (crs--diff-base-line-at-position crs-test--full-diff "b.txt" 2) 2))
+  (should-not (crs--diff-base-line-at-position crs-test--full-diff "b.txt" 3))
+  (should-not (crs--diff-base-line-at-position crs-test--full-diff "b.txt" 9))
+  (should-not (crs--diff-base-line-at-position crs-test--full-diff "c.txt" 1)))
+
+(ert-deftest crs-test-copy-github-line-link ()
+  "`L' copies the link to the line at point: removed lines by base line, others by head."
+  (should (eq (keymap-lookup my-code-review-mode-map "L") #'crs-copy-github-line-link))
+  (crs-test--with-review-buffer nil
+    (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+      (crs--render-and-update buffer crs-test--pr-payload))
+    (with-current-buffer buffer
+      (let ((pr "https://github.com/acme/widgets/pull/42/files#"))
+        (should (equal (crs-test--line-link-at "^\\+new b") (concat pr crs-test--b-anchor "R2")))
+        (should (equal (crs-test--line-link-at "^-old b") (concat pr crs-test--b-anchor "L2")))
+        (should (equal (crs-test--line-link-at "^ three") (concat pr crs-test--a-anchor "R3")))
+        ;; A comment block links the line it hangs off.
+        (should (equal (crs-test--line-link-at "two-nit") (concat pr crs-test--a-anchor "R2")))
+        ;; A hunk header, the file.
+        (should (equal (crs-test--line-link-at "^@@ -1,2 \\+1,3 @@") (concat pr crs-test--a-anchor)))
+        ;; The PR's own URL wins over one made from the buffer name.
+        (setq crs--buffer-metadata '((url . "https://github.example.com/acme/widgets/pull/42")))
+        (should (equal (crs-test--line-link-at "^\\+new b")
+                       (concat "https://github.example.com/acme/widgets/pull/42/files#"
+                               crs-test--b-anchor "R2")))))))
+
+(ert-deftest crs-test-copy-github-line-link-on-a-filtered-diff ()
+  "On a filtered diff a removed line's base line comes from the full diff."
+  (crs-test--with-filtered-review
+    (with-current-buffer buffer
+      (let ((pr "https://github.com/acme/widgets/pull/42/files#"))
+        ;; Head lines are the head's on either diff.
+        (should (equal (crs-test--line-link-at "^\\+new b") (concat pr crs-test--b-anchor "R2")))
+        ;; A removed line the full diff doesn't show links the file.
+        (should (equal (crs-test--line-link-at "^-newish b") (concat pr crs-test--b-anchor)))
+        ;; One it shows takes the full diff's base line, not the baseline's.
+        (cl-letf (((symbol-function 'crs--full-diff-position) (lambda (_file _pos) 2)))
+          (should (equal (crs-test--line-link-at "^-newish b")
+                         (concat pr crs-test--b-anchor "L2"))))))))
+
 (defmacro crs-test--with-annotated-review (&rest body)
   "Run BODY in `buffer' showing `crs-test--annotated-pr-payload', expanded."
   (declare (indent 0))

@@ -12,6 +12,8 @@
 (require 'markdown-mode)
 
 (declare-function crs--get-comment-context "crs-comments")
+(declare-function crs--filtered-diff-displayed-p "crs-filtered-diff")
+(declare-function crs--full-diff-position "crs-filtered-diff")
 (declare-function crs-add-or-edit-comment "crs-comments")
 (declare-function crs-delete-local-comment "crs-comments")
 (declare-function crs-submit-comment "crs-comments")
@@ -171,6 +173,109 @@ If point is on a URL: line, open the URL in the browser instead."
                     (recenter)))
               (message "File not found: %s" filename))
           (message "No file found at point"))))))
+
+(defun crs--github-diff-link (pr-url filename &optional side line)
+  "The GitHub link to LINE on SIDE of FILENAME in the diff of the PR at PR-URL.
+PR-URL is the PR's page, https://github.com/OWNER/REPO/pull/N.  SIDE is
+\"L\" (the base) or \"R\" (the head), as GitHub's Files changed view writes
+them when a line number is clicked; its anchor names the file by the hex
+SHA-256 of its path.  Without SIDE and LINE the link goes to the file."
+  (let ((base (replace-regexp-in-string
+               "/\\(?:files\\|changes\\|commits\\)/?\\'" ""
+               (string-trim-right pr-url "/+")))
+        (anchor (concat "diff-" (secure-hash 'sha256 (encode-coding-string filename 'utf-8)))))
+    (if (and side line)
+        (format "%s/files#%s%s%d" base anchor side line)
+      (format "%s/files#%s" base anchor))))
+
+(defun crs--diff-base-line-at-position (diff filename position)
+  "The base-side line number of the row at POSITION of FILENAME in DIFF.
+DIFF is a raw unified diff, POSITION a GitHub diff position (the file's first
+hunk header is 0, and every later header and content line counts one).  Nil
+when that row is an added line, or DIFF has no such row."
+  (with-temp-buffer
+    (insert diff)
+    (goto-char (point-min))
+    (let ((in-target nil)
+          (count nil)
+          (base-line nil)
+          (found nil)
+          (done nil))
+      (while (and (not done) (not (eobp)))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position))))
+          (cond
+           ((string-match "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" line)
+            (setq in-target (string= (if (string= (match-string 2 line) "dev/null")
+                                         (match-string 1 line)
+                                       (match-string 2 line))
+                                     filename)
+                  count nil))
+           ((not in-target) nil)
+           ((string-match "^@@ -\\([0-9]+\\)" line)
+            (setq count (if count (1+ count) 0)
+                  base-line (string-to-number (match-string 1 line))))
+           ((null count) nil)
+           ((memq (and (> (length line) 0) (aref line 0)) '(?+ ?- ?\s))
+            (setq count (1+ count))
+            (when (= count position)
+              (setq found (unless (eq (aref line 0) ?+) base-line)
+                    done t))
+            (unless (eq (aref line 0) ?+)
+              (setq base-line (1+ base-line))))))
+        (forward-line 1))
+      found)))
+
+(defun crs--github-line-target (ctx)
+  "Where the GitHub link for the line CTX describes points: (SIDE . LINE).
+CTX is a `crs--get-comment-context' list.  A removed line links its base
+line (\"L\"), any other its head line (\"R\"), as GitHub's own line numbers
+do; nil, to link the file, on a hunk header or a line with no number.
+
+On a filtered diff a removed line's base number counts the baseline's lines,
+not the PR base's, so it is read from the same row of the full diff instead;
+a row the full diff shows as an addition links its head line, and one it
+doesn't show, the file."
+  (let ((filename (nth 3 ctx))
+        (position (nth 4 ctx))
+        (head-line (nth 8 ctx))
+        (base-line (nth 10 ctx))
+        (marker (nth 11 ctx)))
+    (cond
+     ((null marker) nil)
+     ((not (eq marker ?-)) (and head-line (cons "R" head-line)))
+     ((not (crs--filtered-diff-displayed-p)) (and base-line (cons "L" base-line)))
+     (t
+      (let* ((full-pos (crs--full-diff-position filename position))
+             (full-base (and full-pos crs--buffer-full-diff
+                             (crs--diff-base-line-at-position
+                              crs--buffer-full-diff filename full-pos))))
+        (cond (full-base (cons "L" full-base))
+              ;; The full diff shows it as an addition, or not at all.
+              ((and full-pos head-line) (cons "R" head-line))))))))
+
+(defun crs-copy-github-line-link ()
+  "Copy the GitHub link to the diff line at point to the kill ring.
+The link opens the PR's Files changed view at that line, the link GitHub
+copies when one of its line numbers is clicked: a removed line by its base
+line number (L), any other by its head one (R).  On a comment block, the
+line the block hangs off; on a file or hunk header, the file."
+  (interactive)
+  (let* ((ctx (crs--get-comment-context))
+         (owner (nth 0 ctx))
+         (repo (nth 1 ctx))
+         (number (nth 2 ctx))
+         (filename (nth 3 ctx)))
+    (unless (and filename (not (string-empty-p filename)))
+      (user-error "No diff line at point"))
+    (let* ((pr-url (or (cdr (assq 'url crs--buffer-metadata))
+                       (format "https://github.com/%s/%s/pull/%d" owner repo number)))
+           (target (crs--github-line-target ctx))
+           (link (crs--github-diff-link pr-url filename (car target) (cdr target))))
+      (kill-new link)
+      (message "Copied GitHub link to %s%s"
+               filename
+               (if target (format ":%s%d" (car target) (cdr target)) "")))))
 
 (defun crs-show-outdated-comments ()
   "Show outdated comments for the current PR in a separate buffer."

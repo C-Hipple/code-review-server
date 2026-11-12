@@ -2,6 +2,7 @@ package jira
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,7 +27,9 @@ type DevStatusResponse struct {
 }
 
 type JiraSearchResponse struct {
-	Issues []Issue `json:"issues"`
+	Issues        []Issue `json:"issues"`
+	NextPageToken string  `json:"nextPageToken"`
+	IsLast        bool    `json:"isLast"`
 }
 
 type Issue struct {
@@ -80,53 +83,80 @@ func (t targetSet) lookup(ref RepoRef) (RepoRef, bool) {
 
 // GetProjectPRKeys returns the PR numbers for every target repo under a JIRA epic,
 // keyed by the repo they belong to.
-func GetProjectPRKeys(domain string, epicKey string, repos []RepoRef) map[RepoRef][]int {
+//
+// A non-nil error means the answer may be missing PRs: the epic search failed
+// (the map is empty), or looking up the PR linked from some of its issues did.
+// The map then holds what was found, and the caller can't tell a PR that left
+// the epic from one whose lookup failed. An issue with no PR linked, or one
+// linked to a repo outside repos, is not an error.
+func GetProjectPRKeys(domain string, epicKey string, repos []RepoRef) (map[RepoRef][]int, error) {
 	if !strings.HasSuffix(domain, "/") {
 		domain += "/"
 	}
 
-	searchURL := fmt.Sprintf("%srest/api/3/search/jql", domain)
-
-	jiraEmail, token := getAuth()
-
-	params := url.Values{}
-	params.Add("jql", fmt.Sprintf("Parent = %s", epicKey))
-
-	req, err := http.NewRequest("GET", searchURL, nil)
+	data, err := searchIssues(domain, fmt.Sprintf("Parent = %s", epicKey))
 	if err != nil {
-		slog.Error("Error creating request", "error", err)
-		return map[RepoRef][]int{}
-	}
-	req.URL.RawQuery = params.Encode()
-
-	req.SetBasicAuth(jiraEmail, token)
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Error("Error making request", "error", err)
-		return map[RepoRef][]int{}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		slog.Error("Error getting JIRA search")
-		// Read the response body to get the error message.
-		body := make([]byte, 1024)
-		n, _ := resp.Body.Read(body) // We ignore the error here.
-		slog.Error("JIRA response body", "content", string(body[:n]))
-		return map[RepoRef][]int{}
-	}
-
-	var data JiraSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		slog.Error("Error decoding JSON", "error", err)
-		return map[RepoRef][]int{}
+		return map[RepoRef][]int{}, fmt.Errorf("searching the issues of %s: %w", epicKey, err)
 	}
 
 	return processIssues(domain, data, repos)
+}
 
+// maxSearchPages caps how many pages of issues searchIssues follows, so a
+// server that keeps handing back a next page can't hold a cycle forever.
+const maxSearchPages = 50
+
+// searchIssues runs a JQL search, following nextPageToken through every page.
+func searchIssues(domain string, jql string) (JiraSearchResponse, error) {
+	searchURL := fmt.Sprintf("%srest/api/3/search/jql", domain)
+	jiraEmail, token := getAuth()
+	client := &http.Client{}
+
+	var all JiraSearchResponse
+	pageToken := ""
+	for page := 0; ; page++ {
+		if page == maxSearchPages {
+			return all, fmt.Errorf("more than %d pages of issues", maxSearchPages)
+		}
+		params := url.Values{}
+		params.Add("jql", jql)
+		params.Add("fields", "id")
+		params.Add("maxResults", "100")
+		if pageToken != "" {
+			params.Add("nextPageToken", pageToken)
+		}
+
+		req, err := http.NewRequest("GET", searchURL, nil)
+		if err != nil {
+			return all, err
+		}
+		req.URL.RawQuery = params.Encode()
+		req.SetBasicAuth(jiraEmail, token)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return all, err
+		}
+		var data JiraSearchResponse
+		if resp.StatusCode != http.StatusOK {
+			body := make([]byte, 1024)
+			n, _ := resp.Body.Read(body)
+			resp.Body.Close()
+			return all, fmt.Errorf("search returned status %d: %s", resp.StatusCode, body[:n])
+		}
+		err = json.NewDecoder(resp.Body).Decode(&data)
+		resp.Body.Close()
+		if err != nil {
+			return all, fmt.Errorf("decoding the search response: %w", err)
+		}
+
+		all.Issues = append(all.Issues, data.Issues...)
+		if data.IsLast || data.NextPageToken == "" {
+			return all, nil
+		}
+		pageToken = data.NextPageToken
+	}
 }
 
 type issuePR struct {
@@ -148,10 +178,11 @@ func parsePRURL(prURL string) (RepoRef, int, error) {
 	return RepoRef{Owner: parts[len(parts)-4], Repo: parts[len(parts)-3]}, num, nil
 }
 
-func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRef) map[RepoRef][]int {
+func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRef) (map[RepoRef][]int, error) {
 	// Returns a map of repo -> list of PR numbers for that repo. PRs linked to
 	// repos outside the target list are dropped, so a project spanning several
-	// repos gets each repo's PRs grouped independently.
+	// repos gets each repo's PRs grouped independently. The error joins every
+	// issue whose linked PR couldn't be looked up.
 
 	targets := newTargetSet(target_repos)
 
@@ -166,18 +197,12 @@ func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRe
 			defer wg.Done()
 
 			pr, err := getPRLinkForIssue(domain, issue.ID)
-			if pr == nil {
-				errChan <- fmt.Errorf("pr is nil %s", issue.ID)
-				return
-			}
-
 			if err != nil {
-				errChan <- fmt.Errorf("error getting PR link for issue %s: %w", issue.ID, err)
+				errChan <- fmt.Errorf("getting the PR linked from issue %s: %w", issue.ID, err)
 				return
 			}
-
-			if pr.URL == "" {
-				errChan <- fmt.Errorf("Err getting PR link for issue %s: URL is empty", issue.ID)
+			if pr == nil || pr.URL == "" {
+				// No PR linked from this issue.
 				return
 			}
 
@@ -190,7 +215,7 @@ func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRe
 			// share a short name under different owners.
 			configured, ok := targets.lookup(ref)
 			if !ok {
-				errChan <- fmt.Errorf("Issue PR is for a separate repo: %s", ref.FullName())
+				slog.Debug("Issue's PR is in a repo the project doesn't list", "issue", issue.ID, "repo", ref.FullName())
 				return
 			}
 			resultsChan <- issuePR{ref: configured, num: num}
@@ -205,7 +230,11 @@ func processIssues(domain string, data JiraSearchResponse, target_repos []RepoRe
 	for r := range resultsChan {
 		out[r.ref] = append(out[r.ref], r.num)
 	}
-	return out
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return out, errors.Join(errs...)
 }
 
 func getPRLinkForIssue(domain string, issueID string) (*JiraPullRequestIdentifier, error) {

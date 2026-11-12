@@ -146,7 +146,10 @@ func TestProcessIssuesGroupsPRsAcrossRepos(t *testing.T) {
 	crs := RepoRef{Owner: "C-Hipple", Repo: "code-review-server"}
 	diffLsp := RepoRef{Owner: "C-Hipple", Repo: "diff-lsp"}
 
-	got := processIssues(server.URL, issues("1", "2", "3", "4", "5"), []RepoRef{crs, diffLsp})
+	got, err := processIssues(server.URL, issues("1", "2", "3", "4", "5"), []RepoRef{crs, diffLsp})
+	if err != nil {
+		t.Fatalf("processIssues() error = %v; an unlinked issue or another repo's PR is not a failure", err)
+	}
 
 	want := map[RepoRef][]int{
 		crs:     {10, 11},
@@ -170,7 +173,10 @@ func TestProcessIssuesDistinguishesSameRepoNameAcrossOwners(t *testing.T) {
 	orgA := RepoRef{Owner: "org-a", Repo: "service"}
 	orgB := RepoRef{Owner: "org-b", Repo: "service"}
 
-	got := processIssues(server.URL, issues("1", "2"), []RepoRef{orgA, orgB})
+	got, err := processIssues(server.URL, issues("1", "2"), []RepoRef{orgA, orgB})
+	if err != nil {
+		t.Fatalf("processIssues() error = %v", err)
+	}
 
 	want := map[RepoRef][]int{
 		orgA: {1},
@@ -187,10 +193,82 @@ func TestProcessIssuesExcludesUnconfiguredOwner(t *testing.T) {
 	})
 	defer server.Close()
 
-	got := processIssues(server.URL, issues("1"), []RepoRef{{Owner: "org-a", Repo: "service"}})
+	got, err := processIssues(server.URL, issues("1"), []RepoRef{{Owner: "org-a", Repo: "service"}})
+	if err != nil {
+		t.Fatalf("processIssues() error = %v", err)
+	}
 
 	if len(got) != 0 {
 		t.Errorf("processIssues() = %v, want no results for an owner outside the target list", got)
+	}
+}
+
+func TestProcessIssuesReportsFailedLookups(t *testing.T) {
+	ok := devStatusServer(t, map[string]string{
+		"1": "https://github.com/org-a/service/pull/1",
+	})
+	defer ok.Close()
+	// Issue 2's dev-status request fails, as it does when Jira rate-limits.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("issueId") == "2" {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		ok.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	ref := RepoRef{Owner: "org-a", Repo: "service"}
+	got, err := processIssues(server.URL, issues("1", "2"), []RepoRef{ref})
+
+	if err == nil {
+		t.Fatal("processIssues() error = nil, want the failed lookup reported")
+	}
+	if want := (map[RepoRef][]int{ref: {1}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("processIssues() = %v, want the PRs that were found, %v", got, want)
+	}
+}
+
+func TestGetProjectPRKeysFollowsSearchPages(t *testing.T) {
+	ref := RepoRef{Owner: "org-a", Repo: "service"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "search/jql") {
+			if r.URL.Query().Get("nextPageToken") == "" {
+				json.NewEncoder(w).Encode(JiraSearchResponse{Issues: []Issue{{ID: "1"}}, NextPageToken: "p2"})
+				return
+			}
+			json.NewEncoder(w).Encode(JiraSearchResponse{Issues: []Issue{{ID: "2"}}, IsLast: true})
+			return
+		}
+		id := r.URL.Query().Get("issueId")
+		json.NewEncoder(w).Encode(DevStatusResponse{Detail: []DevDetails{{
+			PullRequests: []JiraPullRequestIdentifier{{URL: "https://github.com/org-a/service/pull/" + id}},
+		}}})
+	}))
+	defer server.Close()
+
+	got, err := GetProjectPRKeys(server.URL, "EPIC-1", []RepoRef{ref})
+	if err != nil {
+		t.Fatalf("GetProjectPRKeys() error = %v", err)
+	}
+	sort.Ints(got[ref])
+	if want := (map[RepoRef][]int{ref: {1, 2}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("GetProjectPRKeys() = %v, want both pages' PRs %v", got, want)
+	}
+}
+
+func TestGetProjectPRKeysReportsFailedSearch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	got, err := GetProjectPRKeys(server.URL, "EPIC-1", []RepoRef{{Owner: "org-a", Repo: "service"}})
+	if err == nil {
+		t.Fatal("GetProjectPRKeys() error = nil, want the failed search reported")
+	}
+	if len(got) != 0 {
+		t.Errorf("GetProjectPRKeys() = %v, want nothing", got)
 	}
 }
 

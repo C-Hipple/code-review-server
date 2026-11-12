@@ -482,6 +482,19 @@ func formatComments(comments []*github.PullRequestComment) (int, []string) {
 }
 
 func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
+	return processPRsDB(workflowName, prs, changes_channel, db, section, change_wg, includeDiff, notifyOnAdd, false)
+}
+
+// ProcessPartialPRsDB is ProcessPRsDB for a workflow that could only learn
+// some of its PRs this run: it adds and updates prs, but keeps the items it
+// already holds that prs leaves out rather than releasing them, since one
+// missing may only mean its lookup failed. They still expire with their TTL,
+// so a PR that really left goes once the lookups have failed for that long.
+func ProcessPartialPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool) RunResult {
+	return processPRsDB(workflowName, prs, changes_channel, db, section, change_wg, includeDiff, notifyOnAdd, true)
+}
+
+func processPRsDB(workflowName string, prs []*github.PullRequest, changes_channel chan FileChanges, db *database.DB, section *database.Section, change_wg *sync.WaitGroup, includeDiff bool, notifyOnAdd bool, keepHeld bool) RunResult {
 	result := RunResult{}
 
 	// Each open PR's row on the review list says whether it still merges
@@ -515,7 +528,7 @@ func ProcessPRsDB(workflowName string, prs []*github.PullRequest, changes_channe
 		changes = append(changes, fc)
 	}
 
-	{
+	if !keepHeld {
 		items, err := db.GetItemsBySection(section.ID)
 		if err != nil {
 			slog.Error("Error getting items from section", "error", err)

@@ -238,14 +238,29 @@ export function modalHost(page: Page): Locator {
 }
 
 /**
- * The chips the content script draws beside the PR tabs. They live in an open
- * shadow root inside the tab row: locators pierce shadow roots, but one
- * selector can't straddle the boundary — `#crs-tools .chip` would have to
- * match both halves inside the same tree — so the host is found first and the
- * chips under it.
+ * The "Review tools" button the content script draws beside the PR tabs. It
+ * lives in an open shadow root inside the tab row: locators pierce shadow
+ * roots, but one selector can't straddle the boundary — `#crs-tools .trigger`
+ * would have to match both halves inside the same tree — so the host is found
+ * first and the button under it.
+ */
+export function toolsButton(page: Page): Locator {
+    return page.locator('#crs-tools').locator('.trigger');
+}
+
+/**
+ * The tools in the button's menu — one per enabled AI feature and configured
+ * plugin, not the menu's own "Open panel" — visible once `openTools` has
+ * opened it.
  */
 export function chips(page: Page): Locator {
-    return page.locator('#crs-tools').locator('.chip');
+    return page.locator('#crs-tools').locator('.item.ai, .item.plugin');
+}
+
+/** Opens the tools menu, so its items can be read and pressed. */
+export async function openTools(page: Page): Promise<void> {
+    await toolsButton(page).click();
+    await expect(page.locator('#crs-tools').locator('.menu')).toBeVisible();
 }
 
 /**

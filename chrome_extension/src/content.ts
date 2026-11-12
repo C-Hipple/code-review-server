@@ -48,27 +48,97 @@ const CSS = `
 iframe { display: block; width: 100%; height: 100%; border: 0; }
 `;
 
-// The chips are Primer-coloured, like the panel, so they sit beside GitHub's
-// own tabs without looking foreign.
-const CHIP_CSS = `
+// The tools control: one Primer-styled button in GitHub's tab row that opens a
+// menu of the PR's AI features and plugins. One button rather than a chip per
+// tool, so the row never outgrows the page and grows a scrollbar however many
+// tools the server offers. The menu is a popover, drawn in the top layer, so
+// the tab row's own overflow can't clip it, and it closes on a click outside
+// or Esc for free.
+const TOOLS_CSS = `
 :host {
-    all: initial; display: inline-flex; align-items: center; gap: 6px;
-    margin-left: 12px; color-scheme: light dark;
-    font: 12px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    all: initial; display: inline-flex; align-items: center; flex: none;
+    margin-left: 8px; vertical-align: middle;
+    font: 12px/20px -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    --fg: #1f2328; --muted: #59636e; --bg: #f6f8fa; --bg-hover: #eff2f5;
+    --border: #d1d9e0; --menu-bg: #ffffff; --item-hover: #818b981a;
+    --accent: #8250df; --focus: #0969da;
+    --shadow: 0 8px 24px #42474e29, 0 0 0 1px #d1d9e080;
 }
-.chip {
-    font: inherit; white-space: nowrap; cursor: pointer;
-    color: #1f2328; background: #f6f8fa; border: 1px solid #d1d9e0b3;
-    border-radius: 999px; padding: 2px 10px;
+:host(.dark) {
+    --fg: #f0f6fc; --muted: #9198a1; --bg: #212830; --bg-hover: #262c36;
+    --border: #3d444d; --menu-bg: #151b23; --item-hover: #656c7633;
+    --accent: #ab7df8; --focus: #4493f8;
+    --shadow: 0 8px 24px #010409cc, 0 0 0 1px #3d444d;
 }
-.chip:hover { background: #eff2f5; border-color: #d1d9e0; }
-.chip:focus-visible { outline: 2px solid #0969da; outline-offset: 1px; }
-@media (prefers-color-scheme: dark) {
-    .chip { color: #e6edf3; background: #21262d; border-color: #3d444db3; }
-    .chip:hover { background: #30363d; border-color: #3d444d; }
-    .chip:focus-visible { outline-color: #4493f8; }
+svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.trigger {
+    all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px;
+    height: 28px; padding: 0 8px 0 10px; cursor: pointer; white-space: nowrap;
+    font: inherit; font-weight: 500; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    transition: background-color 80ms ease;
 }
+.trigger:hover, .trigger[aria-expanded="true"] { background: var(--bg-hover); }
+.trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.trigger .mark { color: var(--accent); }
+.trigger .chevron { color: var(--muted); }
+.count {
+    min-width: 18px; padding: 0 6px; box-sizing: border-box; text-align: center;
+    font-size: 12px; line-height: 18px; font-weight: 500;
+    color: var(--fg); background: var(--item-hover); border-radius: 999px;
+}
+.menu {
+    margin: 0; inset: auto; position: fixed; box-sizing: border-box;
+    min-width: 220px; max-width: min(320px, calc(100vw - 16px));
+    max-height: min(420px, calc(100vh - 16px)); overflow: auto;
+    padding: 6px; color: var(--fg); background: var(--menu-bg);
+    border: 0; border-radius: 12px; box-shadow: var(--shadow);
+    font: inherit; font-size: 14px; line-height: 20px;
+}
+.group + .group { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.heading { padding: 4px 8px; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--muted); }
+.item {
+    all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+    width: 100%; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font: inherit; color: var(--fg);
+}
+.item:hover, .item:focus-visible { background: var(--item-hover); }
+.item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.item .icon { color: var(--muted); }
+.item.ai .icon { color: var(--accent); }
+.item .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
+
+// Static icons on a 16px grid, stroked in currentColor.
+const ICONS = {
+    sparkle: '<path d="M8 1.75 9.4 6.6 14.25 8 9.4 9.4 8 14.25 6.6 9.4 1.75 8 6.6 6.6Z"/>',
+    plug: '<path d="M6 1.75v3M10 1.75v3M4.25 4.75h7.5v2.5a3.75 3.75 0 0 1-7.5 0Zm3.75 6.25v3.25"/>',
+    chevron: '<path d="m4.5 6.25 3.5 3.5 3.5-3.5"/>',
+    panel: '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M1.75 6h12.5"/>',
+} as const;
+
+function icon(name: keyof typeof ICONS, size = 16, className = 'icon'): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', className);
+    // A constant above, never a name from the server.
+    svg.innerHTML = ICONS[name];
+    return svg;
+}
+
+/**
+ * GitHub's own theme rather than the system's, since the control sits on
+ * GitHub's page: `data-color-mode` is light, dark, or auto (follow the system).
+ */
+function githubIsDark(): boolean {
+    const mode = document.documentElement.getAttribute('data-color-mode');
+    if (mode === 'dark') return true;
+    if (mode === 'light') return false;
+    return matchMedia('(prefers-color-scheme: dark)').matches;
+}
 
 /**
  * @param focus the AI feature id or plugin name to bring into view, when the
@@ -249,14 +319,120 @@ function findTabsRow(): Element | null {
     return (item ?? link).parentElement;
 }
 
-function chipButton(chip: ToolChip): HTMLButtonElement {
+function menuItem(
+    label: string,
+    kind: ToolChip['kind'] | 'panel',
+    onPick: () => void
+): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'chip';
-    button.textContent = chip.name;
-    button.title = `Show ${chip.name} in the Code Review Server panel`;
-    button.addEventListener('click', () => open(chip.id));
+    button.className = `item ${kind}`;
+    button.setAttribute('role', 'menuitem');
+    const text = document.createElement('span');
+    text.className = 'label';
+    text.textContent = label;
+    button.append(icon(kind === 'ai' ? 'sparkle' : kind === 'plugin' ? 'plug' : 'panel'), text);
+    button.addEventListener('click', onPick);
     return button;
+}
+
+function menuGroup(heading: string, items: HTMLElement[]): HTMLElement {
+    const group = document.createElement('div');
+    group.className = 'group';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', heading);
+    const title = document.createElement('div');
+    title.className = 'heading';
+    title.setAttribute('aria-hidden', 'true');
+    title.textContent = heading;
+    group.append(title, ...items);
+    return group;
+}
+
+/** Puts the open menu under its button, kept inside the window. */
+function placeMenu(trigger: HTMLElement, menu: HTMLElement): void {
+    const gap = 6;
+    const margin = 8;
+    const anchor = trigger.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    const left = Math.max(margin, Math.min(anchor.left, innerWidth - width - margin));
+    let top = anchor.bottom + gap;
+    // No room below: open upwards instead, if there is room there.
+    if (top + height > innerHeight - margin && anchor.top - gap - height >= margin) {
+        top = anchor.top - gap - height;
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
+/**
+ * The control in the host's shadow root: a "Review tools" button with the
+ * number of tools on offer, and its menu — the AI features, then the plugins,
+ * then a plain "Open panel". Picking one opens the panel on it.
+ */
+function drawTools(root: ShadowRoot, chips: ToolChip[]): void {
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'trigger';
+    trigger.title = 'Code Review Server: AI features and plugins for this pull request';
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    const label = document.createElement('span');
+    label.textContent = 'Review tools';
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = String(chips.length);
+    trigger.append(icon('sparkle', 14, 'mark'), label, count, icon('chevron', 14, 'chevron'));
+
+    const menu = document.createElement('div');
+    menu.className = 'menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Review tools');
+    menu.popover = 'auto';
+
+    const pick = (focus: string | null) => () => {
+        menu.hidePopover();
+        open(focus);
+    };
+    const itemsOf = (kind: ToolChip['kind']) =>
+        chips.filter(c => c.kind === kind).map(c => menuItem(c.name, kind, pick(c.id)));
+    const features = itemsOf('ai');
+    const plugins = itemsOf('plugin');
+    if (features.length > 0) menu.append(menuGroup('AI features', features));
+    if (plugins.length > 0) menu.append(menuGroup('Plugins', plugins));
+    menu.append(menuGroup('Code Review Server', [menuItem('Open panel', 'panel', pick(null))]));
+
+    trigger.popoverTargetElement = menu;
+    trigger.popoverTargetAction = 'toggle';
+
+    // The menu is fixed to the window, so it closes rather than drift away
+    // from its button when the page scrolls or resizes under it.
+    const dismiss = () => menu.hidePopover();
+    menu.addEventListener('toggle', event => {
+        const opened = (event as ToggleEvent).newState === 'open';
+        trigger.setAttribute('aria-expanded', String(opened));
+        if (opened) {
+            placeMenu(trigger, menu);
+            menu.querySelector<HTMLElement>('.item')?.focus();
+            addEventListener('scroll', dismiss, { capture: true, passive: true });
+            addEventListener('resize', dismiss);
+        } else {
+            removeEventListener('scroll', dismiss, { capture: true });
+            removeEventListener('resize', dismiss);
+        }
+    });
+    // Arrow keys move between the items, as in GitHub's own menus.
+    menu.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const items = Array.from(menu.querySelectorAll<HTMLElement>('.item'));
+        const at = items.indexOf(root.activeElement as HTMLElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        items[(at + step + items.length) % items.length]?.focus();
+    });
+
+    root.append(trigger, menu);
 }
 
 /** Draws the chips in the tab row, unless there are none or GitHub dropped them. */
@@ -269,10 +445,10 @@ function ensureTools(): void {
     const row = findTabsRow();
     if (!row) return;
 
-    // A tab row is a list, so the chips go in a list item; anything else gets
-    // the wrapper itself. Only a fixed set of elements can host a shadow root
-    // — <li> isn't one of them, and attachShadow throws for it — so the chips'
-    // host is a span inside the wrapper. An open shadow root, unlike the
+    // A tab row is a list, so the control goes in a list item; anything else
+    // gets the wrapper itself. Only a fixed set of elements can host a shadow
+    // root — <li> isn't one of them, and attachShadow throws for it — so the
+    // control's host is a span inside the wrapper. An open shadow root, unlike the
     // modal's closed one: nothing here is private — feature and plugin names
     // only, never a report — and an open one stays visible to tests and to the
     // page's own tooling.
@@ -280,12 +456,14 @@ function ensureTools(): void {
         row.tagName === 'UL' || row.tagName === 'OL' ? 'li' : 'div'
     );
     wrapper.id = TOOLS_ID;
+    wrapper.style.cssText = 'display: flex; align-items: center; flex: none; list-style: none;';
     const host = document.createElement('span');
+    if (githubIsDark()) host.classList.add('dark');
     const root = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
-    style.textContent = CHIP_CSS;
+    style.textContent = TOOLS_CSS;
     root.append(style);
-    for (const chip of tools.chips) root.append(chipButton(chip));
+    drawTools(root, tools.chips);
     wrapper.append(host);
     row.append(wrapper);
 }

@@ -140,21 +140,28 @@ The modal closes with its ✕, `Esc`, a click outside it, or the button again.
 While it is open, GitHub's in-page navigation to another PR (or off PRs) reloads
 the panel for the new page.
 
-### The chips beside the tabs
+### The Review tools button beside the tabs
 
-On a pull request's pages the content script also draws a row of chips in
-GitHub's own tab row, right after **Files changed**: one per AI feature the
-server has enabled and one per configured plugin, each labelled with the
-feature's or plugin's name. Pressing one opens the same modal, on the PR the tab
-is on, with that card scrolled into view and marked with an accent ring. A chip
-whose card the panel doesn't draw — the applied features, review-ease of which
-is the summary's pill — just opens the panel on the PR.
+On a pull request's pages the content script also draws a **Review tools**
+button in GitHub's own tab row, right after **Files changed**, with the number
+of tools on offer. It opens a menu: one item per AI feature the server has
+enabled, then one per configured plugin, each labelled with the feature's or
+plugin's name, and an **Open panel** item. Picking one opens the same modal, on
+the PR the tab is on, with that card scrolled into view and marked with an
+accent ring. An item whose card the panel doesn't draw — the applied features,
+review-ease of which is the summary's pill — just opens the panel on the PR.
 
-The chips come from the two read-only calls the panel makes anyway
+One button rather than a chip per tool, so the tab row never outgrows the page
+however many tools there are. The menu is a popover, in the top layer, so the
+row's overflow can't clip it; it closes on a click outside, Esc, or a scroll,
+and the arrow keys move between its items. It follows GitHub's own theme
+(`data-color-mode`), falling back to the system's.
+
+The menu's items come from the two read-only calls the panel makes anyway
 (`ListAIFeatures`, `ListPlugins`), asked for through the service worker, which
-answers only the sender tab's own PR. A chip carries a name, never a report, so
+answers only the sender tab's own PR. An item carries a name, never a report, so
 nothing the server holds for the PR lands in the page's own DOM. Away from a PR
-page there are no chips, and GitHub's in-page navigation redraws them for the
+page there is no button, and GitHub's in-page navigation redraws it for the
 new page.
 
 ### The file order over the Files changed tab
@@ -332,16 +339,16 @@ another method means adding it there and a function for it in `src/rpc.ts`.
 **What a content script may ask.** Two messages, both answered for the sender
 tab's own PR — the PR in the tab's URL, which the page cannot argue with — and
 nothing else. `crs-tools` carries the names of that PR's enabled AI features and
-configured plugins, from the two read-only calls above: what the chips are drawn
-from. `crs-file-order` carries the file order the server holds for it
+configured plugins, from the two read-only calls above: what the Review tools
+menu is drawn from. `crs-file-order` carries the file order the server holds for it
 (`GetAIOutput` for `file-ordering`): what its Files changed view is laid out by.
 A content script can reach no other server method.
 
 **Content script and panel.** The content script runs on every GitHub page, so
 it stays small: no React and no server access. It draws the modal in a closed
 shadow root, which keeps GitHub's CSS out, and puts the panel in an iframe; and
-it draws the chips in an open one inside GitHub's tab row, since a chip is a name
-and a caption and nothing GitHub may not read. The panel is an extension page:
+it draws the Review tools button in an open one inside GitHub's tab row, since
+its menu is names and captions and nothing GitHub may not read. The panel is an extension page:
 GitHub's page can't script into it, and it talks to the service worker directly,
 never through the page. `panel.html` and its files are web-accessible to
 `https://github.com/*` only. The trust checks:
@@ -437,7 +444,7 @@ pressed. To inspect the panel, right-click inside the modal and choose Inspect.
 | `src/native_client.ts`       | The native port: request IDs, timeouts, reconnecting, subscribing each new server                           |
 | `src/server_events.ts`       | The server's change events as pages hear them (pure, unit tested)                                           |
 | `src/native_protocol.ts`     | The host's messages, chunk reassembly and the error kinds (pure, unit tested)                               |
-| `src/content.ts`             | The modal on github.com, the chips beside a PR's tabs, the file order over its diffs                        |
+| `src/content.ts`             | The modal on github.com, the Review tools button beside a PR's tabs, the file order over its diffs          |
 | `src/tool_chips.ts`          | Which chips a PR page draws: an enabled feature and a plugin each (pure, unit tested)                       |
 | `src/file_order.ts`          | Laying file-ordering's order over GitHub's Files changed view (e2e tested)                                  |
 | `src/github_url.ts`          | Recognising PR URLs and building diff links                                                                 |

@@ -354,6 +354,46 @@ func (s GitHubAPISettings) Routes() map[string]string {
 	}
 }
 
+// ChatSettings is the [Chat] table: the agents a reviewer can chat with about
+// the PR they are reviewing (see the chat package). Each backend has a table
+// of its own, so a new one adds a key here rather than reshaping the old ones.
+// Nothing needs setting: a backend whose program is on PATH is offered as is.
+type ChatSettings struct {
+	// Claude is [Chat.Claude]: the local Claude Code CLI, run headless.
+	Claude ChatBackendSettings `toml:"Claude,omitempty"`
+}
+
+// ChatBackendSettings configures one chat backend.
+type ChatBackendSettings struct {
+	// Disabled stops the server offering the backend at all.
+	Disabled bool `toml:"Disabled,omitempty"`
+	// Command is the program to run, a name on PATH or a path; empty uses the
+	// backend's own ("claude").
+	Command string `toml:"Command,omitempty"`
+	// Models are the models offered to pick from, as the program's --model
+	// takes them; empty offers the backend's built-in list. The backend's own
+	// default (whatever its settings say) is always offered first.
+	Models []string `toml:"Models,omitempty"`
+	// DefaultModel is the model picked when a chat starts without naming one;
+	// empty leaves it to the program.
+	DefaultModel string `toml:"DefaultModel,omitempty"`
+}
+
+// ChatBackend returns the [Chat] settings for the backend id ("claude"); an
+// unknown id gets the zero settings.
+func (c Config) ChatBackend(id string) ChatBackendSettings {
+	switch id {
+	case ChatBackendClaude:
+		return c.Chat.Claude
+	}
+	return ChatBackendSettings{}
+}
+
+// ChatBackendClaude is the ID of the Claude Code chat backend. It lives here,
+// beside the settings that name it, because config cannot import the chat
+// package (chat reads config).
+const ChatBackendClaude = "claude"
+
 // WebhookSettings is the [Webhooks] table: GitHub webhook deliveries the server
 // accepts in place of re-fetching every PR it lists on every cycle. With it set
 // up, a cycle lists PRs and fully fetches the ones it is adding (or whose head
@@ -571,6 +611,9 @@ type Config struct {
 	// Webhooks lets GitHub push PR updates instead of every cycle polling for
 	// them; empty, it leaves polling as it was.
 	Webhooks WebhookSettings
+	// Chat configures the agents the review chat drives; empty, each is
+	// offered with its defaults when its program is installed.
+	Chat ChatSettings
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.
 	legacy legacyLLMKeys
@@ -671,6 +714,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AIFeatures           []AIFeature
 		GitHubAPI            GitHubAPISettings
 		Webhooks             WebhookSettings
+		Chat                 ChatSettings
 		// The legacy keys; see legacyLLMKeys.
 		LegacyFileOrdering bool   `toml:"ExperimentalLLMFileOrdering"`
 		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
@@ -750,6 +794,7 @@ func parseConfig(data []byte) (*Config, error) {
 		AIFeatures:           intermediate_config.AIFeatures,
 		GitHubAPI:            intermediate_config.GitHubAPI,
 		Webhooks:             intermediate_config.Webhooks,
+		Chat:                 intermediate_config.Chat,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

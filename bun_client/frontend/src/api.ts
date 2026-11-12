@@ -1,4 +1,5 @@
 import type { AIFeatureInfo, AIFeatureOutput, RunAIFeatureReply } from './ai_utils';
+import type { Chat, ChatBackendInfo, ChatReply, ChatSummary } from './chat_utils';
 import type { DiffFilterInfo, FilteredDiffResult } from './diff_filter_utils';
 import type {
     AIFeatureEntry,
@@ -166,6 +167,55 @@ export async function getFilteredDiff(
     args: PRRef & { Filter: string }
 ): Promise<FilteredDiffResult> {
     return rpcCall<FilteredDiffResult>('RPCHandler.GetFilteredDiff', [args]);
+}
+
+// The review chat (chat_utils.ts). These go through the bridge's generic
+// /api/rpc endpoint: the chat needs nothing a specialized one would add.
+
+/** The agents a chat can run, and the models each offers. */
+export async function listChatBackends(): Promise<ChatBackendInfo[]> {
+    const reply = await rpcCall<{ backends: ChatBackendInfo[] | null }>(
+        'RPCHandler.ListChatBackends',
+        [{}]
+    );
+    return reply.backends ?? [];
+}
+
+/** A PR's chats, the most recently active first. */
+export async function listChats(args: PRRef): Promise<ChatSummary[]> {
+    const reply = await rpcCall<{ chats: ChatSummary[] | null }>('RPCHandler.ListChats', [args]);
+    return reply.chats ?? [];
+}
+
+/**
+ * Opens a chat about a PR with the reviewer's first message, which the agent
+ * gets with the PR's description and diff. It answers in the background; the
+ * server announces each step (Server.ChatChanged) and getChat reads it.
+ */
+export async function startChat(
+    args: PRRef & { Backend: string; Model: string; Message: string }
+): Promise<ChatReply> {
+    return rpcCall<ChatReply>('RPCHandler.StartChat', [args]);
+}
+
+/** Continues a chat; refused (okay: false) while the agent is still answering. */
+export async function sendChatMessage(chatId: string, message: string): Promise<ChatReply> {
+    return rpcCall<ChatReply>('RPCHandler.SendChatMessage', [{ ChatID: chatId, Message: message }]);
+}
+
+export async function getChat(chatId: string): Promise<Chat> {
+    const reply = await rpcCall<{ chat: Chat }>('RPCHandler.GetChat', [{ ChatID: chatId }]);
+    return reply.chat;
+}
+
+/** Stops the agent answering; the chat notes it and goes idle. */
+export async function stopChat(chatId: string): Promise<boolean> {
+    const reply = await rpcCall<{ stopped: boolean }>('RPCHandler.StopChat', [{ ChatID: chatId }]);
+    return reply.stopped;
+}
+
+export async function deleteChat(chatId: string): Promise<void> {
+    await rpcCall<{ okay: boolean }>('RPCHandler.DeleteChat', [{ ChatID: chatId }]);
 }
 
 export async function rpcCall<T>(method: string, params: any[]): Promise<T> {

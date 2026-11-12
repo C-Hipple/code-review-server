@@ -71,6 +71,43 @@ interface State {
     // Heartbeats stop while this is set (E2E.SetHeartbeat), as if the server
     // had hung.
     heartbeatPaused: boolean;
+    // Review chats, by ID, and whether the Claude backend is available
+    // (E2E.SetChatAvailable).
+    chats: Map<string, FakeChat>;
+    nextChatId: number;
+    nextChatMessageId: number;
+    chatAvailable: boolean;
+}
+
+interface FakeChatMessage {
+    id: number;
+    role: 'user' | 'assistant' | 'tool' | 'error' | 'notice';
+    content: string;
+    created_at: string;
+    tool?: string;
+    tool_status?: string;
+    attached?: string[];
+    head_sha?: string;
+}
+
+interface FakeChat {
+    id: string;
+    owner: string;
+    repo: string;
+    number: number;
+    backend: string;
+    model: string;
+    title: string;
+    head_sha: string;
+    cost_usd: number;
+    status: 'idle' | 'running';
+    created_at: string;
+    updated_at: string;
+    messages: FakeChatMessage[];
+    draft: string;
+    started_at?: string;
+    // Bumped by each turn and by StopChat, so a stopped turn's steps land nowhere.
+    turn: number;
 }
 
 const CONFIG_PATH = '/tmp/crs-e2e/codereviewserver.toml';
@@ -128,6 +165,10 @@ function freshState(): State {
         heldRuns: [],
         config: freshConfig(),
         heartbeatPaused: false,
+        chats: new Map(),
+        nextChatId: 1,
+        nextChatMessageId: 1,
+        chatAvailable: true,
     };
 }
 
@@ -261,6 +302,102 @@ function payload(pr: PRFixture) {
         annotations: [],
         images: [],
     };
+}
+
+// --- Review chat --------------------------------------------------------------
+//
+// One backend, a stand-in for Claude Code. Each turn runs in the background as
+// the server's do: the reply is drafted, the agent reads pr.diff, then the
+// reply lands — each step announced with a Server.ChatChanged. A held run
+// (E2E.HoldRuns) stops short of the reply.
+
+const CHAT_HEAD_SHA = 'e2e-head-sha';
+
+function chatBackend() {
+    return {
+        id: 'claude',
+        name: 'Claude Code',
+        available: state.chatAvailable,
+        reason: state.chatAvailable
+            ? undefined
+            : "claude isn't installed where the server can find it (set [Chat.Claude] Command to its path)",
+        models: [
+            { id: '', name: 'Default' },
+            { id: 'opus', name: 'Opus' },
+            { id: 'sonnet', name: 'Sonnet' },
+            { id: 'haiku', name: 'Haiku' },
+        ],
+        default_model: '',
+    };
+}
+
+function chatChanged(chat: FakeChat) {
+    notify('Server.ChatChanged', {
+        owner: chat.owner,
+        repo: chat.repo,
+        number: chat.number,
+        chat_id: chat.id,
+        status: chat.status,
+    });
+}
+
+function chatMessage(fields: Omit<FakeChatMessage, 'id' | 'created_at'>): FakeChatMessage {
+    return { id: state.nextChatMessageId++, created_at: new Date().toISOString(), ...fields };
+}
+
+function chatSummary(chat: FakeChat) {
+    const { messages: _m, draft: _d, started_at: _s, turn: _t, ...summary } = chat;
+    return summary;
+}
+
+function chatPayload(chat: FakeChat) {
+    return { ...chat, turn: undefined, current_sha: CHAT_HEAD_SHA };
+}
+
+function findChat(id: string): FakeChat {
+    const chat = state.chats.get(id);
+    if (!chat) throw new Error(`there is no chat "${id}"`);
+    return chat;
+}
+
+/** Stores the reviewer's message and answers it in the background. */
+function chatTurn(chat: FakeChat, message: string, attach: boolean) {
+    chat.messages.push(
+        chatMessage({
+            role: 'user',
+            content: message,
+            ...(attach ? { attached: ['description', 'diff'], head_sha: CHAT_HEAD_SHA } : {}),
+        })
+    );
+    chat.status = 'running';
+    chat.started_at = new Date().toISOString();
+    chat.updated_at = chat.started_at;
+    const turn = ++chat.turn;
+    chatChanged(chat);
+    const live = () => state.chats.get(chat.id) === chat && chat.turn === turn;
+    later(() => {
+        if (!live()) return;
+        chat.draft = 'Reading the';
+        chatChanged(chat);
+        chat.messages.push(
+            chatMessage({ role: 'tool', tool: 'Read', tool_status: 'done', content: 'pr.diff' })
+        );
+        chatChanged(chat);
+        later(
+            () => {
+                if (!live()) return;
+                chat.draft = '';
+                chat.messages.push(
+                    chatMessage({ role: 'assistant', content: `**Fake answer** to: ${message}` })
+                );
+                chat.status = 'idle';
+                chat.started_at = undefined;
+                chat.cost_usd += 0.01;
+                chatChanged(chat);
+            },
+            { lands: true }
+        );
+    });
 }
 
 const AI_FEATURE = {
@@ -805,6 +942,89 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { output: Object.fromEntries(features.map(f => [f.id, aiOutput(pr, f)])) };
     },
 
+    'RPCHandler.ListChatBackends': () => ({ backends: [chatBackend()] }),
+
+    'RPCHandler.ListChats': args => {
+        const pr = findPR(args);
+        const chats = [...state.chats.values()]
+            .filter(
+                c =>
+                    c.owner === pr.item.owner &&
+                    c.repo === pr.item.repo &&
+                    c.number === pr.item.number
+            )
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id));
+        return { chats: chats.map(chatSummary) };
+    },
+
+    'RPCHandler.StartChat': args => {
+        const pr = findPR(args);
+        const message = String(args.Message ?? '').trim();
+        if (!message) return { okay: false, message: 'the message is empty', chat: null };
+        if (!state.chatAvailable) {
+            return { okay: false, message: `Claude Code isn't available`, chat: null };
+        }
+        const now = new Date().toISOString();
+        const chat: FakeChat = {
+            id: `chat-${state.nextChatId++}`,
+            owner: pr.item.owner,
+            repo: pr.item.repo,
+            number: pr.item.number,
+            backend: args.Backend || 'claude',
+            model: args.Model ?? '',
+            title: message.slice(0, 80),
+            head_sha: CHAT_HEAD_SHA,
+            cost_usd: 0,
+            status: 'idle',
+            created_at: now,
+            updated_at: now,
+            messages: [],
+            draft: '',
+            turn: 0,
+        };
+        state.chats.set(chat.id, chat);
+        chatTurn(chat, message, true);
+        return { okay: true, message: '', chat: chatPayload(chat) };
+    },
+
+    'RPCHandler.SendChatMessage': args => {
+        const chat = findChat(args.ChatID);
+        const message = String(args.Message ?? '').trim();
+        if (!message)
+            return { okay: false, message: 'the message is empty', chat: chatPayload(chat) };
+        if (chat.status === 'running') {
+            return {
+                okay: false,
+                message: 'the agent is still answering; wait for it, or stop it',
+                chat: chatPayload(chat),
+            };
+        }
+        chatTurn(chat, message, false);
+        return { okay: true, message: '', chat: chatPayload(chat) };
+    },
+
+    'RPCHandler.GetChat': args => ({ chat: chatPayload(findChat(args.ChatID)) }),
+
+    'RPCHandler.StopChat': args => {
+        const chat = findChat(args.ChatID);
+        if (chat.status !== 'running') return { stopped: false };
+        chat.turn++;
+        chat.draft = '';
+        chat.status = 'idle';
+        chat.started_at = undefined;
+        chat.messages.push(chatMessage({ role: 'notice', content: 'Stopped.' }));
+        later(() => chatChanged(chat), { ms: 50 });
+        return { stopped: true };
+    },
+
+    'RPCHandler.DeleteChat': args => {
+        const chat = findChat(args.ChatID);
+        state.chats.delete(chat.id);
+        chat.status = 'idle';
+        chatChanged(chat);
+        return { okay: true };
+    },
+
     'RPCHandler.Subscribe': args => {
         subscribed = true;
         heartbeatInterval = Number(args.IntervalSeconds) > 0 ? Number(args.IntervalSeconds) : 10;
@@ -890,6 +1110,12 @@ const handlers: Record<string, (args: any) => unknown> = {
             state.heldRuns = [];
             for (const land of held) land();
         }
+        return { okay: true };
+    },
+
+    // Make the Claude chat backend available or not.
+    'E2E.SetChatAvailable': args => {
+        state.chatAvailable = !!args.available;
         return { okay: true };
     },
 

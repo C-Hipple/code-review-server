@@ -408,6 +408,20 @@ Subscription = "projects/my-project/subscriptions/crs-github-events"
 
 See [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pubsub).
 
+## Review Chat
+
+The web client's review chat lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). Claude Code is the one backend so far. Nothing needs configuring: it is offered whenever `claude` is on the server's `PATH`, and costs nothing until someone starts a chat. The optional `[Chat.Claude]` table changes that:
+
+```toml
+[Chat.Claude]
+Command = "/opt/homebrew/bin/claude"   # the program, when it isn't on the server's PATH (words split like a shell would)
+Models = ["opus", "sonnet"]            # the models to offer, as `claude --model` takes them; default opus, sonnet, haiku
+DefaultModel = "sonnet"                # preselected for a new chat; default: Claude's own default
+# Disabled = true                      # don't offer it
+```
+
+Claude runs with your own Claude Code login, settings and MCP servers, in a working directory per chat under `$CRS_HOME/chats/`, and may only read and search files there and in the PR's checkout. Its sessions are stored by Claude Code itself, under that directory's project in `~/.claude`. `UpdateConfig` doesn't model the table; a save carries it over untouched.
+
 ## Example Config
 
 ```toml

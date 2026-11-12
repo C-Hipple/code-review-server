@@ -1388,3 +1388,394 @@ canvas {
         min-height: 44px;
     }
 }
+
+/* The review chat (ChatWidget.tsx): a button fixed to the bottom-left corner,
+   and the panel it opens above itself. */
+.crs-chat {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.crs-chat--raised {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+}
+
+.crs-chat-button {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-md);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0.85;
+    transition:
+        opacity 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease,
+        transform 0.15s ease;
+}
+
+.crs-chat-button:hover,
+.crs-chat-button--open {
+    opacity: 1;
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.crs-chat-button:hover {
+    transform: translateY(-1px);
+}
+
+.crs-chat-button-dot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--bg-secondary);
+    animation: crsChatPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes crsChatPulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.35;
+    }
+}
+
+.crs-chat-panel {
+    order: -1;
+    width: min(400px, calc(100vw - 32px));
+    height: min(560px, calc(100vh - 120px));
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    font-size: 13px;
+    color: var(--text-primary);
+    animation: crsChatIn 0.12s ease-out;
+}
+
+@keyframes crsChatIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.crs-chat-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.crs-chat-title {
+    font-weight: 600;
+}
+
+.crs-chat-header-spacer {
+    flex: 1;
+}
+
+.crs-chat-select {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+    min-width: 0;
+}
+
+.crs-chat-history {
+    max-width: 190px;
+}
+
+.crs-chat-icon-button {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 3px 6px;
+    min-height: 0;
+}
+
+.crs-chat-icon-button:hover {
+    color: var(--text-primary);
+    border-color: var(--border);
+}
+
+.crs-chat-icon-button--on {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: var(--accent-dim);
+}
+
+.crs-chat-meta,
+.crs-chat-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.crs-chat-meta {
+    justify-content: space-between;
+}
+
+.crs-chat-picker label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.crs-chat-link-button {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    min-height: 0;
+}
+
+.crs-chat-link-button:hover {
+    color: var(--text-danger);
+    text-decoration: underline;
+}
+
+.crs-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.crs-chat-empty {
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: auto 8px;
+    text-align: center;
+}
+
+.crs-chat-banner {
+    background: var(--bg-warning-dim);
+    border: 1px solid var(--border-warning-dim);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+
+.crs-chat-message {
+    border-radius: 10px;
+    padding: 7px 10px;
+    line-height: 1.5;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.crs-chat-message--user {
+    align-self: flex-end;
+    max-width: 88%;
+    background: var(--accent-dim);
+    border: 1px solid var(--border-info-dim);
+}
+
+.crs-chat-user-text {
+    white-space: pre-wrap;
+}
+
+.crs-chat-attached {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.crs-chat-message--assistant {
+    align-self: stretch;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+}
+
+.crs-chat-message--assistant .markdown-content > :first-child {
+    margin-top: 0;
+}
+
+.crs-chat-message--assistant .markdown-content > :last-child {
+    margin-bottom: 0;
+}
+
+/* The reply being written: a cursor after its last block. */
+.crs-chat-message--streaming .markdown-content > :last-child::after {
+    content: '▍';
+    margin-left: 1px;
+    color: var(--accent);
+    animation: crsChatPulse 1s steps(2, start) infinite;
+}
+
+.crs-chat-message--error {
+    background: var(--bg-danger-dim);
+    border: 1px solid var(--border-danger-dim);
+    white-space: pre-wrap;
+}
+
+.crs-chat-notice {
+    align-self: center;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 12px;
+}
+
+.crs-chat-tool {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 0 4px;
+    min-width: 0;
+}
+
+.crs-chat-tool-name {
+    color: var(--text-primary);
+}
+
+.crs-chat-tool-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.crs-chat-tool--done .crs-chat-tool-mark {
+    color: var(--text-success);
+}
+
+.crs-chat-tool--error .crs-chat-tool-mark {
+    color: var(--text-danger);
+}
+
+.crs-chat-thinking {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 0 4px;
+}
+
+.crs-chat-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 999px;
+    animation: spin 0.8s linear infinite;
+}
+
+.crs-chat-error {
+    margin: 0 10px 6px;
+    color: var(--text-danger);
+    font-size: 12px;
+}
+
+.crs-chat-compose {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--border);
+}
+
+.crs-chat-input {
+    flex: 1;
+    resize: none;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font: inherit;
+    padding: 6px 8px;
+    max-height: 140px;
+    field-sizing: content;
+    min-height: 2.6em;
+}
+
+.crs-chat-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.crs-chat-send {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.crs-chat-send:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.crs-chat-send--stop {
+    background: var(--danger);
+}
+
+@media (max-width: 768px) {
+    .crs-chat {
+        left: 12px;
+    }
+
+    .crs-chat-panel {
+        width: calc(100vw - 24px);
+        height: min(560px, calc(100vh - 170px));
+    }
+
+    .crs-chat-icon-button,
+    .crs-chat-link-button {
+        min-height: 32px;
+    }
+}

@@ -41,6 +41,8 @@ func RunServer() {
 	notifier = newNotifier(out)
 	// A subscribed client hears each AI run start and land.
 	aiRunner.OnChange = notifyAIOutputChanged
+	// And each step of a review chat.
+	chatManager.OnChange = notifyChatChanged
 	server.ServeCodec(jsonrpc.NewServerCodec(&Stdio{out: out}))
 }
 

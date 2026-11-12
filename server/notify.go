@@ -26,7 +26,8 @@ import (
 // Server.AIOutputChanged, which let a client showing a PR's plugin output or
 // AI feature results read them again when they change instead of polling, and
 // Server.PRUpdated, sent when a GitHub webhook delivery has changed what the
-// server holds for a PR.
+// server holds for a PR, and Server.ChatChanged, sent as a review chat's agent
+// answers (chat.go).
 
 // HeartbeatMethod is the method a heartbeat notification names.
 const HeartbeatMethod = "Server.Heartbeat"

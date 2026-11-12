@@ -26,6 +26,11 @@ share only the code that runs a subprocess and the OpenRouter client.
 **Everything is off by default.** Nothing runs, and nothing changes for
 existing users, until a config file enables a feature.
 
+The [review chat](protocol.md#review-chat) is separate from the features: it
+drives the local Claude Code CLI as a conversation rather than producing a
+result, and is configured by its own [`[Chat]`](configuration.md#review-chat)
+table.
+
 ## Enabling a feature
 
 ```toml

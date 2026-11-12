@@ -107,6 +107,24 @@ The notification says what changed, not what it changed to: a client showing the
 
 Deliveries come in bursts — a push sets off one per check, then the section change — so expect several of these close together for one PR, and refetch once per burst rather than once per notification.
 
+### `Server.ChatChanged`
+
+Sent each time what [`GetChat`](#rpchandlergetchat) returns for a [review chat](#review-chat) changes: the reviewer's message is stored and the agent starts (`running`), each step of its turn lands (a tool call, a finished block of the reply, the reply being written growing — that last at most five times a second), and the turn ends, is stopped, or the chat is deleted (`idle`). A client showing the chat reads `GetChat` again when one names it, instead of polling. Like the others it names what changed, never the messages.
+
+```json
+{"method": "Server.ChatChanged", "params": [{"owner": "C-Hipple", "repo": "code-review-server", "number": 303, "chat_id": "6f1c0a52-8d3e-4f4b-9a51-0c2d7e1b9a33", "status": "running"}], "id": null}
+```
+
+| Field     | Type   | Description |
+|-----------|--------|-------------|
+| `owner`   | string | Repository owner, as the chat was started with it |
+| `repo`    | string | Repository name |
+| `number`  | int    | Pull request number |
+| `chat_id` | string | The chat |
+| `status`  | string | `running` while the agent is answering, `idle` once it is done |
+
+A client that (re)subscribes reads `GetChat` once to catch up. Whether a turn is running lives in the server's memory, so a chat a restart interrupted reads `idle`, with whatever its turn had stored.
+
 ---
 
 ## Methods
@@ -1031,6 +1049,118 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
   "id": 11
 }
 ```
+
+### Review chat
+
+A reviewer can chat with a local coding agent about the PR they are reviewing. The server holds the conversations — in its database, so a client can leave a chat and come back to it — and runs the agent: **Claude Code** (`claude`) to start with, other backends to follow. Each turn runs the agent's CLI headless (`claude -p --output-format stream-json`) in a working directory of the chat's own under `$CRS_HOME/chats/<chat id>/`, with the prompt on stdin.
+
+- **The first message** tells the agent we're reviewing the PR (`owner/repo#N`, its title, author, branches and head commit), then carries the reviewer's words, then the PR's description and diff, so the agent has them in context from the start. The diff goes in as GitHub sent it, cut at 200 KB; the same description and the whole diff are written to `pr.md` and `pr.diff` in the working directory, where the agent can read them again.
+- **Later messages** resume the agent's own session (`--resume`), which keeps the full transcript; the server keeps only its handle. If the agent no longer has the session, the server starts a new one carrying what was said so far, and the PR again.
+- **Read-only**: the agent may read and search files (`Read`, `Grep`, `Glob`) — the working directory and a checkout of the repository (the PR's worktree when there is one, else the local clone, passed with `--add-dir`) — but not edit them, run commands or reach the network. A system prompt says so, and where the files are.
+- **In the background**: `StartChat` and `SendChatMessage` reply as soon as the message is stored; the agent answers afterwards, announcing each step with [`Server.ChatChanged`](#serverchatchanged). One turn runs per chat at a time, for at most 20 minutes; `StopChat` ends one sooner.
+
+Backends are configured in the optional [`[Chat]`](configuration.md#review-chat) table; with none, Claude Code is offered whenever `claude` is on the server's `PATH`.
+
+#### `ChatBackend` Object
+
+| Field           | Type   | Description |
+|-----------------|--------|-------------|
+| `id`            | string | `claude` |
+| `name`          | string | `Claude Code` |
+| `available`     | bool   | False when it can't run here: the program isn't installed, or config disables it |
+| `reason`        | string | Why it isn't available; omitted when it is |
+| `models`        | `ChatModel[]` | `{id, name}` pairs to offer, the agent's own default first (`id` empty). Claude's are its aliases `opus`, `sonnet`, `haiku` unless `[Chat.Claude] Models` lists others |
+| `default_model` | string | The model to preselect (`[Chat.Claude] DefaultModel`); empty for the agent's default |
+
+#### `Chat` Object
+
+| Field         | Type   | Description |
+|---------------|--------|-------------|
+| `id`          | string | The chat's ID (a UUID) |
+| `owner`, `repo`, `number` | | The PR |
+| `backend`     | string | The backend's ID |
+| `model`       | string | The model asked for; empty for the backend's default |
+| `title`       | string | The start of the first message, on one line |
+| `head_sha`    | string | The PR head whose description and diff the chat attached |
+| `current_sha` | string | The PR head now, from the caches; differs from `head_sha` once the PR has moved on (start a new chat to give the agent the new diff) |
+| `cost_usd`    | float  | What the agent reported its turns cost, summed |
+| `status`      | string | `running` while the agent is answering, else `idle` |
+| `messages`    | `ChatMessage[]` | The conversation, oldest first |
+| `draft`       | string | The part of the reply the agent is writing right now, not yet a message (Markdown); empty between replies |
+| `started_at`  | string | When the running turn started (RFC 3339); omitted when idle |
+| `created_at`, `updated_at` | string | RFC 3339 |
+
+`ListChats` returns the same without `messages`, `draft`, `started_at` and `current_sha`.
+
+#### `ChatMessage` Object
+
+| Field            | Type     | Description |
+|------------------|----------|-------------|
+| `id`             | int      | Orders a chat's messages |
+| `role`           | string   | `user` (the reviewer), `assistant` (a block of the agent's reply, Markdown), `tool` (a tool the agent used), `error` (the turn failed; `content` says why) or `notice` (`Stopped.`) |
+| `content`        | string   | The text; for a tool, what it was used on (`pr.diff`, `func Greet in server`) |
+| `created_at`     | string   | RFC 3339 |
+| `tool`           | string   | A tool message's tool (`Read`, `Grep`, `Glob`) |
+| `tool_status`    | string   | `running`, `done` or `error` |
+| `attached`       | string[] | What a reviewer's message carried besides their words — `["description", "diff"]` on the message that started a conversation with the agent |
+| `diff_truncated` | bool     | The attached diff was cut to fit |
+| `head_sha`       | string   | The head the attached diff came from |
+
+### `RPCHandler.ListChatBackends`
+
+Lists the chat backends, available or not, in the order to offer them.
+
+- **Params**: `{}`
+- **Result**: `{"backends": [ChatBackend, ...]}`
+
+### `RPCHandler.ListChats`
+
+A PR's chats, the most recently active first. Owner and repo match whatever their case.
+
+- **Params**: `{"Owner": "...", "Repo": "...", "Number": 42}`
+- **Result**: `{"chats": [Chat, ...]}` (summaries, without messages)
+
+### `RPCHandler.StartChat`
+
+Opens a chat about a PR with the reviewer's first message and starts the agent on it.
+
+- **Params**:
+  - `Owner`, `Repo`, `Number`: the PR.
+  - `Backend` (string): a backend's `id`; empty picks the first available.
+  - `Model` (string): one of its models; empty takes its `default_model`.
+  - `Message` (string): what the reviewer asks.
+- **Result**:
+  - `okay` (bool): false when the message was refused — empty, or the backend unavailable.
+  - `message` (string): why, when it was.
+  - `chat` (`Chat`): the chat right after the message was stored, already `running`; `null` when refused.
+
+### `RPCHandler.SendChatMessage`
+
+Continues a chat with the reviewer's next message. Refused (`okay: false`) while the agent is still answering the last one.
+
+- **Params**: `{"ChatID": "...", "Message": "..."}`
+- **Result**: as `StartChat`; `chat` is the chat as it now stands either way. An unknown `ChatID` is an error.
+
+### `RPCHandler.GetChat`
+
+Reads a chat: its messages, and while the agent is answering, the reply it is writing (`draft`). A pure read.
+
+- **Params**: `{"ChatID": "..."}`
+- **Result**: `{"chat": Chat}`; an unknown `ChatID` is an error.
+
+### `RPCHandler.StopChat`
+
+Stops the agent answering in a chat. The chat stores a `notice` once the agent has exited, and goes `idle`.
+
+- **Params**: `{"ChatID": "..."}`
+- **Result**: `{"stopped": bool}` — false when nothing was running.
+
+### `RPCHandler.DeleteChat`
+
+Removes a chat, its messages and its working directory, stopping the agent first if it is running.
+
+- **Params**: `{"ChatID": "..."}`
+- **Result**: `{"okay": true}`; an unknown `ChatID` is an error.
 
 ---
 

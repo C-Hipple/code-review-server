@@ -103,6 +103,11 @@ class Backend {
         });
     }
 
+    /** Make the chat's Claude backend available or not. */
+    setChatAvailable(available: boolean) {
+        return this.rpc('E2E.SetChatAvailable', { available });
+    }
+
     /** Stop or resume the backend's heartbeats. */
     setHeartbeat(beating: boolean) {
         return this.rpc('E2E.SetHeartbeat', { beating });

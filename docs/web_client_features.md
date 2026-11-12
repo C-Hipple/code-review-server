@@ -610,7 +610,8 @@ Client-side only, persisted in `localStorage`:
 `useMediaQuery` / `useIsMobile` drive real behavioral changes, not just CSS: line
 wrapping defaults on, the diff becomes horizontally scrollable, line-number gutters
 are hidden, split view is disabled, the code viewer goes full-screen, inline cards
-stick to the left edge, and the bottom review action bar appears. The review list
+stick to the left edge, and the bottom review action bar appears (the review chat's
+button moves up above it). The review list
 restacks in CSS alone: the sidebar becomes a header, its state buckets a horizontally
 scrolling strip, and row actions stay visible instead of waiting for a hover.
 
@@ -735,6 +736,34 @@ since whatever was sent meanwhile is lost.
   starting, a row rewritten — and the user's own changes (`own`) refresh silently;
   the list says nothing about PRs it doesn't show.
 
+### 3.19 Review chat (`ChatWidget.tsx`, `useChat.ts`, `chat_utils.ts`)
+
+A round chat button sits in the review's bottom-left corner (above the bottom bar
+on mobile). Resting the pointer on it opens a chat panel above it: a conversation
+with a local coding agent about the PR — Claude Code, run by the server (see
+[Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
+unless the reviewer is working in it: focus inside it, a message half written, or
+pinned open (📌, or clicking the button, which also focuses the message box). Escape
+or × closes it. On a touch screen the button toggles it.
+
+- **Starting**: a new chat offers the server's backends (`ListChatBackends`) and the
+  picked one's models, remembered per browser; an unavailable backend says why and
+  can't be written to. The first message (Enter sends, Shift+Enter is a newline)
+  calls `StartChat`; the server sends the agent that we're reviewing the PR, the
+  message, then the PR's description and diff, and the message shows a 📎 line
+  saying so.
+- **Following**: nothing is polled. The panel reads `GetChat` on each
+  [`Server.ChatChanged`](protocol.md#serverchatchanged) for the PR (and when the event
+  stream reconnects), with the same ticketing as the AI reports so a slow reply
+  can't overwrite a newer one. The reply streams in as `draft`, with a cursor; tool
+  calls show as a line each (`✓ Read pr.diff`); errors and stops show where they
+  happened. The button pulses while the agent works. **Stop** calls `StopChat`.
+- **Continuing**: later messages call `SendChatMessage`. Reopening the PR reopens
+  its most recent chat (`ListChats`); the header's select switches between the
+  PR's chats or starts a new one, **+** starts a new one, and **Delete** removes the
+  open one (`DeleteChat`). A chat whose PR has new commits since it attached the
+  diff says so, and suggests a new chat.
+
 ## 4. Protocol methods used — and not used
 
 Called by the current client:
@@ -742,7 +771,8 @@ Called by the current client:
 `GetAllReviews`, `GetPR`, `GetAdjacentPR`, `SyncPR`, `AddComment`, `EditComment`,
 `DeleteComment`, `SetFeedback`, `SubmitReview`, `GetPluginOutput`, `RerunPlugins`,
 `GetHunkContext`, `GetConfig`, `UpdateConfig`, `ListAIFeatures`, `RunAIFeature`,
-`GetAIOutput`.
+`GetAIOutput`, and the review chat's `ListChatBackends`, `ListChats`, `StartChat`,
+`SendChatMessage`, `GetChat`, `StopChat` and `DeleteChat` (through `/api/rpc`).
 
 Bridged in `server.ts` but not called by the UI: `RemovePRComments`, `ListPlugins`.
 

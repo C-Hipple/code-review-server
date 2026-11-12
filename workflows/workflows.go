@@ -197,7 +197,15 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		return RunResult{}, errors.New("ProjectList has no valid repos")
 	}
 
-	prsByRepo := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, refs)
+	// A lookup that failed partway leaves PRs out that are still in the epic.
+	// Pruning on it would drop them now and add them back (and notify) on the
+	// next cycle that gets through, so the PRs already held stay this time.
+	complete := true
+	prsByRepo, err := jira.GetProjectPRKeys(w.JiraDomain, w.JiraEpic, refs)
+	if err != nil {
+		slog.Warn("Jira lookup incomplete; keeping the PRs the section holds", "workflow", w.Name, "epic", w.JiraEpic, "error", err)
+		complete = false
+	}
 
 	// Walk the configured order rather than the map so each cycle processes the
 	// repos the same way.
@@ -207,10 +215,9 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		if len(nums) == 0 {
 			continue
 		}
-		repoPRs, err := git_tools.GetSpecificPRs(client, ref.Owner, ref.Repo, nums)
-		if err != nil {
-			slog.Error("Error getting specific PRs", "owner", ref.Owner, "repo", ref.Repo, "error", err)
-			continue
+		repoPRs, ok := fetchPRsByNumber(client, ref, nums)
+		if !ok {
+			complete = false
 		}
 		// Because GetPRRequirements returns nil, the manager's prefetch pass skips
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
@@ -230,10 +237,30 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 
 	beforeCount, _ := db.GetItemCount()
 	slog.Info("Starting workflow", "items_before", beforeCount)
-	result := ProcessPRsDB(w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
+	process := ProcessPRsDB
+	if !complete {
+		process = ProcessPartialPRsDB
+	}
+	result := process(w.Name, allPRs, c, db, section, file_change_wg, w.IncludeDiff, w.ShouldNotify())
 	afterCount, _ := db.GetItemCount()
 	slog.Info("Finished workflow", "items_after", afterCount)
 	return result, nil
+}
+
+// fetchPRsByNumber fetches each PR on its own, so one that fails (a rate
+// limit, a blip) costs only that PR rather than the repo's whole list. ok is
+// false when any failed.
+func fetchPRsByNumber(client *github.Client, ref jira.RepoRef, nums []int) (prs []*github.PullRequest, ok bool) {
+	ok = true
+	for _, num := range nums {
+		got, err := git_tools.GetSpecificPRs(client, ref.Owner, ref.Repo, []int{num})
+		if err != nil {
+			ok = false
+			continue
+		}
+		prs = append(prs, got...)
+	}
+	return prs, ok
 }
 
 // resolveRepoRefs turns configured "owner/repo" entries into repo refs, keeping

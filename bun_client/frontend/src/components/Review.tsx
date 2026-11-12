@@ -48,6 +48,7 @@ import {
 } from '../dock_utils';
 import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
 import AIReportModal from './AIReportModal';
+import ChatWidget from './ChatWidget';
 import CodeViewerModal from './CodeViewerModal';
 import AddCommentModal from './review/AddCommentModal';
 import DiffView from './review/DiffView';
@@ -2056,6 +2057,9 @@ export default function Review({
                     onAction={openSubmitModal}
                 />
             )}
+
+            {/* Chat with a local agent about the PR, from the bottom-left corner */}
+            <ChatWidget owner={owner} repo={repo} number={number} raised={isMobile && !!metadata} />
         </div>
     );
 }

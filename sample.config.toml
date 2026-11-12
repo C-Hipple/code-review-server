@@ -99,6 +99,15 @@ SectionTitle = "Needs My Team's Review"
 # EventTypeAttribute = "event_type"     # the attribute naming the GitHub event
 # DeliveryIDAttribute = "delivery_id"   # the attribute holding the delivery's ID
 
+# The review chat (docs/configuration.md#review-chat): a reviewer can chat with
+# the local Claude Code CLI about the PR they're reviewing. Nothing needs
+# setting: it is offered whenever `claude` is on the server's PATH.
+# [Chat.Claude]
+# Command = "/opt/homebrew/bin/claude"  # when claude isn't on the server's PATH
+# Models = ["opus", "sonnet"]           # the models to offer; default opus, sonnet, haiku
+# DefaultModel = "sonnet"               # preselected; default: Claude's own default
+# Disabled = true                       # don't offer it at all
+
 # Plugins allow extending the server with custom checks
 [[Plugins]]
 Name = "Security Check"

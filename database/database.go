@@ -338,6 +338,36 @@ func (db *DB) initSchema() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_apicallstats_recorded ON APICallStats(recorded_at);
+
+	-- Review chats with a local agent (see chat.go): one row per conversation,
+	-- and its messages in order. Additive, like AIResults.
+	CREATE TABLE IF NOT EXISTS ChatSessions (
+		id TEXT PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		pr_number INTEGER NOT NULL,
+		backend TEXT NOT NULL,
+		model TEXT NOT NULL DEFAULT '',
+		backend_session_id TEXT NOT NULL DEFAULT '',
+		head_sha TEXT NOT NULL DEFAULT '',
+		title TEXT NOT NULL DEFAULT '',
+		cost_usd REAL NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_chat_sessions_pr ON ChatSessions(owner, repo, pr_number);
+
+	CREATE TABLE IF NOT EXISTS ChatMessages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL REFERENCES ChatSessions(id) ON DELETE CASCADE,
+		role TEXT NOT NULL,
+		content TEXT NOT NULL DEFAULT '',
+		meta TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON ChatMessages(session_id, id);
 	`
 
 	_, err := db.conn.Exec(schema)

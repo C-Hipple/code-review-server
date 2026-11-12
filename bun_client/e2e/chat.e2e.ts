@@ -12,6 +12,10 @@ const chatButton = (page: Page) =>
 const panel = (page: Page) => page.getByRole('dialog', { name: 'Review chat' });
 const messageBox = (page: Page) => panel(page).getByRole('textbox', { name: 'Message' });
 
+// The panel spans 80% of the 1400px-wide viewport from the left edge, so the
+// pointer leaves it by moving right of that.
+const moveAway = (page: Page) => page.mouse.move(1300, 300);
+
 async function hoverOpen(page: Page) {
     await chatButton(page).hover();
     await expect(panel(page)).toBeVisible();
@@ -29,8 +33,10 @@ test.describe('Review chat', () => {
         await expect(panel(page)).toHaveCount(0);
         await hoverOpen(page);
         await expect(panel(page)).toContainText('Ask Claude Code about this PR');
+        const panelBox = await panel(page).boundingBox();
+        expect(panelBox!.width).toBeCloseTo(1400 * 0.8, 0);
 
-        await page.mouse.move(900, 300);
+        await moveAway(page);
         await expect(panel(page)).toHaveCount(0);
     });
 
@@ -38,7 +44,7 @@ test.describe('Review chat', () => {
         await openReview(page);
         await hoverOpen(page);
         await messageBox(page).fill('Half a thought');
-        await page.mouse.move(900, 300);
+        await moveAway(page);
         await page.waitForTimeout(800);
         await expect(panel(page)).toBeVisible();
 

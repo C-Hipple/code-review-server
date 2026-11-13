@@ -2729,6 +2729,8 @@ func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache b
 				}
 				slog.Error("Error unmarshaling cached CI status", "error", err)
 			} else {
+				// Rows cached before GetCheckRuns left out superseded runs.
+				git_tools.LatestCheckRunResults(combined.CheckRuns, nil)
 				return &combined, nil
 			}
 		}

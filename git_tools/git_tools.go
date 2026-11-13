@@ -825,10 +825,25 @@ func GetCombinedStatus(client *github.Client, owner, repo, ref string) (*github.
 	return combined, nil
 }
 
-// GetCheckRuns returns every check run on a ref, for the same reason as
-// GetCombinedStatus: a busy repo has more than one page of checks, and a
-// truncated list silently misreports the PR's CI state.
+// GetCheckRuns returns the check runs on a commit that its PR page shows:
+// every page of them, for the same reason as GetCombinedStatus (a busy repo
+// has more than one page of checks, and a truncated list silently misreports
+// the PR's CI state), less those a later run replaced (LatestCheckRuns). The
+// superseded workflow runs come from the Actions API; when that can't be read
+// (a token without Actions access) only re-run checks are left out.
 func GetCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListCheckRunsResults, error) {
+	all, err := listCheckRuns(client, owner, repo, ref)
+	if err != nil {
+		return all, err
+	}
+	superseded, serr := SupersededCheckSuites(client, owner, repo, ref)
+	if serr != nil {
+		slog.Debug("Could not list workflow runs; keeping every check suite", "owner", owner, "repo", repo, "ref", ref, "error", serr)
+	}
+	return LatestCheckRunResults(all, superseded), nil
+}
+
+func listCheckRuns(client *github.Client, owner, repo, ref string) (*github.ListCheckRunsResults, error) {
 	ctx := context.Background()
 	var all *github.ListCheckRunsResults
 	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: githubPageSize, Page: 1}}

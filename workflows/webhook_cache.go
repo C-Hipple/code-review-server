@@ -236,8 +236,9 @@ func loadCachedReviews(db *database.DB, key PRKey) ([]*github.PullRequestReview,
 	return reviews, true
 }
 
-// loadCachedCI reads a commit's statuses and check runs. ok is false when
-// nothing is cached for sha; either half may still be nil when it is.
+// loadCachedCI reads a commit's statuses and check runs, the latest of each
+// check (git_tools.LatestCheckRuns). ok is false when nothing is cached for
+// sha; either half may still be nil when it is.
 func loadCachedCI(db *database.DB, key PRKey, sha string) (*github.CombinedStatus, *github.ListCheckRunsResults, bool) {
 	if sha == "" {
 		return nil, nil, false
@@ -251,7 +252,9 @@ func loadCachedCI(db *database.DB, key PRKey, sha string) (*github.CombinedStatu
 		slog.Warn("Failed to decode cached CI status", "pr", key.Number, "repo", key.Repo, "sha", sha, "error", err)
 		return nil, nil, false
 	}
-	return row.Status, row.CheckRuns, true
+	// A row cached before GetCheckRuns left out superseded runs still has
+	// them; the re-runs at least can be told apart here.
+	return row.Status, git_tools.LatestCheckRunResults(row.CheckRuns, nil), true
 }
 
 // loadCachedReviewThreads reads the PR's review threads. ok is false when

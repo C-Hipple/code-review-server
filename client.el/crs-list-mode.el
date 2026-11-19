@@ -238,7 +238,7 @@ without the overhead of full `org-mode'."
   (crs-get-reviews))
 
 
-;;;###autoload
+;;;###autoload (autoload 'crs-get-reviews "crs-client" nil t)
 (defun crs-get-reviews ()
   "Call the GetAllReviews RPC method and display the result in `crs-reviews-buffer-name'.
 The buffer is always regenerated from a fresh RPC call: the reply is small

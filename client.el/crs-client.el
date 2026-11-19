@@ -36,6 +36,14 @@
 ;; declares an empty keymap next to its `define-derived-mode'; the bindings are
 ;; installed below.  Non-evil bindings populate the keymaps directly, while
 ;; evil bindings are deferred until evil itself is loaded.
+;;
+;; Because the bindings live here, every entry point must load this file:
+;; the modules' autoload cookies name "crs-client", not their own file, as in
+;; `;;;###autoload (autoload 'crs-start-server "crs-client" nil t)'.  A plain
+;; cookie would autoload only the defining module (`crs-start-server' would
+;; load crs-rpc alone), leaving these keymaps empty and any
+;; `with-eval-after-load' on crs-client unrun.  `crs-test-autoloads-load-client'
+;; enforces this.
 
 (define-keymap :keymap crs-list-mode-map
   "TAB" #'crs-list-toggle-heading

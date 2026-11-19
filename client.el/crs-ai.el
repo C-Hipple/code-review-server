@@ -258,7 +258,7 @@ report buffer."
     (pop-to-buffer buffer)
     buffer))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-ai-list-features "crs-client" nil t)
 (defun crs-ai-list-features ()
   "Fetch the AI features the server has enabled into `crs-ai-features'."
   (interactive)
@@ -270,7 +270,7 @@ report buffer."
                   (mapconcat (lambda (f) (cdr (assq 'name f))) crs-ai-features ", ")
                 "none")))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-get-ai-output "crs-client" nil t)
 (defun crs-get-ai-output ()
   "Show an AI feature's report for the PR in the current review buffer.
 Starts a run when the feature has never run for the PR or its report is
@@ -287,7 +287,7 @@ and lands."
                                              (crs--ai-choose-feature crs-ai-features))))
          (crs--ai-fetch buffer t))))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-run-ai-feature "crs-client" nil t)
 (defun crs-run-ai-feature (&optional force)
   "Run an AI feature for the current PR and show its buffer.
 From an AI output buffer (or the change diagram's), runs that buffer's

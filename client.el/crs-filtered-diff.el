@@ -160,7 +160,7 @@ the head it diffs to."
       (when filter
         (crs--request-filtered-diff buffer filter)))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-show-filtered-diff "crs-client" nil t)
 (defun crs-show-filtered-diff (&optional filter)
   "Narrow the review buffer's diff to the commits FILTER picks.
 FILTER is a diff filter ID such as \"since-last-review\"; nil goes back to
@@ -187,20 +187,20 @@ the PR's full diff.  Interactively, pick one by name."
       (message "Loading %s..." (crs--diff-filter-name filter))
       (crs--request-filtered-diff buffer filter))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-show-diff-since-last-review "crs-client" nil t)
 (defun crs-show-diff-since-last-review ()
   "Narrow the review buffer's diff to the changes since your last review."
   (interactive)
   (crs-show-filtered-diff "since-last-review"))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-show-diff-since-last-interaction "crs-client" nil t)
 (defun crs-show-diff-since-last-interaction ()
   "Narrow the review buffer's diff to the changes since you last took part.
 That is your most recent review or comment on the PR."
   (interactive)
   (crs-show-filtered-diff "since-last-interaction"))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-show-full-diff "crs-client" nil t)
 (defun crs-show-full-diff ()
   "Put the PR's full diff back in the review buffer."
   (interactive)

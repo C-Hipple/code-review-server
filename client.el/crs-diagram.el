@@ -146,7 +146,7 @@ minibuffer."
         (or (crs--parse-pr-ref ref)
             (user-error "Not a PR URL or owner/repo#number: %s" ref)))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-show-change-diagram "crs-client" nil t)
 (defun crs-show-change-diagram (owner repo number)
   "Show the change diagram of PR OWNER/REPO #NUMBER in a mermaid-mode buffer.
 The diagram is the server's change-diagram AI feature: a Mermaid

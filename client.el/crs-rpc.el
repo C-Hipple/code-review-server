@@ -9,7 +9,7 @@
 (require 'json)
 (require 'crs-vars)
 
-;;;###autoload
+;;;###autoload (autoload 'crs-start-server "crs-client" nil t)
 (defun crs-start-server ()
   "Start the crs JSON-RPC server process.
 Returns the process handle."
@@ -82,7 +82,7 @@ that fails is reported, and the rest still run."
                          method (error-message-string err))))
        nil))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-shutdown-server "crs-client" nil t)
 (defun crs-shutdown-server ()
   "Stop the crs JSON-RPC server process if it is running."
   (interactive)
@@ -94,7 +94,7 @@ that fails is reported, and the rest still run."
         (message "Stopped crs JSON-RPC server"))
     (message "Server is not running")))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-restart-server "crs-client" nil t)
 (defun crs-restart-server ()
   "Restart the crs JSON-RPC server process.
 Stops the existing server if running, then starts a new one.
@@ -228,7 +228,7 @@ CALLBACK is a function to call with the result."
        (message "Plugins updated: %d plugins found" (length crs-plugins))))))
 
 
-;;;###autoload
+;;;###autoload (autoload 'crs-get-rate-limit-status "crs-client" nil t)
 (defun crs-get-rate-limit-status ()
   "Show the GitHub API rate limit status in the minibuffer."
   (interactive)

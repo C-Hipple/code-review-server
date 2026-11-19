@@ -232,6 +232,30 @@ without the overhead of full `org-mode'."
   (setq buffer-read-only t)
   (goto-address-mode 1))
 
+(defun crs--strip-empty-sections (content)
+  "Remove the top-level sections in CONTENT that hold no PRs.
+The server renders every section, including one whose workflow matched
+nothing, as a bare \"* TODO Name [0/0]\" heading.  In the list buffer
+those only push the sections that do hold PRs down the screen.  A
+section is kept when a \"** \" PR heading falls between its heading and
+the next one; anything before the first section is always kept."
+  (when content
+    (let ((kept '())      ; lines kept so far, newest first
+          (section '())   ; the current section's lines, newest first
+          (has-pr t))     ; t before the first section: keep the preamble
+      (dolist (line (split-string content "\n"))
+        (when (string-prefix-p "* " line)
+          (when has-pr
+            (setq kept (append section kept)))
+          (setq section '()
+                has-pr nil))
+        (when (string-prefix-p "** " line)
+          (setq has-pr t))
+        (push line section))
+      (when has-pr
+        (setq kept (append section kept)))
+      (string-join (nreverse kept) "\n"))))
+
 (defun crs-refresh-reviews ()
   "Refresh the PR list by re-fetching from the server."
   (interactive)
@@ -261,9 +285,10 @@ and quick enough now that reusing a stale list costs more than re-fetching."
                        (if crs-include-comments-tree t :json-false))))
    (lambda (result)
      (let* ((content (cdr (assq 'content result)))
-            (rendered (if crs-include-comments-tree
-                          content
-                        (crs--strip-comments-tree content)))
+            (rendered (crs--strip-empty-sections
+                       (if crs-include-comments-tree
+                           content
+                         (crs--strip-comments-tree content))))
             (buffer (get-buffer-create crs-reviews-buffer-name)))
        (with-current-buffer buffer
          (let ((inhibit-read-only t))

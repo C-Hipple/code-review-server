@@ -140,6 +140,9 @@ several modules; `crs-client.el` is the entry point that loads them all
 (crs-get-review "C-Hipple" "code-review-server" 1)  ;; Start it directly.
 ```
 
+The reviews buffer lists only the sections that hold a PR: a section whose
+workflow matched nothing is left out rather than shown as a bare `[0/0]` heading.
+
 In the reviews buffer, each PR's headline carries its tags: the repository,
 `draft` or `merged`, `conflict` when GitHub reports that the PR's branch conflicts
 with its base (drawn in `crs-list-conflict-face`), and the

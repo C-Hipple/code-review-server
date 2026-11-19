@@ -1,8 +1,30 @@
 import { expect, test, describe } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { VALID_THEMES, THEME_OPTIONS, isTheme, resolveTheme } from './design/theme';
+import { getSyntaxTheme } from './components/review/diff_theme';
+import { parseCssColor } from './mermaid_utils';
 
 const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8');
+
+// WCAG relative luminance of a color, 0 (black) to 1 (white); null when the
+// color can't be read.
+const luminance = (color: string): number | null => {
+    const rgb = parseCssColor(color);
+    if (!rgb || rgb.some(n => !Number.isFinite(n))) return null;
+    const [r, g, b] = rgb.map(v => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+// WCAG contrast ratio of two colors, 1:1 to 21:1; null when either can't be read.
+const contrastRatio = (a: string, b: string): number | null => {
+    const la = luminance(a);
+    const lb = luminance(b);
+    if (la === null || lb === null) return null;
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+};
 
 // Every var the dark theme defines is one the app expects to resolve under any
 // theme, so a new theme block that forgets one silently inherits the default.
@@ -81,6 +103,27 @@ describe('theme definitions', () => {
             for (const cssVar of REQUIRED_VARS) {
                 expect(block, `${theme} is missing ${cssVar}`).toContain(`${cssVar}:`);
             }
+        }
+    });
+
+    test('a theme’s syntax colors are legible on its background', () => {
+        // A light theme falling through to a dark Prism style paints pale code
+        // on pale rows, so the two halves of a theme have to agree.
+        for (const theme of VALID_THEMES) {
+            const bg = themeBlock(theme)?.match(/--bg-primary:\s*([^;]+);/)?.[1];
+            expect(bg, `${theme} has no --bg-primary`).toBeTruthy();
+
+            const style = getSyntaxTheme(theme) as Record<string, { color?: string }>;
+            const text = (style['code[class*="language-"]'] ?? style["code[class*='language-']"])
+                ?.color;
+            expect(text, `${theme}'s Prism style has no code color`).toBeTruthy();
+
+            const ratio = contrastRatio(text!, bg!.trim());
+            if (ratio === null) continue; // a color form we can't read
+            expect(
+                ratio,
+                `${theme}: code ${text} on ${bg} is ${ratio.toFixed(1)}:1`
+            ).toBeGreaterThan(3);
         }
     });
 });

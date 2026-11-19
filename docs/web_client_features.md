@@ -594,12 +594,15 @@ Configuration tab. Built on `GetConfig` / `UpdateConfig`.
 
 Client-side only, persisted in `localStorage`:
 
-- **Theme** — 21 options (One Dark/Light, GitHub, Gruvbox, Solarized, Monokai,
-  Dracula, Nord, Night Owl, Tokyo Night, the four Catppuccins, Everforest, Rosé Pine,
-  SynthWave '84), applied as `data-theme` on `<html>` with CSS custom
+- **Theme** — 32 options (One Dark/Light, GitHub, Gruvbox, Solarized, Monokai,
+  Dracula, Nord, Night Owl, Tokyo Night, the four Catppuccins, Everforest and
+  Everforest Light, Rosé Pine and Rosé Pine Dawn, SynthWave '84, Material Ocean,
+  Shades of Purple, Tomorrow Night, Twilight, Lucario, Coldark Dark/Cold,
+  Hopscotch, A11y Dark/Light), applied as `data-theme` on `<html>` with CSS custom
   properties; initial value follows `prefers-color-scheme`. Legacy stored values are
   migrated through `resolveTheme`. The Prism diff theme is derived from the active
-  theme.
+  theme, and a test holds every theme's syntax colors to a legible contrast against
+  its background.
 - **Preferred review location** — clicking a PR title opens it in-app or on GitHub.
 - **Diff font size** — five steps published as `--diff-font-size`; line numbers,
   gutters and hunk headers size in `em` off it so the whole diff scales together. The

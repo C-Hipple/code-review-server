@@ -23,6 +23,18 @@ export const VALID_THEMES = [
     'everforest',
     'rose-pine',
     'synthwave-84',
+    'material-ocean',
+    'shades-of-purple',
+    'tomorrow-night',
+    'twilight',
+    'lucario',
+    'coldark-dark',
+    'hopscotch',
+    'a11y-dark',
+    'coldark-cold',
+    'a11y-light',
+    'rose-pine-dawn',
+    'everforest-light',
 ] as const;
 
 export type Theme = (typeof VALID_THEMES)[number];
@@ -53,6 +65,18 @@ export const THEME_OPTIONS: ThemeOption[] = [
     { value: 'everforest', label: '🌲 Everforest' },
     { value: 'rose-pine', label: '🌹 Rose Pine' },
     { value: 'synthwave-84', label: "🕹️ SynthWave '84" },
+    { value: 'material-ocean', label: '🌊 Material Ocean' },
+    { value: 'shades-of-purple', label: '🟣 Shades of Purple' },
+    { value: 'tomorrow-night', label: '🌃 Tomorrow Night' },
+    { value: 'twilight', label: '🌆 Twilight' },
+    { value: 'lucario', label: '🐺 Lucario' },
+    { value: 'coldark-dark', label: '🧊 Coldark Dark' },
+    { value: 'hopscotch', label: '🪁 Hopscotch' },
+    { value: 'a11y-dark', label: '♿ A11y Dark' },
+    { value: 'coldark-cold', label: '🧊 Coldark Cold' },
+    { value: 'a11y-light', label: '♿ A11y Light' },
+    { value: 'rose-pine-dawn', label: '🌅 Rosé Pine Dawn' },
+    { value: 'everforest-light', label: '🌲 Everforest Light' },
 ];
 
 /**

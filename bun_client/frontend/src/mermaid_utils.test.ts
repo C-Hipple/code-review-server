@@ -72,6 +72,11 @@ describe('isDarkColor', () => {
         expect(isDarkColor('rgba(22, 27, 34, 0.9)')).toBe(true);
     });
 
+    test('reads hsl colors, which the Prism styles use', () => {
+        expect(isDarkColor('hsl(220, 13%, 18%)')).toBe(true);
+        expect(isDarkColor('hsl(230, 1%, 98%)')).toBe(false);
+    });
+
     test('is null for a color it cannot read', () => {
         expect(isDarkColor('')).toBeNull();
         expect(isDarkColor('var(--bg)')).toBeNull();

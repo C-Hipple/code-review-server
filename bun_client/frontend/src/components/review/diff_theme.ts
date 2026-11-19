@@ -12,6 +12,15 @@ import {
     nord,
     nightOwl,
     synthwave84,
+    a11yDark,
+    coldarkCold,
+    coldarkDark,
+    hopscotch,
+    lucario,
+    materialOceanic,
+    shadesOfPurple,
+    tomorrow,
+    twilight,
 } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { Theme } from '../../design';
 
@@ -44,6 +53,30 @@ export const getSyntaxTheme = (theme: Theme) => {
             return nightOwl;
         case 'synthwave-84':
             return synthwave84;
+        case 'material-ocean':
+            return materialOceanic;
+        case 'shades-of-purple':
+            return shadesOfPurple;
+        case 'tomorrow-night':
+            return tomorrow;
+        case 'twilight':
+            return twilight;
+        case 'lucario':
+            return lucario;
+        case 'coldark-dark':
+            return coldarkDark;
+        case 'hopscotch':
+            return hopscotch;
+        case 'a11y-dark':
+            return a11yDark;
+        case 'coldark-cold':
+            return coldarkCold;
+        case 'a11y-light':
+            return oneLight;
+        case 'rose-pine-dawn':
+            return oneLight;
+        case 'everforest-light':
+            return gruvboxLight;
         case 'catppuccin-latte':
             return oneLight;
         default:

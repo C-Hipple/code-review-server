@@ -107,24 +107,54 @@ export function stepZoom(scale: number, direction: 1 | -1): number {
 }
 
 /**
- * Whether a CSS color (#rgb, #rrggbb or rgb()/rgba()) is dark; null when it
- * can't be read.
+ * A CSS color (#rgb, #rrggbb, rgb()/rgba() or hsl()/hsla()) as 0–255 rgb, or
+ * null when it can't be read. `white` and `black` are understood too, since
+ * some Prism styles name them.
  */
-export function isDarkColor(color: string): boolean | null {
+export function parseCssColor(color: string): number[] | null {
     const c = color.trim().toLowerCase();
-    let rgb: number[] | null = null;
+    if (c === 'white') return [255, 255, 255];
+    if (c === 'black') return [0, 0, 0];
     const hex = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/);
     if (hex) {
         const h = hex[1].length === 3 ? [...hex[1]].map(d => d + d).join('') : hex[1];
-        rgb = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
-    } else {
-        const fn = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
-        if (fn) rgb = fn.slice(1, 4).map(Number);
+        return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
     }
+    const fn = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+    if (fn) return fn.slice(1, 4).map(Number);
+    const hsl = c.match(/^hsla?\(\s*([\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%/);
+    if (hsl) return hslToRgb(Number(hsl[1]), Number(hsl[2]) / 100, Number(hsl[3]) / 100);
+    return null;
+}
+
+/** Whether a CSS color is dark; null when it can't be read. */
+export function isDarkColor(color: string): boolean | null {
+    const rgb = parseCssColor(color);
     if (!rgb || rgb.some(n => !Number.isFinite(n))) return null;
     // Relative luminance, ITU-R BT.709 weights, in 0–255.
     const [r, g, b] = rgb;
     return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+}
+
+/** hsl (hue in degrees, saturation and lightness in 0–1) as 0–255 rgb. */
+function hslToRgb(hue: number, s: number, l: number): number[] {
+    const h = ((hue % 360) + 360) % 360;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    const [r, g, b] =
+        h < 60
+            ? [c, x, 0]
+            : h < 120
+              ? [x, c, 0]
+              : h < 180
+                ? [0, c, x]
+                : h < 240
+                  ? [0, x, c]
+                  : h < 300
+                    ? [x, 0, c]
+                    : [c, 0, x];
+    return [r, g, b].map(v => Math.round((v + m) * 255));
 }
 
 /** Whether the app's current theme is dark, read from its background color. */

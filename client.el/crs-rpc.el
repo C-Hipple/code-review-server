@@ -722,7 +722,7 @@ EVENT says how it closed.  The next request reconnects."
       (setf (alist-get 'github_linked crs--remote-session) t))
     (message "%s" outcome)))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-link-github "crs-client" nil t)
 (defun crs-link-github ()
   "Link your GitHub account on the shared server, so reviews go out as you.
 A shared server submits reviews as the reviewer's own GitHub account, and
@@ -805,7 +805,7 @@ reopened by the next poll."
                  reason))
     (crs--link-schedule-poll)))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-unlink-github "crs-client" nil t)
 (defun crs-unlink-github ()
   "Unlink your GitHub account from the shared server.
 Your reviews stop going out as you: the server refuses them until you
@@ -840,7 +840,7 @@ link again, or sends them as its own account where it is set up to."
      ((equal status "unavailable") (format "GitHub: this server can't link accounts (%s)" text))
      (t (format "GitHub: %s; M-x crs-link-github to try again" text)))))
 
-;;;###autoload
+;;;###autoload (autoload 'crs-github-link-status "crs-client" nil t)
 (defun crs-github-link-status ()
   "Say whether your GitHub account is linked on the shared server."
   (interactive)

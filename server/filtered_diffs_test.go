@@ -99,7 +99,7 @@ func fdSetup(t *testing.T, reviews []ReviewJSON, comments []*github.PullRequestC
 			t.Fatal(err)
 		}
 	}
-	must(db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", "full diff"))
+	must(db.UpsertPullRequest(fdOwner, fdRepo, fdNumber, "c4", "base", "full diff"))
 	var commits []CommitJSON
 	parent := "m1"
 	for i, sha := range []string{"c1", "c2", "c3", "c4"} {
@@ -107,15 +107,15 @@ func fdSetup(t *testing.T, reviews []ReviewJSON, comments []*github.PullRequestC
 		parent = sha
 	}
 	raw, _ := json.Marshal(commits)
-	must(db.UpsertPRCommits(fdNumber, fdRepo, string(raw)))
+	must(db.UpsertPRCommits(fdOwner, fdRepo, fdNumber, string(raw)))
 	if reviews == nil {
 		reviews = []ReviewJSON{}
 	}
 	raw, _ = json.Marshal(reviews)
-	must(db.UpsertPRReviews(fdNumber, fdRepo, string(raw)))
+	must(db.UpsertPRReviews(fdOwner, fdRepo, fdNumber, string(raw)))
 	if comments != nil {
 		raw, _ = json.Marshal(comments)
-		must(db.UpsertPRComments(fdNumber, fdRepo, string(raw)))
+		must(db.UpsertPRComments(fdOwner, fdRepo, fdNumber, string(raw)))
 	}
 	return db
 }
@@ -523,7 +523,7 @@ func mapsEqual(a, b map[int]int) bool {
 
 func TestFilteredDiffCarriesItsPositionsOntoTheFullDiff(t *testing.T) {
 	db := fdSetup(t, []ReviewJSON{myReview(fdAt(12), "c2")}, nil)
-	if err := db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", fdFullDiff); err != nil {
+	if err := db.UpsertPullRequest(fdOwner, fdRepo, fdNumber, "c4", "base", fdFullDiff); err != nil {
 		t.Fatal(err)
 	}
 	useFakeCompare(t, &fakeCompare{diff: fdSinceDiff})
@@ -542,7 +542,7 @@ func TestFilteredDiffCarriesItsPositionsOntoTheFullDiff(t *testing.T) {
 	}
 
 	// Nothing to show, nothing to map: still an object, never null.
-	if err := db.UpsertPRReviews(fdNumber, fdRepo, "[]"); err != nil {
+	if err := db.UpsertPRReviews(fdOwner, fdRepo, fdNumber, "[]"); err != nil {
 		t.Fatal(err)
 	}
 	none := getFD(t, filtereddiff.SinceLastReview)
@@ -615,7 +615,7 @@ index 3333333..4444444 100644
 func mergeSetup(t *testing.T, withParents bool) *database.DB {
 	t.Helper()
 	db := fdSetup(t, []ReviewJSON{myReview(fdAt(12), "c2")}, nil)
-	if err := db.UpsertPullRequest(fdNumber, fdRepo, "c4", "base", mergeFullDiff); err != nil {
+	if err := db.UpsertPullRequest(fdOwner, fdRepo, fdNumber, "c4", "base", mergeFullDiff); err != nil {
 		t.Fatal(err)
 	}
 	commits := []CommitJSON{
@@ -631,7 +631,7 @@ func mergeSetup(t *testing.T, withParents bool) *database.DB {
 		}
 	}
 	raw, _ := json.Marshal(commits)
-	if err := db.UpsertPRCommits(fdNumber, fdRepo, string(raw)); err != nil {
+	if err := db.UpsertPRCommits(fdOwner, fdRepo, fdNumber, string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	return db

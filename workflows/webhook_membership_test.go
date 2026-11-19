@@ -34,7 +34,7 @@ func membershipEnv(t *testing.T, workflows ...Workflow) *webhookTestEnv {
 		takeWebhookActivity()
 	})
 	for _, wf := range workflows {
-		if _, err := env.db.GetOrCreateSection(wf.GetOrgSectionName(), 1); err != nil {
+		if _, err := env.db.GetOrCreateSection(wf.GetUser(), wf.GetOrgSectionName(), 1); err != nil {
 			t.Fatalf("section: %v", err)
 		}
 	}
@@ -44,8 +44,8 @@ func membershipEnv(t *testing.T, workflows ...Workflow) *webhookTestEnv {
 // listIn puts PR #number in wf's section, owned by wf, as a cycle would.
 func listIn(t *testing.T, db *database.DB, wf Workflow, number int) {
 	t.Helper()
-	section, _ := db.GetSection(wf.GetOrgSectionName())
-	if _, err := db.UpsertItemWithWorkflow(section.ID, "acme/widgets-"+itoa(number), "TODO", "Add widgets", []string{"old"}, []string{whRepo}, 0, wf.GetName()); err != nil {
+	section, _ := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
+	if _, err := db.UpsertItemWithWorkflow(section.ID, "acme/widgets-"+itoa(number), "TODO", "Add widgets", []string{"old"}, []string{whRepo}, 0, ownershipKey(wf)); err != nil {
 		t.Fatalf("list: %v", err)
 	}
 }
@@ -53,9 +53,9 @@ func listIn(t *testing.T, db *database.DB, wf Workflow, number int) {
 // listedIn reports whether wf's section lists PR #number on wf's behalf.
 func listedIn(t *testing.T, db *database.DB, wf Workflow, number int) bool {
 	t.Helper()
-	section, _ := db.GetSection(wf.GetOrgSectionName())
+	section, _ := db.GetSection(wf.GetUser(), wf.GetOrgSectionName())
 	item, err := db.GetItem(section.ID, "acme/widgets-"+itoa(number))
-	return err == nil && item != nil && slices.Contains(item.GetWorkflows(), wf.GetName())
+	return err == nil && item != nil && slices.Contains(item.GetWorkflows(), ownershipKey(wf))
 }
 
 func reviewRequestedWorkflow() SearchWorkflow {
@@ -88,11 +88,11 @@ func TestSubmittingAReviewTakesThePROutOfReviewRequested(t *testing.T) {
 	if listedIn(t, env.db, wf, 1) {
 		t.Fatal("the PR is still in Review Requested after I reviewed it")
 	}
-	section, _ := env.db.GetSection(wf.SectionTitle)
+	section, _ := env.db.GetSection("", wf.SectionTitle)
 	if item, _ := env.db.GetItem(section.ID, "acme/widgets-1"); item != nil {
 		t.Error("the row was left behind with no workflow claiming it")
 	}
-	if raw, _ := env.db.GetRequestedReviewers(1, whRepo); strings.Contains(raw, `"me"`) {
+	if raw, _ := env.db.GetRequestedReviewers(whOwner, whRepo, 1); strings.Contains(raw, `"me"`) {
 		t.Errorf("requested reviewers still list me: %s", raw)
 	}
 	if a := takeWebhookActivity(); a.SectionDrops != 1 || a.Applied != 1 {
@@ -116,7 +116,7 @@ func TestAReviewRequestPutsThePRIntoReviewRequested(t *testing.T) {
 	if !listedIn(t, env.db, wf, 1) {
 		t.Fatal("a PR requesting my review didn't join Review Requested")
 	}
-	section, _ := env.db.GetSection(wf.SectionTitle)
+	section, _ := env.db.GetSection("", wf.SectionTitle)
 	item, _ := env.db.GetItem(section.ID, "acme/widgets-1")
 	if details, _ := item.GetDetails(); !strings.Contains(strings.Join(details, "\n"), "Requested Reviewers: me") {
 		t.Errorf("row details not built from the caches: %v", details)
@@ -132,20 +132,20 @@ func TestTeamReviewRequests(t *testing.T) {
 	pr.RequestedTeams = []*github.Team{{Slug: github.Ptr("core")}}
 
 	git_tools.GlobalCache.Set("my_team_refs", []string{"Acme/Core"}, time.Minute)
-	if got := reviewRequestedOf(pr, "me"); got != memberYes {
+	if got := reviewRequestedOf(pr, "me", true); got != memberYes {
 		t.Errorf("my team's request: %v", got)
 	}
 	git_tools.GlobalCache.Set("my_team_refs", []string{"acme/other"}, time.Minute)
-	if got := reviewRequestedOf(pr, "me"); got != memberNo {
+	if got := reviewRequestedOf(pr, "me", true); got != memberNo {
 		t.Errorf("another team's request: %v", got)
 	}
-	if got := reviewRequestedOf(whPR(1, "head1"), "me"); got != memberNo {
+	if got := reviewRequestedOf(whPR(1, "head1"), "me", true); got != memberNo {
 		t.Errorf("no request at all: %v", got)
 	}
 
 	// Without knowing my teams, a team request can't be judged.
 	t.Setenv("CRS_GITHUB_TOKEN", "")
-	if got := reviewRequestedOf(pr, "me"); got != memberUnknown {
+	if got := reviewRequestedOf(pr, "me", true); got != memberUnknown {
 		t.Errorf("unknown teams: %v", got)
 	}
 }
@@ -368,5 +368,101 @@ func TestReevaluationJudgesByTheNewestPRSeen(t *testing.T) {
 	drainReevaluations()
 	if !listedIn(t, env.db, wf, 1) {
 		t.Error("an older delivery's PR undid the newer listing")
+	}
+}
+
+// canonicalRepository is acme/widgets as GitHub spells it, and so as its
+// deliveries and its PR objects name it: the config names it "acme/widgets".
+func canonicalRepository() *github.Repository {
+	repo := whRepository()
+	repo.FullName = github.Ptr("Acme/widgets")
+	repo.Owner = &github.User{Login: github.Ptr("Acme")}
+	return repo
+}
+
+func canonicalPR(number int, sha string) *github.PullRequest {
+	pr := whPR(number, sha)
+	pr.Base.Repo = canonicalRepository()
+	return pr
+}
+
+// The config names the repository acme/widgets and a cycle keys its caches so;
+// GitHub, and every delivery, call the owner Acme. A delivery still patches
+// the caches the cycle wrote — the ones the next cycle and every client read,
+// whichever spelling they ask by — and still moves the PR between sections.
+func TestDeliveriesPatchTheCachesUnderTheConfigsSpelling(t *testing.T) {
+	wf := reviewRequestedWorkflow()
+	env := membershipEnv(t, wf) // webhooks trusted for "acme/widgets"
+	cycleKey := whKey(1)
+	seedCachedPR(t, env.db, cycleKey, "head1")
+	// The row's identifier comes from the PR object a cycle lists, which is
+	// GitHub's spelling.
+	section, _ := env.db.GetSection("", wf.SectionTitle)
+	if _, err := env.db.UpsertItemWithWorkflow(section.ID, "Acme/widgets-1", "TODO", "Add widgets", nil, []string{whRepo}, 0, ownershipKey(wf)); err != nil {
+		t.Fatal(err)
+	}
+
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestReviewEvent{
+		Action:      github.Ptr("submitted"),
+		Review:      &github.PullRequestReview{ID: github.Ptr(int64(9)), User: &github.User{Login: github.Ptr("me")}, State: github.Ptr("approved")},
+		PullRequest: requestedOfMe(canonicalPR(1, "head1")),
+		Repo:        canonicalRepository(),
+	}})
+	applyWebhookEvent(webhookDelivery{event: &github.StatusEvent{
+		SHA: github.Ptr("head1"), Context: github.Ptr("ci/lint"), State: github.Ptr("failure"),
+		UpdatedAt: &github.Timestamp{Time: time.Unix(10, 0)}, Repo: canonicalRepository(),
+	}})
+	drainReevaluations()
+
+	if len(env.refetched) != 0 {
+		t.Errorf("the delivery found no cached head and refetched: %v", env.refetched)
+	}
+	for _, key := range []PRKey{cycleKey, {Owner: "Acme", Repo: whRepo, Number: 1}} {
+		if reviews := cachedReviewsOf(t, env.db, key); len(reviews) != 1 || reviews[0].User != "me" {
+			t.Errorf("reviews read as %s = %+v, want my review", key.Owner, reviews)
+		}
+		if status, _, _ := loadCachedCI(env.db, key, "head1"); status.GetState() != "failure" {
+			t.Errorf("CI read as %s = %+v, want the failed status", key.Owner, status)
+		}
+	}
+	if item, _ := env.db.GetItem(section.ID, "Acme/widgets-1"); item != nil {
+		t.Errorf("the PR is still in Review Requested after my review: %+v", item)
+	}
+}
+
+// One PR is one entry in the maps keyed by PRKey however its owner and
+// repository are spelled, so a cycle's fetch under the config's spelling and a
+// delivery under GitHub's share its lock, its aux data and its last-seen PR.
+func TestPRKeyedMapsIgnoreCase(t *testing.T) {
+	t.Cleanup(func() { pruneRememberedPRs(time.Now().Add(time.Hour)) })
+	cycleKey, deliveryKey := PRKey{Owner: "acme", Repo: "widgets", Number: 1}, PRKey{Owner: "Acme", Repo: "Widgets", Number: 1}
+
+	unlock := lockPR(cycleKey)
+	locked := make(chan struct{})
+	go func() {
+		defer close(locked)
+		lockPR(deliveryKey)()
+	}()
+	select {
+	case <-locked:
+		t.Fatal("a delivery took the PR's lock while a fetch held it")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	<-locked
+
+	store := NewAuxDataStore()
+	store.Set(cycleKey, &PRAuxData{HeadSHA: "head1", Reviews: []*github.PullRequestReview{}})
+	if aux, ok := store.Get(deliveryKey); !ok || aux.HeadSHA != "head1" {
+		t.Errorf("aux data stored under the config's spelling not found under GitHub's: %+v", aux)
+	}
+	store.MergeSet(deliveryKey, &PRAuxData{Diff: "diff"})
+	if aux, _ := store.Get(cycleKey); aux.Diff != "diff" || aux.Reviews == nil {
+		t.Errorf("MergeSet under another spelling didn't merge into the entry: %+v", aux)
+	}
+
+	rememberPR(cycleKey, whPR(1, "head1"))
+	if pr := rememberedPRFor(deliveryKey); pr.GetHead().GetSHA() != "head1" {
+		t.Errorf("remembered PR not found under GitHub's spelling: %v", pr)
 	}
 }

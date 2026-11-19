@@ -44,7 +44,7 @@ func TestResolvePRTeamReviewsUnionsCachedAndPendingTeams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := cfg.DB.UpsertPRTeamReviews(key.Number, key.Repo, string(seed)); err != nil {
+	if err := cfg.DB.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, string(seed)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestResolvePRTeamReviewsKeepsPersonalRequestAfterItIsCleared(t *testing.T) 
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := cfg.DB.UpsertPRTeamReviews(key.Number, key.Repo, string(seed)); err != nil {
+	if err := cfg.DB.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, string(seed)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestResolvePRTeamReviewsKeepsAnEmptyAnswerEmpty(t *testing.T) {
 	// A previous cycle already established this PR needs no team review. The
 	// answer must come back as an empty non-nil slice: persisting "[]" is what
 	// stops every later cycle asking GitHub for the history all over again.
-	if err := cfg.DB.UpsertPRTeamReviews(key.Number, key.Repo, "[]"); err != nil {
+	if err := cfg.DB.UpsertPRTeamReviews(key.Owner, key.Repo, key.Number, "[]"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestPersistPRCacheDataStoresTeamReviews(t *testing.T) {
 	}
 	persistPRCacheData("test-workflow", key, nil, auxData, nil, nil, nil, nil, nil)
 
-	raw, err := cfg.DB.GetPRTeamReviews(key.Number, key.Repo)
+	raw, err := cfg.DB.GetPRTeamReviews(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		t.Fatalf("GetPRTeamReviews: %v", err)
 	}

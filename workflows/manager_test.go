@@ -77,6 +77,8 @@ type mockWorkflow struct {
 func (m *mockWorkflow) GetName() string                    { return m.name }
 func (m *mockWorkflow) GetOrgSectionName() string          { return m.name }
 func (m *mockWorkflow) GetPRRequirements() []PRRequirement { return m.reqs }
+func (m *mockWorkflow) GetUser() string                    { return "" }
+func (m *mockWorkflow) GetSectionPriority() int            { return 0 }
 func (m *mockWorkflow) Run(_ []*github.PullRequest, _ chan FileChanges, _ *sync.WaitGroup) (RunResult, error) {
 	m.runCalls++
 	return RunResult{}, nil

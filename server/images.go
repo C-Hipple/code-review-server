@@ -1,7 +1,10 @@
 package server
 
 import (
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
 
 	"crs/images"
 )
@@ -82,9 +85,18 @@ func imagesForPR(details *PRDetails) []ImageJSON {
 	return out
 }
 
+// maxImageDataBytes caps the image GetImage sends inline (IncludeData). The
+// whole reply is one JSON line, a third bigger again for base64, that both
+// ends hold in memory; GitHub's attachments are well under it.
+const maxImageDataBytes = 10 << 20
+
 type GetImageArgs struct {
 	// URL is the image URL as it appears in a PR body, review or comment.
 	URL string `json:"URL"`
+	// IncludeData asks for the image's bytes in the reply, for a client that
+	// cannot read the server's disk: one connected to a hosted server, for
+	// which Path names a file on another machine.
+	IncludeData bool `json:"IncludeData"`
 }
 
 type GetImageReply struct {
@@ -97,6 +109,9 @@ type GetImageReply struct {
 	// case the prefetch exists to avoid.
 	Cached bool   `json:"cached"`
 	Error  string `json:"error"`
+	// Data is the cached file's bytes (base64 in JSON) when IncludeData asked
+	// for them, and absent otherwise.
+	Data []byte `json:"data,omitempty"`
 }
 
 // GetImage returns the local path of an image embedded in a PR, downloading it
@@ -111,6 +126,11 @@ type GetImageReply struct {
 // Unlike the rest of the read path this one can block on the network, because
 // the caller is asking for exactly one image and has nothing to show without
 // it.
+//
+// A remote client sets IncludeData and gets the bytes in the reply instead of
+// a path it cannot open. With it, okay means the bytes came along: an image
+// over maxImageDataBytes, or one whose file went away meanwhile, is okay:false
+// with the reason in error and the rest of the reply filled in.
 func (h *RPCHandler) GetImage(args *GetImageArgs, reply *GetImageReply) error {
 	reply.URL = args.URL
 	entry, cached, err := images.DefaultStore().Resolve(args.URL)
@@ -125,7 +145,37 @@ func (h *RPCHandler) GetImage(args *GetImageArgs, reply *GetImageReply) error {
 	reply.ContentType = entry.ContentType
 	reply.Size = entry.Size
 	reply.Cached = cached
+	if args.IncludeData {
+		data, err := readImageData(entry.Path)
+		if err != nil {
+			slog.Warn("Could not send an image's bytes", "url", entry.URL, "error", err)
+			reply.Okay = false
+			reply.Error = err.Error()
+			return nil
+		}
+		reply.Data = data
+	}
 	return nil
+}
+
+// readImageData reads a cached image for GetImage to send inline, refusing
+// one over maxImageDataBytes. It reads at most one byte past the cap rather
+// than trusting the size a stat saw: cached files are replaced and deleted
+// under the store's feet.
+func readImageData(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not read the cached image: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxImageDataBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("could not read the cached image: %w", err)
+	}
+	if len(data) > maxImageDataBytes {
+		return nil, fmt.Errorf("the image is over the %d MiB GetImage sends inline; open its URL on GitHub instead", maxImageDataBytes>>20)
+	}
+	return data, nil
 }
 
 // prefetchPRImages downloads the images a PR references, so that by the time

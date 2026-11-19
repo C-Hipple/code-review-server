@@ -178,7 +178,7 @@ func RunSectionPlugins(owner, repo string, number int) {
 		return
 	}
 	db := config.C().DB
-	head, _, _ := db.GetPullRequestSHAs(number, repo)
+	head, _, _ := db.GetPullRequestSHAs(owner, repo, number)
 	var due []string
 	for _, plugin := range config.C().Plugins {
 		if !always[plugin.Name] {
@@ -192,16 +192,16 @@ func RunSectionPlugins(owner, repo string, number int) {
 		return
 	}
 
-	details, err := GetPRDetails(owner, repo, number, false)
+	details, err := GetPRDetails("", owner, repo, number, false)
 	if err != nil {
 		slog.Error("Error fetching PR details for section plugins", "repo", repo, "pr", number, "error", err)
 		return
 	}
 	commentsJSON := "[]"
-	if rawComments, _ := db.GetPRComments(number, repo); rawComments != "" {
+	if rawComments, _ := db.GetPRComments(owner, repo, number); rawComments != "" {
 		commentsJSON = rawComments
 	}
-	sha, _, _ := db.GetPullRequestSHAs(number, repo)
+	sha, _, _ := db.GetPullRequestSHAs(owner, repo, number)
 	metadataJSON, err := json.Marshal(details.Metadata)
 	if err != nil {
 		metadataJSON = []byte("{}")

@@ -151,7 +151,7 @@ func TestOrderDiffFilesNeverStartsARun(t *testing.T) {
 		return nil, nil
 	}
 
-	details, err := GetPRDetails(aiOwner, aiRepo, aiNumber, false)
+	details, err := GetPRDetails("", aiOwner, aiRepo, aiNumber, false)
 	if err != nil {
 		t.Fatalf("GetPRDetails: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	db := aiTestSetup(t, []config.AIFeature{{ID: ai.ReviewEaseID, Enabled: true}})
 	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
 	forgetHookDispatches()
-	section, err := db.GetOrCreateSection("Review Requested", 0)
+	section, err := db.GetOrCreateSection("", "Review Requested", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,13 +351,13 @@ func TestReviewEaseEndToEnd(t *testing.T) {
 	if second.Metadata.ReviewEase != "easy" {
 		t.Errorf("metadata review_ease = %q, want easy", second.Metadata.ReviewEase)
 	}
-	items, err := NewOrgRenderer(db).GetAllReviewItems()
+	items, err := NewOrgRenderer(db, "").GetAllReviewItems()
 	if err != nil || len(items) != 1 || items[0].ReviewEase != "easy" {
 		t.Errorf("the review list should carry the rating: %+v (err %v)", items, err)
 	}
 
 	// After a push, the PR keeps its rating until the new head is rated.
-	if err := db.UpsertPullRequest(aiNumber, aiRepo, "sha-2", "base-1", aiTestDiff); err != nil {
+	if err := db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-2", "base-1", aiTestDiff); err != nil {
 		t.Fatal(err)
 	}
 	if got := reviewEase(aiOwner, aiRepo, aiNumber); got != "easy" {

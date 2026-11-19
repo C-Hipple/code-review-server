@@ -593,7 +593,7 @@ func runs(t *testing.T, log string) []string {
 // does, under the identifier the workflows give a PR's item.
 func putInSection(t *testing.T, db *database.DB, section, owner, repo string, number int) {
 	t.Helper()
-	s, err := db.GetOrCreateSection(section, 0)
+	s, err := db.GetOrCreateSection("", section, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

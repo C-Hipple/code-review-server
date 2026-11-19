@@ -410,7 +410,7 @@ See [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pu
 
 ## Review Chat
 
-The web client's review chat lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). Claude Code is the one backend so far. Nothing needs configuring: it is offered whenever `claude` is on the server's `PATH`, and costs nothing until someone starts a chat. The optional `[Chat.Claude]` table changes that:
+The review chat (in the web client, and the Emacs client's `crs-chat`) lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). Claude Code is the one backend so far. Nothing needs configuring: it is offered whenever `claude` is on the server's `PATH`, and costs nothing until someone starts a chat. The optional `[Chat.Claude]` table changes that:
 
 ```toml
 [Chat.Claude]

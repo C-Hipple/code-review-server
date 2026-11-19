@@ -221,5 +221,78 @@ diagram's Mermaid source instead (crs-diagram.el).")
 Its report is a diagram, which `crs-show-change-diagram' shows in a
 mermaid-mode buffer of its own rather than as a markdown report.")
 
+;; The review chat (crs-chat.el).
+(defcustom crs-chat-window-height 0.25
+  "How much of the window `crs-chat' is called from the chat takes.
+The chat opens in a window split off the bottom of that one, usually
+the review's: a fraction of its height, the review keeping the rest, or
+a whole number of lines."
+  :type '(choice (float :tag "Fraction of the window")
+                 (integer :tag "Lines"))
+  :group 'crs)
+
+(defcustom crs-chat-backend nil
+  "ID of the agent a new chat talks to, such as \"claude\".
+Nil, or an agent the server can't run, takes the first one it can."
+  :type '(choice (const :tag "The server's first available" nil)
+                 (string :tag "Agent ID"))
+  :group 'crs)
+
+(defcustom crs-chat-model nil
+  "ID of the model a new chat asks its agent for, such as \"sonnet\".
+Nil, or a model the agent doesn't offer, takes the agent's default."
+  :type '(choice (const :tag "The agent's default" nil)
+                 (string :tag "Model ID"))
+  :group 'crs)
+
+(defvar crs-chat-backends nil
+  "The chat agents the server offers, as ListChatBackends lists them.
+A vector of alists with `id', `name', `available', `reason', `models'
+and `default_model'; empty when the server offers none, nil until
+fetched.")
+
+(defvar crs--chat-last-choice nil
+  "The (BACKEND . MODEL) last chosen with `crs-chat-select-model'.
+New chat buffers start with it, ahead of `crs-chat-backend' and
+`crs-chat-model'.")
+
+(defvar crs--chat-tickets 0
+  "Counter for the chat requests whose replies carry a chat.
+Replies can land out of order while a reply streams in, so a chat
+buffer shows a reply only when its request is newer than the one it
+shows.")
+
+(defvar crs--chat-timer nil
+  "The timer redrawing running chats' header lines once a second.
+It only redraws, to keep the elapsed time current; it sends nothing.")
+
+;; Buffer-local state for chat buffers.
+(defvar-local crs--chat-owner nil
+  "Owner of the PR a chat buffer is about.")
+(defvar-local crs--chat-repo nil
+  "Repo of the PR a chat buffer is about.")
+(defvar-local crs--chat-number nil
+  "Number of the PR a chat buffer is about.")
+(defvar-local crs--chat-id nil
+  "ID of the chat the buffer shows, or nil for a new one not yet started.")
+(defvar-local crs--chat nil
+  "The chat the buffer shows, as GetChat last returned it.")
+(defvar-local crs--chat-backend nil
+  "ID of the agent the buffer's next new chat talks to.")
+(defvar-local crs--chat-model nil
+  "ID of the model the buffer's next new chat asks for; \"\" for the default.")
+(defvar-local crs--chat-shown 0
+  "The ticket (`crs--chat-tickets') of the reply the buffer shows.")
+(defvar-local crs--chat-fetching nil
+  "Non-nil while the buffer reads its chat again.
+It is `again' when another read was asked for meanwhile, which runs once
+the one in flight lands.")
+(defvar-local crs--chat-sending nil
+  "Non-nil while the buffer's last message is on its way to the server.")
+(defvar-local crs--chat-input-start nil
+  "Marker where the input starts: the transcript is everything before it.")
+(defvar-local crs--chat-prompt nil
+  "The overlay drawing the line between the transcript and the input.")
+
 (provide 'crs-vars)
 ;;; crs-vars.el ends here

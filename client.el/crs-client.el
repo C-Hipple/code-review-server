@@ -27,6 +27,7 @@
 (require 'crs-ai)
 (require 'crs-diagram)
 (require 'crs-filtered-diff)
+(require 'crs-chat)
 
 
 ;;; Keybindings
@@ -73,6 +74,7 @@
   "R" #'crs-rerun-plugin
   "C" #'crs-get-ai-output
   "M" #'crs-show-change-diagram
+  "t" #'crs-chat
   "H" #'crs-toggle-comments
   "L" #'crs-copy-github-line-link
   "A" #'crs-toggle-annotations
@@ -111,6 +113,20 @@
   "r" #'crs-ai-refresh
   "R" #'crs-ai-rerun
   "q" #'crs-quit-ai-output)
+
+;; The chat buffer is editable below its line, so its keys are all C-c
+;; ones, chosen to leave markdown-mode's useful ones alone: C-c C-f / C-c
+;; C-b still step between turns, C-c C-o follows a link.
+(define-keymap :keymap crs-chat-mode-map
+  "C-c C-c" #'crs-chat-send
+  "C-c RET" #'crs-chat-send
+  "C-c C-k" #'crs-chat-stop
+  "C-c C-n" #'crs-chat-new
+  "C-c C-w" #'crs-chat-switch
+  "C-c C-e" #'crs-chat-select-model
+  "C-c C-r" #'crs-chat-refresh
+  "C-c C-d" #'crs-chat-delete
+  "C-c C-q" #'crs-chat-quit)
 
 (with-eval-after-load 'evil
   ;; Global normal-state leader bindings: available in any buffer/mode,
@@ -153,6 +169,7 @@
     "R" #'crs-rerun-plugin
     "C" #'crs-get-ai-output
     "M" #'crs-show-change-diagram
+    "t" #'crs-chat
     "H" #'crs-toggle-comments
     "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
@@ -185,6 +202,7 @@
     "R" #'crs-rerun-plugin
     "C" #'crs-get-ai-output
     "M" #'crs-show-change-diagram
+    "t" #'crs-chat
     "H" #'crs-toggle-comments
     "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
@@ -232,7 +250,23 @@
   (evil-define-minor-mode-key 'normal 'crs-diagram-view-mode
     "r" #'crs-ai-refresh
     "R" #'crs-ai-rerun
-    "q" #'crs-quit-ai-output))
+    "q" #'crs-quit-ai-output)
+  ;; crs-chat-mode: write in insert state, as in a comment buffer; the
+  ;; normal-state leader keys mirror the C-c ones.
+  (evil-define-key 'normal crs-chat-mode-map
+    (kbd "C-c C-c") #'crs-chat-send
+    (kbd "C-c C-k") #'crs-chat-stop
+    ", c" #'crs-chat-send
+    ", k" #'crs-chat-stop
+    ", n" #'crs-chat-new
+    ", w" #'crs-chat-switch
+    ", e" #'crs-chat-select-model
+    ", r" #'crs-chat-refresh
+    ", d" #'crs-chat-delete
+    "q" #'crs-chat-quit)
+  (evil-define-key 'insert crs-chat-mode-map
+    (kbd "C-c C-c") #'crs-chat-send
+    (kbd "C-c C-k") #'crs-chat-stop))
 
 (provide 'crs-client)
 

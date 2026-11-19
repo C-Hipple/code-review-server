@@ -23,7 +23,7 @@
   (should (featurep 'crs-client))
   (dolist (feat '(crs-vars crs-html crs-rpc crs-render crs-list-mode
                   crs-review crs-comments crs-review-actions crs-plugins
-                  crs-ai crs-diagram crs-filtered-diff))
+                  crs-ai crs-diagram crs-filtered-diff crs-chat))
     (should (featurep feat))))
 
 (ert-deftest crs-test-key-commands-defined ()
@@ -43,6 +43,8 @@
                 crs-get-ai-output crs-run-ai-feature crs-ai-refresh crs-ai-rerun
                 crs-ai-list-features crs-quit-ai-output
                 crs-show-change-diagram
+                crs-chat crs-chat-send crs-chat-stop crs-chat-new crs-chat-switch
+                crs-chat-select-model crs-chat-refresh crs-chat-delete crs-chat-quit
                 crs-show-filtered-diff crs-show-full-diff
                 crs-show-diff-since-last-review crs-show-diff-since-last-interaction
                 crs-get-rate-limit-status))
@@ -76,7 +78,11 @@
                 crs--ai-buffer-name crs--ai-choose-feature
                 crs--ai-report-features crs--ai-feature-buffer
                 crs--insert-diagram crs--diagram-source crs--diagram-open
-                crs--diagram-buffer-name crs--parse-pr-ref crs--diagram-read-pr))
+                crs--diagram-buffer-name crs--parse-pr-ref crs--diagram-read-pr
+                crs--chat-buffer-name crs--chat-transcript crs--chat-render
+                crs--chat-replace-transcript crs--chat-shift-undo crs--chat-fetch
+                crs--chat-on-notification crs--chat-on-subscribed crs--chat-display
+                crs--chat-header-line crs--chat-pick-backend crs--chat-pick-model))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -96,7 +102,13 @@
                  crs--ai-insert-function
                  crs-change-diagram-feature-id
                  crs-diff-filters crs--buffer-diff-filter crs--buffer-full-diff
-                 crs--buffer-filtered-diff))
+                 crs--buffer-filtered-diff
+                 crs-chat-window-height crs-chat-backend crs-chat-model
+                 crs-chat-backends crs--chat-last-choice crs--chat-tickets
+                 crs--chat-timer crs--chat-owner crs--chat-id crs--chat
+                 crs--chat-backend crs--chat-model crs--chat-shown
+                 crs--chat-fetching crs--chat-sending crs--chat-input-start
+                 crs--chat-prompt))
     (should (boundp var))))
 
 ;;; --- Modes can be entered without error ---
@@ -105,7 +117,7 @@
   "Each major mode can be activated in a fresh buffer without error."
   (dolist (mode '(crs-list-mode my-code-review-mode comment-edit-mode
                   crs-outdated-comments-mode crs-plugin-output-mode
-                  crs-ai-output-mode))
+                  crs-ai-output-mode crs-chat-mode))
     (should (fboundp mode))
     (with-temp-buffer
       (funcall mode)
@@ -2093,6 +2105,545 @@ Count 0 least of all: the server reads it as 20."
     (should (string-match-p "^\\+a11 +<C: bob>$" text))
     (should (string-match-p "^ a6$" text))
     (should (= (crs-test--count "<C: bob>" text) 3))))
+
+;;; --- Review chat (crs-chat.el) ---
+
+(defconst crs-test--chat-backends
+  [((id . "claude") (name . "Claude Code") (available . t)
+    (models . [((id . "") (name . "Default"))
+               ((id . "opus") (name . "Opus"))
+               ((id . "sonnet") (name . "Sonnet"))])
+    (default_model . ""))]
+  "ListChatBackends' backends, as the server lists Claude Code.")
+
+(defun crs-test--chat (&rest overrides)
+  "A GetChat chat about acme/widgets #42, with OVERRIDES (KEY VALUE ...) applied.
+The reviewer asked what greet does; the agent read the diff and answered."
+  (let ((chat (list (cons 'id "chat-1")
+                    (cons 'owner "acme") (cons 'repo "widgets") (cons 'number 42)
+                    (cons 'backend "claude") (cons 'model "sonnet")
+                    (cons 'title "What does greet do?")
+                    (cons 'head_sha "abc1234def") (cons 'current_sha "abc1234def")
+                    (cons 'cost_usd 0.12) (cons 'status "idle")
+                    (cons 'messages
+                          (vector '((id . 1) (role . "user") (content . "What does greet do?")
+                                    (attached . ["description" "diff"]) (head_sha . "abc1234def"))
+                                  '((id . 2) (role . "tool") (tool . "Read") (content . "pr.diff")
+                                    (tool_status . "done"))
+                                  '((id . 3) (role . "assistant") (content . "It greets."))))
+                    (cons 'draft "")
+                    (cons 'created_at "2026-11-19T10:00:00Z")
+                    (cons 'updated_at "2026-11-19T10:01:00Z"))))
+    (while overrides
+      (setf (alist-get (pop overrides) chat) (pop overrides)))
+    chat))
+
+(defconst crs-test--chat-transcript
+  (concat "# You\n\nWhat does greet do?\n\n"
+          "*PR description and diff attached at abc1234*\n\n"
+          "# Claude Code\n\n"
+          "> ✓ Read pr.diff\n\n"
+          "It greets.\n\n")
+  "How `crs-test--chat' reads in the chat buffer.")
+
+(defmacro crs-test--with-chat (replies &rest body)
+  "Run BODY with chat RPCs answered from REPLIES, and the window layout restored.
+REPLIES maps a method name to its result, or to a function of the
+params returning it.  Binds `calls' to the (METHOD . PARAMS) sent, most
+recent first, and `timers' to the functions scheduled.  No agents are
+known to begin with, and the chat buffers are killed after."
+  (declare (indent 1))
+  `(let ((calls '())
+         (timers '())
+         (crs-chat-backends nil)
+         (crs--chat-last-choice nil)
+         (crs--chat-timer nil)
+         (crs-chat-backend nil)
+         (crs-chat-model nil))
+     (cl-letf (((symbol-function 'crs--send-request)
+                (lambda (method params callback)
+                  (push (cons method params) calls)
+                  (let ((reply (cdr (assoc method ,replies))))
+                    (funcall callback (if (functionp reply) (funcall reply params) reply)))))
+               ((symbol-function 'run-with-timer)
+                (lambda (_secs _repeat fn &rest _args)
+                  (push fn timers)
+                  'crs-test-timer))
+               ((symbol-function 'crs-start-server) #'ignore))
+       (unwind-protect
+           (save-window-excursion ,@body)
+         (mapc #'kill-buffer (crs--chat-buffers))))))
+
+(defun crs-test--chat-text ()
+  "The current chat buffer's transcript, without its input."
+  (buffer-substring-no-properties (point-min) crs--chat-input-start))
+
+(ert-deftest crs-test-chat-opens-below-the-review ()
+  "From a review, the chat takes the bottom quarter and opens the latest chat."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-backends)))
+        ("RPCHandler.ListChats" . ((chats . [((id . "chat-1") (title . "What does greet do?"))
+                                             ((id . "chat-0") (title . "Older"))])))
+        ("RPCHandler.GetChat" . ((chat . ,(crs-test--chat)))))
+    (delete-other-windows)
+    (let ((review (get-buffer-create (crs--review-buffer-name "acme" "widgets" 42))))
+      (unwind-protect
+          (progn
+            (switch-to-buffer review)
+            (let* ((review-window (selected-window))
+                   (total (window-total-height review-window))
+                   (chat-lines (round (* 0.25 total)))
+                   (buffer (crs-chat "acme" "widgets" 42))
+                   (chat-window (get-buffer-window buffer)))
+              (should (eq (selected-window) chat-window))
+              (should (eq (window-in-direction 'below review-window) chat-window))
+              (should (eq (window-buffer review-window) review))
+              (should (= (window-total-height chat-window) chat-lines))
+              (should (= (window-total-height review-window) (- total chat-lines)))
+              (should (equal (mapcar #'car (reverse calls))
+                             '("RPCHandler.ListChatBackends" "RPCHandler.ListChats"
+                               "RPCHandler.GetChat")))
+              (should (equal (json-encode (cdar calls)) "[{\"ChatID\":\"chat-1\"}]"))
+              (should-not timers)
+              (with-current-buffer buffer
+                (should (eq major-mode 'crs-chat-mode))
+                (should (derived-mode-p 'markdown-mode))
+                (should (equal crs--chat-id "chat-1"))
+                (should (equal (crs-test--chat-text) crs-test--chat-transcript))
+                ;; Point waits in the input, for the next message.
+                (should (= (point) (point-max) crs--chat-input-start)))
+              ;; Asking again selects the same window rather than splitting.
+              (select-window review-window)
+              (crs-chat "acme" "widgets" 42)
+              (should (eq (selected-window) chat-window))
+              (should (= (length (window-list)) 2))
+              ;; Quitting gives the review its whole window back.
+              (crs-chat-quit)
+              (should (= (length (window-list)) 1))
+              (should (= (window-total-height review-window) total))
+              (should (buffer-live-p buffer))))
+        (kill-buffer review)))))
+
+(ert-deftest crs-test-chat-window-height ()
+  "The chat's height is a fraction of the window it splits, or a line count."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((total (window-total-height)))
+      (let ((crs-chat-window-height 0.5))
+        (should (= (crs--chat-window-lines (selected-window)) (round (* 0.5 total)))))
+      (let ((crs-chat-window-height 7))
+        (should (= (crs--chat-window-lines (selected-window)) 7)))
+      (let ((crs-chat-window-height 0.01))
+        (should (= (crs--chat-window-lines (selected-window)) window-min-height))))))
+
+(ert-deftest crs-test-chat-new-pr-shows-the-intro ()
+  "A PR with no chats opens a new one, naming the agent and model it will use."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-backends)))
+        ("RPCHandler.ListChats" . ((chats . []))))
+    (let ((buffer (crs-chat "acme" "widgets" 42)))
+      (with-current-buffer buffer
+        (should-not crs--chat-id)
+        (should (equal (mapcar #'car (reverse calls))
+                       '("RPCHandler.ListChatBackends" "RPCHandler.ListChats")))
+        (should (string-match-p "\\`Ask Claude Code about acme/widgets #42\\." (crs-test--chat-text)))
+        (should (string-match-p "C-c C-c sends" (crs-test--chat-text)))
+        (should (equal (crs--chat-header-line)
+                       "New chat · acme/widgets #42 · Claude Code · Default"))
+        (should (string-match-p "Your message · C-c C-c sends"
+                                (overlay-get crs--chat-prompt 'before-string)))))))
+
+(ert-deftest crs-test-chat-unavailable-agent ()
+  "An agent the server can't run says why, and a message to it isn't sent."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends"
+         . ((backends . [((id . "claude") (name . "Claude Code") (available . :json-false)
+                          (reason . "claude is not on the server's PATH")
+                          (models . []) (default_model . ""))])))
+        ("RPCHandler.ListChats" . ((chats . []))))
+    (with-current-buffer (crs-chat "acme" "widgets" 42)
+      (should (string-match-p "\\`\\*\\*Claude Code isn't available\\.\\*\\* claude is not on"
+                              (crs-test--chat-text)))
+      (insert "Hello?")
+      (setq calls nil)
+      (should-error (crs-chat-send) :type 'user-error)
+      (should-not calls)
+      (should (equal (crs--chat-input) "Hello?")))))
+
+(ert-deftest crs-test-chat-transcript ()
+  "Turns are level-1 headings, tools blockquote lines, and replies Markdown."
+  (let ((crs-chat-backends crs-test--chat-backends))
+    (with-temp-buffer
+      (crs-chat-mode)
+      (setq crs--chat-id "chat-1")
+      (should (equal (crs--chat-transcript (crs-test--chat)) crs-test--chat-transcript))
+      ;; The reply being written follows the tools as it will read once
+      ;; stored, a code block it stops inside closed so the input isn't code.
+      (should (equal (crs--chat-transcript
+                      (crs-test--chat 'status "running"
+                                      'draft "Like this:\n\n```go\nfunc greet() {"))
+                     (concat crs-test--chat-transcript
+                             "Like this:\n\n```go\nfunc greet() {\n```\n\n")))
+      ;; A new question being worked on, after a tool still running.
+      (should (equal (crs--chat-transcript
+                      (crs-test--chat
+                       'status "running"
+                       'messages (vector '((id . 1) (role . "user") (content . "Why?"))
+                                         '((id . 2) (role . "tool") (tool . "Grep")
+                                           (content . "func greet in server")
+                                           (tool_status . "running")))))
+                     (concat "# You\n\nWhy?\n\n# Claude Code\n\n"
+                             "> … Grep func greet in server\n\n*Working…*\n\n")))
+      ;; A failed turn, a stopped one, and a PR that moved on.
+      (let ((text (crs--chat-transcript
+                   (crs-test--chat
+                    'current_sha "fff0000"
+                    'messages (vector '((id . 1) (role . "user") (content . "Why?"))
+                                      '((id . 2) (role . "error") (content . "claude exited\nstatus 1"))
+                                      '((id . 3) (role . "notice") (content . "Stopped.")))))))
+        (should (string-match-p "> \\*\\*Error:\\*\\* claude exited\n> status 1\n\n" text))
+        (should (string-match-p "> \\*Stopped\\.\\*\n\n" text))
+        (should (string-match-p "new commits since this chat started.*C-c C-n starts a new chat"
+                                text)))
+      ;; Not loaded yet.
+      (should (equal (crs--chat-transcript nil) "Loading the chat…\n\n")))))
+
+(ert-deftest crs-test-chat-helpers ()
+  "Costs, elapsed times, attachments and code fences read as the web client's do."
+  (should-not (crs--chat-format-cost 0))
+  (should-not (crs--chat-format-cost nil))
+  (should (equal (crs--chat-format-cost 0.004) "<$0.01"))
+  (should (equal (crs--chat-format-cost 1.234) "$1.23"))
+  (let ((now (parse-iso8601-time-string "2026-11-19T10:01:15Z")))
+    (should (equal (crs--chat-elapsed "2026-11-19T10:01:03Z" now) "12s"))
+    (should (equal (crs--chat-elapsed "2026-11-19T10:00:00Z" now) "1m 15s"))
+    (should (equal (crs--chat-elapsed nil now) ""))
+    (should (equal (crs--chat-elapsed "soon" now) "")))
+  (should (equal (crs--chat-attached-label
+                  '((attached . ["description" "diff"]) (diff_truncated . t)
+                    (head_sha . "9f2c1e7aa")))
+                 "PR description and diff (cut to fit) attached at 9f2c1e7"))
+  (should-not (crs--chat-attached-label '((attached . []))))
+  (should (equal (crs--chat-close-fence "a\n```\nb\n```\nc") "a\n```\nb\n```\nc"))
+  (should (equal (crs--chat-close-fence "a\n~~~~\nb\n```") "a\n~~~~\nb\n```\n~~~~"))
+  (should (crs--chat-stale-p '((head_sha . "a") (current_sha . "b"))))
+  (should-not (crs--chat-stale-p '((head_sha . "a") (current_sha . ""))))
+  (let ((backends (append crs-test--chat-backends nil)))
+    (should (equal (cdr (assq 'id (crs--chat-pick-backend backends "nope"))) "claude"))
+    (should (equal (crs--chat-pick-model (car backends) "opus") "opus"))
+    (should (equal (crs--chat-pick-model (car backends) "gpt") ""))
+    (should (equal (crs--chat-model-label (car backends) "sonnet") "Sonnet"))
+    (should (equal (crs--chat-model-label (car backends) "") "Default"))
+    (should (equal (crs--chat-model-label nil "custom") "custom"))))
+
+(ert-deftest crs-test-chat-transcript-is-read-only ()
+  "The conversation can't be edited; the input below it can."
+  (let ((crs-chat-backends crs-test--chat-backends))
+    (with-temp-buffer
+      (crs-chat-mode)
+      (setq crs--chat-id "chat-1")
+      (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+      (crs--chat-render (current-buffer))
+      (goto-char (point-min))
+      (should-error (insert "x") :type 'text-read-only)
+      (goto-char (+ (point-min) 5))
+      (should-error (insert "x") :type 'text-read-only)
+      (goto-char crs--chat-input-start)
+      (should-error (delete-char -1) :type 'text-read-only)
+      (insert "typed")
+      (should (equal (crs--chat-input) "typed"))
+      ;; Typing doesn't pick up the transcript's properties.
+      (should-not (get-text-property crs--chat-input-start 'read-only)))))
+
+(ert-deftest crs-test-chat-input-survives-fontification ()
+  "Typing below the line still works once markdown-mode has fontified the buffer.
+markdown-mode's font-lock manages `rear-nonsticky', stripping it from
+the transcript, so the transcript's `read-only' must not rely on it."
+  (let ((crs-chat-backends crs-test--chat-backends))
+    (with-temp-buffer
+      (crs-chat-mode)
+      (setq crs--chat-id "chat-1")
+      (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+      (crs--chat-render (current-buffer))
+      (font-lock-ensure)
+      (goto-char (point-max))
+      (insert "typed")
+      (should (equal (crs--chat-input) "typed"))
+      (goto-char (point-min))
+      (should-error (insert "x") :type 'text-read-only))))
+
+(ert-deftest crs-test-chat-streams-without-touching-the-input ()
+  "A growing reply leaves the message being written, point and its undo alone."
+  (let ((crs-chat-backends crs-test--chat-backends)
+        (crs--chat-timer nil))
+    (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) 'crs-test-timer)))
+      (with-temp-buffer
+        (crs-chat-mode)
+        (buffer-enable-undo)
+        (setq crs--chat-id "chat-1")
+        (crs--chat-show (crs--chat-ticket) (crs-test--chat 'status "running" 'draft "Greets"))
+        (crs--chat-render (current-buffer))
+        ;; The reviewer writes their next question meanwhile.
+        (goto-char (point-max))
+        (insert "And who")
+        (undo-boundary)
+        (insert " calls it?")
+        (undo-boundary)
+        (backward-char 3)
+        (crs--chat-show (crs--chat-ticket)
+                        (crs-test--chat 'status "running" 'draft "Greets the caller by name."))
+        (crs--chat-render (current-buffer))
+        (should (equal (crs-test--chat-text)
+                       (concat crs-test--chat-transcript "Greets the caller by name.\n\n")))
+        (should (equal (crs--chat-input) "And who calls it?"))
+        (should (equal (buffer-substring-no-properties (point) (point-max)) "it?"))
+        ;; The draft is stored as a message: the text reads the same.
+        (crs--chat-show (crs--chat-ticket)
+                        (crs-test--chat
+                         'messages (vconcat (cdr (assq 'messages (crs-test--chat)))
+                                            [((id . 4) (role . "assistant")
+                                              (content . "Greets the caller by name."))])))
+        (crs--chat-render (current-buffer))
+        (should (equal (crs-test--chat-text)
+                       (concat crs-test--chat-transcript "Greets the caller by name.\n\n")))
+        (should (equal (buffer-substring-no-properties (point) (point-max)) "it?"))
+        ;; Undo still takes back the reviewer's typing, where it now is.
+        (undo)
+        (should (equal (crs--chat-input) "And who"))
+        (should (equal (crs-test--chat-text)
+                       (concat crs-test--chat-transcript "Greets the caller by name.\n\n")))))))
+
+(ert-deftest crs-test-chat-shift-undo ()
+  "Each kind of undo entry at or after the transcript's end moves with it."
+  (with-temp-buffer
+    (let ((marker (copy-marker 1)))
+      ;; Positions before 20 belong to text the transcript redraw left be.
+      (setq buffer-undo-list
+            (copy-tree (list nil '(30 . 35) '("gone" . 40) '("end" . -41) 42 '(t . 0)
+                             '(nil face bold 31 . 33) (cons marker 2)
+                             '(apply 3 31 36 ignore) '(5 . 9))))
+      (crs--chat-shift-undo 20 10)
+      (should (equal buffer-undo-list
+                     (list nil '(40 . 45) '("gone" . 50) '("end" . -51) 52 '(t . 0)
+                           '(nil face bold 41 . 43) (cons marker 2)
+                           '(apply 3 41 46 ignore) '(5 . 9)))))))
+
+(ert-deftest crs-test-chat-send-starts-a-chat ()
+  "The first message starts a chat with the chosen agent and leaves the input."
+  (crs-test--with-chat
+      `(("RPCHandler.StartChat"
+         . ((okay . t) (message . "")
+            (chat . ,(crs-test--chat 'status "running" 'cost_usd 0
+                                     'messages [((id . 1) (role . "user")
+                                                 (content . "What does greet do?"))])))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (goto-char (point-max))
+      (insert "  What does greet do?\n")
+      (crs-chat-send)
+      (should (equal (mapcar #'car calls) '("RPCHandler.StartChat")))
+      (should (equal (json-encode (cdar calls))
+                     (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
+                             "\"Backend\":\"claude\",\"Model\":\"\","
+                             "\"Message\":\"What does greet do?\"}]")))
+      (should (equal crs--chat-id "chat-1"))
+      (should (equal (crs--chat-input) ""))
+      (should-not crs--chat-sending)
+      (should (equal (crs-test--chat-text)
+                     "# You\n\nWhat does greet do?\n\n# Claude Code\n\n*Working…*\n\n"))
+      (should (string-match-p "Claude Code is answering · C-c C-k stops it"
+                              (overlay-get crs--chat-prompt 'before-string)))
+      (should (string-match-p "· working" (crs--chat-header-line)))
+      ;; A running chat ticks its header line once a second, which asks
+      ;; the server nothing.
+      (should (= (length timers) 1))
+      (let ((sent (length calls)))
+        (funcall (car timers))
+        (should (= (length calls) sent)))
+      ;; The next message waits for the answer.
+      (insert "And then?")
+      (should-error (crs-chat-send) :type 'user-error)
+      (should (= (length calls) 1))
+      (should (equal (crs--chat-input) "And then?")))))
+
+(ert-deftest crs-test-chat-send-continues-a-chat ()
+  "A later message continues the chat; a refused one stays in the input."
+  (let ((reply `((okay . t) (message . "") (chat . ,(crs-test--chat 'status "running")))))
+    (crs-test--with-chat
+        `(("RPCHandler.SendChatMessage" . ,(lambda (_params) reply)))
+      (setq crs-chat-backends crs-test--chat-backends)
+      (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+        (setq crs--chat-id "chat-1")
+        (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+        (crs--chat-render (current-buffer))
+        (goto-char (point-max))
+        (insert "Who calls it?")
+        (crs-chat-send)
+        (should (equal (json-encode (cdar calls))
+                       "[{\"ChatID\":\"chat-1\",\"Message\":\"Who calls it?\"}]"))
+        (should (equal (crs--chat-input) ""))
+        ;; Refused: the message stays to send again.
+        (setq reply `((okay . :json-false) (message . "the agent is still answering")
+                      (chat . ,(crs-test--chat)))
+              crs--chat (crs-test--chat))
+        (insert "Again?")
+        (crs-chat-send)
+        (should (equal (crs--chat-input) "Again?"))
+        (should-not crs--chat-sending)
+        ;; An RPC error leaves it too.
+        (setq reply '((error . "rpc: server down")))
+        (crs-chat-send)
+        (should (equal (crs--chat-input) "Again?"))
+        ;; Nothing written, nothing sent.
+        (delete-region crs--chat-input-start (point-max))
+        (setq calls nil)
+        (should-error (crs-chat-send) :type 'user-error)
+        (should-not calls)))))
+
+(ert-deftest crs-test-chat-follows-notifications-one-read-at-a-time ()
+  "Server.ChatChanged re-reads the chat it names; reads don't pile up."
+  (let ((pending '())
+        (crs-chat-backends crs-test--chat-backends)
+        (crs--chat-timer nil)
+        (change '((owner . "acme") (repo . "widgets") (number . 42)
+                  (chat_id . "chat-1") (status . "running"))))
+    (cl-letf (((symbol-function 'crs--send-request)
+               (lambda (method params callback) (push (list method params callback) pending)))
+              ((symbol-function 'run-with-timer) (lambda (&rest _) 'crs-test-timer)))
+      (let ((buffer (crs--chat-create "acme" "widgets" 42)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (setq crs--chat-id "chat-1")
+              (crs--handle-notification "Server.ChatChanged" (vector change))
+              (crs--handle-notification "Server.ChatChanged" (vector change))
+              (crs--handle-notification "Server.ChatChanged"
+                                        (vector '((chat_id . "other") (status . "idle"))))
+              (crs--handle-notification "Server.AIOutputChanged" (vector change))
+              ;; One read in flight; another due once it lands.
+              (should (= (length pending) 1))
+              (should (equal (car (car pending)) "RPCHandler.GetChat"))
+              (should (eq crs--chat-fetching 'again))
+              (funcall (nth 2 (pop pending))
+                       `((chat . ,(crs-test--chat 'status "running" 'draft "Gre"))))
+              (should (string-suffix-p "Gre\n\n" (crs-test--chat-text)))
+              (should (= (length pending) 1))
+              (funcall (nth 2 (pop pending))
+                       `((chat . ,(crs-test--chat 'status "running" 'draft "Greets"))))
+              (should (string-suffix-p "Greets\n\n" (crs-test--chat-text)))
+              (should-not crs--chat-fetching)
+              (should-not pending))
+          (kill-buffer buffer))))))
+
+(ert-deftest crs-test-chat-ignores-stale-replies ()
+  "A reply older than the one shown, or about a chat left, isn't shown."
+  (let ((crs-chat-backends crs-test--chat-backends))
+    (with-temp-buffer
+      (crs-chat-mode)
+      (setq crs--chat-id "chat-1")
+      (let ((older (crs--chat-ticket))
+            (newer (crs--chat-ticket)))
+        (should (crs--chat-show newer (crs-test--chat 'draft "newer")))
+        (should-not (crs--chat-show older (crs-test--chat 'draft "older")))
+        (should (equal (cdr (assq 'draft crs--chat)) "newer"))
+        (should-not (crs--chat-show (crs--chat-ticket) (crs-test--chat 'id "chat-2")))
+        ;; A new chat ignores what was asked about the one before.
+        (let ((asked (crs--chat-ticket)))
+          (crs-chat-new)
+          (should-not (crs--chat-show asked (crs-test--chat)))
+          (should-not crs--chat-id))))))
+
+(ert-deftest crs-test-chat-deleted-elsewhere ()
+  "A chat deleted from another client turns the buffer into a new chat."
+  (crs-test--with-chat
+      '(("RPCHandler.GetChat" . ((error . "there is no chat \"chat-1\""))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (setq crs--chat-id "chat-1")
+      (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+      (crs--chat-on-notification "Server.ChatChanged" '((chat_id . "chat-1") (status . "idle")))
+      (should-not crs--chat-id)
+      (should-not crs--chat)
+      (should (string-prefix-p "Ask Claude Code" (crs-test--chat-text))))))
+
+(ert-deftest crs-test-chat-switch-and-delete ()
+  "Another of the PR's chats opens in the buffer; deleting leaves a new one."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChats" . ((chats . [((id . "chat-1") (title . "What does greet do?")
+                                              (updated_at . "2026-11-19T10:01:00Z"))
+                                             ((id . "chat-0") (title . "Older")
+                                              (status . "running"))])))
+        ("RPCHandler.GetChat" . ,(lambda (params)
+                                   `((chat . ,(crs-test--chat
+                                               'id (cdr (assq 'ChatID (aref params 0))))))))
+        ("RPCHandler.DeleteChat" . ((okay . t))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (should (equal (car (nth 0 collection)) "New chat"))
+                   (should (string-match-p "\\`Older  (\\?, answering)\\'" (car (nth 2 collection))))
+                   (car (nth 2 collection)))))
+        (crs-chat-switch))
+      (should (equal crs--chat-id "chat-0"))
+      (should (equal (json-encode (cdar calls)) "[{\"ChatID\":\"chat-0\"}]"))
+      (should (string-prefix-p "# You" (crs-test--chat-text)))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
+        (crs-chat-delete))
+      (should (equal (json-encode (cdar calls)) "[{\"ChatID\":\"chat-0\"}]"))
+      (should (equal (caar calls) "RPCHandler.DeleteChat"))
+      (should-not crs--chat-id)
+      (should (string-prefix-p "Ask Claude Code" (crs-test--chat-text))))))
+
+(ert-deftest crs-test-chat-select-model ()
+  "The model chosen goes with the next new chat, here and in later buffers."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-backends)))
+        ("RPCHandler.StartChat" . ((okay . t) (chat . ,(crs-test--chat)))))
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt _collection &rest _)
+                   ;; One agent: only the model is asked for.
+                   (should (equal prompt "Model: "))
+                   "Opus")))
+        (crs-chat-select-model))
+      (should (equal crs--chat-model "opus"))
+      (should (equal crs--chat-last-choice '("claude" . "opus")))
+      (should (string-match-p "Claude Code · Opus" (crs--chat-header-line)))
+      (goto-char (point-max))
+      (insert "Hi")
+      (crs-chat-send)
+      (should (string-match-p "\"Model\":\"opus\"" (json-encode (cdar calls)))))
+    (with-current-buffer (crs--chat-create "acme" "widgets" 7)
+      (should (equal crs--chat-model "opus")))))
+
+(ert-deftest crs-test-chat-new-server-reads-again ()
+  "A new server's subscription re-reads the agents and each open chat."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-backends)))
+        ("RPCHandler.GetChat" . ((chat . ,(crs-test--chat)))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (setq crs--chat-id "chat-1"
+            crs--chat-fetching t
+            crs--chat-sending t)
+      (run-hooks 'crs-server-subscribed-hook)
+      (should (equal (mapcar #'car (reverse calls))
+                     '("RPCHandler.ListChatBackends" "RPCHandler.GetChat")))
+      (should-not crs--chat-fetching)
+      (should-not crs--chat-sending)
+      (should (equal (crs-test--chat-text) crs-test--chat-transcript)))))
+
+(ert-deftest crs-test-chat-keys-bound ()
+  "The chat opens from a review; its keys leave markdown-mode's turn-stepping."
+  (should (eq (lookup-key my-code-review-mode-map (kbd "t")) #'crs-chat))
+  (dolist (binding '(("C-c C-c" . crs-chat-send) ("C-c RET" . crs-chat-send)
+                     ("C-c C-k" . crs-chat-stop) ("C-c C-n" . crs-chat-new)
+                     ("C-c C-w" . crs-chat-switch) ("C-c C-e" . crs-chat-select-model)
+                     ("C-c C-r" . crs-chat-refresh) ("C-c C-d" . crs-chat-delete)
+                     ("C-c C-q" . crs-chat-quit)))
+    (should (eq (lookup-key crs-chat-mode-map (kbd (car binding))) (cdr binding))))
+  (should (eq (lookup-key crs-chat-mode-map (kbd "C-c C-f")) #'markdown-outline-next-same-level))
+  (should (eq (lookup-key crs-chat-mode-map (kbd "C-c C-o")) #'markdown-follow-thing-at-point)))
 
 ;; Keybindings are installed in crs-client.el, so an autoloaded command must
 ;; load crs-client, not just its own module.  A bare `;;;###autoload' cookie

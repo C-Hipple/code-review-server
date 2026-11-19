@@ -108,8 +108,9 @@ See [Configuration](configuration.md) for `WorkflowInterval` and other schedulin
 
 The emacs client lives in the `client.el/` directory. It is split into
 several modules; `crs-client.el` is the entry point that loads them all
-(`crs-vars`, `crs-html`, `crs-rpc`, `crs-render`, `crs-list-mode`,
-`crs-review`, `crs-comments`, `crs-review-actions`, `crs-plugins`, `crs-ai`).
+(`crs-vars`, `crs-html`, `crs-rpc`, `crs-filtered-diff`, `crs-render`,
+`crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`,
+`crs-plugins`, `crs-ai`, `crs-diagram`, `crs-chat`).
 
 ### Installation
 
@@ -207,6 +208,46 @@ when it is installed, so `C-c C-b` renders it with `mmdc` and `C-c C-o` opens it
 in the Mermaid live editor. Called with `M-x` anywhere else, it asks for the PR as
 a URL or `owner/repo#number`. The same `r`, `R` and `q` apply, and the header line
 says whether the diagram still describes the PR.
+
+#### Review chat
+
+`t` in a review buffer (`crs-chat`) opens the [review chat](protocol.md#review-chat):
+a conversation about the PR with a coding agent the server runs on your machine
+(Claude Code, when `claude` is on the server's `PATH`). The chat opens in a window
+split off the bottom of the review's, which keeps the top three quarters
+(`crs-chat-window-height`), and shows the PR's most recent conversation, or a new
+one. The agent gets the PR's description and diff with your first message, and can
+read the repository but not change it.
+
+The chat buffer is in `crs-chat-mode`, built on `markdown-mode`: the conversation
+is Markdown, read-only, one level-1 heading per turn (`# You`, then the agent's
+name, with the tools it used as `>` lines), so markdown-mode's `C-c C-f` and
+`C-c C-b` step from turn to turn and `C-c C-o` follows a link. Write your message
+below the line at the bottom; the header line names the agent, the model, what the
+chat has cost and, while the agent works, for how long.
+
+| Key | Command | |
+|-----|---------|-|
+| `C-c C-c` | `crs-chat-send` | Send the message below the line (also `C-c RET`) |
+| `C-c C-k` | `crs-chat-stop` | Stop the agent answering |
+| `C-c C-n` | `crs-chat-new` | Start a new chat, which gets the PR's diff as it is now |
+| `C-c C-w` | `crs-chat-switch` | Open another of the PR's chats |
+| `C-c C-e` | `crs-chat-select-model` | Pick the agent and model for new chats |
+| `C-c C-r` | `crs-chat-refresh` | Read the chat from the server again |
+| `C-c C-d` | `crs-chat-delete` | Delete the chat |
+| `C-c C-q` | `crs-chat-quit` | Close the chat window, keeping what you were writing |
+
+With evil, the chat opens in insert state; in normal state `q` closes it and
+`, c`, `, k`, `, n`, `, w`, `, e`, `, r` and `, d` do as the `C-c` keys above.
+
+The answer streams in as the agent writes it: the server announces each step
+(`Server.ChatChanged`) and the buffer reads the chat again, redrawing only what
+changed. What you are writing, where point is and your undo history stay as they
+were, and a window whose point is in your message follows the conversation down.
+When the PR has new commits since the chat started, the chat says so; `C-c C-n`
+gives the agent the new diff. `crs-chat-backend` and `crs-chat-model` set the agent
+and model new chats start with (by default the server's first agent, and its
+default model).
 
 ### Embedded screenshots
 

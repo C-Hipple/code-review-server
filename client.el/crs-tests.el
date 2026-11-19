@@ -62,6 +62,7 @@
                 crs--ensure-html crs--make-html-placeholder
                 crs--localize-image-srcs crs--image-cache-path
                 crs--process-html-placeholders crs--strip-comments-tree
+                crs--strip-empty-sections
                 crs--format-reaction crs--format-reactions
                 crs--index-annotations crs--render-annotation-block
                 crs--insert-annotations-into-buffer
@@ -207,6 +208,32 @@
     (should-not (string-match-p "a comment" stripped))
     (should (string-match-p "PR one" stripped))
     (should (string-match-p "PR two" stripped))))
+
+(ert-deftest crs-test-strip-empty-sections ()
+  "Sections with no PRs are dropped; the rest pass through untouched."
+  (let ((stripped (crs--strip-empty-sections
+                   (concat "* TODO Empty one [0/0]\n\n"
+                           "* TODO Mine [0/1]\n"
+                           "** TODO PR one\t\t:repo:\n"
+                           "*** Details\nbody\n\n"
+                           "* TODO Empty two [0/0]\n\n"
+                           "* DONE Merged [1/1]\n"
+                           "** DONE PR two\n\n"
+                           "* TODO Empty three [0/0]\n\n"))))
+    (should (equal stripped
+                   (concat "* TODO Mine [0/1]\n"
+                           "** TODO PR one\t\t:repo:\n"
+                           "*** Details\nbody\n\n"
+                           "* DONE Merged [1/1]\n"
+                           "** DONE PR two\n")))))
+
+(ert-deftest crs-test-strip-empty-sections-edge-cases ()
+  "No content, only empty sections, and text before the first section."
+  (should-not (crs--strip-empty-sections nil))
+  (should (equal (crs--strip-empty-sections "* TODO A [0/0]\n\n* TODO B [0/0]\n\n")
+                 ""))
+  (should (equal (crs--strip-empty-sections "preamble\n* TODO A [0/0]\n")
+                 "preamble")))
 
 ;;; --- Plugin annotations ---
 

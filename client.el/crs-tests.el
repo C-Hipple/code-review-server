@@ -2094,5 +2094,22 @@ Count 0 least of all: the server reads it as 20."
     (should (string-match-p "^ a6$" text))
     (should (= (crs-test--count "<C: bob>" text) 3))))
 
+;; Keybindings are installed in crs-client.el, so an autoloaded command must
+;; load crs-client, not just its own module.  A bare `;;;###autoload' cookie
+;; before a defun autoloads the defining file (crs-start-server -> crs-rpc),
+;; which leaves every mode keymap empty after a package install.
+(ert-deftest crs-test-autoloads-load-client ()
+  (let ((dir (file-name-directory (locate-library "crs-client")))
+        (bare nil))
+    (dolist (file (directory-files dir t "\\`crs-.*\\.el\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (while (re-search-forward "^;;;###autoload[ \t]*\\(.*\\)$" nil t)
+          (unless (string-match-p "\\`(autoload '[^ ]+ \"crs-client\"" (match-string 1))
+            (push (format "%s:%d" (file-name-nondirectory file)
+                          (line-number-at-pos))
+                  bare)))))
+    (should-not bare)))
+
 (provide 'crs-tests)
 ;;; crs-tests.el ends here

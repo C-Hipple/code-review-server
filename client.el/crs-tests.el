@@ -1533,6 +1533,76 @@ description was rendered put every diff line off by its extra lines."
         ;; shr wraps to the window, which is narrow in batch.
         (should (string-match-p "Adds[[:space:]]+widgets" (buffer-string)))))))
 
+(ert-deftest crs-test-review-mode-hook-runs-after-point-and-read-only ()
+  "The review mode's hooks see the restored point and a read-only buffer."
+  (crs-test--with-review-buffer nil
+    (let* ((seen nil)
+           (hook (lambda ()
+                   (push (list (point) buffer-read-only inhibit-read-only)
+                         seen))))
+      (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+        (crs--render-and-update buffer crs-test--pr-payload))
+      (with-current-buffer buffer
+        (goto-char (point-min))
+        (forward-line 5))
+      (add-hook 'my-code-review-mode-hook hook)
+      (unwind-protect
+          (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+            (crs--render-and-update buffer nil 6))
+        (remove-hook 'my-code-review-mode-hook hook))
+      (with-current-buffer buffer
+        (should (= (length seen) 1))
+        (should (= (nth 0 (car seen)) (point)))
+        (should (= (line-number-at-pos (nth 0 (car seen))) 6))
+        (should (nth 1 (car seen)))
+        (should-not (nth 2 (car seen)))))))
+
+(ert-deftest crs-test-review-mode-hook-on-string-content ()
+  "String content renders its HTML before the review mode's hooks run, once."
+  (crs-test--with-review-buffer nil
+    (let* ((seen nil)
+           (hook (lambda () (push (buffer-string) seen))))
+      (add-hook 'my-code-review-mode-hook hook)
+      (unwind-protect
+          (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+            (crs--render-and-update
+             buffer
+             (concat "Description\n"
+                     (crs--make-html-placeholder "<p>First paragraph.</p><p>Second one.</p>")
+                     "\n\n" crs-test--full-diff)))
+        (remove-hook 'my-code-review-mode-hook hook))
+      (with-current-buffer buffer
+        (should (= (length seen) 1))
+        (should (equal (car seen) (buffer-string)))
+        (should-not (string-match-p "<CRS-HTML" (car seen)))
+        (should (string-match-p "First[[:space:]]+paragraph" (car seen)))))))
+
+(ert-deftest crs-test-review-mode-hook-runs-when-rendering-fails ()
+  "A render that fails after the mode switch still runs the mode's hooks."
+  (crs-test--with-review-buffer nil
+    (let* ((ran 0)
+           (hook (lambda () (setq ran (1+ ran)))))
+      (add-hook 'my-code-review-mode-hook hook)
+      (unwind-protect
+          (cl-letf (((symbol-function 'crs--send-request) #'ignore)
+                    ((symbol-function 'crs--process-html-placeholders)
+                     (lambda () (error "Bad placeholder"))))
+            (should-error (crs--render-and-update buffer crs-test--pr-payload)))
+        (remove-hook 'my-code-review-mode-hook hook))
+      (with-current-buffer buffer
+        (should (eq major-mode 'my-code-review-mode))
+        (should (= ran 1))))))
+
+(ert-deftest crs-test-render-keeps-buffer-owner ()
+  "Rendering re-enters the review mode without losing the PR's owner."
+  (crs-test--with-review-buffer nil
+    (with-current-buffer buffer
+      (setq crs--buffer-owner "acme"))
+    (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+      (crs--render-and-update buffer crs-test--pr-payload))
+    (with-current-buffer buffer
+      (should (equal crs--buffer-owner "acme")))))
+
 (ert-deftest crs-test-filtered-diff-without-a-baseline-keeps-the-full-diff ()
   "A filter with nothing to start from leaves the full diff and its comments."
   (crs-test--with-review-buffer nil

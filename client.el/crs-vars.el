@@ -101,7 +101,10 @@ opened (see `crs--full-diff-position').")
 
 ;; Buffer-local variables for storing PR data separately
 (defvar-local crs--buffer-owner nil
-  "The GitHub owner for the current PR buffer.")
+  "The GitHub owner for the current PR buffer.
+Permanent: `crs-get-review' sets it before rendering, and rendering
+re-enters the review buffer's major mode, which would otherwise reset it.")
+(put 'crs--buffer-owner 'permanent-local t)
 (defvar-local crs--buffer-diff nil
   "The raw diff content for the current PR.")
 (defvar-local crs--buffer-comments nil

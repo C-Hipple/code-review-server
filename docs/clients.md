@@ -124,6 +124,14 @@ several modules; `crs-client.el` is the entry point that loads them all
                       :files ("*.el")))
 ```
 
+#### Language server support in reviews
+
+Hover, go to definition and find references inside a review buffer come from
+[diff-lsp](https://github.com/C-Hipple/diff-lsp) and its Emacs package
+[diff-lsp.el](https://github.com/C-Hipple/diff-lsp.el); both are installed
+separately from this repository. See
+[Reviewing Code](reviewing.md#lsp-integration) for setup.
+
 ### Usage
 
 1. Open `client.el/crs-client.el` && evaluate the buffer (it `require`s the other modules)

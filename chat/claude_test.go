@@ -191,9 +191,17 @@ func TestClaudeTurnFailures(t *testing.T) {
 	}
 }
 
-func TestClaudeEnvDropsTheNestedSessionMarker(t *testing.T) {
-	env := claudeEnv([]string{"PATH=/bin", "CLAUDECODE=1", "HOME=/home/me"})
+func TestAgentEnvDropsTheNestedSessionMarker(t *testing.T) {
+	env := agentEnv([]string{"PATH=/bin", "CLAUDECODE=1", "HOME=/home/me"}, nil)
 	if !slices.Equal(env, []string{"PATH=/bin", "HOME=/home/me"}) {
+		t.Errorf("env = %q", env)
+	}
+}
+
+func TestAgentEnvAddsTheConfiguredEnvOverTheServers(t *testing.T) {
+	env := agentEnv([]string{"PATH=/bin", "GEMINI_API_KEY=old", "HOME=/home/me"},
+		map[string]string{"GEMINI_API_KEY": "new", "DEBUG": "1"})
+	if !slices.Equal(env, []string{"PATH=/bin", "HOME=/home/me", "DEBUG=1", "GEMINI_API_KEY=new"}) {
 		t.Errorf("env = %q", env)
 	}
 }

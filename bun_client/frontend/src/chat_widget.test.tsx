@@ -57,9 +57,8 @@ const chat: Chat = {
 function state(fields: Partial<ChatState> = {}): ChatState {
     return {
         backends: [claude],
-        backend: 'claude',
+        agent: claude,
         model: '',
-        selectBackend: () => {},
         selectModel: () => {},
         chats: [],
         chat: null,
@@ -107,9 +106,12 @@ describe('ChatWidget', () => {
 });
 
 describe('ChatPanel', () => {
-    test('a new chat offers the agent and model, and says what goes with the message', () => {
+    test('a new chat names the agent, offers its models, and says what goes with the message', () => {
         const html = panel();
-        expect(html).toContain('>Claude Code</option>');
+        // The server's config picks the agent: it is named, not offered.
+        expect(html).toContain('<span class="crs-chat-agent"');
+        expect(html).toContain('>Claude Code</span>');
+        expect(html).not.toContain('aria-label="Agent"');
         expect(html).toContain('>Sonnet</option>');
         expect(html).toContain('Ask Claude Code about this PR');
         expect(html).toContain('description and diff');
@@ -118,10 +120,23 @@ describe('ChatPanel', () => {
         expect(html).toMatch(/<button type="submit" class="crs-chat-send" disabled=""/);
     });
 
+    test('an agent with only its default model offers no model to pick', () => {
+        const gemini: ChatBackendInfo = {
+            id: 'gemini',
+            name: 'Gemini CLI',
+            available: true,
+            models: [{ id: '', name: 'Default' }],
+            default_model: '',
+        };
+        const html = panel({ backends: [claude, gemini], agent: gemini });
+        expect(html).toContain('>Gemini CLI</span>');
+        expect(html).not.toContain('aria-label="Model"');
+        expect(html).toContain('Ask Gemini CLI about this PR');
+    });
+
     test('an unavailable agent says why and can’t be written to', () => {
-        const html = panel({
-            backends: [{ ...claude, available: false, reason: 'claude isn’t installed' }],
-        });
+        const unavailable = { ...claude, available: false, reason: 'claude isn’t installed' };
+        const html = panel({ backends: [unavailable], agent: unavailable });
         expect(html).toContain('Claude Code isn&#x27;t available.');
         expect(html).toContain('claude isn’t installed');
         expect(html).toMatch(/<textarea[^>]*disabled=""/);

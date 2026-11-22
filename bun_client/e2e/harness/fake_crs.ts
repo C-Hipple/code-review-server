@@ -942,7 +942,7 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { output: Object.fromEntries(features.map(f => [f.id, aiOutput(pr, f)])) };
     },
 
-    'RPCHandler.ListChatBackends': () => ({ backends: [chatBackend()] }),
+    'RPCHandler.ListChatBackends': () => ({ backends: [chatBackend()], agent: 'claude' }),
 
     'RPCHandler.ListChats': args => {
         const pr = findPR(args);
@@ -970,7 +970,7 @@ const handlers: Record<string, (args: any) => unknown> = {
             owner: pr.item.owner,
             repo: pr.item.repo,
             number: pr.item.number,
-            backend: args.Backend || 'claude',
+            backend: 'claude', // the config's agent, as the server picks it
             model: args.Model ?? '',
             title: message.slice(0, 80),
             head_sha: CHAT_HEAD_SHA,

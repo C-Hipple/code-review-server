@@ -410,17 +410,58 @@ See [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pu
 
 ## Review Chat
 
-The review chat (in the web client, and the Emacs client's `crs-chat`) lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). Claude Code is the one backend so far. Nothing needs configuring: it is offered whenever `claude` is on the server's `PATH`, and costs nothing until someone starts a chat. The optional `[Chat.Claude]` table changes that:
+The review chat (in the web client, and the Emacs client's `crs-chat`) lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). **Which agent is the config's choice**, not the client's: `[Chat] Agent` names it, and every new chat talks to it. Nothing needs configuring: without a `[Chat]` table the agent is Claude Code, offered whenever `claude` is on the server's `PATH`, and it costs nothing until someone starts a chat.
+
+The agent can be Claude Code's own CLI, or **any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP)**: Gemini CLI, `claude-code-acp`, opencode, goose, Hermes and the rest. Each agent has a table of its own — the built-in Claude Code one is `[Chat.Claude]`, any other is `[Chat.Agents.<id>]` — so adding one is adding a table:
 
 ```toml
-[Chat.Claude]
-Command = "/opt/homebrew/bin/claude"   # the program, when it isn't on the server's PATH (words split like a shell would)
-Models = ["opus", "sonnet"]            # the models to offer, as `claude --model` takes them; default opus, sonnet, haiku
-DefaultModel = "sonnet"                # preselected for a new chat; default: Claude's own default
+[Chat]
+Agent = "gemini"                       # the agent new chats talk to: "claude" (the default) or an [Chat.Agents] ID
+
+[Chat.Agents.gemini]
+Name = "Gemini CLI"                    # what the clients call it; default: its ID
+Command = "gemini --experimental-acp"  # starts the agent speaking ACP on stdio (words split like a shell would)
+Env = { GEMINI_API_KEY = "..." }       # added to the server's environment for the agent
+Models = ["gemini-2.5-pro", "gemini-2.5-flash"]  # the models to offer, as the agent names them; default: only its own
+DefaultModel = "gemini-2.5-flash"      # preselected for a new chat; default: the agent's own default
+# Mode = "plan"                        # a session mode to switch each conversation to; default: the agent's
+# AuthMethod = "gemini-api-key"        # sign in with this method when the agent says it needs signing in
 # Disabled = true                      # don't offer it
 ```
 
-Claude runs with your own Claude Code login, settings and MCP servers, in a working directory per chat under `$CRS_HOME/chats/`, and may only read and search files there and in the PR's checkout. Its sessions are stored by Claude Code itself, under that directory's project in `~/.claude`. `UpdateConfig` doesn't model the table; a save carries it over untouched.
+| Key | Meaning |
+|-----|---------|
+| `Agent` (in `[Chat]`) | The ID of the agent new chats talk to: `claude`, or a key of `[Chat.Agents]`. Chats started with another agent carry on with it while it is still defined. |
+| `Protocol` | How the server talks to the agent: `acp` (the default for `[Chat.Agents]`) or `claude-code` (the Claude Code CLI, say a wrapper around it). `[Chat.Claude]` is always `claude-code`. |
+| `Command` | The program and its arguments. Required for an ACP agent; for Claude Code it defaults to `claude`. |
+| `Name`, `Env`, `Models`, `DefaultModel`, `Disabled` | As in the example. For Claude Code, `Models` defaults to its aliases `opus`, `sonnet` and `haiku`. |
+| `Mode`, `AuthMethod` | ACP only: a session mode the agent lists, and an authentication method it lists, both by ID. |
+
+Some ACP agents:
+
+```toml
+[Chat.Agents.claude-acp]               # Claude Code through Zed's ACP adapter
+Name = "Claude Code (ACP)"
+Command = "claude-code-acp"
+Models = ["sonnet", "haiku"]
+
+[Chat.Agents.opencode]
+Command = "opencode acp"
+# opencode runs commands and edits without asking unless told not to; see Read-only below.
+Env = { OPENCODE_CONFIG_CONTENT = '{"permission":{"edit":"deny","bash":"deny","webfetch":"deny"}}' }
+
+[Chat.Agents.hermes]
+Command = "hermes acp"
+
+[Chat.Agents.goose]
+Command = "goose acp"
+```
+
+**How an ACP agent runs.** Each chat gets an agent process of its own, started in the chat's working directory (under `$CRS_HOME/chats/`) on its first turn and kept for 10 minutes for the next. The agent names the conversation; a process started later picks it up again with `session/resume` or `session/load`, whichever the agent offers, and an agent that offers neither starts a new conversation that carries what was said. The agent's own login, settings and MCP servers apply, as they do for Claude Code; one that needs signing in first says how, and `AuthMethod` signs it in on the server's side when its method needs no browser (an API key in `Env`, say).
+
+**Read-only.** Claude Code runs with only its read and search tools. An ACP agent is held to the same as far as the protocol lets a client: the server offers it file reads (of the chat's working directory and the PR's checkout only) but no writing and no terminals, and answers its permission requests itself — yes to reading, searching and thinking, no to anything else. A client can only refuse what an agent asks about, though, so **an agent that edits a file, runs a command or fetches a URL without asking has its turn stopped** with a message saying so. Configure such an agent to ask first, or to deny those tools: opencode, for one, runs commands without asking by default, which the `OPENCODE_CONFIG_CONTENT` above turns off. Don't give an agent a mode that skips its permission requests.
+
+`UpdateConfig` doesn't model the `[Chat]` table; a save carries it over untouched.
 
 ## Example Config
 

@@ -1,9 +1,14 @@
 // Package chat lets a reviewer talk to a local coding agent about the PR they
-// are reviewing. A chat is a conversation with one agent (a Backend: Claude
-// Code to start with), held by the server: the conversation and its messages
-// are stored in the ChatSessions and ChatMessages tables, so a client can
-// leave and come back to it, and each turn runs the agent's CLI headless in a
-// working directory of the chat's own.
+// are reviewing. A chat is a conversation with one agent (a Backend), held by
+// the server: the conversation and its messages are stored in the
+// ChatSessions and ChatMessages tables, so a client can leave and come back to
+// it, and each turn runs the agent headless in a working directory of the
+// chat's own.
+//
+// Which agent a new chat talks to is the config's choice ([Chat] Agent), not
+// the client's. Each agent is run over a Protocol (agents.go): Claude Code's
+// own CLI (claude.go), or the Agent Client Protocol that many agents speak
+// (acp.go). A Source lists the agents; ConfigSource reads them from config.
 //
 // The first message of a conversation tells the agent we're reviewing the PR,
 // carries what the reviewer asked, then the PR's description and diff, so the
@@ -42,7 +47,8 @@ type Backend interface {
 	Info() BackendInfo
 	// Turn runs one turn of a conversation: it sends t.Prompt, calls emit with
 	// each step as the agent takes it, and returns when the agent has
-	// answered, failed, or ctx ended. emit is called on Turn's goroutine.
+	// answered, failed, or ctx ended. emit is never called concurrently, nor
+	// after Turn returns.
 	Turn(ctx context.Context, t Turn, emit func(Event)) (TurnResult, error)
 }
 
@@ -78,10 +84,12 @@ type Turn struct {
 	ReadDirs []string
 	Model    string
 	Prompt   string
-	// SystemPrompt is appended to the agent's own system prompt.
+	// SystemPrompt is appended to the agent's own system prompt. An agent
+	// that takes none is given it ahead of a new conversation's first prompt.
 	SystemPrompt string
 	// SessionID is the agent's handle on the conversation: the one to resume
-	// when Resume is set, otherwise the one to give the new conversation.
+	// when Resume is set, otherwise the one to give the new conversation (an
+	// agent that names its own reports that one with EventSession).
 	SessionID string
 	Resume    bool
 }
@@ -97,7 +105,8 @@ const (
 	EventTextDelta EventKind = "text_delta"
 	// EventText is a finished block of the reply.
 	EventText EventKind = "text"
-	// EventToolUse is the agent calling a tool.
+	// EventToolUse is the agent calling a tool. Another for a call still
+	// running (its ToolUseID) updates it: the agent said more about it.
 	EventToolUse EventKind = "tool_use"
 	// EventToolResult is a tool call's outcome.
 	EventToolResult EventKind = "tool_result"
@@ -174,13 +183,13 @@ var (
 	ErrBusy        = errors.New("the agent is still answering; wait for it, or stop it")
 	ErrEmpty       = errors.New("the message is empty")
 	ErrNoStore     = errors.New("chats need the server's database, which isn't open")
-	ErrUnavailable = errors.New("that chat backend isn't available")
+	ErrUnavailable = errors.New("no chat agent is configured")
 )
 
 // Manager holds the chats: it starts them, runs their turns, and tracks which
 // are running.
 type Manager struct {
-	backends []Backend
+	source Source
 
 	// Store returns where chats are kept, nil when there is nowhere.
 	Store func() Store
@@ -208,23 +217,50 @@ type turnState struct {
 	stopped   bool
 }
 
-// NewManager makes a manager for the given backends, in the order clients
-// should offer them.
-func NewManager(backends ...Backend) *Manager {
-	return &Manager{backends: backends, running: map[string]*turnState{}}
+// NewManager makes a manager for the agents source lists.
+func NewManager(source Source) *Manager {
+	return &Manager{source: source, running: map[string]*turnState{}}
 }
 
-// Backends describes every backend, in order.
+func (m *Manager) backends() []Backend {
+	if m.source == nil {
+		return nil
+	}
+	return m.source.Backends()
+}
+
+// Backends describes every agent a chat may talk to, in order.
 func (m *Manager) Backends() []BackendInfo {
-	infos := make([]BackendInfo, 0, len(m.backends))
-	for _, b := range m.backends {
+	backends := m.backends()
+	infos := make([]BackendInfo, 0, len(backends))
+	for _, b := range backends {
 		infos = append(infos, b.Info())
 	}
 	return infos
 }
 
+// Agent is the ID of the agent new chats talk to: the source's default, else
+// the first available agent, else the first; empty when there are none.
+func (m *Manager) Agent() string {
+	if m.source != nil {
+		if id := m.source.Default(); id != "" {
+			return id
+		}
+	}
+	backends := m.backends()
+	for _, b := range backends {
+		if b.Info().Available {
+			return b.ID()
+		}
+	}
+	if len(backends) > 0 {
+		return backends[0].ID()
+	}
+	return ""
+}
+
 func (m *Manager) backend(id string) (Backend, bool) {
-	for _, b := range m.backends {
+	for _, b := range m.backends() {
 		if b.ID() == id {
 			return b, true
 		}
@@ -248,9 +284,8 @@ type StartRequest struct {
 	Owner  string
 	Repo   string
 	Number int
-	// Backend is the backend's ID; empty picks the first available one.
-	Backend string
-	// Model is the model to run; empty takes the backend's default.
+	// Model is the model to run; empty takes the agent's default. The agent
+	// is Agent's.
 	Model   string
 	Message string
 }
@@ -266,7 +301,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (database.ChatSes
 	if err != nil {
 		return database.ChatSession{}, err
 	}
-	backend, info, err := m.pickBackend(req.Backend)
+	backend, info, err := m.agentBackend()
 	if err != nil {
 		return database.ChatSession{}, err
 	}
@@ -304,19 +339,15 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (database.ChatSes
 	return session, nil
 }
 
-// pickBackend finds the backend a chat asked for, or the first available one.
-func (m *Manager) pickBackend(id string) (Backend, BackendInfo, error) {
+// agentBackend is the agent new chats talk to, when it can run.
+func (m *Manager) agentBackend() (Backend, BackendInfo, error) {
+	id := m.Agent()
 	if id == "" {
-		for _, b := range m.backends {
-			if info := b.Info(); info.Available {
-				return b, info, nil
-			}
-		}
 		return nil, BackendInfo{}, ErrUnavailable
 	}
 	b, ok := m.backend(id)
 	if !ok {
-		return nil, BackendInfo{}, fmt.Errorf("there is no chat backend named %q", id)
+		return nil, BackendInfo{}, fmt.Errorf("there is no chat agent named %q", id)
 	}
 	info := b.Info()
 	if !info.Available {
@@ -556,6 +587,14 @@ func (m *Manager) turn(ctx context.Context, store Store, session database.ChatSe
 			}
 			m.addMessage(store, session, RoleAssistant, e.Text, "")
 		case EventToolUse:
+			if call, ok := tools[e.ToolUseID]; ok {
+				if e.Tool != "" {
+					call.tool = e.Tool
+				}
+				call.detail = e.Detail
+				call.save(store, session.ID, ToolRunning)
+				break
+			}
 			call := &toolCall{tool: e.Tool, useID: e.ToolUseID, detail: e.Detail}
 			id, err := store.AddChatMessage(database.ChatMessage{
 				SessionID: session.ID, Role: RoleTool, Content: call.detail, Meta: call.meta(ToolRunning),
@@ -575,7 +614,7 @@ func (m *Manager) turn(ctx context.Context, store Store, session database.ChatSe
 			if e.IsError {
 				status = ToolError
 			}
-			call.settle(store, session.ID, status)
+			call.save(store, session.ID, status)
 			delete(tools, e.ToolUseID)
 		}
 		lastNotify = time.Now()
@@ -588,7 +627,7 @@ func (m *Manager) turn(ctx context.Context, store Store, session database.ChatSe
 	m.mu.Unlock()
 	// A call the agent never saw the end of was cut off with the turn.
 	for _, call := range tools {
-		call.settle(store, session.ID, ToolError)
+		call.save(store, session.ID, ToolError)
 	}
 	if result.SessionID == "" && result.Answered {
 		result.SessionID = t.SessionID
@@ -609,8 +648,8 @@ func (c *toolCall) meta(status string) string {
 	return string(data)
 }
 
-// settle records how the call ended.
-func (c *toolCall) settle(store Store, chatID, status string) {
+// save stores the call as it now stands: how it ended, or what it is on.
+func (c *toolCall) save(store Store, chatID, status string) {
 	if err := store.UpdateChatMessage(c.id, c.detail, c.meta(status)); err != nil {
 		slog.Warn("Could not update a chat's tool call", "chat", chatID, "error", err)
 	}
@@ -755,6 +794,11 @@ func (m *Manager) Delete(id string) error {
 	}
 	if m.Dir != nil {
 		if root, err := m.Dir(); err == nil {
+			if b, ok := m.backend(session.Backend); ok {
+				if r, ok := b.(Releaser); ok {
+					r.Release(filepath.Join(root, id))
+				}
+			}
 			if err := os.RemoveAll(filepath.Join(root, id)); err != nil {
 				slog.Warn("Could not remove a chat's working directory", "chat", id, "error", err)
 			}

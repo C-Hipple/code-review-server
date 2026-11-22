@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"crs/config"
 	"crs/database"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func TestRealClaude(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	m := NewManager(NewClaudeBackend())
+	m := NewManager(Fixed{NewClaudeBackend(config.ChatBackendClaude, func() config.ChatBackendSettings { return config.ChatBackendSettings{} })})
 	if info := m.Backends()[0]; !info.Available {
 		t.Skipf("claude is not available: %s", info.Reason)
 	}

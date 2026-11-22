@@ -40,24 +40,29 @@ const claudeWaitDelay = 5 * time.Second
 // `claude -p` run with streamed JSON output (--output-format stream-json),
 // the prompt on stdin, in the chat's working directory. The first turn names
 // the new conversation (--session-id), later ones resume it (--resume), so
-// Claude Code keeps the transcript and the server keeps only its handle.
+// Claude Code keeps the transcript and the server keeps only its handle. It is
+// the config.ChatProtocolClaudeCode protocol.
 type ClaudeBackend struct {
-	// Settings returns [Chat.Claude] as config has it now.
+	// AgentID is the agent's ID; empty means config.ChatBackendClaude.
+	AgentID string
+	// Settings returns the agent's table ([Chat.Claude]) as config has it now.
 	Settings func() config.ChatBackendSettings
 	// LookPath finds the program; tests replace it.
 	LookPath func(string) (string, error)
 }
 
-// NewClaudeBackend is the Claude Code backend, reading its settings from the
-// server's config.
-func NewClaudeBackend() *ClaudeBackend {
-	return &ClaudeBackend{
-		Settings: func() config.ChatBackendSettings { return config.C().ChatBackend(config.ChatBackendClaude) },
-		LookPath: exec.LookPath,
-	}
+// NewClaudeBackend is a Claude Code agent with the given ID, reading its
+// settings from settings.
+func NewClaudeBackend(id string, settings func() config.ChatBackendSettings) *ClaudeBackend {
+	return &ClaudeBackend{AgentID: id, Settings: settings, LookPath: exec.LookPath}
 }
 
-func (b *ClaudeBackend) ID() string { return config.ChatBackendClaude }
+func (b *ClaudeBackend) ID() string {
+	if b.AgentID != "" {
+		return b.AgentID
+	}
+	return config.ChatBackendClaude
+}
 
 func (b *ClaudeBackend) settings() config.ChatBackendSettings {
 	if b.Settings == nil {
@@ -72,26 +77,23 @@ func (b *ClaudeBackend) argv() ([]string, error) {
 	if command == "" {
 		command = claudeDefaultCommand
 	}
-	return subprocess.SplitCommand(command)
+	argv, err := subprocess.SplitCommand(command)
+	if err == nil && len(argv) == 0 {
+		err = errors.New("it names no program")
+	}
+	return argv, err
 }
 
 func (b *ClaudeBackend) Info() BackendInfo {
 	s := b.settings()
-	info := BackendInfo{ID: b.ID(), Name: "Claude Code", DefaultModel: s.DefaultModel}
-	info.Models = append(info.Models, Model{ID: "", Name: "Default"})
-	models := s.Models
-	if len(models) == 0 {
-		models = claudeModels
+	table := config.ChatTable(b.ID())
+	info := BackendInfo{
+		ID: b.ID(), Name: agentName(s, "Claude Code"), DefaultModel: s.DefaultModel,
+		Models: modelChoices(s, claudeModels),
 	}
-	for _, id := range models {
-		if id = strings.TrimSpace(id); id != "" {
-			info.Models = append(info.Models, Model{ID: id, Name: modelName(id)})
-		}
-	}
-
 	switch argv, err := b.argv(); {
 	case s.Disabled:
-		info.Reason = "it is disabled in the config ([Chat.Claude] Disabled)"
+		info.Reason = "it is disabled in the config (" + table + " Disabled)"
 	case err != nil:
 		info.Reason = "its command can't be read: " + err.Error()
 	default:
@@ -100,7 +102,7 @@ func (b *ClaudeBackend) Info() BackendInfo {
 			lookPath = exec.LookPath
 		}
 		if _, err := lookPath(argv[0]); err != nil {
-			info.Reason = fmt.Sprintf("%s isn't installed where the server can find it (set [Chat.Claude] Command to its path)", argv[0])
+			info.Reason = fmt.Sprintf("%s isn't installed where the server can find it (set %s Command to its path)", argv[0], table)
 		} else {
 			info.Available = true
 		}
@@ -147,12 +149,12 @@ func (b *ClaudeBackend) args(t Turn) []string {
 func (b *ClaudeBackend) Turn(ctx context.Context, t Turn, emit func(Event)) (TurnResult, error) {
 	argv, err := b.argv()
 	if err != nil {
-		return TurnResult{}, fmt.Errorf("the [Chat.Claude] Command can't be read: %w", err)
+		return TurnResult{}, fmt.Errorf("the %s Command can't be read: %w", config.ChatTable(b.ID()), err)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], b.args(t)...)...)
 	cmd.Dir = t.WorkDir
 	cmd.Stdin = strings.NewReader(t.Prompt)
-	cmd.Env = claudeEnv(os.Environ())
+	cmd.Env = agentEnv(os.Environ(), b.settings().Env)
 	cmd.WaitDelay = claudeWaitDelay
 	stderr := &tailBuffer{max: 4000}
 	cmd.Stderr = stderr
@@ -187,20 +189,6 @@ func (b *ClaudeBackend) Turn(ctx context.Context, t Turn, emit func(Event)) (Tur
 		return res, fmt.Errorf("%s exited without finishing its answer", filepath.Base(argv[0]))
 	}
 	return res, nil
-}
-
-// claudeEnv is the server's environment for a claude run, less the marker a
-// Claude Code session sets for its own children: a server started from one
-// would otherwise have its chats taken for nested sessions.
-func claudeEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "CLAUDECODE=") {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
 }
 
 // claudeStream reads `claude -p --output-format stream-json` output: one JSON

@@ -83,7 +83,8 @@
                 crs--chat-buffer-name crs--chat-transcript crs--chat-render
                 crs--chat-replace-transcript crs--chat-shift-undo crs--chat-fetch
                 crs--chat-on-notification crs--chat-on-subscribed crs--chat-display
-                crs--chat-header-line crs--chat-pick-backend crs--chat-pick-model))
+                crs--chat-header-line crs--chat-agent-backend crs--chat-next-backend
+                crs--chat-pick-model))
     (should (fboundp fn))))
 
 (ert-deftest crs-test-buffer-local-state-declared ()
@@ -104,7 +105,7 @@
                  crs-change-diagram-feature-id
                  crs-diff-filters crs--buffer-diff-filter crs--buffer-full-diff
                  crs--buffer-filtered-diff
-                 crs-chat-window-height crs-chat-backend crs-chat-model
+                 crs-chat-window-height crs-chat-model crs-chat-agent
                  crs-chat-backends crs--chat-last-choice crs--chat-tickets
                  crs--chat-timer crs--chat-owner crs--chat-id crs--chat
                  crs--chat-backend crs--chat-model crs--chat-shown
@@ -2284,7 +2285,7 @@ known to begin with, and the chat buffers are killed after."
          (crs-chat-backends nil)
          (crs--chat-last-choice nil)
          (crs--chat-timer nil)
-         (crs-chat-backend nil)
+         (crs-chat-agent nil)
          (crs-chat-model nil))
      (cl-letf (((symbol-function 'crs--send-request)
                 (lambda (method params callback)
@@ -2396,6 +2397,43 @@ known to begin with, and the chat buffers are killed after."
       (should-not calls)
       (should (equal (crs--chat-input) "Hello?")))))
 
+(defconst crs-test--chat-agents
+  (vconcat crs-test--chat-backends
+           [((id . "gemini") (name . "Gemini CLI") (available . t)
+             (models . [((id . "") (name . "Default"))]) (default_model . ""))])
+  "ListChatBackends' backends with an ACP agent beside Claude Code.")
+
+(ert-deftest crs-test-chat-talks-to-the-servers-agent ()
+  "New chats talk to the agent the server's config names, not one picked here."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-agents) (agent . "gemini")))
+        ("RPCHandler.ListChats" . ((chats . [])))
+        ("RPCHandler.StartChat" . ((okay . t) (chat . ,(crs-test--chat 'backend "gemini")))))
+    (with-current-buffer (crs-chat "acme" "widgets" 42)
+      (should (equal crs-chat-agent "gemini"))
+      (should (string-match-p "\\`Ask Gemini CLI about acme/widgets #42\\." (crs-test--chat-text)))
+      (should (equal (crs--chat-header-line) "New chat · acme/widgets #42 · Gemini CLI · Default"))
+      ;; It offers only its default model, so there is nothing to pick.
+      (should-error (crs-chat-select-model) :type 'user-error)
+      (goto-char (point-max))
+      (insert "Hi")
+      (crs-chat-send)
+      (should-not (string-match-p "Backend" (json-encode (cdar calls))))
+      (should (string-match-p "Gemini CLI" (crs--chat-header-line))))))
+
+(ert-deftest crs-test-chat-agent-the-server-doesnt-define ()
+  "An agent the server's config names but doesn't define says so, and isn't sent to."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChatBackends" . ((backends . ,crs-test--chat-backends) (agent . "codex")))
+        ("RPCHandler.ListChats" . ((chats . []))))
+    (with-current-buffer (crs-chat "acme" "widgets" 42)
+      (should (string-match-p "\\`\\*\\*codex isn't available\\.\\*\\* the server's config names it"
+                              (crs-test--chat-text)))
+      (insert "Hello?")
+      (setq calls nil)
+      (should-error (crs-chat-send) :type 'user-error)
+      (should-not calls))))
+
 (ert-deftest crs-test-chat-transcript ()
   "Turns are level-1 headings, tools blockquote lines, and replies Markdown."
   (let ((crs-chat-backends crs-test--chat-backends))
@@ -2455,7 +2493,15 @@ known to begin with, and the chat buffers are killed after."
   (should (crs--chat-stale-p '((head_sha . "a") (current_sha . "b"))))
   (should-not (crs--chat-stale-p '((head_sha . "a") (current_sha . ""))))
   (let ((backends (append crs-test--chat-backends nil)))
-    (should (equal (cdr (assq 'id (crs--chat-pick-backend backends "nope"))) "claude"))
+    ;; The agent is the server's; one it names but doesn't list says so.
+    (should (equal (cdr (assq 'id (crs--chat-agent-backend backends "claude"))) "claude"))
+    (let ((missing (crs--chat-agent-backend backends "gemini")))
+      (should (equal (cdr (assq 'id missing)) "gemini"))
+      (should-not (crs--chat-available-p missing))
+      (should (string-match-p "doesn't define it" (cdr (assq 'reason missing)))))
+    ;; A server that names none: its first available agent.
+    (should (equal (cdr (assq 'id (crs--chat-agent-backend backends nil))) "claude"))
+    (should-not (crs--chat-agent-backend nil nil))
     (should (equal (crs--chat-pick-model (car backends) "opus") "opus"))
     (should (equal (crs--chat-pick-model (car backends) "gpt") ""))
     (should (equal (crs--chat-model-label (car backends) "sonnet") "Sonnet"))
@@ -2570,7 +2616,7 @@ the transcript, so the transcript's `read-only' must not rely on it."
       (should (equal (mapcar #'car calls) '("RPCHandler.StartChat")))
       (should (equal (json-encode (cdar calls))
                      (concat "[{\"Owner\":\"acme\",\"Repo\":\"widgets\",\"Number\":42,"
-                             "\"Backend\":\"claude\",\"Model\":\"\","
+                             "\"Model\":\"\","
                              "\"Message\":\"What does greet do?\"}]")))
       (should (equal crs--chat-id "chat-1"))
       (should (equal (crs--chat-input) ""))
@@ -2728,8 +2774,8 @@ the transcript, so the transcript's `read-only' must not rely on it."
     (with-current-buffer (crs--chat-create "acme" "widgets" 42)
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (prompt _collection &rest _)
-                   ;; One agent: only the model is asked for.
-                   (should (equal prompt "Model: "))
+                   ;; The server's agent: only its model is asked for.
+                   (should (equal prompt "Claude Code model: "))
                    "Opus")))
         (crs-chat-select-model))
       (should (equal crs--chat-model "opus"))

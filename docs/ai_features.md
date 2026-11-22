@@ -27,9 +27,9 @@ share only the code that runs a subprocess and the OpenRouter client.
 existing users, until a config file enables a feature.
 
 The [review chat](protocol.md#review-chat) is separate from the features: it
-drives the local Claude Code CLI as a conversation rather than producing a
-result, and is configured by its own [`[Chat]`](configuration.md#review-chat)
-table.
+drives a local coding agent (Claude Code, or any agent that speaks ACP) as a
+conversation rather than producing a result, and is configured by its own
+[`[Chat]`](configuration.md#review-chat) table.
 
 ## Enabling a feature
 

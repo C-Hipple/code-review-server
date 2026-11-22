@@ -60,6 +60,9 @@ test.describe('Review chat', () => {
         await openReview(page);
         await hoverOpen(page);
         const dialog = panel(page);
+        // The server's config picks the agent; the page only names it.
+        await expect(dialog.locator('.crs-chat-agent')).toHaveText('Claude Code');
+        await expect(dialog.getByRole('combobox', { name: 'Agent' })).toHaveCount(0);
         await dialog.getByRole('combobox', { name: 'Model' }).selectOption({ label: 'Opus' });
 
         await backend.holdRuns(true);
@@ -72,7 +75,6 @@ test.describe('Review chat', () => {
                 Owner: 'acme',
                 Repo: 'widgets',
                 Number: 42,
-                Backend: 'claude',
                 Model: 'opus',
                 Message: 'Is the greeting exported on purpose?',
             },

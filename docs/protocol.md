@@ -1052,25 +1052,28 @@ The body and annotations follow the [plugin response contract](plugins.md#plugin
 
 ### Review chat
 
-A reviewer can chat with a local coding agent about the PR they are reviewing. The server holds the conversations — in its database, so a client can leave a chat and come back to it — and runs the agent: **Claude Code** (`claude`) to start with, other backends to follow. Each turn runs the agent's CLI headless (`claude -p --output-format stream-json`) in a working directory of the chat's own under `$CRS_HOME/chats/<chat id>/`, with the prompt on stdin.
+A reviewer can chat with a local coding agent about the PR they are reviewing. The server holds the conversations — in its database, so a client can leave a chat and come back to it — and runs the agent, in a working directory of the chat's own under `$CRS_HOME/chats/<chat id>/`. **Which agent is the server config's choice** ([`[Chat] Agent`](configuration.md#review-chat)), not the client's: every new chat talks to it, and `ListChatBackends` says which it is. An agent is run over one of two protocols:
+
+- **Claude Code** (`claude-code`, the built-in `claude` agent): each turn runs the CLI headless (`claude -p --output-format stream-json`) with the prompt on stdin.
+- **ACP** (`acp`): any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) — Gemini CLI, `claude-code-acp`, opencode, goose, Hermes, ... — run as a process of the chat's own that the server talks JSON-RPC to over stdio, kept between turns for a while. Each turn is a `session/prompt`; the server streams `agent_message_chunk` updates into the reply and `tool_call` updates into tool messages, and leaves out the agent's thoughts.
 
 - **The first message** tells the agent we're reviewing the PR (`owner/repo#N`, its title, author, branches and head commit), then carries the reviewer's words, then the PR's description and diff, so the agent has them in context from the start. The diff goes in as GitHub sent it, cut at 200 KB; the same description and the whole diff are written to `pr.md` and `pr.diff` in the working directory, where the agent can read them again.
-- **Later messages** resume the agent's own session (`--resume`), which keeps the full transcript; the server keeps only its handle. If the agent no longer has the session, the server starts a new one carrying what was said so far, and the PR again.
-- **Read-only**: the agent may read and search files (`Read`, `Grep`, `Glob`) — the working directory and a checkout of the repository (the PR's worktree when there is one, else the local clone, passed with `--add-dir`) — but not edit them, run commands or reach the network. A system prompt says so, and where the files are.
-- **In the background**: `StartChat` and `SendChatMessage` reply as soon as the message is stored; the agent answers afterwards, announcing each step with [`Server.ChatChanged`](#serverchatchanged). One turn runs per chat at a time, for at most 20 minutes; `StopChat` ends one sooner.
+- **Later messages** resume the agent's own session (Claude Code's `--resume`; an ACP agent's session, picked up again with `session/resume` or `session/load` when its process has exited), which keeps the full transcript; the server keeps only its handle. If the agent no longer has the session, the server starts a new one carrying what was said so far, and the PR again.
+- **Read-only**: the agent may read and search files — the working directory and a checkout of the repository (the PR's worktree when there is one, else the local clone) — but not edit them, run commands or reach the network. Claude Code gets only `Read`, `Grep` and `Glob`, and the checkout with `--add-dir`. An ACP agent is offered file reads (of those directories only) and no writing or terminals; the server answers its permission requests itself (yes to `read`, `search` and `think` calls, no to the rest), and stops a turn in which the agent edits, runs or fetches something without asking. A system prompt says so, and where the files are (an ACP agent, which takes no system prompt, gets it ahead of the first message).
+- **In the background**: `StartChat` and `SendChatMessage` reply as soon as the message is stored; the agent answers afterwards, announcing each step with [`Server.ChatChanged`](#serverchatchanged). One turn runs per chat at a time, for at most 20 minutes; `StopChat` ends one sooner (an ACP agent gets `session/cancel`).
 
-Backends are configured in the optional [`[Chat]`](configuration.md#review-chat) table; with none, Claude Code is offered whenever `claude` is on the server's `PATH`.
+Agents are configured in the optional [`[Chat]`](configuration.md#review-chat) table; with none, Claude Code is the agent, available whenever `claude` is on the server's `PATH`.
 
 #### `ChatBackend` Object
 
 | Field           | Type   | Description |
 |-----------------|--------|-------------|
-| `id`            | string | `claude` |
-| `name`          | string | `Claude Code` |
+| `id`            | string | `claude`, or the agent's `[Chat.Agents]` ID |
+| `name`          | string | `Claude Code`, or the agent's `Name` (its ID when it has none) |
 | `available`     | bool   | False when it can't run here: the program isn't installed, or config disables it |
 | `reason`        | string | Why it isn't available; omitted when it is |
-| `models`        | `ChatModel[]` | `{id, name}` pairs to offer, the agent's own default first (`id` empty). Claude's are its aliases `opus`, `sonnet`, `haiku` unless `[Chat.Claude] Models` lists others |
-| `default_model` | string | The model to preselect (`[Chat.Claude] DefaultModel`); empty for the agent's default |
+| `models`        | `ChatModel[]` | `{id, name}` pairs to offer, the agent's own default first (`id` empty). Claude's are its aliases `opus`, `sonnet`, `haiku` unless `[Chat.Claude] Models` lists others; an ACP agent's are the ones its table's `Models` lists |
+| `default_model` | string | The model to preselect (`DefaultModel`); empty for the agent's default |
 
 #### `Chat` Object
 
@@ -1078,7 +1081,7 @@ Backends are configured in the optional [`[Chat]`](configuration.md#review-chat)
 |---------------|--------|-------------|
 | `id`          | string | The chat's ID (a UUID) |
 | `owner`, `repo`, `number` | | The PR |
-| `backend`     | string | The backend's ID |
+| `backend`     | string | The ID of the agent the chat talks to |
 | `model`       | string | The model asked for; empty for the backend's default |
 | `title`       | string | The start of the first message, on one line |
 | `head_sha`    | string | The PR head whose description and diff the chat attached |
@@ -1098,9 +1101,9 @@ Backends are configured in the optional [`[Chat]`](configuration.md#review-chat)
 |------------------|----------|-------------|
 | `id`             | int      | Orders a chat's messages |
 | `role`           | string   | `user` (the reviewer), `assistant` (a block of the agent's reply, Markdown), `tool` (a tool the agent used), `error` (the turn failed; `content` says why) or `notice` (`Stopped.`) |
-| `content`        | string   | The text; for a tool, what it was used on (`pr.diff`, `func Greet in server`) |
+| `content`        | string   | The text; for a tool, what it was used on (`pr.diff`, `func Greet in server`), updated while it runs as the agent says more |
 | `created_at`     | string   | RFC 3339 |
-| `tool`           | string   | A tool message's tool (`Read`, `Grep`, `Glob`) |
+| `tool`           | string   | A tool message's tool: Claude Code's (`Read`, `Grep`, `Glob`), or for an ACP agent its kind (`Read`, `Search`, `Run`, `Edit`, ...), empty for one of no particular kind |
 | `tool_status`    | string   | `running`, `done` or `error` |
 | `attached`       | string[] | What a reviewer's message carried besides their words — `["description", "diff"]` on the message that started a conversation with the agent |
 | `diff_truncated` | bool     | The attached diff was cut to fit |
@@ -1108,10 +1111,10 @@ Backends are configured in the optional [`[Chat]`](configuration.md#review-chat)
 
 ### `RPCHandler.ListChatBackends`
 
-Lists the chat backends, available or not, in the order to offer them.
+Lists the chat agents the config defines, available or not — the one new chats talk to, and any an older chat may still talk to — and says which one new chats talk to.
 
 - **Params**: `{}`
-- **Result**: `{"backends": [ChatBackend, ...]}`
+- **Result**: `{"backends": [ChatBackend, ...], "agent": "gemini"}` — `agent` is the `id` of the agent new chats talk to (`[Chat] Agent`, else `claude`). A client shows it and its models; it doesn't offer the others.
 
 ### `RPCHandler.ListChats`
 
@@ -1126,11 +1129,10 @@ Opens a chat about a PR with the reviewer's first message and starts the agent o
 
 - **Params**:
   - `Owner`, `Repo`, `Number`: the PR.
-  - `Backend` (string): a backend's `id`; empty picks the first available.
-  - `Model` (string): one of its models; empty takes its `default_model`.
+  - `Model` (string): one of the agent's models; empty takes its `default_model`. The agent is the config's (`ListChatBackends`' `agent`); a `Backend` param, which older clients sent, is ignored.
   - `Message` (string): what the reviewer asks.
 - **Result**:
-  - `okay` (bool): false when the message was refused — empty, or the backend unavailable.
+  - `okay` (bool): false when the message was refused — empty, or the agent unavailable.
   - `message` (string): why, when it was.
   - `chat` (`Chat`): the chat right after the message was stored, already `running`; `null` when refused.
 

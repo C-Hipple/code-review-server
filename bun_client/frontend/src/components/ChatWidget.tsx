@@ -183,11 +183,11 @@ export function ChatPanel({
 }: ChatPanelProps) {
     const { chat, backends, chats } = state;
     const running = chat?.status === 'running';
-    const selected = backends?.find(b => b.id === state.backend);
+    const selected = state.agent ?? undefined;
     const chatBackend = chat ? backends?.find(b => b.id === chat.backend) : selected;
     const agentName = chatBackend?.name ?? 'the agent';
     const unavailable = !chat && selected && !selected.available ? selected : null;
-    const noBackends = backends !== null && backends.length === 0;
+    const noBackends = backends !== null && !selected;
 
     // While the agent works, tick once a second for the elapsed time.
     const [now, setNow] = useState(() => Date.now());
@@ -290,7 +290,7 @@ export function ChatPanel({
                     </button>
                 </div>
             ) : (
-                <BackendPicker state={state} />
+                <AgentLine state={state} />
             )}
 
             <div
@@ -392,45 +392,37 @@ export function ChatPanel({
     );
 }
 
-/** The agent and model a new chat starts with. */
-function BackendPicker({ state }: { state: ChatState }) {
-    const { backends } = state;
-    if (!backends || backends.length === 0) return null;
-    const selected: ChatBackendInfo | undefined = backends.find(b => b.id === state.backend);
+/**
+ * The agent a new chat talks to — the server config's choice, not the
+ * page's — and the model it asks for, when the agent offers more than its
+ * default.
+ */
+function AgentLine({ state }: { state: ChatState }) {
+    const agent: ChatBackendInfo | null = state.agent;
+    if (!agent) return null;
     return (
         <div className="crs-chat-picker">
-            <label>
-                <span>Agent</span>
-                <select
-                    className="crs-chat-select"
-                    aria-label="Agent"
-                    value={state.backend}
-                    onChange={e => state.selectBackend(e.target.value)}
-                >
-                    {backends.map(b => (
-                        <option key={b.id} value={b.id}>
-                            {b.name}
-                            {b.available ? '' : ' (unavailable)'}
-                        </option>
-                    ))}
-                </select>
-            </label>
-            <label>
-                <span>Model</span>
-                <select
-                    className="crs-chat-select"
-                    aria-label="Model"
-                    value={state.model}
-                    disabled={!selected?.available}
-                    onChange={e => state.selectModel(e.target.value)}
-                >
-                    {(selected?.models ?? []).map(m => (
-                        <option key={m.id} value={m.id}>
-                            {m.name}
-                        </option>
-                    ))}
-                </select>
-            </label>
+            <span className="crs-chat-agent" title="The server's config picks the chat agent">
+                {agent.name}
+            </span>
+            {agent.models.length > 1 && (
+                <label>
+                    <span>Model</span>
+                    <select
+                        className="crs-chat-select"
+                        aria-label="Model"
+                        value={state.model}
+                        disabled={!agent.available}
+                        onChange={e => state.selectModel(e.target.value)}
+                    >
+                        {agent.models.map(m => (
+                            <option key={m.id} value={m.id}>
+                                {m.name}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            )}
         </div>
     );
 }

@@ -54,7 +54,7 @@ func (b *stubChatBackend) recorded() []chat.Turn {
 // for the rest of the test.
 func useChatBackend(t *testing.T, b chat.Backend) {
 	t.Helper()
-	m := newChatManager(b)
+	m := newChatManager(chat.Fixed{b})
 	m.OnChange = notifyChatChanged
 	orig := chatManager
 	chatManager = m
@@ -105,8 +105,9 @@ func TestChatRPCs(t *testing.T) {
 	if err := h.ListChatBackends(&ListChatBackendsArgs{}, &backends); err != nil {
 		t.Fatal(err)
 	}
-	if len(backends.Backends) != 1 || backends.Backends[0].ID != "stub" || len(backends.Backends[0].Models) != 2 {
-		t.Fatalf("backends = %+v", backends.Backends)
+	if len(backends.Backends) != 1 || backends.Backends[0].ID != "stub" || len(backends.Backends[0].Models) != 2 ||
+		backends.Agent != "stub" {
+		t.Fatalf("backends = %+v", backends)
 	}
 
 	var started ChatReply

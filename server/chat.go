@@ -16,21 +16,23 @@ import (
 
 // --- Review chat ---
 //
-// A reviewer can chat with a local agent (Claude Code, to start with) about
-// the PR they're reviewing; the chat package runs it. The server holds the
-// conversations: StartChat opens one and SendChatMessage continues it, each
-// returning as soon as the reviewer's message is stored while the agent
-// answers in the background, and GetChat reads a chat back. A subscribed
-// client hears Server.ChatChanged as each step lands and reads GetChat again,
-// as it does for plugin and AI output.
+// A reviewer can chat with a local agent about the PR they're reviewing; the
+// chat package runs it. Which agent is the config's choice ([Chat] Agent):
+// Claude Code, or any agent that speaks ACP ([Chat.Agents.<id>]). The server
+// holds the conversations: StartChat opens one and SendChatMessage continues
+// it, each returning as soon as the reviewer's message is stored while the
+// agent answers in the background, and GetChat reads a chat back. A
+// subscribed client hears Server.ChatChanged as each step lands and reads
+// GetChat again, as it does for plugin and AI output.
 
-// chatManager runs the chats for the RPCs. Tests swap it.
-var chatManager = newChatManager(chat.NewClaudeBackend())
+// chatManager runs the chats for the RPCs, with the agents the config
+// defines. Tests swap it.
+var chatManager = newChatManager(chat.NewConfigSource())
 
-// newChatManager is the chat manager for the given backends, keeping chats in
-// the server's database and reading PRs from its caches.
-func newChatManager(backends ...chat.Backend) *chat.Manager {
-	m := chat.NewManager(backends...)
+// newChatManager is the chat manager for the agents source lists, keeping
+// chats in the server's database and reading PRs from its caches.
+func newChatManager(source chat.Source) *chat.Manager {
+	m := chat.NewManager(source)
 	m.Store = func() chat.Store {
 		if db := config.C().DB; db != nil {
 			return db
@@ -246,15 +248,19 @@ func chatJSON(v chat.View) ChatJSON {
 type ListChatBackendsArgs struct{}
 
 type ListChatBackendsReply struct {
-	// Backends lists every chat backend, available or not, in the order to
-	// offer them.
+	// Backends lists every chat agent the config defines, available or not:
+	// the one new chats talk to, and any an older chat may still talk to.
 	Backends []chat.BackendInfo `json:"backends"`
+	// Agent is the ID of the agent new chats talk to ([Chat] Agent); clients
+	// don't choose it.
+	Agent string `json:"agent"`
 }
 
-// ListChatBackends lists the agents a chat can run, and the models each
-// offers.
+// ListChatBackends lists the chat agents and the models each offers, and says
+// which one new chats talk to.
 func (h *RPCHandler) ListChatBackends(args *ListChatBackendsArgs, reply *ListChatBackendsReply) error {
 	reply.Backends = chatManager.Backends()
+	reply.Agent = chatManager.Agent()
 	return nil
 }
 
@@ -286,9 +292,8 @@ type StartChatArgs struct {
 	Owner  string `json:"Owner"`
 	Repo   string `json:"Repo"`
 	Number int    `json:"Number"`
-	// Backend is a backend's ID; empty picks the first available.
-	Backend string `json:"Backend"`
-	// Model is one of the backend's models; empty takes its default.
+	// Model is one of the agent's models; empty takes its default. The agent
+	// is the config's ([Chat] Agent), not the client's.
 	Model   string `json:"Model"`
 	Message string `json:"Message"`
 }
@@ -296,7 +301,7 @@ type StartChatArgs struct {
 // ChatReply answers StartChat and SendChatMessage.
 type ChatReply struct {
 	// Okay is false when the message was refused (empty, the agent still
-	// answering, the backend unavailable); Message says why.
+	// answering or unavailable); Message says why.
 	Okay    bool   `json:"okay"`
 	Message string `json:"message"`
 	// Chat is the chat right after the message was stored, already running;
@@ -310,7 +315,7 @@ type ChatReply struct {
 func (h *RPCHandler) StartChat(args *StartChatArgs, reply *ChatReply) error {
 	session, err := chatManager.Start(context.Background(), chat.StartRequest{
 		Owner: args.Owner, Repo: args.Repo, Number: args.Number,
-		Backend: args.Backend, Model: args.Model, Message: args.Message,
+		Model: args.Model, Message: args.Message,
 	})
 	if err != nil {
 		reply.Message = err.Error()

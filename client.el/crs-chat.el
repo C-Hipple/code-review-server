@@ -2,9 +2,11 @@
 
 ;;; Commentary:
 
-;; The server can run a local coding agent (Claude Code, to start with) to
-;; chat about the PR under review (docs/protocol.md#review-chat).  It holds
-;; the conversations and runs the agent; this module shows them.
+;; The server can run a local coding agent to chat about the PR under review
+;; (docs/protocol.md#review-chat): Claude Code, or any agent that speaks the
+;; Agent Client Protocol.  Which agent is the server config's choice ([Chat]
+;; Agent), not the client's.  The server holds the conversations and runs the
+;; agent; this module shows them.
 ;;
 ;; `crs-chat' (`t' in a review buffer) opens the PR's chat in a window split
 ;; off the bottom of the review's: the review keeps the top three quarters
@@ -75,15 +77,18 @@ below the line under it.
   "The agent whose ID is ID, or nil."
   (seq-find (lambda (b) (equal (cdr (assq 'id b)) id)) (crs--chat-backends)))
 
-(defun crs--chat-pick-backend (backends preferred)
-  "The agent of BACKENDS a new chat talks to.
-PREFERRED, an agent's ID, while the server can run it; else the first
-one it can; else the first listed, whose `reason' then says why not."
-  (or (seq-find (lambda (b) (and (equal (cdr (assq 'id b)) preferred)
-                                 (crs--chat-available-p b)))
-                backends)
-      (seq-find #'crs--chat-available-p backends)
-      (car backends)))
+(defun crs--chat-agent-backend (backends agent)
+  "The agent of BACKENDS new chats talk to: the one whose ID is AGENT.
+An AGENT the server names but doesn't list stands in as unavailable, so
+the buffer says why.  AGENT nil or empty (an older server that doesn't
+say) takes the first agent it can run, else the first listed."
+  (if (and (stringp agent) (not (string-empty-p agent)))
+      (or (seq-find (lambda (b) (equal (cdr (assq 'id b)) agent)) backends)
+          `((id . ,agent) (name . ,agent) (available . :json-false)
+            (reason . "the server's config names it as the chat agent, but doesn't define it.")
+            (models . []) (default_model . "")))
+    (or (seq-find #'crs--chat-available-p backends)
+        (car backends))))
 
 (defun crs--chat-models (backend)
   "The models BACKEND offers, as a list of alists with `id' and `name'."
@@ -109,12 +114,11 @@ PREFERRED, a model's ID, when BACKEND offers it; else its default."
 
 (defun crs--chat-ensure-choice ()
   "Choose the agent and model of the buffer's next new chat.
-Once the agents are known: the last ones chosen this session come
-first, then `crs-chat-backend' and `crs-chat-model'."
+Once the agents are known: the agent is the server's, and the model the
+last one chosen for it this session, else `crs-chat-model'."
   (when (and crs-chat-backends (null crs--chat-backend))
     (let* ((last crs--chat-last-choice)
-           (backend (crs--chat-pick-backend (crs--chat-backends)
-                                            (or (car last) crs-chat-backend)))
+           (backend (crs--chat-agent-backend (crs--chat-backends) crs-chat-agent))
            (id (cdr (assq 'id backend))))
       (when backend
         (setq crs--chat-backend id
@@ -129,9 +133,17 @@ first, then `crs-chat-backend' and `crs-chat-model'."
   (let ((chat (or chat crs--chat)))
     (if chat (cdr (assq 'backend chat)) crs--chat-backend)))
 
+(defun crs--chat-next-backend ()
+  "The agent the buffer's next new chat talks to, once the agents are known."
+  (and crs-chat-backends crs--chat-backend
+       (crs--chat-agent-backend (crs--chat-backends) crs--chat-backend)))
+
 (defun crs--chat-backend-shown (&optional chat)
   "The agent of CHAT, by default the buffer's chat, or else its next new chat."
-  (crs--chat-find-backend (crs--chat-backend-id chat)))
+  (let ((chat (or chat crs--chat)))
+    (if chat
+        (crs--chat-find-backend (cdr (assq 'backend chat)))
+      (crs--chat-next-backend))))
 
 (defun crs--chat-agent-name (&optional chat)
   "The name of the agent CHAT talks to; CHAT is as for `crs--chat-backend-shown'."
@@ -154,7 +166,8 @@ A server that can't list them is taken to offer none."
          (when err
            (message "Could not list the chat agents: %s" err))
          (setq crs-chat-backends (or (and (not err) (cdr (assq 'backends result)))
-                                     [])))
+                                     [])
+               crs-chat-agent (and (not err) (cdr (assq 'agent result)))))
        (funcall callback)))))
 
 
@@ -268,19 +281,14 @@ as code."
 
 (defun crs--chat-intro ()
   "What the buffer shows before its chat has started."
-  (let* ((backends (crs--chat-backends))
-         (backend (crs--chat-find-backend crs--chat-backend))
+  (let* ((backend (crs--chat-backend-shown))
          (name (or (cdr (assq 'name backend)) "the agent")))
     (cond
      ((null crs-chat-backends) "Loading the chat agents…\n\n")
-     ((null backends) "The server offers no chat agents.\n\n")
+     ((null backend) "The server offers no chat agents.\n\n")
      ((not (crs--chat-available-p backend))
-      (concat (format "**%s isn't available.** %s\n\n"
-                      name (or (cdr (assq 'reason backend)) ""))
-              (if (cdr backends)
-                  (format "%s picks another agent.\n\n"
-                          (crs--chat-keys 'crs-chat-select-model))
-                "")))
+      (format "**%s isn't available.** %s\n\n"
+              name (or (cdr (assq 'reason backend)) "")))
      (t
       (format (concat "Ask %s about %s/%s #%s.  Your first message goes with the PR's "
                       "description and diff, and %s can read the repository, but not "
@@ -668,11 +676,14 @@ Each buffer showing the chat it names reads it again."
 (defun crs--chat-on-subscribed ()
   "Read every chat buffer's chat again, for a new server.
 It may offer other agents, and replies the old one owed never come."
-  (setq crs-chat-backends nil)
+  (setq crs-chat-backends nil
+        crs-chat-agent nil)
   (dolist (buffer (crs--chat-buffers))
     (with-current-buffer buffer
       (setq crs--chat-fetching nil
-            crs--chat-sending nil))
+            crs--chat-sending nil
+            ;; Its config may name another agent.
+            crs--chat-backend nil))
     (crs--chat-load buffer nil)))
 
 (add-hook 'crs-server-notification-functions #'crs--chat-on-notification)
@@ -728,13 +739,14 @@ minibuffer."
   "Chat with a local agent about PR OWNER/REPO #NUMBER.
 From a review buffer, the chat opens below the review, which keeps the
 top three quarters of its window (`crs-chat-window-height').  It shows
-the PR's most recent conversation, or a new one; the agent the server
-runs (Claude Code, say) reads the PR's description and diff with your
-first message, and can read the repository but not change it.
+the PR's most recent conversation, or a new one; the agent the server's
+config picks (Claude Code, say, or any ACP agent) reads the PR's
+description and diff with your first message, and can read the
+repository but not change it.
 
 Write below the line and send with \\<crs-chat-mode-map>\\[crs-chat-send].  The answer streams in as
 the agent writes it.  \\[crs-chat-stop] stops it, \\[crs-chat-new] starts a new chat, \\[crs-chat-switch] opens
-another of the PR's chats, \\[crs-chat-select-model] picks the agent and model for new ones, and
+another of the PR's chats, \\[crs-chat-select-model] picks the model for new ones, and
 \\[crs-chat-quit] closes the window.
 
 Interactively, the PR is the current review's or chat's, the one on
@@ -816,7 +828,7 @@ the background, and its answer streams into the buffer."
       (user-error "%s is still answering; %s stops it"
                   (crs--chat-agent-name) (crs--chat-keys 'crs-chat-stop)))
     (unless crs--chat-id
-      (let ((backend (crs--chat-find-backend crs--chat-backend)))
+      (let ((backend (crs--chat-backend-shown)))
         (when (and crs-chat-backends (not (crs--chat-available-p backend)))
           (user-error "%s" (if backend
                                (format "%s isn't available: %s"
@@ -836,7 +848,6 @@ the background, and its answer streams into the buffer."
                      (list (cons 'Owner crs--chat-owner)
                            (cons 'Repo crs--chat-repo)
                            (cons 'Number crs--chat-number)
-                           (cons 'Backend (or crs--chat-backend ""))
                            (cons 'Model (or crs--chat-model ""))
                            (cons 'Message text))))
            (lambda (result) (crs--chat-on-sent buffer ticket raw result)))
@@ -914,8 +925,10 @@ chat gives the agent the PR's diff as it is now."
       (crs--chat-open-id (current-buffer) (cdr (assoc choice choices))))))
 
 (defun crs-chat-select-model ()
-  "Choose the agent, and the model it asks for, for this buffer's next new chat.
-The choice is remembered for the chats opened after it this session."
+  "Choose the model this buffer's next new chat asks its agent for.
+The agent is the server config's choice ([Chat] Agent); the model is
+one of those it offers.  The choice is remembered for the chats opened
+after it this session."
   (interactive)
   (crs--chat-check-buffer)
   (unless crs-chat-backends
@@ -923,50 +936,41 @@ The choice is remembered for the chats opened after it this session."
            (err (crs--chat-reply-error result)))
       (when err
         (user-error "Could not list the chat agents: %s" err))
-      (setq crs-chat-backends (or (cdr (assq 'backends result)) []))))
-  (let* ((backends (crs--chat-backends))
-         (backend
-          (cond
-           ((null backends) (user-error "The server offers no chat agents"))
-           ((null (cdr backends)) (car backends))
-           (t
-            (let* ((names (mapcar (lambda (b)
-                                    (cons (concat (cdr (assq 'name b))
-                                                  (if (crs--chat-available-p b) "" " (unavailable)"))
-                                          b))
-                                  backends))
-                   (current (car (seq-find (lambda (n) (equal (cdr (assq 'id (cdr n)))
-                                                              crs--chat-backend))
-                                           names))))
-              (cdr (assoc (completing-read "Agent: " names nil t nil nil current) names)))))))
+      (setq crs-chat-backends (or (cdr (assq 'backends result)) [])
+            crs-chat-agent (cdr (assq 'agent result)))))
+  (crs--chat-ensure-choice)
+  (let ((backend (crs--chat-next-backend)))
+    (unless backend
+      (user-error "The server offers no chat agents"))
     (unless (crs--chat-available-p backend)
       (user-error "%s isn't available: %s"
                   (cdr (assq 'name backend)) (or (cdr (assq 'reason backend)) "")))
     (let* ((id (cdr (assq 'id backend)))
            (models (mapcar (lambda (m) (cons (cdr (assq 'name m)) (cdr (assq 'id m))))
-                           (crs--chat-models backend)))
-           (current (crs--chat-model-label
-                     backend (if (equal id crs--chat-backend)
-                                 crs--chat-model
-                               (cdr (assq 'default_model backend)))))
-           (model (if models
-                      (cdr (assoc (completing-read "Model: " models nil t nil nil current)
-                                  models))
-                    "")))
-      (setq crs--chat-backend id
-            crs--chat-model (or model "")
-            crs--chat-last-choice (cons id crs--chat-model))
-      (crs--chat-render (current-buffer))
-      (message "%s%s · %s"
-               (if crs--chat (format "New chats (%s) will use " (crs--chat-keys 'crs-chat-new)) "Using ")
-               (cdr (assq 'name backend))
-               (crs--chat-model-label backend crs--chat-model)))))
+                           (crs--chat-models backend))))
+      (unless (cdr models)
+        (user-error "%s offers no choice of model (its config lists none)" (cdr (assq 'name backend))))
+      (let ((model (cdr (assoc (completing-read
+                                (format "%s model: " (cdr (assq 'name backend)))
+                                models nil t nil nil
+                                (crs--chat-model-label backend crs--chat-model))
+                               models))))
+        (setq crs--chat-model (or model "")
+              crs--chat-last-choice (cons id crs--chat-model))
+        (crs--chat-render (current-buffer))
+        (message "%s%s · %s"
+                 (if crs--chat (format "New chats (%s) will use " (crs--chat-keys 'crs-chat-new)) "Using ")
+                 (cdr (assq 'name backend))
+                 (crs--chat-model-label backend crs--chat-model))))))
 
 (defun crs-chat-refresh ()
   "Read the agents and this buffer's chat from the server again."
   (interactive)
   (crs--chat-check-buffer)
-  (setq crs--chat-fetching nil)
+  (setq crs-chat-backends nil
+        crs-chat-agent nil
+        crs--chat-backend nil
+        crs--chat-fetching nil)
   (crs--chat-load (current-buffer) nil))
 
 (defun crs-chat-delete ()

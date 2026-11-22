@@ -1504,6 +1504,35 @@ most recent first."
       (should-not (get-buffer "*Comment Edit acme/widgets #42*"))
       (should-not sent))))
 
+(ert-deftest crs-test-review-mode-hook-sees-the-finished-buffer ()
+  "The review mode's hooks run once the buffer is what the reviewer sees.
+diff-lsp.el's hook snapshots the buffer for diff-lsp, which maps the
+lines the client sends against it: a snapshot taken before a multi-line
+description was rendered put every diff line off by its extra lines."
+  (crs-test--with-review-buffer nil
+    (let* ((payload (cons `(metadata . ((number . 42) (title . "Widgets")
+                                        (body . ,(concat "## Summary\n\nAdds widgets.\n\n"
+                                                         "## Testing\n\n- one\n- two\n"))))
+                          (assq-delete-all 'metadata (copy-alist crs-test--pr-payload))))
+           (seen nil)
+           (hook (lambda ()
+                   (push (list (buffer-string) crs--buffer-metadata) seen))))
+      (add-hook 'my-code-review-mode-hook hook)
+      (unwind-protect
+          (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+            (crs--render-and-update buffer payload)
+            (crs--render-and-update buffer nil))
+        (remove-hook 'my-code-review-mode-hook hook))
+      (with-current-buffer buffer
+        ;; Once per render, each seeing the final text and the PR's data.
+        (should (= (length seen) 2))
+        (dolist (snapshot seen)
+          (should (equal (nth 0 snapshot) (buffer-string)))
+          (should-not (string-match-p "<CRS-HTML" (nth 0 snapshot)))
+          (should (equal (cdr (assq 'title (nth 1 snapshot))) "Widgets")))
+        ;; shr wraps to the window, which is narrow in batch.
+        (should (string-match-p "Adds[[:space:]]+widgets" (buffer-string)))))))
+
 (ert-deftest crs-test-filtered-diff-without-a-baseline-keeps-the-full-diff ()
   "A filter with nothing to start from leaves the full diff and its comments."
   (crs-test--with-review-buffer nil

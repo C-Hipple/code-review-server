@@ -1250,7 +1250,9 @@ for more robust position restoration."
         (insert content)
         (delta-wash)
         (crs--simplify-diff-headers)
-        (my-code-review-mode))
+        ;; The mode hooks wait for the finished buffer (`run-mode-hooks'
+        ;; below).
+        (delay-mode-hooks (my-code-review-mode)))
 
        ;; nil or alist: render from stored data
        (t
@@ -1318,7 +1320,7 @@ for more robust position restoration."
           (goto-char (point-min))
           (insert preamble))
 
-        (my-code-review-mode)))
+        (delay-mode-hooks (my-code-review-mode))))
 
       ;; The major-mode change above wiped the buffer-locals, and rendering a
       ;; body needs the cached image paths, so put those back first.
@@ -1338,6 +1340,15 @@ for more robust position restoration."
       (setq crs--buffer-annotations (or new-annotations existing-annotations))
       (setq crs--buffer-show-annotations new-show-annotations)
       (setq crs--buffer-review-feedback existing-review-feedback)
+
+      ;; Only now is the buffer the one the reviewer sees: the HTML bodies
+      ;; are rendered (one placeholder line becomes as many lines as the
+      ;; description or comment has) and the buffer-locals are back. A
+      ;; hook that reads the buffer needs both -- diff-lsp.el's `lsp'
+      ;; snapshots it to the tempfile diff-lsp maps lines with, and the
+      ;; snapshot taken before the HTML was rendered put every diff line
+      ;; off by the extra lines the description renders to.
+      (run-mode-hooks)
 
       (let ((final-pos
              (cond

@@ -55,7 +55,7 @@ func chatsDir() (string, error) {
 // GetPR serves (reaching GitHub only on a miss), and the checkout the agent may read: the PR's worktree when
 // there is one, else the local clone.
 func loadChatPR(_ context.Context, owner, repo string, number int) (chat.PRContext, error) {
-	details, err := GetPRDetails(owner, repo, number, false)
+	details, err := GetPRDetails("", owner, repo, number, false)
 	if err != nil {
 		return chat.PRContext{}, err
 	}
@@ -77,7 +77,7 @@ func loadChatPR(_ context.Context, owner, repo string, number int) (chat.PRConte
 	// cached: an agent reads a plain unified diff best, and pr.diff should
 	// be one. The rendered one stands in when there is none.
 	if db := config.C().DB; db != nil {
-		raw, sha, err := db.GetPullRequest(number, repo)
+		raw, sha, err := db.GetPullRequest(owner, repo, number)
 		if err == nil {
 			pr.HeadSHA = sha
 			if strings.TrimSpace(raw) != "" {
@@ -236,7 +236,7 @@ func chatJSON(v chat.View) ChatJSON {
 	if v.Running {
 		out.Status = chat.StatusRunning
 	}
-	out.CurrentSHA, _ = currentAIInputs(v.Session.Repo, v.Session.Number)
+	out.CurrentSHA, _ = currentAIInputs(v.Session.Owner, v.Session.Repo, v.Session.Number)
 	for _, m := range v.Messages {
 		out.Messages = append(out.Messages, chatMessageJSON(m))
 	}

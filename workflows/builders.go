@@ -1,11 +1,11 @@
 package workflows
 
 import (
+	"crs/config"
+	"crs/git_tools"
 	"fmt"
 	"log/slog"
 	"strings"
-	"crs/config"
-	"crs/git_tools"
 
 	"github.com/google/go-github/v74/github"
 )
@@ -29,11 +29,11 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 		case "MyReviewRequestsWorkflow":
 			wf, err = BuildSearchWorkflow(&raw_workflow, ModeReviewRequested)
 		default:
-			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "type", raw_workflow.WorkflowType)
+			slog.Warn("Skipping workflow with unknown WorkflowType", "name", raw_workflow.Name, "user", raw_workflow.User, "type", raw_workflow.WorkflowType)
 			continue
 		}
 		if err != nil {
-			slog.Warn("Skipping improperly configured workflow", "name", raw_workflow.Name, "error", err)
+			slog.Warn("Skipping improperly configured workflow", "name", raw_workflow.Name, "user", raw_workflow.User, "error", err)
 			continue
 		}
 		workflows = append(workflows, wf)
@@ -57,6 +57,7 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
+		User:                 raw.User,
 	}
 	return wf, nil
 }
@@ -82,6 +83,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
+		User:                 raw.User,
 	}
 	return wf, nil
 }
@@ -115,6 +117,7 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 		AuxDataReq:           computeAuxRequirements(raw.Filters, raw.IncludeDiff),
 		PostFilterAux:        postFilterAuxRequirements(raw.Filters),
 		DesktopNotifications: raw.DesktopNotifications,
+		User:                 raw.User,
 	}
 	return wf, nil
 }
@@ -146,6 +149,7 @@ func BuildSearchWorkflow(raw *config.RawWorkflow, mode SearchMode) (Workflow, er
 			Diff:     raw.IncludeDiff,
 		},
 		DesktopNotifications: raw.DesktopNotifications,
+		User:                 raw.User,
 	}
 	return wf, nil
 }
@@ -172,6 +176,7 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, repos *[]string, jiraDoma
 		SectionTitle:         raw.SectionTitle,
 		IncludeDiff:          raw.IncludeDiff,
 		DesktopNotifications: raw.DesktopNotifications,
+		User:                 raw.User,
 	}
 	return wf, nil
 }

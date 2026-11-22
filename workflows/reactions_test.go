@@ -21,7 +21,7 @@ func TestPersistPRCacheDataStoresReactions(t *testing.T) {
 	}
 	persistPRCacheData("test-workflow", key, nil, auxData, nil, nil, nil, nil, nil)
 
-	raw, err := cfg.DB.GetPRReactions(key.Number, key.Repo)
+	raw, err := cfg.DB.GetPRReactions(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		t.Fatalf("GetPRReactions: %v", err)
 	}
@@ -40,14 +40,14 @@ func TestPersistPRCacheDataLeavesReactionsAloneWhenNotFetched(t *testing.T) {
 	cfg := teamReviewTestConfig(t)
 	key := PRKey{Owner: "acme", Repo: "widgets", Number: 22}
 
-	if err := cfg.DB.UpsertPRReactions(key.Number, key.Repo,
+	if err := cfg.DB.UpsertPRReactions(key.Owner, key.Repo, key.Number,
 		`{"comments":{"11":[{"content":"+1","emoji":"👍","users":["erin"],"count":1}]},"reviews":{}}`); err != nil {
 		t.Fatalf("seeding the cache: %v", err)
 	}
 
 	persistPRCacheData("test-workflow", key, nil, &PRAuxData{HeadSHA: "abc123"}, nil, nil, nil, nil, nil)
 
-	raw, err := cfg.DB.GetPRReactions(key.Number, key.Repo)
+	raw, err := cfg.DB.GetPRReactions(key.Owner, key.Repo, key.Number)
 	if err != nil {
 		t.Fatalf("GetPRReactions: %v", err)
 	}

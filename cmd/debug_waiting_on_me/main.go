@@ -189,7 +189,7 @@ func explain(pr *github.PullRequest, login string, interacted git_tools.Interact
 		return false, "prefiltered: search found no reviews or comments from you"
 	}
 
-	state := git_tools.GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, pr)
+	state := git_tools.GetInteractionState(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, login, pr)
 
 	reasons := []string{}
 	if state.MyReviewDismissed {

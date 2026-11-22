@@ -16,8 +16,8 @@ func TestApplyChangeRunsTheSectionsPluginsForTheItemsItWrites(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { config.SetC(config.Config{}) })
-	team, _ := db.GetOrCreateSection("Team", 0)
-	mine, _ := db.GetOrCreateSection("Mine", 0)
+	team, _ := db.GetOrCreateSection("", "Team", 0)
+	mine, _ := db.GetOrCreateSection("", "Mine", 0)
 
 	type call struct {
 		owner, repo string

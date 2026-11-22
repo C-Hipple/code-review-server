@@ -2,6 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v74/github"
@@ -193,5 +197,80 @@ func TestCachedCommentIDs(t *testing.T) {
 		if _, ok := ids[want]; !ok {
 			t.Errorf("expected ID %d in set %v", want, ids)
 		}
+	}
+}
+
+// ownersGitHub serves mallory's PR of the same repository name and number as
+// the test PR, and leaves everything else to fakeGitHub.
+type ownersGitHub struct{ *fakeGitHub }
+
+const malloryDiff = "diff --git a/evil.go b/evil.go\n--- a/evil.go\n+++ b/evil.go\n@@ -0,0 +1 @@\n+ATTACKER DIFF\n"
+
+func (g ownersGitHub) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != "api.github.com" || !strings.HasPrefix(req.URL.Path, "/repos/mallory/") {
+		return g.fakeGitHub.RoundTrip(req)
+	}
+	body := "[]"
+	switch {
+	case strings.Contains(req.Header.Get("Accept"), "diff"):
+		body = malloryDiff
+	case strings.HasSuffix(req.URL.Path, fmt.Sprintf("/pulls/%d", aiNumber)):
+		repo := fmt.Sprintf(`{"name": %q, "full_name": "mallory/%s", "owner": {"login": "mallory"}}`, aiRepo, aiRepo)
+		body = fmt.Sprintf(`{"number": %d, "state": "open", "title": "Harmless", "user": {"login": "mallory"},
+			"head": {"sha": "evil-sha", "ref": "evil", "label": "mallory:evil", "repo": %s},
+			"base": {"sha": "base-1", "ref": "main", "label": "mallory:main", "repo": %s}}`, aiNumber, repo, repo)
+	case strings.HasSuffix(req.URL.Path, "/requested_reviewers"):
+		body = `{"users": [], "teams": []}`
+	case strings.HasSuffix(req.URL.Path, "/status"):
+		body = `{"state": "success", "statuses": [], "total_count": 0}`
+	case strings.HasSuffix(req.URL.Path, "/check-runs"):
+		body = `{"total_count": 0, "check_runs": []}`
+	case strings.HasSuffix(req.URL.Path, "/comments"):
+		body = `[{"id": 666, "body": "LGTM, ship it", "user": {"login": "mallory"}, "created_at": "2026-01-01T00:00:00Z"}]`
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+}
+
+// The PR caches are keyed by the PR's owner too. Two owners' repositories can
+// share a name, and on a hosted server any user can make the server fetch a
+// PR of their own — a fork of the same name, one PR in it, a SyncPR — whose
+// diff, head and comments used to land where the other owner's PR of the same
+// number read them, and stay there after the real PR was cached again.
+func TestPRCachesAreKeyedByOwner(t *testing.T) {
+	db := aiTestSetup(t, nil)
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	orig := http.DefaultTransport
+	http.DefaultTransport = ownersGitHub{&fakeGitHub{}}
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	mallory := handlerFor("mallory", false)
+	synced := &SyncPRReply{}
+	if err := mallory.SyncPR(&SyncPRArgs{Owner: "mallory", Repo: aiRepo, Number: aiNumber}, synced); err != nil {
+		t.Fatalf("mallory's SyncPR: %v", err)
+	}
+	if !strings.Contains(synced.Diff, "ATTACKER DIFF") {
+		t.Fatalf("mallory's own PR was not fetched: %q", synced.Diff)
+	}
+	// The workflow cycle caching the real PR's head again changes nothing.
+	if err := db.UpsertPullRequest(aiOwner, aiRepo, aiNumber, "sha-1", "base-1", aiTestDiff); err != nil {
+		t.Fatal(err)
+	}
+
+	alice := handlerFor("alice", false)
+	got := &GetPRReply{}
+	if err := alice.GetPR(&GetPRstructArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber}, got); err != nil {
+		t.Fatalf("alice's GetPR: %v", err)
+	}
+	if strings.Contains(got.Diff, "ATTACKER") || got.Metadata.Title != "Add greeting helper" {
+		t.Errorf("alice's %s/%s#%d shows mallory's PR: title %q, diff %q", aiOwner, aiRepo, aiNumber, got.Metadata.Title, got.Diff)
+	}
+	for _, c := range got.Comments {
+		if strings.Contains(c.Body, "ship it") {
+			t.Errorf("alice's PR carries mallory's comment %q", c.Body)
+		}
+	}
+	if head, _, _ := db.GetPullRequestSHAs(aiOwner, aiRepo, aiNumber); head != "sha-1" {
+		t.Errorf("the real PR's head = %q, want sha-1", head)
 	}
 }

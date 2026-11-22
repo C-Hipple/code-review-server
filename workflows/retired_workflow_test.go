@@ -17,9 +17,19 @@ func retiredTestDB(t *testing.T, workflows ...config.RawWorkflow) *database.DB {
 	return db
 }
 
+// owned is the owned set the end of a cycle reads (see ownedSections).
+func owned(t *testing.T) map[string]database.SectionRef {
+	t.Helper()
+	sections, ok := ownedSections(config.C())
+	if !ok {
+		t.Fatal("ownedSections could not tell what the workflows own")
+	}
+	return sections
+}
+
 func seedOwnedItem(t *testing.T, db *database.DB, sectionName, identifier string, ttl int64, owners ...string) *database.Section {
 	t.Helper()
-	section, err := db.GetOrCreateSection(sectionName, 0)
+	section, err := db.GetOrCreateSection("", sectionName, 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection(%q): %v", sectionName, err)
 	}
@@ -40,7 +50,7 @@ func itemExists(t *testing.T, db *database.DB, sectionID int64, identifier strin
 
 func sectionExists(t *testing.T, db *database.DB, name string) bool {
 	t.Helper()
-	section, err := db.GetSection(name)
+	section, err := db.GetSection("", name)
 	return err == nil && section != nil
 }
 
@@ -56,9 +66,9 @@ func TestRetiredWorkflowItemsAreEvicted(t *testing.T) {
 	retiredSection := seedOwnedItem(t, db, "Retired Section", "o/r-1", expired, "retired_workflow")
 	liveSection := seedOwnedItem(t, db, live.SectionTitle, "o/r-2", expired, live.Name)
 
-	releaseStaleWorkflowOwnership()
+	releaseStaleWorkflowOwnership(owned(t), false)
 	pruneOrphanedItems()
-	pruneRetiredSections()
+	pruneRetiredSections(owned(t), false)
 
 	if itemExists(t, db, retiredSection.ID, "o/r-1") {
 		t.Error("item owned only by a workflow removed from the config survived the cycle")
@@ -87,7 +97,7 @@ func TestRetiredCoOwnerDoesNotPinItemInLiveSection(t *testing.T) {
 		t.Fatalf("RemoveWorkflowFromItem: %v", err)
 	}
 
-	releaseStaleWorkflowOwnership()
+	releaseStaleWorkflowOwnership(owned(t), false)
 	pruneOrphanedItems()
 
 	if itemExists(t, db, section.ID, "o/r-1") {
@@ -104,9 +114,9 @@ func TestRepointedWorkflowReleasesItsOldSection(t *testing.T) {
 	oldSection := seedOwnedItem(t, db, "Old Section", "o/r-1", 0, moved.Name)
 	newSection := seedOwnedItem(t, db, moved.SectionTitle, "o/r-1", 0, moved.Name)
 
-	releaseStaleWorkflowOwnership()
+	releaseStaleWorkflowOwnership(owned(t), false)
 	pruneOrphanedItems()
-	pruneRetiredSections()
+	pruneRetiredSections(owned(t), false)
 
 	if itemExists(t, db, oldSection.ID, "o/r-1") {
 		t.Error("item stayed in the section the workflow no longer writes into")
@@ -129,9 +139,9 @@ func TestUnbuildableWorkflowKeepsItsItems(t *testing.T) {
 		t.Fatalf("expected the broken workflow to be skipped by MatchWorkflows, got %d", len(built))
 	}
 
-	releaseStaleWorkflowOwnership()
+	releaseStaleWorkflowOwnership(owned(t), false)
 	pruneOrphanedItems()
-	pruneRetiredSections()
+	pruneRetiredSections(owned(t), false)
 
 	if !itemExists(t, db, section.ID, "o/r-1") {
 		t.Error("items of a misconfigured but still-configured workflow were evicted")
@@ -145,9 +155,9 @@ func TestEmptyConfigReleasesNothing(t *testing.T) {
 
 	section := seedOwnedItem(t, db, "Some Section", "o/r-1", 0, "some_workflow")
 
-	releaseStaleWorkflowOwnership()
+	releaseStaleWorkflowOwnership(owned(t), true)
 	pruneOrphanedItems()
-	pruneRetiredSections()
+	pruneRetiredSections(owned(t), true)
 
 	if !itemExists(t, db, section.ID, "o/r-1") {
 		t.Error("items were evicted when no workflows were configured")
@@ -163,14 +173,14 @@ func TestEmptyConfiguredSectionIsKept(t *testing.T) {
 	live := config.RawWorkflow{Name: "live_workflow", SectionTitle: "Live Section"}
 	db := retiredTestDB(t, live)
 
-	if _, err := db.GetOrCreateSection(live.SectionTitle, 0); err != nil {
+	if _, err := db.GetOrCreateSection("", live.SectionTitle, 0); err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}
-	if _, err := db.GetOrCreateSection("Retired Section", 0); err != nil {
+	if _, err := db.GetOrCreateSection("", "Retired Section", 0); err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}
 
-	pruneRetiredSections()
+	pruneRetiredSections(owned(t), false)
 
 	if !sectionExists(t, db, live.SectionTitle) {
 		t.Error("empty section of a configured workflow was pruned")

@@ -72,7 +72,7 @@ func widgetsRef(number int) git_tools.PRRef {
 
 func checkMergeability(t *testing.T, db *database.DB, number int, wantState, wantSHA string) {
 	t.Helper()
-	state, sha, err := db.GetPRMergeability(number, "widgets")
+	state, sha, err := db.GetPRMergeability("acme", "widgets", number)
 	if err != nil {
 		t.Fatalf("GetPRMergeability(%d): %v", number, err)
 	}
@@ -111,7 +111,7 @@ func TestRecordMergeabilityLooksUpOnlyWhatThePRsDontCarry(t *testing.T) {
 func TestRecordMergeabilityAsksAgainAboutUnknownAnswers(t *testing.T) {
 	db := warmTestDB(t)
 	// An answer from before the base branch moved, for the head PR 3 still has.
-	if err := db.RecordPRMergeability(3, "widgets", "head-3", git_tools.MergeabilityConflicting); err != nil {
+	if err := db.RecordPRMergeability("acme", "widgets", 3, "head-3", git_tools.MergeabilityConflicting); err != nil {
 		t.Fatal(err)
 	}
 	calls := fakeMergeabilityLookup(t, func(call int, refs []git_tools.PRRef) (map[git_tools.PRRef]git_tools.Mergeability, error) {
@@ -153,7 +153,7 @@ func TestRecordMergeabilityAsksAgainAboutUnknownAnswers(t *testing.T) {
 
 func TestRecordMergeabilityKeepsTheLastAnswersWhenTheLookupFails(t *testing.T) {
 	db := warmTestDB(t)
-	if err := db.RecordPRMergeability(3, "widgets", "head-3", git_tools.MergeabilityConflicting); err != nil {
+	if err := db.RecordPRMergeability("acme", "widgets", 3, "head-3", git_tools.MergeabilityConflicting); err != nil {
 		t.Fatal(err)
 	}
 	calls := fakeMergeabilityLookup(t, func(int, []git_tools.PRRef) (map[git_tools.PRRef]git_tools.Mergeability, error) {
@@ -177,7 +177,7 @@ func TestProcessPRsDBRecordsMergeability(t *testing.T) {
 	seedReprocessAuxData(t, "acme", "widgets", 7)
 	fakeMergeabilityLookup(t, answerAll(git_tools.MergeabilityConflicting))
 
-	section, err := db.GetOrCreateSection("Needs Review", 0)
+	section, err := db.GetOrCreateSection("", "Needs Review", 0)
 	if err != nil {
 		t.Fatalf("GetOrCreateSection: %v", err)
 	}

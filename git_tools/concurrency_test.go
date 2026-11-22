@@ -2,7 +2,6 @@ package git_tools
 
 import (
 	"crs/config"
-	"fmt"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ func TestFilterConcurrencyDeadlock(t *testing.T) {
 		}
 
 		// Mock interaction state in cache so it doesn't try to call GitHub API
-		cacheKey := fmt.Sprintf("interaction_state:%s/%s:%d", owner, repo, num)
+		cacheKey := InteractionStateCacheKey("testuser", owner, repo, num)
 		GlobalCache.Set(cacheKey, InteractionState{HasUnrespondedComments: false}, 1*time.Hour)
 	}
 

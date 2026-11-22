@@ -8,13 +8,18 @@ import (
 	"github.com/google/go-github/v74/github"
 )
 
-// fakePRStateSource answers for the PR numbers it holds and passes on the rest.
+// fakePRStateSource answers for the PR numbers it holds, for the one login it
+// answers for (any, when empty), and passes on the rest.
 type fakePRStateSource struct {
+	login  string
 	states map[int]InteractionState
 	ci     map[int]CIStatusInfo
 }
 
-func (f fakePRStateSource) InteractionState(_, _ string, pr *github.PullRequest) (InteractionState, bool) {
+func (f fakePRStateSource) InteractionState(_, _, login string, pr *github.PullRequest) (InteractionState, bool) {
+	if f.login != "" && login != f.login {
+		return InteractionState{}, false
+	}
 	state, ok := f.states[pr.GetNumber()]
 	return state, ok
 }
@@ -32,11 +37,11 @@ func withPRStateSource(t *testing.T, source PRStateSource) {
 
 func TestGetInteractionStateAsksTheRegisteredSourceFirst(t *testing.T) {
 	want := InteractionState{LastMeTime: time.Unix(100, 0), MyReviewDismissed: true}
-	withPRStateSource(t, fakePRStateSource{states: map[int]InteractionState{7: want}})
+	withPRStateSource(t, fakePRStateSource{login: "me", states: map[int]InteractionState{7: want}})
 
-	// The source answers, so nothing reaches GitHub (there is no client set up
-	// to reach it with).
-	got := GetInteractionState("acme", "widgets", &github.PullRequest{Number: github.Ptr(7)})
+	// The source answers for the login asking, so nothing reaches GitHub
+	// (there is no client set up to reach it with).
+	got := GetInteractionState("acme", "widgets", "me", &github.PullRequest{Number: github.Ptr(7)})
 	if got != want {
 		t.Errorf("GetInteractionState = %+v, want the source's %+v", got, want)
 	}

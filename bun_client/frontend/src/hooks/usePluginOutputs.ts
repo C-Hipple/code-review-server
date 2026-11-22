@@ -35,13 +35,15 @@ export interface PluginOutputs {
  * first automatic run has a result to hand back right away. Instead the
  * server announces every change to a PR's plugin output — a plugin marked
  * pending, a result landing, a re-run clearing one — and the output is read
- * again when an announcement names this PR. Nothing is polled.
+ * again when an announcement names this PR. Nothing is polled. A re-run the
+ * server refuses is handed to `onRerunFailed`, for the surface to say so.
  */
 export function usePluginOutputs(
     owner: string,
     repo: string,
     number: number,
-    events: ServerEvents = serverEvents
+    events: ServerEvents = serverEvents,
+    onRerunFailed?: (name: string, error: unknown) => void
 ): PluginOutputs {
     const pr = `${owner}/${repo}#${number}`;
     // The output as the server last served it, and the re-runs it doesn't
@@ -123,6 +125,7 @@ export function usePluginOutputs(
             await read(true);
         } catch (e) {
             console.error('Failed to execute plugin:', e);
+            onRerunFailed?.(name, e);
         } finally {
             if (prRef.current === startedFor) {
                 setExecuting(prev => {

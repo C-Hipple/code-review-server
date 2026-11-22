@@ -1172,6 +1172,10 @@ for more robust position restoration."
                                   nil))
           ;; Set when a fresh payload arrives under a filtered diff.
           (refresh-filter nil)
+          ;; Set once the buffer is in the review mode, whose hooks then
+          ;; run on the finished buffer -- or, should rendering fail, on
+          ;; what it got to, as they did before they were delayed.
+          (mode-set nil)
           ;; Preserve existing data for re-render case
           (existing-diff crs--buffer-diff)
           (existing-comments crs--buffer-comments)
@@ -1242,137 +1246,156 @@ for more robust position restoration."
       (setq crs--buffer-show-annotations new-show-annotations)
       (setq crs--buffer-review-feedback existing-review-feedback)
 
-      (erase-buffer)
+      (unwind-protect
+          (progn
+            (erase-buffer)
 
-      (cond
-       ;; String content: insert directly
-       ((stringp content)
-        (insert content)
-        (delta-wash)
-        (crs--simplify-diff-headers)
-        (my-code-review-mode))
+            (cond
+             ;; String content: insert directly
+             ((stringp content)
+              (insert content)
+              (delta-wash)
+              (crs--simplify-diff-headers)
+              ;; The mode hooks wait for the finished buffer (`run-mode-hooks'
+              ;; below).
+              (delay-mode-hooks (my-code-review-mode))
+              (setq mode-set t))
 
-       ;; nil or alist: render from stored data
-       (t
-        ;; 1. Insert Diff
-        (insert (or crs--buffer-diff ""))
+             ;; nil or alist: render from stored data
+             (t
+              ;; 1. Insert Diff
+              (insert (or crs--buffer-diff ""))
 
-        ;; 2. Delta Wash
-        (delta-wash)
+              ;; 2. Delta Wash
+              (delta-wash)
 
-        ;; 3. Simplify Headers
-        (crs--simplify-diff-headers)
+              ;; 3. Simplify Headers
+              (crs--simplify-diff-headers)
 
-        ;; 3.5. Mark the context hunk expansions spliced in, which the
-        ;; position counting below skips, and draw the hunks they left
-        ;; touching as one.
-        (crs--show-hunk-expansions (crs--expanded-diff-lines crs--buffer-diff))
+              ;; 3.5. Mark the context hunk expansions spliced in, which the
+              ;; position counting below skips, and draw the hunks they left
+              ;; touching as one.
+              (crs--show-hunk-expansions (crs--expanded-diff-lines crs--buffer-diff))
 
-        ;; 4. Insert Comments (only regular comments in-line with diff).
-        ;; Their positions count rows of the PR's full diff; on a filtered
-        ;; diff, those it shows are moved to their rows there.
-        (crs--insert-comments-into-buffer (crs--displayed-comments) crs--buffer-show-comments)
+              ;; 4. Insert Comments (only regular comments in-line with diff).
+              ;; Their positions count rows of the PR's full diff; on a filtered
+              ;; diff, those it shows are moved to their rows there.
+              (crs--insert-comments-into-buffer (crs--displayed-comments) crs--buffer-show-comments)
 
-        ;; 4.5. Insert plugin annotations (after comments so their line
-        ;; positions account for the interleaved comment blocks)
-        (crs--insert-annotations-into-buffer crs--buffer-annotations crs--buffer-show-annotations)
+              ;; 4.5. Insert plugin annotations (after comments so their line
+              ;; positions account for the interleaved comment blocks)
+              (crs--insert-annotations-into-buffer crs--buffer-annotations crs--buffer-show-annotations)
 
-        ;; 5. Insert Preamble & Feedback at TOP
-        (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
-               (conversation (crs--render-conversation-from-data
-                              crs--buffer-comments
-                              crs--buffer-reviews
-                              crs--buffer-outdated-comments
-                              crs--buffer-commits))
-               (changes-header
-                (let* ((meta crs--buffer-metadata)
-                       (nfiles (or (cdr (assq 'changed_files meta)) 0))
-                       (adds (or (cdr (assq 'additions meta)) 0))
-                       (dels (or (cdr (assq 'deletions meta)) 0)))
-                  (concat "\nChanges\n"
-                          (format "%d file%s changed, +%d addition%s, -%d deletion%s\n"
-                                  nfiles (if (= nfiles 1) "" "s")
-                                  adds (if (= adds 1) "" "s")
-                                  dels (if (= dels 1) "" "s"))
-                          (if (and crs--buffer-diff-filter crs--buffer-filtered-diff)
-                              (concat (crs--filtered-diff-summary
-                                       crs--buffer-filtered-diff
-                                       (crs--diff-filter-name crs--buffer-diff-filter))
-                                      "\n")
-                            ""))))
-               (preamble (concat header "\n" conversation changes-header "\n"))
-               (feedback existing-review-feedback))
+              ;; 5. Insert Preamble & Feedback at TOP
+              (let* ((header (crs--render-header-from-metadata crs--buffer-metadata))
+                     (conversation (crs--render-conversation-from-data
+                                    crs--buffer-comments
+                                    crs--buffer-reviews
+                                    crs--buffer-outdated-comments
+                                    crs--buffer-commits))
+                     (changes-header
+                      (let* ((meta crs--buffer-metadata)
+                             (nfiles (or (cdr (assq 'changed_files meta)) 0))
+                             (adds (or (cdr (assq 'additions meta)) 0))
+                             (dels (or (cdr (assq 'deletions meta)) 0)))
+                        (concat "\nChanges\n"
+                                (format "%d file%s changed, +%d addition%s, -%d deletion%s\n"
+                                        nfiles (if (= nfiles 1) "" "s")
+                                        adds (if (= adds 1) "" "s")
+                                        dels (if (= dels 1) "" "s"))
+                                (if (and crs--buffer-diff-filter crs--buffer-filtered-diff)
+                                    (concat (crs--filtered-diff-summary
+                                             crs--buffer-filtered-diff
+                                             (crs--diff-filter-name crs--buffer-diff-filter))
+                                            "\n")
+                                  ""))))
+                     (preamble (concat header "\n" conversation changes-header "\n"))
+                     (feedback existing-review-feedback))
 
-          ;; Inject feedback into preamble (logic from crs--render-from-stored-data)
-          (if (and feedback (not (string-empty-p feedback)))
-              (if (string-match "^Your Review Feedback\n" preamble)
-                  (let* ((start (match-end 0))
-                         (rest (substring preamble start))
-                         (next-section (string-match crs--section-header-regexp rest))
-                         (content-str (concat "──────────────────────────────────\n" feedback "\n\n")))
-                    (if next-section
-                        (setq preamble (concat (substring preamble 0 start) content-str (substring rest next-section)))
-                      (setq preamble (concat (substring preamble 0 start) content-str))))
-                (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
+                ;; Inject feedback into preamble (logic from crs--render-from-stored-data)
+                (if (and feedback (not (string-empty-p feedback)))
+                    (if (string-match "^Your Review Feedback\n" preamble)
+                        (let* ((start (match-end 0))
+                               (rest (substring preamble start))
+                               (next-section (string-match crs--section-header-regexp rest))
+                               (content-str (concat "──────────────────────────────────\n" feedback "\n\n")))
+                          (if next-section
+                              (setq preamble (concat (substring preamble 0 start) content-str (substring rest next-section)))
+                            (setq preamble (concat (substring preamble 0 start) content-str))))
+                      (setq preamble (concat preamble "\nYour Review Feedback\n──────────────────────────────────\n" feedback "\n\n"))))
 
-          (goto-char (point-min))
-          (insert preamble))
+                (goto-char (point-min))
+                (insert preamble))
 
-        (my-code-review-mode)))
+              (delay-mode-hooks (my-code-review-mode))
+              (setq mode-set t)))
 
-      ;; The major-mode change above wiped the buffer-locals, and rendering a
-      ;; body needs the cached image paths, so put those back first.
-      (setq crs--buffer-images (or new-images existing-images))
-      (crs--process-html-placeholders)
+            ;; The major-mode change above wiped the buffer-locals, and rendering a
+            ;; body needs the cached image paths, so put those back first.
+            (setq crs--buffer-images (or new-images existing-images))
+            (crs--process-html-placeholders)
 
-      ;; Re-set the buffer-local variables AFTER mode change
-      (setq crs--buffer-diff (or new-diff existing-diff))
-      (setq crs--buffer-comments (or new-comments existing-comments))
-      (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
-      (setq crs--buffer-metadata (or new-metadata existing-metadata))
-      (setq crs--buffer-reviews (or new-reviews existing-reviews))
-      (setq crs--buffer-commits (or new-commits existing-commits))
-      (setq crs--buffer-images (or new-images existing-images))
-      (setq crs--buffer-preamble (or new-preamble existing-preamble))
-      (setq crs--buffer-show-comments new-show-comments)
-      (setq crs--buffer-annotations (or new-annotations existing-annotations))
-      (setq crs--buffer-show-annotations new-show-annotations)
-      (setq crs--buffer-review-feedback existing-review-feedback)
+            ;; Re-set the buffer-local variables AFTER mode change
+            (setq crs--buffer-diff (or new-diff existing-diff))
+            (setq crs--buffer-comments (or new-comments existing-comments))
+            (setq crs--buffer-outdated-comments (or new-outdated-comments existing-outdated-comments))
+            (setq crs--buffer-metadata (or new-metadata existing-metadata))
+            (setq crs--buffer-reviews (or new-reviews existing-reviews))
+            (setq crs--buffer-commits (or new-commits existing-commits))
+            (setq crs--buffer-images (or new-images existing-images))
+            (setq crs--buffer-preamble (or new-preamble existing-preamble))
+            (setq crs--buffer-show-comments new-show-comments)
+            (setq crs--buffer-annotations (or new-annotations existing-annotations))
+            (setq crs--buffer-show-annotations new-show-annotations)
+            (setq crs--buffer-review-feedback existing-review-feedback)
 
-      (let ((final-pos
-             (cond
-              ;; First try using context (filename + position) for accurate restoration
-              ((and target-context (nth 0 target-context) (nth 1 target-context))
-               (let* ((ctx-filename (nth 0 target-context))
-                      (ctx-position (nth 1 target-context))
-                      (found-line (crs--find-position-in-diff ctx-filename ctx-position)))
-                 (if found-line
+            (let ((final-pos
+                   (cond
+                    ;; First try using context (filename + position) for accurate restoration
+                    ((and target-context (nth 0 target-context) (nth 1 target-context))
+                     (let* ((ctx-filename (nth 0 target-context))
+                            (ctx-position (nth 1 target-context))
+                            (found-line (crs--find-position-in-diff ctx-filename ctx-position)))
+                       (if found-line
+                           (progn
+                             (goto-char (point-min))
+                             (forward-line (1- found-line))
+                             (point))
+                         ;; Fallback to target-line if context-based search fails
+                         (when target-line
+                           (goto-char (point-min))
+                           (forward-line (1- target-line))
+                           (if (> (point) (point-max))
+                               (point-max)
+                             (point))))))
+                    ;; Fallback to absolute line number
+                    (target-line
                      (progn
                        (goto-char (point-min))
-                       (forward-line (1- found-line))
-                       (point))
-                   ;; Fallback to target-line if context-based search fails
-                   (when target-line
-                     (goto-char (point-min))
-                     (forward-line (1- target-line))
-                     (if (> (point) (point-max))
-                         (point-max)
-                       (point))))))
-              ;; Fallback to absolute line number
-              (target-line
-               (progn
-                 (goto-char (point-min))
-                 (forward-line (1- target-line))
-                 (if (> (point) (point-max))
-                     (point-max)
-                   (point))))
-              ;; Default: restore old position
-              (t (min old-pos (point-max))))))
-        (goto-char final-pos)
-        ;; Also update point in any windows showing this buffer
-        (dolist (win (get-buffer-window-list buffer nil t))
-          (set-window-point win final-pos)))
-      (setq buffer-read-only t)
+                       (forward-line (1- target-line))
+                       (if (> (point) (point-max))
+                           (point-max)
+                         (point))))
+                    ;; Default: restore old position
+                    (t (min old-pos (point-max))))))
+              (goto-char final-pos)
+              ;; Also update point in any windows showing this buffer
+              (dolist (win (get-buffer-window-list buffer nil t))
+                (set-window-point win final-pos)))
+            (setq buffer-read-only t))
+        ;; Only now is the buffer the one the reviewer sees: the HTML
+        ;; bodies are rendered (one placeholder line becomes as many lines
+        ;; as the description or comment has), the buffer-locals are back,
+        ;; point is restored and the buffer is read-only. A hook that reads
+        ;; the buffer needs that -- diff-lsp.el's `lsp' snapshots it to the
+        ;; tempfile diff-lsp maps lines with, and the snapshot taken before
+        ;; the HTML was rendered put every diff line off by the extra lines
+        ;; the description renders to. Run from the cleanup, so a render
+        ;; that fails past the mode switch still runs them, and outside
+        ;; the `inhibit-read-only' the rendering binds.
+        (when mode-set
+          (let ((inhibit-read-only nil))
+            (run-mode-hooks))))
       (when refresh-filter
         (crs--refresh-diff-filter buffer)))))
 

@@ -134,6 +134,10 @@ type TurnResult struct {
 	// Answered is true once the agent produced any reply or tool call, so a
 	// failure after it is not a failure to resume.
 	Answered bool
+	// Resumed is true when the backend knows it picked the conversation up
+	// again, so a failure after that is not a failure to resume either; a
+	// backend that can't tell leaves it false.
+	Resumed bool
 }
 
 // Roles of a chat's messages.
@@ -498,7 +502,7 @@ func (m *Manager) run(ctx context.Context, store Store, session database.ChatSes
 	result, err := m.turn(ctx, store, session, backend, ts, workDir, message, pr, promptPR, history)
 	// The agent no longer has the conversation (its transcript went, or it
 	// never got going): start a new one that carries what was said.
-	if err != nil && pr == nil && !result.Answered && ctx.Err() == nil && m.LoadPR != nil {
+	if err != nil && pr == nil && !result.Answered && !result.Resumed && ctx.Err() == nil && m.LoadPR != nil {
 		slog.Info("Could not resume a chat's conversation; starting a new one", "chat", session.ID, "error", err)
 		if loaded, loadErr := m.LoadPR(ctx, session.Owner, session.Repo, session.Number); loadErr == nil {
 			history := m.history(store, session.ID)

@@ -22,8 +22,8 @@ import (
 // some of its own (reading a file, asking permission), which the turn
 // attached answers.
 type acpConn struct {
-	// key is the command line and environment the agent was started with, so
-	// a config change starts a new one.
+	// key is the command line, environment and mode the agent was started
+	// with, so a config change starts a new one.
 	key    string
 	name   string
 	cmd    *exec.Cmd
@@ -140,8 +140,51 @@ func startACP(name string, argv, env []string, dir, key string) (*acpConn, error
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("could not start %s: %w", filepath.Base(argv[0]), err)
 	}
+	running.add(c)
 	go c.read(stdout)
 	return c, nil
+}
+
+// running are the agents started and not yet exited, for StopAgents.
+var running = &acpRunning{conns: map[*acpConn]struct{}{}}
+
+type acpRunning struct {
+	mu    sync.Mutex
+	conns map[*acpConn]struct{}
+}
+
+func (r *acpRunning) add(c *acpConn) {
+	r.mu.Lock()
+	r.conns[c] = struct{}{}
+	r.mu.Unlock()
+}
+
+func (r *acpRunning) remove(c *acpConn) {
+	r.mu.Lock()
+	delete(r.conns, c)
+	r.mu.Unlock()
+}
+
+// StopAgents stops every ACP agent the server has running, a turn's or one
+// kept for its chat's next, and returns once they have exited. The server
+// calls it as it shuts down: an agent runs in a process group of its own, so
+// neither a signal to the server's nor the server's exit reaches it.
+func StopAgents() {
+	running.mu.Lock()
+	conns := make([]*acpConn, 0, len(running.conns))
+	for c := range running.conns {
+		conns = append(conns, c)
+	}
+	running.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, c := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.close()
+		}()
+	}
+	wg.Wait()
 }
 
 // read handles what the agent writes until it exits. A line can be long — a
@@ -157,7 +200,11 @@ func (c *acpConn) read(stdout io.Reader) {
 			break
 		}
 	}
-	c.end(c.cmd.Wait())
+	waitErr := c.cmd.Wait()
+	// Whatever the agent started goes with it. Its process ID was only just
+	// freed, so the group's ID can't have been taken by another yet.
+	killGroup(c.cmd)
+	c.end(waitErr)
 }
 
 func (c *acpConn) dispatch(line []byte) {
@@ -221,6 +268,7 @@ func (c *acpConn) end(waitErr error) {
 		return
 	}
 	c.ended = true
+	running.remove(c)
 	detail := lastLines(c.stderr.String(), 10, 1500)
 	switch {
 	case detail != "":
@@ -327,7 +375,18 @@ func (c *acpConn) locked(f func()) {
 func (c *acpConn) kill() {
 	c.stopping.Store(true)
 	_ = c.stdin.Close()
-	killProcessGroup(c.cmd)
+	c.killRunning()
+}
+
+// killRunning kills the agent's process group unless the agent has exited:
+// its process ID, and so the group's, may belong to another process by now
+// (read killed what it left behind as it exited).
+func (c *acpConn) killRunning() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.ended {
+		killProcessGroup(c.cmd)
+	}
 }
 
 // close stops the agent: its stdin is closed, which an ACP agent takes as the
@@ -338,7 +397,7 @@ func (c *acpConn) close() {
 	select {
 	case <-c.done:
 	case <-time.After(acpCloseGrace):
-		killProcessGroup(c.cmd)
+		c.killRunning()
 	}
 }
 

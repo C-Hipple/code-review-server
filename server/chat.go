@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +31,27 @@ import (
 // chatManager runs the chats for the RPCs, with the agents the config
 // defines. Tests swap it.
 var chatManager = newChatManager(chat.NewConfigSource())
+
+// stopChatAgentsOnSignal stops the review chats' agents when the server is
+// told to stop (Ctrl-C in its terminal, a SIGTERM), then exits as the signal
+// would have had it: each agent runs in a process group of its own, which
+// neither the signal nor the server's exit reaches. A second signal while the
+// agents stop ends the server at once.
+func stopChatAgentsOnSignal() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		sig := <-signals
+		signal.Reset(os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		slog.Info("Stopping the review chats' agents", "signal", sig.String())
+		chat.StopAgents()
+		code := 1
+		if s, ok := sig.(syscall.Signal); ok {
+			code = 128 + int(s)
+		}
+		os.Exit(code)
+	}()
+}
 
 // newChatManager is the chat manager for the agents source lists, keeping
 // chats in the server's database and reading PRs from its caches.

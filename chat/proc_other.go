@@ -13,3 +13,6 @@ func killProcessGroup(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// killGroup does nothing: without process groups, there is no group to kill.
+func killGroup(*exec.Cmd) {}

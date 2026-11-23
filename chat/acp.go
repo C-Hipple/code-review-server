@@ -37,9 +37,10 @@ import (
 // the chat's working directory and the PR's checkout only) but not write them
 // or run terminals, and answers its permission requests itself — yes to
 // reading, searching and thinking, no to anything else. A client can only
-// refuse what an agent asks about, so an agent that edits a file, runs a
-// command or fetches a URL without asking has its turn stopped when the call
-// is reported done, with a message saying to configure it to ask.
+// refuse what an agent asks about, so an agent that makes any other call — an
+// edit, a command, a fetch, one whose kind says nothing — without asking, or
+// after it was refused, has its turn stopped when the call is reported done,
+// with a message saying to configure it to ask.
 type ACPBackend struct {
 	AgentID string
 	// Settings returns the agent's [Chat.Agents] table as config has it now.
@@ -164,6 +165,11 @@ func (b *ACPBackend) Turn(ctx context.Context, t Turn, emit func(Event)) (TurnRe
 	// What the agent wrote after its last tool call is the reply's last block.
 	turn.flush()
 	res.Answered = turn.answered
+	// The conversation is the chat's to resume once the agent has taken the
+	// prompt: a new one whose first prompt it never took doesn't have the PR.
+	if turn.accepted {
+		res.SessionID = turn.session
+	}
 	return res, err
 }
 
@@ -173,12 +179,13 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 	if err != nil {
 		return TurnResult{}, err
 	}
-	res := TurnResult{SessionID: sessionID}
+	// A conversation picked up again is the chat's already, so a failure from
+	// here on isn't a failure to resume. A new one becomes the chat's once the
+	// agent takes the prompt (accept): one it never takes leaves the chat to
+	// start over, carrying the PR again.
+	res := TurnResult{Resumed: t.Resume}
 	conn.locked(func() {
-		turn.session, turn.quiet = sessionID, false
-		if !t.Resume {
-			turn.emit(Event{Kind: EventSession, SessionID: sessionID})
-		}
+		turn.session, turn.quiet, turn.accepted = sessionID, false, t.Resume
 	})
 
 	// ACP has no system prompt for a client to add to, so a new
@@ -214,6 +221,7 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 	if err := r.decode(&pr); err != nil {
 		return res, b.describe(conn, s, err)
 	}
+	conn.locked(turn.accept)
 	switch pr.StopReason {
 	case "end_turn", "":
 		return res, nil
@@ -417,7 +425,9 @@ func setupCall(ctx context.Context, conn *acpConn, method string, params, result
 // acquire hands the turn the chat's agent: the one kept from its last turn
 // when it is still running the same command, else a new one, initialized.
 func (b *ACPBackend) acquire(ctx context.Context, s config.ChatBackendSettings, workDir string, argv, env []string) (*acpConn, error) {
-	key := strings.Join(argv, "\x00") + "\x01" + strings.Join(env, "\x00")
+	// The mode is chosen as the session opens, which a kept agent's has, so a
+	// new Mode takes a new agent too.
+	key := strings.Join(argv, "\x00") + "\x01" + strings.Join(env, "\x00") + "\x01" + strings.TrimSpace(s.Mode)
 	b.mu.Lock()
 	if b.conns == nil {
 		b.conns = map[string]*acpEntry{}
@@ -568,16 +578,18 @@ type acpTurn struct {
 	dirs []string
 	// session is the session the turn prompts; quiet drops its updates until
 	// the prompt is sent, so a session/load's replay of the conversation
-	// isn't taken for a new answer.
+	// isn't taken for a new answer. accepted is set once the agent has taken
+	// the prompt: it is working on it, or has answered it.
 	session  string
 	quiet    bool
+	accepted bool
 	text     strings.Builder
 	answered bool
 	tools    map[string]*acpTool
-	// asked are the tool calls the agent asked permission for; stop gets
-	// why the turn must stop, once, when it made a call it should have asked
-	// about.
-	asked   map[string]bool
+	// denied are the tool calls the server refused, with the kind each was
+	// refused as; stop gets why the turn must stop, once, when the agent made
+	// a call it wasn't let make.
+	denied  map[string]string
 	stopped bool
 	stop    chan string
 	// refused is the last call the server refused, in words ("Run \"make\"").
@@ -597,7 +609,7 @@ type acpTool struct {
 func newACPTurn(agent string, emit func(Event), t Turn) *acpTurn {
 	turn := &acpTurn{
 		agent: agent, emit: emit, quiet: true,
-		tools: map[string]*acpTool{}, asked: map[string]bool{}, stop: make(chan string, 1),
+		tools: map[string]*acpTool{}, denied: map[string]string{}, stop: make(chan string, 1),
 	}
 	for _, dir := range append([]string{t.WorkDir}, t.ReadDirs...) {
 		if dir == "" {
@@ -621,6 +633,17 @@ func (t *acpTurn) flush() {
 	}
 }
 
+// accept records that the agent has taken the prompt, and for a new
+// conversation tells the Manager its handle, kept from then on so a turn that
+// dies later can be resumed.
+func (t *acpTurn) accept() {
+	if t.accepted || t.session == "" {
+		return
+	}
+	t.accepted = true
+	t.emit(Event{Kind: EventSession, SessionID: t.session})
+}
+
 func (t *acpTurn) notify(method string, params json.RawMessage) {
 	if method != "session/update" || t.quiet {
 		return
@@ -630,6 +653,12 @@ func (t *acpTurn) notify(method string, params json.RawMessage) {
 		return
 	}
 	u := n.Update
+	switch u.SessionUpdate {
+	case "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan":
+		// Working on the prompt. (Other updates, the commands it offers
+		// say, can come of opening the session.)
+		t.accept()
+	}
 	switch u.SessionUpdate {
 	case "agent_message_chunk":
 		if u.Content == nil || u.Content.Type != "text" || u.Content.Text == "" {
@@ -681,21 +710,65 @@ func (t *acpTurn) toolCall(u acpUpdate) {
 	if u.Status != nil && (*u.Status == "completed" || *u.Status == "failed") {
 		call.settled = true
 		t.emit(Event{Kind: EventToolResult, ToolUseID: u.ToolCallID, IsError: *u.Status == "failed"})
-		if *u.Status == "completed" && !t.asked[u.ToolCallID] {
-			if verb, ok := acpMustAsk[call.kind]; ok && !t.stopped {
-				t.stopped = true
-				t.stop <- fmt.Sprintf("Stopped: %s %s %q without asking first. The chat is read-only, and the server can only "+
-					"refuse what an agent asks to do: configure %s to ask before it runs commands, changes files or fetches URLs "+
-					"(see the review chat in docs/configuration.md).", t.agent, verb, detail, t.agent)
+		// The server only lets reads, searches and thinking through, so any
+		// other call that completed was made without its leave: unasked, or
+		// refused and made anyway.
+		deniedAs, denied := t.denied[u.ToolCallID]
+		if *u.Status == "completed" && !t.stopped && (!acpReadOnlyKinds[call.kind] || denied) {
+			t.stopped = true
+			kind, how := call.kind, "without asking first"
+			if denied {
+				kind, how = deniedAs, "after the server refused to let it"
 			}
+			t.stop <- fmt.Sprintf("Stopped: %s %s %s. The chat is read-only, and the server can only "+
+				"refuse what an agent asks to do: configure %s to ask before it runs commands, changes files or fetches URLs "+
+				"(see the review chat in docs/configuration.md).", t.agent, acpDid(kind, detail), how, t.agent)
 		}
 	}
 }
 
-// acpMustAsk are the kinds of tool call an agent must ask permission for,
-// which the server then refuses, by what the agent did.
-var acpMustAsk = map[string]string{
-	"edit": "edited", "delete": "deleted", "move": "moved", "execute": "ran", "fetch": "fetched",
+// acpDid says what a tool call of kind on detail did ("ran \"make\"").
+func acpDid(kind, detail string) string {
+	verb, ok := map[string]string{
+		"read": "read", "search": "searched", "think": "thought about", "edit": "edited", "delete": "deleted",
+		"move": "moved", "execute": "ran", "fetch": "fetched", "switch_mode": "switched its mode to",
+	}[kind]
+	switch {
+	case detail == "" && ok:
+		return verb + " something"
+	case detail == "":
+		return "used a tool"
+	case !ok:
+		return "used " + strconv.Quote(detail)
+	}
+	return verb + " " + strconv.Quote(detail)
+}
+
+// acpToolWords are the first words of a title that only repeat the tool's
+// name, by its name: the name inflected, or snake_cased into a longer one
+// ("read_file").
+var acpToolWords = map[string][]string{
+	"Read":        {"read", "reads", "reading"},
+	"Search":      {"search", "searches", "searching", "searched"},
+	"Edit":        {"edit", "edits", "editing", "edited"},
+	"Delete":      {"delete", "deletes", "deleting", "deleted"},
+	"Move":        {"move", "moves", "moving", "moved"},
+	"Run":         {"run", "runs", "running", "ran"},
+	"Think":       {"think", "thinks", "thinking", "thought"},
+	"Fetch":       {"fetch", "fetches", "fetching", "fetched"},
+	"Switch mode": {"switch", "switches", "switching", "switched"},
+}
+
+// repeatsTool reports whether word, a title's first, only repeats the tool's
+// name: "Reading" or "read_file:" does for Read, "README.md" doesn't.
+func repeatsTool(word, tool string) bool {
+	word = strings.TrimSuffix(strings.ToLower(word), ":")
+	for _, w := range acpToolWords[tool] {
+		if word == w || strings.HasPrefix(word, w+"_") {
+			return true
+		}
+	}
+	return false
 }
 
 // acpToolName names a tool by its kind, as Claude Code's tools read ("Read",
@@ -731,8 +804,7 @@ func acpToolName(kind string) string {
 func (t *acpTurn) detail(call *acpTool) string {
 	detail := strings.Join(strings.Fields(t.relativeAll(call.title)), " ")
 	if tool := acpToolName(call.kind); tool != "" {
-		first, rest, _ := strings.Cut(detail, " ")
-		if strings.HasPrefix(strings.ToLower(first), strings.ToLower(tool)) {
+		if first, rest, _ := strings.Cut(detail, " "); repeatsTool(first, tool) {
 			detail = rest
 		}
 	}
@@ -778,7 +850,9 @@ func (t *acpTurn) permission(params json.RawMessage) (any, *acpError) {
 	if err := json.Unmarshal(params, &r); err != nil {
 		return nil, &acpError{Code: acpErrInvalidParams, Message: err.Error()}
 	}
-	t.asked[r.ToolCall.ToolCallID] = true
+	if !t.quiet && r.SessionID == t.session {
+		t.accept() // asking is working on the prompt
+	}
 	kind := ""
 	if r.ToolCall.Kind != nil {
 		kind = *r.ToolCall.Kind
@@ -791,10 +865,12 @@ func (t *acpTurn) permission(params json.RawMessage) (any, *acpError) {
 		want = []string{"allow_once", "allow_always"}
 	}
 	if !acpReadOnlyKinds[kind] {
-		call := &acpTool{kind: kind}
+		t.denied[r.ToolCall.ToolCallID] = kind
+		call := &acpTool{}
 		if known := t.tools[r.ToolCall.ToolCallID]; known != nil {
 			*call = *known
 		}
+		call.kind = kind // the request's, which the call was refused for
 		if r.ToolCall.Title != nil && strings.TrimSpace(*r.ToolCall.Title) != "" {
 			call.title = *r.ToolCall.Title
 		}

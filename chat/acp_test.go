@@ -476,6 +476,12 @@ func TestACPToolDetail(t *testing.T) {
 		{acpTool{kind: "search", title: "grep \"Greet\" /src/repo"}, `grep "Greet" /src/repo`},
 		{acpTool{kind: "read", title: "", locations: []string{"/src/repo/a.go"}}, "a.go"},
 		{acpTool{kind: "other", title: "Todo list"}, "Todo list"},
+		{acpTool{kind: "read", title: "Reading /src/repo/a.go"}, "a.go"},
+		// A file whose name starts with the tool's keeps it.
+		{acpTool{kind: "read", title: "README.md"}, "README.md"},
+		{acpTool{kind: "edit", title: "editor.go"}, "editor.go"},
+		{acpTool{kind: "execute", title: "Runner.sh --fast"}, "Runner.sh --fast"},
+		{acpTool{kind: "execute", title: "run_shell_command: make"}, "make"},
 	} {
 		if got := turn.detail(&tt.call); got != tt.want {
 			t.Errorf("detail(%+v) = %q, want %q", tt.call, got, tt.want)
@@ -603,5 +609,129 @@ func waitFor(t *testing.T, ok func() bool) {
 			t.Fatal("timed out")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestACPKeepsNoConversationWhosePromptTheAgentRejected(t *testing.T) {
+	b, _, dir := newACPTestBackend(t, "", config.ChatBackendSettings{})
+	res, run, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@reject"})
+	if err == nil || !strings.Contains(err.Error(), "the prompt was rejected") {
+		t.Errorf("err = %v", err)
+	}
+	if res.SessionID != "" || res.Answered || res.Resumed {
+		t.Errorf("a conversation that never took its first prompt isn't the chat's: %+v", res)
+	}
+	for _, e := range run.events {
+		if e.Kind == EventSession {
+			t.Errorf("the session was reported, so the chat would resume it without the PR: %+v", run.events)
+		}
+	}
+}
+
+func TestACPManagerDoesntStartOverAfterAResumedTurnFails(t *testing.T) {
+	b, logs, _ := newACPTestBackend(t, "", config.ChatBackendSettings{})
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	m := NewManager(Fixed{b})
+	root := t.TempDir()
+	m.Store = func() Store { return db }
+	m.Dir = func() (string, error) { return root, nil }
+	m.LoadPR = func(context.Context, string, string, int) (PRContext, error) { return testPR, nil }
+	idle := make(chan struct{}, 4)
+	m.OnChange = func(_ database.ChatSession, status string) {
+		if status == StatusIdle {
+			idle <- struct{}{}
+		}
+	}
+	session, err := m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Message: "@plain first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := waitView(t, m, session.ID, idle).Session.BackendSessionID
+	if err := m.Send(context.Background(), session.ID, "@refusal second"); err != nil {
+		t.Fatal(err)
+	}
+	v := waitView(t, m, session.ID, idle)
+	if last := v.Messages[len(v.Messages)-1]; last.Role != RoleError || last.Content != "The agent refused to answer." {
+		t.Errorf("the refusal should be shown: %s", dump(v.Messages))
+	}
+	if v.Session.BackendSessionID != first {
+		t.Errorf("the conversation should be kept: %q, was %q", v.Session.BackendSessionID, first)
+	}
+	if m := methods(logs()); !slices.Equal(m, []string{"initialize", "session/new", "session/prompt", "session/prompt"}) {
+		t.Errorf("the message should be sent once, to the same conversation: %v", m)
+	}
+}
+
+func TestACPStopsAnAgentThatActsAfterARefusal(t *testing.T) {
+	b, _, dir := newACPTestBackend(t, "", config.ChatBackendSettings{Name: "Fake"})
+	_, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@refused-anyway"})
+	if err == nil || !strings.Contains(err.Error(), `Stopped: Fake ran "make" after the server refused to let it.`) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestACPStopsAnUnaskedCallWhoseKindSaysNothing(t *testing.T) {
+	for _, prompt := range []string{"@unasked-other", "@unasked-nokind"} {
+		b, _, dir := newACPTestBackend(t, "", config.ChatBackendSettings{Name: "Fake"})
+		_, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: prompt})
+		if err == nil || !strings.Contains(err.Error(), `Stopped: Fake used "write_notes" without asking first.`) {
+			t.Errorf("%s: err = %v", prompt, err)
+		}
+	}
+}
+
+func TestACPSaysWhatItRefusedByTheKindItWasAskedFor(t *testing.T) {
+	b, _, dir := newACPTestBackend(t, "", config.ChatBackendSettings{})
+	_, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@refuse-kind"})
+	if err == nil || err.Error() != `fake stopped when the server refused to let it run "make test": the chat is read-only.` {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestACPStartsANewAgentForANewMode(t *testing.T) {
+	b, logs, dir := newACPTestBackend(t, "", config.ChatBackendSettings{})
+	configured := b.Settings
+	mode := ""
+	b.Settings = func() config.ChatBackendSettings {
+		s := configured()
+		s.Mode = mode
+		return s
+	}
+	first, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode = "plan"
+	if _, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@plain", SessionID: first.SessionID, Resume: true}); err == nil ||
+		!strings.Contains(err.Error(), "can't pick up a conversation") {
+		t.Errorf("a new Mode should take a new agent, which can't resume this one: %v", err)
+	}
+	if p := pids(logs()); len(p) != 2 {
+		t.Errorf("pids = %v", p)
+	}
+}
+
+func TestStopAgentsStopsTheKeptAgents(t *testing.T) {
+	b, _, dir := newACPTestBackend(t, "", config.ChatBackendSettings{})
+	if _, _, err := runTurn(t, b, Turn{WorkDir: dir, Prompt: "@plain"}); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	conn := b.conns[dir].conn
+	b.mu.Unlock()
+	StopAgents()
+	select {
+	case <-conn.done:
+	default:
+		t.Fatal("the kept agent should have exited")
+	}
+	running.mu.Lock()
+	defer running.mu.Unlock()
+	if len(running.conns) != 0 {
+		t.Errorf("%d agents still running", len(running.conns))
 	}
 }

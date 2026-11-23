@@ -24,9 +24,13 @@ import (
 // configopts (mode and model as config options rather than modes and models),
 // nomodels (no choice of model at all). What a prompt does is picked by a word
 // in it: @hang (wait for session/cancel), @ignore-cancel (never answer),
-// @crash, @unasked (run a command without asking), @refuse-quits (end the turn
-// when a permission is refused), @plain (just answer); otherwise the full flow
-// of reading, asking and answering.
+// @crash, @unasked (run a command without asking), @unasked-other (make a
+// call of kind "other" without asking), @unasked-nokind (one of no kind),
+// @refused-anyway (run a command it was refused), @refuse-quits (end the turn
+// when a permission is refused), @refuse-kind (ask for a call announced
+// without a kind, then give up), @refusal (refuse to answer, saying nothing),
+// @reject (fail the prompt before working on it), @plain (just answer);
+// otherwise the full flow of reading, asking and answering.
 const (
 	fakeACPEnv    = "CRS_FAKE_ACP"
 	fakeACPLogEnv = "CRS_FAKE_ACP_LOG"
@@ -252,6 +256,12 @@ func (f *fakeACP) handle(raw []byte) {
 		for _, c := range prompt.Prompt {
 			text += c.Text
 		}
+		if strings.Contains(text, "@reject") {
+			// What opening the session says, then no to the prompt.
+			f.update(p.SessionID, map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": []any{}})
+			f.fail(m.ID, -32603, "Internal error: the prompt was rejected")
+			return
+		}
 		go f.prompt(m.ID, p.SessionID, text, cancel)
 	default:
 		if len(m.ID) > 0 {
@@ -338,9 +348,26 @@ func (f *fakeACP) prompt(id json.RawMessage, session, text string, cancel chan s
 	case strings.Contains(text, "@crash"):
 		fmt.Fprintln(os.Stderr, "something broke")
 		os.Exit(3)
+	case strings.Contains(text, "@unasked-other"):
+		tool(map[string]any{"toolCallId": "o1", "title": "write_notes", "kind": "other", "status": "completed"})
+		waitCancel()
+	case strings.Contains(text, "@unasked-nokind"):
+		tool(map[string]any{"toolCallId": "o1", "title": "write_notes", "status": "completed"})
+		waitCancel()
 	case strings.Contains(text, "@unasked"):
 		tool(map[string]any{"toolCallId": "x1", "title": "rm -rf build", "kind": "execute", "status": "completed"})
 		waitCancel()
+	case strings.Contains(text, "@refused-anyway"):
+		tool(map[string]any{"toolCallId": "m1", "title": "make", "kind": "execute", "status": "pending"})
+		permission("m1", "", "")
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "m1", "status": "completed"})
+		waitCancel()
+	case strings.Contains(text, "@refuse-kind"):
+		tool(map[string]any{"toolCallId": "m1", "title": "make test", "status": "pending"})
+		permission("m1", "execute", "make test")
+		end("cancelled")
+	case strings.Contains(text, "@refusal"):
+		end("refusal")
 	case strings.Contains(text, "@refuse-quits"):
 		tool(map[string]any{"toolCallId": "m1", "title": "make", "kind": "execute", "status": "pending"})
 		permission("m1", "", "")

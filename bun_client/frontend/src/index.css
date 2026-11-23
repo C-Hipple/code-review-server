@@ -2124,6 +2124,15 @@ canvas {
     min-width: 0;
 }
 
+.crs-chat-agent {
+    color: var(--text-primary);
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .crs-chat-link-button {
     background: none;
     border: none;

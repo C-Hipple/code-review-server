@@ -223,8 +223,8 @@ says whether the diagram still describes the PR.
 #### Review chat
 
 `t` in a review buffer (`crs-chat`) opens the [review chat](protocol.md#review-chat):
-a conversation about the PR with a coding agent the server runs on your machine
-(Claude Code, when `claude` is on the server's `PATH`). The chat opens in a window
+a conversation about the PR with a coding agent the server runs on your machine:
+the one its config picks (`[Chat] Agent`), Claude Code by default. The chat opens in a window
 split off the bottom of the review's, which keeps the top three quarters
 (`crs-chat-window-height`), and shows the PR's most recent conversation, or a new
 one. The agent gets the PR's description and diff with your first message, and can
@@ -243,7 +243,7 @@ chat has cost and, while the agent works, for how long.
 | `C-c C-k` | `crs-chat-stop` | Stop the agent answering |
 | `C-c C-n` | `crs-chat-new` | Start a new chat, which gets the PR's diff as it is now |
 | `C-c C-w` | `crs-chat-switch` | Open another of the PR's chats |
-| `C-c C-e` | `crs-chat-select-model` | Pick the agent and model for new chats |
+| `C-c C-e` | `crs-chat-select-model` | Pick the model for new chats, of those the agent offers |
 | `C-c C-r` | `crs-chat-refresh` | Read the chat from the server again |
 | `C-c C-d` | `crs-chat-delete` | Delete the chat |
 | `C-c C-q` | `crs-chat-quit` | Close the chat window, keeping what you were writing |
@@ -256,9 +256,9 @@ The answer streams in as the agent writes it: the server announces each step
 changed. What you are writing, where point is and your undo history stay as they
 were, and a window whose point is in your message follows the conversation down.
 When the PR has new commits since the chat started, the chat says so; `C-c C-n`
-gives the agent the new diff. `crs-chat-backend` and `crs-chat-model` set the agent
-and model new chats start with (by default the server's first agent, and its
-default model).
+gives the agent the new diff. The agent is the server config's choice, not the
+client's; `crs-chat-model` sets the model new chats start with (by default the
+agent's own), and `C-c C-r` reads the agents again after the config changes.
 
 ### Embedded screenshots
 

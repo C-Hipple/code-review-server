@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -354,44 +356,146 @@ func (s GitHubAPISettings) Routes() map[string]string {
 	}
 }
 
-// ChatSettings is the [Chat] table: the agents a reviewer can chat with about
-// the PR they are reviewing (see the chat package). Each backend has a table
-// of its own, so a new one adds a key here rather than reshaping the old ones.
-// Nothing needs setting: a backend whose program is on PATH is offered as is.
+// ChatSettings is the [Chat] table: which agent the review chat talks to (see
+// the chat package), and how each agent is run. The agent is the config's
+// choice, not a client's: every new chat talks to Agent. Each agent has a
+// table of its own — the built-in Claude Code one [Chat.Claude], any other
+// [Chat.Agents.<id>] — so a new one adds a table rather than reshaping the old
+// ones. Nothing needs setting: Claude Code is offered as is when `claude` is
+// on PATH.
 type ChatSettings struct {
+	// Agent is the ID of the agent new chats talk to: ChatBackendClaude or a
+	// key of Agents. Empty means ChatBackendClaude. Chats started with another
+	// agent carry on with it while it is still defined.
+	Agent string `toml:"Agent,omitempty"`
 	// Claude is [Chat.Claude]: the local Claude Code CLI, run headless.
 	Claude ChatBackendSettings `toml:"Claude,omitempty"`
+	// Agents are further agents, [Chat.Agents.<id>], each run over the
+	// protocol its Protocol names: any agent that speaks the Agent Client
+	// Protocol (ACP) — Gemini CLI, claude-code-acp, opencode, goose, ... — by
+	// default.
+	Agents map[string]ChatBackendSettings `toml:"Agents,omitempty"`
 }
 
-// ChatBackendSettings configures one chat backend.
+// ChatBackendSettings configures one chat agent.
 type ChatBackendSettings struct {
-	// Disabled stops the server offering the backend at all.
+	// Disabled stops the server offering the agent at all.
 	Disabled bool `toml:"Disabled,omitempty"`
-	// Command is the program to run, a name on PATH or a path; empty uses the
-	// backend's own ("claude").
+	// Name is what clients call the agent; empty takes the protocol's name for
+	// [Chat.Claude] ("Claude Code") and the agent's ID otherwise.
+	Name string `toml:"Name,omitempty"`
+	// Protocol is how the server talks to the agent: ChatProtocolACP (the
+	// default for [Chat.Agents]) or ChatProtocolClaudeCode. [Chat.Claude] is
+	// always ChatProtocolClaudeCode.
+	Protocol string `toml:"Protocol,omitempty"`
+	// Command is the program to run, a name on PATH or a path, with any
+	// arguments (split like a shell would): for an ACP agent, the command line
+	// that starts it speaking ACP on stdio ("gemini --experimental-acp").
+	// Empty uses the protocol's own program, which only Claude Code has.
 	Command string `toml:"Command,omitempty"`
-	// Models are the models offered to pick from, as the program's --model
-	// takes them; empty offers the backend's built-in list. The backend's own
-	// default (whatever its settings say) is always offered first.
+	// Env adds environment variables to the agent's, over the server's own.
+	Env map[string]string `toml:"Env,omitempty"`
+	// Models are the models offered to pick from, as the agent takes them
+	// (Claude Code's --model, an ACP agent's model IDs); empty offers the
+	// protocol's built-in list — Claude Code's aliases, nothing for ACP. The
+	// agent's own default is always offered first.
 	Models []string `toml:"Models,omitempty"`
 	// DefaultModel is the model picked when a chat starts without naming one;
-	// empty leaves it to the program.
+	// empty leaves it to the agent.
 	DefaultModel string `toml:"DefaultModel,omitempty"`
+	// Mode is an ACP agent's session mode to switch each conversation to
+	// ("plan", say); empty leaves the agent's default.
+	Mode string `toml:"Mode,omitempty"`
+	// AuthMethod is the ACP authentication method (one the agent lists in its
+	// authMethods) to sign in with when the agent says it needs signing in;
+	// empty reports that instead.
+	AuthMethod string `toml:"AuthMethod,omitempty"`
 }
 
-// ChatBackend returns the [Chat] settings for the backend id ("claude"); an
-// unknown id gets the zero settings.
+// The protocols a chat agent can be run over. They live here, beside the
+// settings that name them, because config cannot import the chat package
+// (chat reads config); the chat package registers a driver for each.
+const (
+	// ChatProtocolClaudeCode runs the Claude Code CLI headless, one `claude
+	// -p` per turn.
+	ChatProtocolClaudeCode = "claude-code"
+	// ChatProtocolACP runs any agent that speaks the Agent Client Protocol
+	// (agentclientprotocol.com) over stdio.
+	ChatProtocolACP = "acp"
+)
+
+// ChatProtocols are the protocols a [Chat.Agents] table may name.
+var ChatProtocols = []string{ChatProtocolACP, ChatProtocolClaudeCode}
+
+// ChatBackend returns the settings of the chat agent id: [Chat.Claude] for
+// ChatBackendClaude, else its [Chat.Agents] table, with Protocol filled in.
+// An unknown id gets the zero settings.
 func (c Config) ChatBackend(id string) ChatBackendSettings {
-	switch id {
-	case ChatBackendClaude:
-		return c.Chat.Claude
+	if id == ChatBackendClaude {
+		s := c.Chat.Claude
+		s.Protocol = ChatProtocolClaudeCode
+		return s
 	}
-	return ChatBackendSettings{}
+	s, ok := c.Chat.Agents[id]
+	if !ok {
+		return ChatBackendSettings{}
+	}
+	if strings.TrimSpace(s.Protocol) == "" {
+		s.Protocol = ChatProtocolACP
+	}
+	s.Protocol = strings.TrimSpace(s.Protocol)
+	return s
 }
 
-// ChatBackendClaude is the ID of the Claude Code chat backend. It lives here,
-// beside the settings that name it, because config cannot import the chat
-// package (chat reads config).
+// ChatAgent is the ID of the agent new chats talk to: [Chat] Agent, else
+// ChatBackendClaude.
+func (c Config) ChatAgent() string {
+	if id := strings.TrimSpace(c.Chat.Agent); id != "" {
+		return id
+	}
+	return ChatBackendClaude
+}
+
+// ChatAgentIDs are the IDs of every chat agent the config defines: the
+// built-in Claude Code one, then the [Chat.Agents] tables by ID.
+func (c Config) ChatAgentIDs() []string {
+	ids := []string{ChatBackendClaude}
+	for _, id := range slices.Sorted(maps.Keys(c.Chat.Agents)) {
+		if id != ChatBackendClaude {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// ChatTable names the table that configures the chat agent id, for messages:
+// "[Chat.Claude]" or "[Chat.Agents.<id>]".
+func ChatTable(id string) string {
+	if id == ChatBackendClaude {
+		return "[Chat.Claude]"
+	}
+	return "[Chat.Agents." + tomlKey(id) + "]"
+}
+
+// tomlKey is key as a TOML table header spells it: bare when it can be,
+// quoted otherwise.
+func tomlKey(key string) string {
+	bare := key != ""
+	for _, r := range key {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			bare = false
+			break
+		}
+	}
+	if bare {
+		return key
+	}
+	return strconv.Quote(key)
+}
+
+// ChatBackendClaude is the ID of the built-in Claude Code chat agent. It
+// lives here, beside the settings that name it, because config cannot import
+// the chat package (chat reads config).
 const ChatBackendClaude = "claude"
 
 // WebhookSettings is the [Webhooks] table: GitHub webhook deliveries the server
@@ -611,8 +715,8 @@ type Config struct {
 	// Webhooks lets GitHub push PR updates instead of every cycle polling for
 	// them; empty, it leaves polling as it was.
 	Webhooks WebhookSettings
-	// Chat configures the agents the review chat drives; empty, each is
-	// offered with its defaults when its program is installed.
+	// Chat picks the agent the review chat talks to and configures how each
+	// agent is run; empty, the chat talks to Claude Code when it is installed.
 	Chat ChatSettings
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.

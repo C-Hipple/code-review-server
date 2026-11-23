@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+    agentBackend,
     attachedLabel,
     chatIsStale,
     elapsedLabel,
@@ -7,7 +8,6 @@ import {
     isSendKey,
     modelLabel,
     parseChatChanged,
-    pickBackend,
     pickModel,
     shouldCloseOnLeave,
     type ChatBackendInfo,
@@ -53,16 +53,23 @@ describe('parseChatChanged', () => {
     });
 });
 
-describe('pickBackend and pickModel', () => {
-    test('prefer the remembered backend while it is available', () => {
-        expect(pickBackend([codex, claude], 'claude')?.id).toBe('claude');
-        expect(pickBackend([codex, claude], 'codex')?.id).toBe('claude');
-        expect(pickBackend([codex, claude], null)?.id).toBe('claude');
+describe('agentBackend and pickModel', () => {
+    test('take the agent the server names, available or not', () => {
+        expect(agentBackend({ backends: [codex, claude], agent: 'claude' })?.id).toBe('claude');
+        expect(agentBackend({ backends: [codex, claude], agent: 'codex' })?.id).toBe('codex');
     });
 
-    test('fall back to the first listed when none is available', () => {
-        expect(pickBackend([codex], null)?.id).toBe('codex');
-        expect(pickBackend([], null)).toBeNull();
+    test('stand in for an agent the server names but does not list', () => {
+        const missing = agentBackend({ backends: [claude], agent: 'gemini' });
+        expect(missing?.id).toBe('gemini');
+        expect(missing?.available).toBe(false);
+        expect(missing?.reason).toContain("doesn't define it");
+    });
+
+    test('fall back, for a server that names none, to the first available, else the first', () => {
+        expect(agentBackend({ backends: [codex, claude], agent: '' })?.id).toBe('claude');
+        expect(agentBackend({ backends: [codex], agent: '' })?.id).toBe('codex');
+        expect(agentBackend({ backends: [], agent: '' })).toBeNull();
     });
 
     test('keep a remembered model the backend offers, else its default', () => {

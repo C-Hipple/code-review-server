@@ -1,5 +1,5 @@
 import type { AIFeatureInfo, AIFeatureOutput, RunAIFeatureReply } from './ai_utils';
-import type { Chat, ChatBackendInfo, ChatReply, ChatSummary } from './chat_utils';
+import type { Chat, ChatAgents, ChatBackendInfo, ChatReply, ChatSummary } from './chat_utils';
 import type { DiffFilterInfo, FilteredDiffResult } from './diff_filter_utils';
 import type {
     AIFeatureEntry,
@@ -172,13 +172,13 @@ export async function getFilteredDiff(
 // The review chat (chat_utils.ts). These go through the bridge's generic
 // /api/rpc endpoint: the chat needs nothing a specialized one would add.
 
-/** The agents a chat can run, and the models each offers. */
-export async function listChatBackends(): Promise<ChatBackendInfo[]> {
-    const reply = await rpcCall<{ backends: ChatBackendInfo[] | null }>(
+/** The chat agents, the models each offers, and the one new chats talk to. */
+export async function listChatBackends(): Promise<ChatAgents> {
+    const reply = await rpcCall<{ backends: ChatBackendInfo[] | null; agent?: string }>(
         'RPCHandler.ListChatBackends',
         [{}]
     );
-    return reply.backends ?? [];
+    return { backends: reply.backends ?? [], agent: reply.agent ?? '' };
 }
 
 /** A PR's chats, the most recently active first. */
@@ -189,11 +189,12 @@ export async function listChats(args: PRRef): Promise<ChatSummary[]> {
 
 /**
  * Opens a chat about a PR with the reviewer's first message, which the agent
- * gets with the PR's description and diff. It answers in the background; the
- * server announces each step (Server.ChatChanged) and getChat reads it.
+ * the server's config names gets with the PR's description and diff. It
+ * answers in the background; the server announces each step
+ * (Server.ChatChanged) and getChat reads it.
  */
 export async function startChat(
-    args: PRRef & { Backend: string; Model: string; Message: string }
+    args: PRRef & { Model: string; Message: string }
 ): Promise<ChatReply> {
     return rpcCall<ChatReply>('RPCHandler.StartChat', [args]);
 }

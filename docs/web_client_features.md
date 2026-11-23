@@ -743,15 +743,16 @@ since whatever was sent meanwhile is lost.
 
 A round chat button sits in the review's bottom-left corner (above the bottom bar
 on mobile). Resting the pointer on it opens a chat panel above it: a conversation
-with a local coding agent about the PR — Claude Code, run by the server (see
-[Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
+with a local coding agent about the PR — the one the server's config picks (Claude
+Code, or any ACP agent), run by the server (see [Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
 unless the reviewer is working in it: focus inside it, a message half written, or
 pinned open (📌, or clicking the button, which also focuses the message box). Escape
 or × closes it. On a touch screen the button toggles it.
 
-- **Starting**: a new chat offers the server's backends (`ListChatBackends`) and the
-  picked one's models, remembered per browser; an unavailable backend says why and
-  can't be written to. The first message (Enter sends, Shift+Enter is a newline)
+- **Starting**: a new chat names the agent the server's config picks
+  (`ListChatBackends`' `agent`) — there is no agent to choose here — and offers its
+  models when it has more than its default, the one picked remembered per browser;
+  an unavailable agent says why and can't be written to. The first message (Enter sends, Shift+Enter is a newline)
   calls `StartChat`; the server sends the agent that we're reviewing the PR, the
   message, then the PR's description and diff, and the message shows a 📎 line
   saying so.

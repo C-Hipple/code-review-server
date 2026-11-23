@@ -3,6 +3,7 @@ package config
 import (
 	"crs/subprocess"
 	"fmt"
+	"maps"
 	"net"
 	"path/filepath"
 	"slices"
@@ -101,7 +102,59 @@ func Validate(cfg *Config) []ValidationError {
 	problems = append(problems, validatePlugins(cfg)...)
 	problems = append(problems, validateGitHubAPI(cfg)...)
 	problems = append(problems, validateWebhooks(cfg)...)
+	problems = append(problems, validateChat(cfg)...)
 	return append(problems, validateAI(cfg)...)
+}
+
+// validateChat checks the [Chat] table: that Agent names an agent the config
+// defines, and that each [Chat.Agents] table can be run. A chat agent that
+// can't run only says so when a chat starts, which is why it is worth
+// catching here.
+func validateChat(cfg *Config) []ValidationError {
+	var problems []ValidationError
+	agent := cfg.ChatAgent()
+	if agent != ChatBackendClaude {
+		if _, ok := cfg.Chat.Agents[agent]; !ok {
+			problems = append(problems, rootError("Chat.Agent",
+				"there is no agent %q: define it in %s, or use %q for Claude Code", agent, ChatTable(agent), ChatBackendClaude))
+		}
+	}
+	if p := strings.TrimSpace(cfg.Chat.Claude.Protocol); p != "" && p != ChatProtocolClaudeCode {
+		problems = append(problems, rootError("Chat.Claude.Protocol",
+			"[Chat.Claude] is always Claude Code; run another agent from a [Chat.Agents.<id>] table"))
+	}
+	for _, id := range slices.Sorted(maps.Keys(cfg.Chat.Agents)) {
+		field := func(name string) string { return "Chat.Agents." + tomlKey(id) + "." + name }
+		if strings.TrimSpace(id) == "" {
+			problems = append(problems, rootError("Chat.Agents", "an agent's ID can't be empty"))
+			continue
+		}
+		if id == ChatBackendClaude {
+			problems = append(problems, rootError("Chat.Agents."+id,
+				"%q is the built-in Claude Code agent: configure it in [Chat.Claude], or give this one another ID", id))
+			continue
+		}
+		s := cfg.ChatBackend(id)
+		if !slices.Contains(ChatProtocols, s.Protocol) {
+			problems = append(problems, rootError(field("Protocol"),
+				"unknown protocol %q (expected one of: %s)", s.Protocol, strings.Join(ChatProtocols, ", ")))
+			continue
+		}
+		command := strings.TrimSpace(s.Command)
+		if command == "" && s.Protocol == ChatProtocolACP {
+			problems = append(problems, rootError(field("Command"),
+				"is required: the command that starts the agent speaking ACP on stdio, e.g. \"gemini --experimental-acp\""))
+			continue
+		}
+		if command != "" {
+			if argv, err := subprocess.SplitCommand(command); err != nil {
+				problems = append(problems, rootError(field("Command"), "%v", err))
+			} else if len(argv) == 0 {
+				problems = append(problems, rootError(field("Command"), "names no program"))
+			}
+		}
+	}
+	return problems
 }
 
 // validateWebhooks checks the [Webhooks] table. A table that asks for webhooks

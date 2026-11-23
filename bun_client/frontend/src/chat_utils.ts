@@ -1,11 +1,19 @@
-// The review chat: a conversation with a local agent (Claude Code, to start)
-// about the PR under review, held by the server. See docs/protocol.md#review-chat
-// for the RPCs these types mirror.
+// The review chat: a conversation with a local agent about the PR under
+// review, held by the server. Which agent is the server config's choice
+// ([Chat] Agent), not the page's. See docs/protocol.md#review-chat for the RPCs
+// these types mirror.
 
 /** A model a backend offers; `id` empty means "whatever the agent defaults to". */
 export interface ChatModel {
     id: string;
     name: string;
+}
+
+/** What ListChatBackends says: every agent, and the one new chats talk to. */
+export interface ChatAgents {
+    backends: ChatBackendInfo[];
+    /** The ID of the agent new chats talk to; empty from a server that doesn't say. */
+    agent: string;
 }
 
 /** An agent the server can chat through. */
@@ -100,15 +108,23 @@ export function parseChatChanged(data: unknown): ChatChanged | null {
 }
 
 /**
- * The backend to preselect: the remembered one while it is still available,
- * else the first available, else the first listed (whose reason then shows).
+ * The agent new chats talk to: the one the server names. One it names but
+ * doesn't list stands in as unavailable, so the panel says why; a server that
+ * names none (an older one) talks to its first available agent.
  */
-export function pickBackend(
-    backends: ChatBackendInfo[],
-    remembered: string | null
-): ChatBackendInfo | null {
-    const known = backends.find(b => b.id === remembered && b.available);
-    return known ?? backends.find(b => b.available) ?? backends[0] ?? null;
+export function agentBackend(agents: ChatAgents): ChatBackendInfo | null {
+    const { backends, agent } = agents;
+    if (!agent) return backends.find(b => b.available) ?? backends[0] ?? null;
+    return (
+        backends.find(b => b.id === agent) ?? {
+            id: agent,
+            name: agent,
+            available: false,
+            reason: "the server's config names it as the chat agent, but doesn't define it.",
+            models: [],
+            default_model: '',
+        }
+    );
 }
 
 /** The model to preselect for `backend`: the remembered one if it offers it, else its default. */
@@ -182,24 +198,19 @@ export function isSendKey(e: {
     return e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing;
 }
 
-const BACKEND_KEY = 'crs.chat.backend';
 const MODEL_KEY = 'crs.chat.model';
 
-/** The backend and model last chosen, remembered per browser. */
-export function loadChatPrefs(): { backend: string | null; model: string | null } {
+/** The model last chosen, remembered per browser. */
+export function loadChatModel(): string | null {
     try {
-        return {
-            backend: localStorage.getItem(BACKEND_KEY),
-            model: localStorage.getItem(MODEL_KEY),
-        };
+        return localStorage.getItem(MODEL_KEY);
     } catch {
-        return { backend: null, model: null };
+        return null;
     }
 }
 
-export function saveChatPrefs(backend: string, model: string): void {
+export function saveChatModel(model: string): void {
     try {
-        localStorage.setItem(BACKEND_KEY, backend);
         localStorage.setItem(MODEL_KEY, model);
     } catch {
         // Private mode or storage off: the picker just starts at the default.

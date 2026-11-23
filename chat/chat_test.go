@@ -40,7 +40,7 @@ func newHarness(t *testing.T, mode string) *harness {
 	t.Cleanup(func() { db.Close() })
 	b := &ClaudeBackend{}
 	h := &harness{db: db, dir: t.TempDir(), runs: useFakeClaude(t, b, mode), idle: make(chan string, 16)}
-	h.m = NewManager(b)
+	h.m = NewManager(Fixed{b})
 	h.m.Store = func() Store { return db }
 	h.m.Dir = func() (string, error) { return h.dir, nil }
 	h.m.LoadPR = func(_ context.Context, owner, repo string, number int) (PRContext, error) {
@@ -105,7 +105,7 @@ func roles(msgs []database.ChatMessage) string {
 func TestStartAttachesThePRAndAnswers(t *testing.T) {
 	h := newHarness(t, "ok")
 	session, err := h.m.Start(context.Background(), StartRequest{
-		Owner: "acme", Repo: "widgets", Number: 42, Backend: "claude", Model: "sonnet",
+		Owner: "acme", Repo: "widgets", Number: 42, Model: "sonnet",
 		Message: "  Is the greeting exported on purpose?  ",
 	})
 	if err != nil {
@@ -299,17 +299,27 @@ func TestStartRefusals(t *testing.T) {
 	if _, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Message: "   "}); !errors.Is(err, ErrEmpty) {
 		t.Errorf("empty message: %v", err)
 	}
-	if _, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Backend: "codex", Message: "hi"}); err == nil {
-		t.Error("an unknown backend should be refused")
+	h.m.source = defaultSource{Fixed: Fixed{h.m.backends()[0]}, id: "codex"}
+	if _, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Message: "hi"}); err == nil ||
+		!strings.Contains(err.Error(), `"codex"`) {
+		t.Errorf("a configured agent there is no backend for should be refused, got %v", err)
 	}
 	if err := h.m.Send(context.Background(), "nope", "hi"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Send to a missing chat: %v", err)
 	}
-	none := NewManager()
+	none := NewManager(Fixed{})
 	if _, err := none.Start(context.Background(), StartRequest{Message: "hi"}); !errors.Is(err, ErrNoStore) {
 		t.Errorf("no store: %v", err)
 	}
 }
+
+// defaultSource is Fixed with a default of its own.
+type defaultSource struct {
+	Fixed
+	id string
+}
+
+func (s defaultSource) Default() string { return s.id }
 
 func TestDeleteRemovesTheChatAndItsDirectory(t *testing.T) {
 	h := newHarness(t, "ok")

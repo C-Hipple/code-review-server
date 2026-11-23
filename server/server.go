@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crs/ai"
+	"crs/chat"
 	"crs/config"
 	"crs/database"
 	"crs/git_tools"
@@ -43,7 +44,11 @@ func RunServer() {
 	aiRunner.OnChange = notifyAIOutputChanged
 	// And each step of a review chat.
 	chatManager.OnChange = notifyChatChanged
+	stopChatAgentsOnSignal()
 	server.ServeCodec(jsonrpc.NewServerCodec(&Stdio{out: out}))
+	// Stdin closed: the client has gone, and the server goes with it, taking
+	// the chats' agents along.
+	chat.StopAgents()
 }
 
 type Stdio struct {

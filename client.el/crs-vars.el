@@ -234,12 +234,10 @@ a whole number of lines."
                  (integer :tag "Lines"))
   :group 'crs)
 
-(defcustom crs-chat-backend nil
-  "ID of the agent a new chat talks to, such as \"claude\".
-Nil, or an agent the server can't run, takes the first one it can."
-  :type '(choice (const :tag "The server's first available" nil)
-                 (string :tag "Agent ID"))
-  :group 'crs)
+(make-obsolete-variable
+ 'crs-chat-backend
+ "the server's config picks the chat agent: [Chat] Agent in codereviewserver.toml."
+ "2026-11")
 
 (defcustom crs-chat-model nil
   "ID of the model a new chat asks its agent for, such as \"sonnet\".
@@ -252,11 +250,18 @@ Nil, or a model the agent doesn't offer, takes the agent's default."
   "The chat agents the server offers, as ListChatBackends lists them.
 A vector of alists with `id', `name', `available', `reason', `models'
 and `default_model'; empty when the server offers none, nil until
-fetched.")
+fetched.  Chats started before the config changed agent may talk to
+any of them; new ones talk to `crs-chat-agent'.")
+
+(defvar crs-chat-agent nil
+  "ID of the agent new chats talk to, as ListChatBackends names it.
+The server's config picks it ([Chat] Agent), not the client.  Nil until
+fetched, or from a server that doesn't say, whose first available agent
+new chats then talk to.")
 
 (defvar crs--chat-last-choice nil
-  "The (BACKEND . MODEL) last chosen with `crs-chat-select-model'.
-New chat buffers start with it, ahead of `crs-chat-backend' and
+  "The (AGENT . MODEL) last chosen with `crs-chat-select-model'.
+New chat buffers whose agent is AGENT start with MODEL, ahead of
 `crs-chat-model'.")
 
 (defvar crs--chat-tickets 0
@@ -281,7 +286,7 @@ It only redraws, to keep the elapsed time current; it sends nothing.")
 (defvar-local crs--chat nil
   "The chat the buffer shows, as GetChat last returned it.")
 (defvar-local crs--chat-backend nil
-  "ID of the agent the buffer's next new chat talks to.")
+  "ID of the agent the buffer's next new chat talks to: the server's.")
 (defvar-local crs--chat-model nil
   "ID of the model the buffer's next new chat asks for; \"\" for the default.")
 (defvar-local crs--chat-shown 0

@@ -10,12 +10,12 @@ import {
     stopChat,
 } from '../api';
 import {
+    agentBackend,
     CHAT_CHANGED_EVENT,
-    loadChatPrefs,
+    loadChatModel,
     parseChatChanged,
-    pickBackend,
     pickModel,
-    saveChatPrefs,
+    saveChatModel,
     type Chat,
     type ChatBackendInfo,
     type ChatSummary,
@@ -31,12 +31,12 @@ interface UseChatOptions {
 }
 
 export interface ChatState {
-    /** Null until the server has said which backends it has. */
+    /** Null until the server has said which agents it has. */
     backends: ChatBackendInfo[] | null;
-    /** The backend and model the next new chat starts with. */
-    backend: string;
+    /** The agent new chats talk to, as the server's config has it; null until known. */
+    agent: ChatBackendInfo | null;
+    /** The model the next new chat asks for. */
     model: string;
-    selectBackend: (id: string) => void;
     selectModel: (id: string) => void;
     /** The PR's chats, the most recently active first. */
     chats: ChatSummary[];
@@ -63,7 +63,7 @@ export interface ChatState {
  */
 export function useChat({ owner, repo, number, events = serverEvents }: UseChatOptions): ChatState {
     const [backends, setBackends] = useState<ChatBackendInfo[] | null>(null);
-    const [backend, setBackend] = useState('');
+    const [agent, setAgent] = useState<ChatBackendInfo | null>(null);
     const [model, setModel] = useState('');
     const [chats, setChats] = useState<ChatSummary[]>([]);
     const [chat, setChat] = useState<Chat | null>(null);
@@ -113,11 +113,10 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
                     listChats({ Owner: owner, Repo: repo, Number: number }),
                 ]);
                 if (cancelled) return;
-                setBackends(found);
-                const prefs = loadChatPrefs();
-                const picked = pickBackend(found, prefs.backend);
-                setBackend(picked?.id ?? '');
-                setModel(pickModel(picked, prefs.model));
+                setBackends(found.backends);
+                const picked = agentBackend(found);
+                setAgent(picked);
+                setModel(pickModel(picked, loadChatModel()));
                 setChats(list);
                 if (list.length > 0) {
                     chatIdRef.current = list[0].id;
@@ -168,7 +167,6 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
                       Owner: owner,
                       Repo: repo,
                       Number: number,
-                      Backend: backend,
                       Model: model,
                       Message: text,
                   });
@@ -181,7 +179,7 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
                 setError(reply.message || 'The server refused the message.');
                 return false;
             }
-            if (backend) saveChatPrefs(backend, model);
+            if (agent) saveChatModel(model);
             return true;
         } catch (e) {
             setError(rpcErrorMessage(e));
@@ -191,17 +189,10 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
         }
     };
 
-    const selectBackend = (id: string) => {
-        setBackend(id);
-        const picked = backends?.find(b => b.id === id) ?? null;
-        setModel(pickModel(picked, null));
-    };
-
     return {
         backends,
-        backend,
+        agent,
         model,
-        selectBackend,
         selectModel: setModel,
         chats,
         chat,

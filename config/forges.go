@@ -40,6 +40,8 @@ var ForgeKinds = []string{ForgeKindGitHub}
 // ForgeSettings is one [Forges.<id>] table. It holds only the kind for now;
 // what a driver needs to reach its forge — a base URL, the environment
 // variable its token is in — belongs here as drivers that need it arrive.
+// Two IDs with equal settings are taken to be one service under two names
+// (forge.Same), so only what picks the service belongs here.
 type ForgeSettings struct {
 	// Kind picks the driver: one of ForgeKinds. Empty means the table's ID, so
 	// [Forges.github] needs no Kind.
@@ -116,12 +118,14 @@ func validateForges(cfg *Config) []ValidationError {
 		s, _ := cfg.Forge(id)
 		field := "Forges." + tomlKey(id) + ".Kind"
 		switch {
-		case !slices.Contains(ForgeKinds, s.Kind):
-			problems = append(problems, rootError(field,
-				"unknown kind %q (this build can talk to: %s)", s.Kind, kinds))
+		// First: the built-in forge of another kind is also, for now, of a
+		// kind no driver serves, and this is the message that explains it.
 		case id == ForgeGitHub && s.Kind != ForgeKindGitHub:
 			problems = append(problems, rootError(field,
 				"%q is the built-in GitHub forge; give a forge of another kind its own ID", id))
+		case !slices.Contains(ForgeKinds, s.Kind):
+			problems = append(problems, rootError(field,
+				"unknown kind %q (this build can talk to: %s)", s.Kind, kinds))
 		}
 	}
 	if id := cfg.DefaultForgeID(); !cfg.forgeDefined(id) {

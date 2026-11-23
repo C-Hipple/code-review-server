@@ -101,14 +101,15 @@ func ReprocessPR(owner, repo string, number int) error {
 }
 
 // WorkflowsTargetingRepo returns the workflows that draw PRs from owner/repo,
-// on the forge it is on. Workflows that can't report their repos are skipped:
-// without that answer we would have to run them to find out, which is exactly
-// what reprocessing avoids.
+// on the forge it is on or another name for that service (forge.Same).
+// Workflows that can't report their repos are skipped: without that answer we
+// would have to run them to find out, which is exactly what reprocessing
+// avoids.
 func WorkflowsTargetingRepo(wfs []Workflow, owner, repo string) []Workflow {
 	targets := []Workflow{}
 	repoForge := forge.IDForRepo(owner, repo)
 	for _, wf := range wfs {
-		if workflowForgeID(wf) != repoForge {
+		if !forge.Same(workflowForgeID(wf), repoForge) {
 			continue
 		}
 		targeter, ok := wf.(RepoTargeter)

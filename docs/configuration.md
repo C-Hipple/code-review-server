@@ -396,8 +396,9 @@ Forge = "github"              # default: DefaultForge
 
 Clients don't see forges: a PR from any of them appears in its section the same way, links to its own page, and opens, comments and submits as any other — the server sends what a client asks about a PR to the forge its repository was listed on. A few things follow from that:
 
-- **A repository comes from one forge.** PRs are known by their repository and number everywhere after the fetch, so a config listing the same `owner/repo` on two forges is rejected. The search-driven workflows list no repositories; the ones their searches turn up are sent to the workflow's forge.
-- **A workflow on a forge the server can't open is skipped**, with an error in the log, rather than talking to GitHub instead. A PR whose repository no workflow has listed yet goes to `DefaultForge`.
+- **A repository comes from one forge.** PRs are known by their repository and number everywhere after the fetch, so a config listing the same `owner/repo` on two forges is rejected. The search-driven workflows list no repositories; the ones their searches turn up are sent to the workflow's forge, unless a workflow lists the repository, whose forge wins. A PR whose repository no workflow lists and no search has found goes to `DefaultForge`.
+- **Two IDs with the same settings are one forge.** Every forge of kind `github` is github.com, so `DefaultForge = "work"` with `[Forges.work] Kind = "github"` and a workflow on `github` are two names for one GitHub: a search on either keeps the PRs it finds, whichever of the two lists their repository.
+- **A workflow on a forge the server can't open is skipped** rather than talking to GitHub instead: the configuration problems logged as errors at startup name it, and each cycle that skips it logs a warning. Anything else that needs a forge that can't be opened — a client opening a PR, say — falls back to the built-in GitHub forge, even when a broken `[Forges.github]` table is what can't be opened.
 - **GitHub's own settings stay GitHub's.** `[GitHubAPI]`, `[Webhooks]` and the rate-limit statistics are about GitHub, and `GithubUsername` is the identity every workflow's filters use.
 
 `UpdateConfig` doesn't model `DefaultForge` or the `[Forges]` tables; a save carries them over untouched, and a workflow's `Forge` travels with the workflow.

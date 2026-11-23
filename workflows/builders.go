@@ -13,6 +13,10 @@ import (
 
 func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDomain string) []Workflow {
 	workflows := []Workflow{}
+	// The forge each listed repository is on, recorded once every workflow is
+	// built so a repository no workflow lists any more is forgotten.
+	listed := map[string]string{}
+	defer forge.SetListedRepos(listed)
 	for _, raw_workflow := range workflow_maps {
 		// Resolved here, so each builder copies the forge's ID as it is.
 		raw_workflow.Forge = config.C().WorkflowForgeID(raw_workflow)
@@ -43,16 +47,17 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 			slog.Warn("Skipping improperly configured workflow", "name", raw_workflow.Name, "error", err)
 			continue
 		}
-		rememberRepos(wf, raw_workflow.Forge)
+		listRepos(listed, wf, raw_workflow.Forge)
 		workflows = append(workflows, wf)
 	}
 	return workflows
 }
 
-// rememberRepos records the forge each repository wf lists is on, so that
+// listRepos adds to listed the forge each repository wf lists is on, so that
 // what a client asks about one of its PRs goes there (forge.ForRepo). A search
-// workflow names no repositories; it remembers the ones it finds as it runs.
-func rememberRepos(wf Workflow, forgeID string) {
+// workflow names no repositories; it remembers the ones it finds as it runs,
+// and a listed repository's forge outranks those.
+func listRepos(listed map[string]string, wf Workflow, forgeID string) {
 	var entries []string
 	switch w := wf.(type) {
 	case SyncReviewRequestsWorkflow:
@@ -62,7 +67,7 @@ func rememberRepos(wf Workflow, forgeID string) {
 	}
 	for _, entry := range entries {
 		if owner, repo, err := git_tools.ParseRepoName(strings.TrimSpace(entry)); err == nil {
-			forge.Remember(owner, repo, forgeID)
+			listed[owner+"/"+repo] = forgeID
 		}
 	}
 }

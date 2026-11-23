@@ -131,7 +131,7 @@ Forge = "work"
 Kind = "gitlab"
 `,
 			field: "Forges.github.Kind",
-			want:  "unknown kind",
+			want:  `"github" is the built-in GitHub forge`,
 		},
 	}
 	for _, tt := range tests {

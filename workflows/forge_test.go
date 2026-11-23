@@ -66,7 +66,9 @@ func init() {
 }
 
 // useForges sets a config defining the fake forges ids (and whatever else cfg
-// holds) for the test.
+// holds) for the test. The registry keeps a forge it has opened, so a fake
+// from an earlier test (or an earlier -count run) is handed back again: what
+// it was asked then is cleared.
 func useForges(t *testing.T, cfg config.Config, ids ...string) {
 	t.Helper()
 	old := config.C()
@@ -78,12 +80,24 @@ func useForges(t *testing.T, cfg config.Config, ids ...string) {
 	}
 	config.SetC(cfg)
 	t.Cleanup(func() { config.SetC(old) })
+
+	fakeForges.Lock()
+	defer fakeForges.Unlock()
+	for _, id := range ids {
+		if f := fakeForges.byID[id]; f != nil {
+			f.mu.Lock()
+			f.mergeabilityAsks = nil
+			f.mu.Unlock()
+		}
+	}
 }
 
 // forgetRepos puts repos back on the built-in forge once the test is done:
-// what every other test's config takes them to be on.
+// what every other test's config takes them to be on. It forgets every
+// listed repository, as a build of no workflows would.
 func forgetRepos(t *testing.T, repos ...string) {
 	t.Cleanup(func() {
+		forge.SetListedRepos(nil)
 		for _, entry := range repos {
 			owner, repo, _ := strings.Cut(entry, "/")
 			forge.Remember(owner, repo, config.ForgeGitHub)
@@ -125,6 +139,13 @@ func TestMatchWorkflowsPutsEachWorkflowOnItsForge(t *testing.T) {
 		t.Errorf("forgetest/web is remembered on %q, want the default", id)
 	}
 
+	// A search on another forge turning a listed repository up doesn't move
+	// it off its workflow's forge.
+	forge.Remember("forgetest", "api", config.ForgeGitHub)
+	if id := forge.IDForRepo("forgetest", "api"); id != "lab" {
+		t.Errorf("a search moved forgetest/api to %q; its workflow lists it on lab", id)
+	}
+
 	// The requirements carry the forge into the collection phase.
 	for _, wf := range built {
 		for _, req := range wf.GetPRRequirements() {
@@ -132,6 +153,22 @@ func TestMatchWorkflowsPutsEachWorkflowOnItsForge(t *testing.T) {
 				t.Errorf("%s lists %s from forge %q, want its own %q", wf.GetName(), src.Repo, src.Forge, workflowForgeID(wf))
 			}
 		}
+	}
+}
+
+func TestMatchWorkflowsForgetsReposNoWorkflowListsAnyMore(t *testing.T) {
+	useForges(t, config.Config{}, "lab")
+	forgetRepos(t, "forgetest/api")
+	listAPI := config.RawWorkflow{WorkflowType: "SyncReviewRequestsWorkflow", Name: "API", SectionTitle: "API", Repos: []string{"forgetest/api"}, Forge: "lab"}
+	MatchWorkflows([]config.RawWorkflow{listAPI}, &[]string{}, "")
+	if id := forge.IDForRepo("forgetest", "api"); id != "lab" {
+		t.Fatalf("forgetest/api is on %q, want lab", id)
+	}
+
+	// The workflow is gone from the config: so is its listing.
+	MatchWorkflows(nil, &[]string{}, "")
+	if id := forge.IDForRepo("forgetest", "api"); id != config.ForgeGitHub {
+		t.Errorf("forgetest/api is still on %q after no workflow lists it", id)
 	}
 }
 
@@ -197,6 +234,20 @@ func TestWorkflowsTargetingRepoKeepsToTheRepositorysForge(t *testing.T) {
 	targets := WorkflowsTargetingRepo([]Workflow{onLab, onGitHub}, "forgetest", "api")
 	if len(targets) != 1 || targets[0].GetName() != "lab" {
 		t.Errorf("only the workflow on the repository's forge should be reprocessed, got %v", targets)
+	}
+}
+
+func TestWorkflowsTargetingRepoTakesTwoNamesForOneForgeAsOne(t *testing.T) {
+	// lab and lab2 have equal settings: one service under two names, as two
+	// forges of kind github are.
+	useForges(t, config.Config{}, "lab", "lab2")
+	forgetRepos(t, "forgetest/api")
+	forge.Remember("forgetest", "api", "lab")
+
+	onLab2 := SyncReviewRequestsWorkflow{Name: "lab2", Forge: "lab2", Repos: []string{"forgetest/api"}}
+	targets := WorkflowsTargetingRepo([]Workflow{onLab2}, "forgetest", "api")
+	if len(targets) != 1 {
+		t.Errorf("a workflow on another name for the repository's forge should be reprocessed, got %v", targets)
 	}
 }
 

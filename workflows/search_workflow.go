@@ -110,7 +110,8 @@ func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_ch
 	}
 	// A search turns up repositories no config names. Remembering which forge
 	// they are on is what sends the filters' lookups, and later a client's
-	// questions about these PRs, back to it.
+	// questions about these PRs, back to it; a repository a workflow lists
+	// stays on that workflow's forge.
 	for _, ref := range refs {
 		forge.Remember(ref.Owner, ref.Repo, f.ID())
 	}

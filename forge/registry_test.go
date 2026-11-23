@@ -27,17 +27,18 @@ func useRegistry(t *testing.T, cfg config.Config, kinds ...string) map[string]in
 	oldCfg := config.C()
 	registry.Lock()
 	saved := struct {
-		drivers map[string]Driver
-		open    map[string]opened
-		repos   map[string]string
-		warned  map[string]bool
-	}{registry.drivers, registry.open, registry.repos, registry.warned}
-	registry.drivers, registry.open, registry.repos, registry.warned = nil, nil, nil, nil
+		drivers       map[string]Driver
+		open          map[string]opened
+		listed, found map[string]string
+		warned        map[string]bool
+	}{registry.drivers, registry.open, registry.listed, registry.found, registry.warned}
+	registry.drivers, registry.open, registry.listed, registry.found, registry.warned = nil, nil, nil, nil, nil
 	registry.Unlock()
 	t.Cleanup(func() {
 		config.SetC(oldCfg)
 		registry.Lock()
-		registry.drivers, registry.open, registry.repos, registry.warned = saved.drivers, saved.open, saved.repos, saved.warned
+		registry.drivers, registry.open, registry.listed, registry.found, registry.warned =
+			saved.drivers, saved.open, saved.listed, saved.found, saved.warned
 		registry.Unlock()
 	})
 
@@ -144,10 +145,99 @@ func TestForRepoUsesTheRememberedForge(t *testing.T) {
 		t.Errorf("remembering the default should record it, got %q", got)
 	}
 
-	// A remembered forge the config no longer defines falls back to GitHub.
+	// A remembered forge the config no longer defines is passed over for the
+	// default.
 	Remember("acme", "gadgets", "gone")
-	if got := ForRepo("acme", "gadgets").ID(); got != config.ForgeGitHub {
-		t.Errorf("a forge that can't be opened should fall back to GitHub, got %q", got)
+	if got := IDForRepo("acme", "gadgets"); got != config.ForgeGitHub {
+		t.Errorf("a forge the config no longer defines should give way to the default, got %q", got)
+	}
+}
+
+func TestListedReposOutrankSearchFinds(t *testing.T) {
+	cfg := config.Config{Forges: map[string]config.ForgeSettings{"work": {Kind: "github"}}}
+	useRegistry(t, cfg, config.ForgeKindGitHub)
+
+	SetListedRepos(map[string]string{"Acme/Web": "work"})
+	// A search on another forge turning the repository up doesn't move it.
+	Remember("acme", "web", config.ForgeGitHub)
+	if got := IDForRepo("acme", "web"); got != "work" {
+		t.Errorf("a listed repository should stay on its workflow's forge, got %q", got)
+	}
+	// A repository only a search found is on the search's forge.
+	Remember("acme", "api", "work")
+	if got := IDForRepo("acme", "api"); got != "work" {
+		t.Errorf("a found repository should be on the search's forge, got %q", got)
+	}
+
+	// Each build of the workflows replaces the listing: a repository no
+	// workflow lists any more falls back to what a search found, then the
+	// default.
+	SetListedRepos(map[string]string{"acme/other": "work"})
+	if got := IDForRepo("acme", "web"); got != config.ForgeGitHub {
+		t.Errorf("an unlisted repository should go back to where a search found it, got %q", got)
+	}
+	SetListedRepos(map[string]string{"acme/gone": "work"})
+	if got := IDForRepo("acme", "other"); got != config.ForgeGitHub {
+		t.Errorf("a repository nothing lists or found should be on the default, got %q", got)
+	}
+}
+
+func TestFallbackSurvivesABrokenBuiltInTable(t *testing.T) {
+	// [Forges.github] naming a kind with no driver: validation reports it, and
+	// the forge can't be opened by ID, but the fallback still works.
+	cfg := config.Config{Forges: map[string]config.ForgeSettings{config.ForgeGitHub: {Kind: "githib"}}}
+	useRegistry(t, cfg, config.ForgeKindGitHub)
+	if _, err := For(config.ForgeGitHub); err == nil {
+		t.Error("a [Forges.github] of an unknown kind should fail to open by ID")
+	}
+	for name, get := range map[string]func() Forge{
+		"Default": Default,
+		"ForRepo": func() Forge { return ForRepo("acme", "widgets") },
+		"ForPR":   func() Forge { return ForPR(&github.PullRequest{}) },
+	} {
+		f := get()
+		if f.ID() != config.ForgeGitHub || f.Kind() != config.ForgeKindGitHub {
+			t.Errorf("%s = %s of kind %s, want the built-in GitHub forge", name, f.ID(), f.Kind())
+		}
+	}
+
+	// Once the table is fixed, opening it by ID hands back the same forge.
+	config.SetC(config.Config{})
+	fixed, err := For(config.ForgeGitHub)
+	if err != nil {
+		t.Fatalf("For(github) after the fix: %v", err)
+	}
+	if fixed != Default() {
+		t.Error("the fallback and the built-in forge opened by ID should be one forge")
+	}
+}
+
+func TestSame(t *testing.T) {
+	cfg := config.Config{
+		DefaultForge: "work",
+		Forges: map[string]config.ForgeSettings{
+			"work": {Kind: "github"},
+			"lab":  {Kind: "lab"},
+			"lab2": {},
+		},
+	}
+	useRegistry(t, cfg, config.ForgeKindGitHub, "lab")
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"github", "github", true},
+		{"", "work", true},           // "" is the default
+		{"github", "work", true},     // two names for github.com
+		{"github", "lab", false},     // another kind
+		{"lab", "lab2", false},       // lab2's kind is its ID: another service
+		{"github", "nowhere", false}, // an undefined forge is nothing
+		{"nowhere", "elsewhere", false},
+	}
+	for _, tt := range tests {
+		if got := Same(tt.a, tt.b); got != tt.want {
+			t.Errorf("Same(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
 

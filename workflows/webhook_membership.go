@@ -319,8 +319,10 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 		}
 		verdict := member.webhookMembership(pr)
 		// A workflow on another forge never lists this PR, whatever its
-		// filters would say of it.
-		if workflowForgeID(wf) != prForge {
+		// filters would say of it. Two names for one service (two forges of
+		// kind github, say) are the same forge here: a search on either finds
+		// the PR.
+		if !forge.Same(workflowForgeID(wf), prForge) {
 			verdict = memberNo
 		}
 		if verdict == memberUnknown {

@@ -12,8 +12,8 @@ type PRKey struct {
 	Number int
 }
 
-// Forge is the forge the PR is on: the one its repository was remembered
-// on (forge.ForRepo), which a workflow does as it lists it.
+// Forge is the forge the PR is on (forge.ForRepo): the one a workflow lists
+// its repository on, else the one a search found it on, else the default.
 func (k PRKey) Forge() forge.Forge {
 	return forge.ForRepo(k.Owner, k.Repo)
 }

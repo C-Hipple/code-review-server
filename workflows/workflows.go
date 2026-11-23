@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/forge"
 	"crs/git_tools"
 	"crs/jira"
 	"errors"
@@ -52,7 +53,9 @@ func (rr *RunResult) Report() string {
 
 type SyncReviewRequestsWorkflow struct {
 	// Github repo info
-	Name        string
+	Name string
+	// Forge is the ID of the forge Repos are on; empty means the default.
+	Forge       string
 	Owner       string
 	Repos       []string
 	Filters     []git_tools.PRFilter
@@ -85,6 +88,7 @@ func (w SyncReviewRequestsWorkflow) GetPRRequirements() []PRRequirement {
 		owner, repo, err := git_tools.ParseRepoName(repoEntry)
 		if err == nil {
 			reqs = append(reqs, PRRequirement{
+				Forge:   w.Forge,
 				Owner:   owner,
 				Repo:    repo,
 				State:   state,
@@ -102,7 +106,11 @@ func (w SyncReviewRequestsWorkflow) Run(prs []*github.PullRequest, c chan FileCh
 	// point of the interaction prefilter is that the candidate set is large
 	// and the surviving set is small. See postFilterAuxRequirements.
 	if w.PostFilterAux != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
+		f, err := forge.For(w.Forge)
+		if err != nil {
+			return RunResult{}, err
+		}
+		prefetchAuxForFilteredPRs(f, w.Name, prs, w.PostFilterAux)
 	}
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
@@ -133,12 +141,18 @@ func (w SyncReviewRequestsWorkflow) GetName() string {
 	return w.Name
 }
 
+func (w SyncReviewRequestsWorkflow) ForgeID() string {
+	return w.Forge
+}
+
 func (w SyncReviewRequestsWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
 
 type ProjectListWorkflow struct {
-	Name         string
+	Name string
+	// Forge is the ID of the forge Repos are on; empty means the default.
+	Forge        string
 	Repos        []string
 	Filters      []git_tools.PRFilter
 	SectionTitle string
@@ -164,6 +178,10 @@ func (w ProjectListWorkflow) GetName() string {
 	return w.Name
 }
 
+func (w ProjectListWorkflow) ForgeID() string {
+	return w.Forge
+}
+
 func (w ProjectListWorkflow) GetOrgSectionName() string {
 	return w.SectionTitle
 }
@@ -176,7 +194,10 @@ func (w ProjectListWorkflow) GetPRRequirements() []PRRequirement {
 }
 
 func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error) {
-	client := git_tools.GetGithubClient()
+	f, err := forge.For(w.Forge)
+	if err != nil {
+		return RunResult{}, err
+	}
 	db := config.C().DB
 	section, err := db.GetOrCreateSection(w.SectionTitle, config.C().SectionPriority[w.SectionTitle])
 	if err != nil {
@@ -215,7 +236,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		if len(nums) == 0 {
 			continue
 		}
-		repoPRs, ok := fetchPRsByNumber(client, ref, nums)
+		repoPRs, ok := fetchPRsByNumber(f, ref, nums)
 		if !ok {
 			complete = false
 		}
@@ -223,7 +244,7 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 		// these PRs entirely — leaving the diff (and other aux) caches unpopulated
 		// when GetPRDetails is later called from the web UI. Pre-fetch all aux data
 		// here so it lands in the DB caches and the global AuxDataStore.
-		prefetchAuxDataForPRs(client, w.Name, ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
+		prefetchAuxDataForPRs(f, w.Name, ref.Owner, ref.Repo, repoPRs, AuxDataRequirement{
 			Comments: true,
 			CIStatus: true,
 			Diff:     true,
@@ -250,10 +271,10 @@ func (w ProjectListWorkflow) Run(prs []*github.PullRequest, c chan FileChanges, 
 // fetchPRsByNumber fetches each PR on its own, so one that fails (a rate
 // limit, a blip) costs only that PR rather than the repo's whole list. ok is
 // false when any failed.
-func fetchPRsByNumber(client *github.Client, ref jira.RepoRef, nums []int) (prs []*github.PullRequest, ok bool) {
+func fetchPRsByNumber(f forge.Forge, ref jira.RepoRef, nums []int) (prs []*github.PullRequest, ok bool) {
 	ok = true
 	for _, num := range nums {
-		got, err := git_tools.GetSpecificPRs(client, ref.Owner, ref.Repo, []int{num})
+		got, err := f.GetPRs(ref.Owner, ref.Repo, []int{num})
 		if err != nil {
 			ok = false
 			continue
@@ -290,8 +311,9 @@ func resolveRepoRefs(entries []string) []jira.RepoRef {
 // Used by workflows whose PR set isn't known during the manager's collection
 // phase (ProjectListWorkflow, which resolves PR numbers via Jira at run time)
 // and for post-filter fetches (prefetchAuxForFilteredPRs). workflowName is
-// recorded in WorkflowActionLog alongside the fields each fetch writes.
-func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
+// recorded in WorkflowActionLog alongside the fields each fetch writes. f is
+// the forge owner/repo is on.
+func prefetchAuxDataForPRs(f forge.Forge, workflowName, owner, repo string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
 	if len(prs) == 0 {
 		return
 	}
@@ -328,7 +350,7 @@ func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo stri
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			data := fetchAuxDataForPR(client, apiCalls, workflowName, key, req, pr)
+			data := fetchAuxDataForPR(f, apiCalls, workflowName, key, req, pr)
 			fillCachedCIStatus(db, key, data)
 			// MergeSet, not Set: auxReq may be a subset of the fields another
 			// pass already stored for this PR (e.g. the manager pre-fetched
@@ -340,16 +362,15 @@ func prefetchAuxDataForPRs(client *github.Client, workflowName, owner, repo stri
 	slog.Info("Pre-fetched aux data for runtime-resolved PRs", "count", len(prs), "from_webhook_caches", fromCache)
 }
 
-// prefetchAuxForFilteredPRs groups prs — which may span several repos — by
-// their base repo and fetches auxReq for each group. Called after a
-// workflow's filters have run, so the PR count here is the section's size,
+// prefetchAuxForFilteredPRs groups prs — which may span several repos of the
+// forge f — by their base repo and fetches auxReq for each group. Called after
+// a workflow's filters have run, so the PR count here is the section's size,
 // not the candidate set's; see postFilterAuxRequirements in builders.go for
 // why interaction-filter workflows defer this data until after filtering.
-func prefetchAuxForFilteredPRs(workflowName string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
+func prefetchAuxForFilteredPRs(f forge.Forge, workflowName string, prs []*github.PullRequest, auxReq AuxDataRequirement) {
 	if len(prs) == 0 {
 		return
 	}
-	client := git_tools.GetGithubClient()
 	type repoRef struct{ owner, repo string }
 	groups := map[repoRef][]*github.PullRequest{}
 	for _, pr := range prs {
@@ -361,6 +382,6 @@ func prefetchAuxForFilteredPRs(workflowName string, prs []*github.PullRequest, a
 		groups[ref] = append(groups[ref], pr)
 	}
 	for ref, group := range groups {
-		prefetchAuxDataForPRs(client, workflowName, ref.owner, ref.repo, group, auxReq)
+		prefetchAuxDataForPRs(f, workflowName, ref.owner, ref.repo, group, auxReq)
 	}
 }

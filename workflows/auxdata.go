@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"crs/forge"
 	"sync"
 )
 
@@ -9,6 +10,12 @@ type PRKey struct {
 	Owner  string
 	Repo   string
 	Number int
+}
+
+// Forge is the forge the PR is on: the one its repository was remembered
+// on (forge.ForRepo), which a workflow does as it lists it.
+func (k PRKey) Forge() forge.Forge {
+	return forge.ForRepo(k.Owner, k.Repo)
 }
 
 // AuxDataStore holds pre-fetched auxiliary data for PRs

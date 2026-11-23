@@ -2,6 +2,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -24,57 +25,11 @@ import (
 
 // Reaction is one emoji's worth of reactions on a single comment or review:
 // which emoji it is, and who left it.
-type Reaction struct {
-	// Content is the REST-style name of the emoji ("+1", "heart", "rocket"),
-	// not GraphQL's THUMBS_UP spelling, so it matches what the rest of GitHub's
-	// API — and anything a client already knows about reactions — calls it.
-	Content string `json:"content"`
-	// Emoji is the character itself. It lives on the wire so the web client and
-	// the Emacs client don't each carry their own copy of the mapping.
-	Emoji string `json:"emoji"`
-	// Users are the logins that left this reaction, capped at
-	// reactionUsersPerGroup. Count is GitHub's own total, so Count >
-	// len(Users) means the list was truncated.
-	Users []string `json:"users"`
-	Count int      `json:"count"`
-	// ViewerReacted is true when the account behind CRS_GITHUB_TOKEN is one of
-	// the reactors, which is what lets a client render its own reaction
-	// differently from everyone else's.
-	ViewerReacted bool `json:"viewer_reacted"`
-}
+type Reaction = forge.Reaction
 
 // PRReactions is every reaction on a PR's comments and reviews, keyed by the
-// REST database ID of the thing that was reacted to (as a string, matching
-// CommentJSON.ID on the wire).
-//
-// Comments covers both review comments and conversation comments, which is the
-// same single ID space the comment caches already merge them into.
-type PRReactions struct {
-	Comments map[string][]Reaction `json:"comments"`
-	Reviews  map[string][]Reaction `json:"reviews"`
-}
-
-// Empty reports whether nothing on the PR has been reacted to. A non-nil but
-// empty result is a successful fetch, not a missing one.
-func (r *PRReactions) Empty() bool {
-	return r == nil || (len(r.Comments) == 0 && len(r.Reviews) == 0)
-}
-
-// ForComment returns the reactions on one comment, by its REST ID.
-func (r *PRReactions) ForComment(id string) []Reaction {
-	if r == nil {
-		return nil
-	}
-	return r.Comments[id]
-}
-
-// ForReview returns the reactions on one review body, by its REST ID.
-func (r *PRReactions) ForReview(id int64) []Reaction {
-	if r == nil {
-		return nil
-	}
-	return r.Reviews[strconv.FormatInt(id, 10)]
-}
+// REST database ID of the thing that was reacted to.
+type PRReactions = forge.PRReactions
 
 // reactionKinds is every reaction GitHub offers, in GitHub's own order — the
 // order GraphQL's reactionGroups arrive in, which REST's are sorted into to

@@ -64,7 +64,7 @@ func TestCreateWorktreeFetchesUnknownBranch(t *testing.T) {
 
 	// The single-branch clone has no knowledge of feature/thing at all.
 	wt := filepath.Join(filepath.Dir(local), "wt_feature")
-	if err := CreateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("CreateWorktree failed for unfetched branch: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(wt, "f.txt")); err != nil {
@@ -84,7 +84,7 @@ func TestCreateWorktreeBranchCheckedOutInMainRepo(t *testing.T) {
 	gitOrFail(t, local, "checkout", "-b", "feature/thing", "origin/feature/thing")
 
 	wt := filepath.Join(filepath.Dir(local), "wt_checked_out")
-	if err := CreateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("CreateWorktree failed when branch is checked out elsewhere: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != headOf(t, local, "origin/feature/thing") {
@@ -96,7 +96,7 @@ func TestUpdateWorktreeFollowsNewCommits(t *testing.T) {
 	origin, local := setupOriginAndClone(t)
 
 	wt := filepath.Join(filepath.Dir(local), "wt_update")
-	if err := CreateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestUpdateWorktreeFollowsNewCommits(t *testing.T) {
 	gitOrFail(t, pusher, "commit", "-am", "more")
 	gitOrFail(t, pusher, "push", "origin", "feature/thing")
 
-	if err := UpdateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := UpdateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("UpdateWorktree failed: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != headOf(t, pusher, "HEAD") {
@@ -123,7 +123,7 @@ func TestUpdateWorktreeLeavesDirtyWorktreeAlone(t *testing.T) {
 	_, local := setupOriginAndClone(t)
 
 	wt := filepath.Join(filepath.Dir(local), "wt_dirty")
-	if err := CreateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 	before := headOf(t, wt, "HEAD")
@@ -131,7 +131,7 @@ func TestUpdateWorktreeLeavesDirtyWorktreeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := UpdateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := UpdateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("UpdateWorktree failed: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != before {
@@ -151,7 +151,7 @@ func TestUpdateWorktreeIgnoresUntrackedFiles(t *testing.T) {
 	origin, local := setupOriginAndClone(t)
 
 	wt := filepath.Join(filepath.Dir(local), "wt_untracked")
-	if err := CreateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0644); err != nil {
@@ -168,7 +168,7 @@ func TestUpdateWorktreeIgnoresUntrackedFiles(t *testing.T) {
 	gitOrFail(t, pusher, "commit", "-am", "more")
 	gitOrFail(t, pusher, "push", "origin", "feature/thing")
 
-	if err := UpdateWorktree(local, "feature/thing", wt, 1); err != nil {
+	if err := UpdateWorktree(local, "feature/thing", wt, 1, gitHubPRHeadRef(1)); err != nil {
 		t.Fatalf("UpdateWorktree failed: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != headOf(t, pusher, "HEAD") {
@@ -194,7 +194,7 @@ func TestCreateWorktreeFallsBackToPullRefForDeletedBranch(t *testing.T) {
 	head := deleteBranchKeepingPullRef(t, origin, 7)
 
 	wt := filepath.Join(filepath.Dir(local), "wt_deleted")
-	if err := CreateWorktree(local, "feature/thing", wt, 7); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 7, gitHubPRHeadRef(7)); err != nil {
 		t.Fatalf("CreateWorktree failed for a PR whose branch was deleted: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != head {
@@ -207,7 +207,7 @@ func TestUpdateWorktreeOnBranchFollowsPullRefForDeletedBranch(t *testing.T) {
 
 	// Created while the branch existed, so it's on a local branch.
 	wt := filepath.Join(filepath.Dir(local), "wt_on_branch")
-	if err := CreateWorktree(local, "feature/thing", wt, 7); err != nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 7, gitHubPRHeadRef(7)); err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 
@@ -222,7 +222,7 @@ func TestUpdateWorktreeOnBranchFollowsPullRefForDeletedBranch(t *testing.T) {
 	gitOrFail(t, pusher, "push", "origin", "feature/thing")
 	head := deleteBranchKeepingPullRef(t, origin, 7)
 
-	if err := UpdateWorktree(local, "feature/thing", wt, 7); err != nil {
+	if err := UpdateWorktree(local, "feature/thing", wt, 7, gitHubPRHeadRef(7)); err != nil {
 		t.Fatalf("UpdateWorktree failed: %v", err)
 	}
 	if headOf(t, wt, "HEAD") != head {
@@ -235,7 +235,7 @@ func TestCreateWorktreeErrorsWhenPRHeadIsUnreachable(t *testing.T) {
 	gitOrFail(t, origin, "update-ref", "-d", "refs/heads/feature/thing")
 
 	wt := filepath.Join(filepath.Dir(local), "wt_missing")
-	if err := CreateWorktree(local, "feature/thing", wt, 7); err == nil {
+	if err := CreateWorktree(local, "feature/thing", wt, 7, gitHubPRHeadRef(7)); err == nil {
 		t.Fatal("CreateWorktree succeeded with no branch and no pull ref")
 	}
 	if _, err := os.Stat(wt); err == nil {

@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"crs/config"
 	"sync"
 	"testing"
 
@@ -82,14 +83,20 @@ func (m *mockWorkflow) Run(_ []*github.PullRequest, _ chan FileChanges, _ *sync.
 	return RunResult{}, nil
 }
 
+// testSource is the source a requirement naming no forge lists owner/repo
+// from: the repository on the default forge.
+func testSource(repo string) repoSource {
+	return repoSource{Forge: config.C().DefaultForgeID(), Repo: repo}
+}
+
 func TestHasUnfetchedRequirements(t *testing.T) {
 	pr1 := &github.PullRequest{}
 
 	tests := []struct {
 		name         string
 		workflow     Workflow
-		repoStatePRs map[string]map[string][]*github.PullRequest
-		specificPRs  map[string]map[int]*github.PullRequest
+		repoStatePRs map[repoSource]map[string][]*github.PullRequest
+		specificPRs  map[repoSource]map[int]*github.PullRequest
 		want         bool
 	}{
 		{
@@ -97,10 +104,10 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", State: "open"},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{
-				"owner/repo": {"open": []*github.PullRequest{pr1}},
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{
+				testSource("owner/repo"): {"open": []*github.PullRequest{pr1}},
 			},
-			specificPRs: map[string]map[int]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{},
 			want:        false,
 		},
 		{
@@ -108,10 +115,10 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", State: "open"},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{
-				"owner/repo": {"open": make([]*github.PullRequest, 0)},
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{
+				testSource("owner/repo"): {"open": make([]*github.PullRequest, 0)},
 			},
-			specificPRs: map[string]map[int]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{},
 			want:        false, // zero PRs is legitimate — section should be cleared
 		},
 		{
@@ -119,10 +126,10 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", State: "open"},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{
-				"owner/repo": {"open": nil}, // fetch error left this nil
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{
+				testSource("owner/repo"): {"open": nil}, // fetch error left this nil
 			},
-			specificPRs: map[string]map[int]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{},
 			want:        true, // must skip to protect DB
 		},
 		{
@@ -130,8 +137,8 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", State: "open"},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{},
-			specificPRs:  map[string]map[int]*github.PullRequest{},
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{},
+			specificPRs:  map[repoSource]map[int]*github.PullRequest{},
 			want:         true, // missing == not fetched
 		},
 		{
@@ -140,11 +147,11 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 				{Owner: "owner", Repo: "repoA", State: "open"},
 				{Owner: "owner", Repo: "repoB", State: "open"},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{
-				"owner/repoA": {"open": []*github.PullRequest{pr1}},
-				"owner/repoB": {"open": nil}, // fetch error
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{
+				testSource("owner/repoA"): {"open": []*github.PullRequest{pr1}},
+				testSource("owner/repoB"): {"open": nil}, // fetch error
 			},
-			specificPRs: map[string]map[int]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{},
 			want:        true, // whole workflow must be skipped
 		},
 		{
@@ -152,9 +159,9 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", PRNumbers: []int{42}},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{},
-			specificPRs: map[string]map[int]*github.PullRequest{
-				"owner/repo": {42: pr1},
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{
+				testSource("owner/repo"): {42: pr1},
 			},
 			want: false,
 		},
@@ -163,17 +170,17 @@ func TestHasUnfetchedRequirements(t *testing.T) {
 			workflow: &mockWorkflow{reqs: []PRRequirement{
 				{Owner: "owner", Repo: "repo", PRNumbers: []int{42}},
 			}},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{},
-			specificPRs: map[string]map[int]*github.PullRequest{
-				"owner/repo": {42: nil}, // fetch error left this nil
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{},
+			specificPRs: map[repoSource]map[int]*github.PullRequest{
+				testSource("owner/repo"): {42: nil}, // fetch error left this nil
 			},
 			want: true,
 		},
 		{
 			name:         "workflow with no requirements (e.g. ProjectListWorkflow)",
 			workflow:     &mockWorkflow{reqs: nil},
-			repoStatePRs: map[string]map[string][]*github.PullRequest{},
-			specificPRs:  map[string]map[int]*github.PullRequest{},
+			repoStatePRs: map[repoSource]map[string][]*github.PullRequest{},
+			specificPRs:  map[repoSource]map[int]*github.PullRequest{},
 			want:         false, // no requirements = nothing to block on
 		},
 	}

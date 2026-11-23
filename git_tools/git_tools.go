@@ -3,6 +3,7 @@ package git_tools
 import (
 	"context"
 	"crs/config"
+	"crs/forge"
 	"fmt"
 	"io"
 	"log/slog"
@@ -882,18 +883,19 @@ func HeadSHA(dir string) (string, error) {
 // fetchPRHead fetches the PR's head and returns the ref to check it out
 // from: origin/<branch>, or, once the branch is gone from origin (a merged
 // PR whose branch was deleted) or never was there (a fork's PR),
-// origin/pr/<number> from GitHub's refs/pull/<number>/head, which it keeps
-// for every PR. Best-effort — offline it returns origin/<branch>, which
-// still works when the ref is already present.
-func fetchPRHead(repoDir, branch string, number int) string {
+// origin/pr/<number> from headRef, the ref the forge keeps every PR's head at
+// (forge.Repository.PRHeadRef: GitHub's refs/pull/<number>/head). Best-effort
+// — offline it returns origin/<branch>, which still works when the ref is
+// already present.
+func fetchPRHead(repoDir, branch string, number int, headRef string) string {
 	branchRef := "origin/" + branch
 	out, err := runGit(repoDir, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/"+branchRef)
 	if err == nil {
 		return branchRef
 	}
-	if number > 0 {
+	if number > 0 && headRef != "" {
 		pullRef := fmt.Sprintf("origin/pr/%d", number)
-		pullOut, pullErr := runGit(repoDir, "fetch", "origin", fmt.Sprintf("+refs/pull/%d/head:refs/remotes/%s", number, pullRef))
+		pullOut, pullErr := runGit(repoDir, "fetch", "origin", fmt.Sprintf("+%s:refs/remotes/%s", headRef, pullRef))
 		if pullErr == nil {
 			slog.Debug("PR branch not on origin, using the pull ref", "repo", repoDir, "branch", branch, "ref", pullRef)
 			return pullRef
@@ -905,8 +907,9 @@ func fetchPRHead(repoDir, branch string, number int) string {
 }
 
 // CreateWorktree checks the PR out at worktreePath: on its branch when
-// origin still has it, otherwise detached at the PR head.
-func CreateWorktree(repoDir, branch, worktreePath string, number int) error {
+// origin still has it, otherwise detached at the PR head, fetched from
+// headRef (see fetchPRHead).
+func CreateWorktree(repoDir, branch, worktreePath string, number int, headRef string) error {
 	// Registrations for worktrees whose directories were deleted by hand
 	// block re-adding at the same path, so clear them first.
 	if out, err := runGit(repoDir, "worktree", "prune"); err != nil {
@@ -915,7 +918,7 @@ func CreateWorktree(repoDir, branch, worktreePath string, number int) error {
 
 	// A PR branch usually only exists on the remote: fetch it so the ref
 	// resolves.
-	ref := fetchPRHead(repoDir, branch, number)
+	ref := fetchPRHead(repoDir, branch, number, headRef)
 
 	if ref == "origin/"+branch {
 		// git worktree add <path> <branch>. When <branch> is not a local
@@ -962,8 +965,8 @@ func CreateWorktree(repoDir, branch, worktreePath string, number int) error {
 
 // UpdateWorktree brings an existing review worktree up to date with the PR
 // head. Best-effort: a dirty worktree (someone is using it) is left alone.
-func UpdateWorktree(repoDir, branch, worktreePath string, number int) error {
-	ref := fetchPRHead(repoDir, branch, number)
+func UpdateWorktree(repoDir, branch, worktreePath string, number int, headRef string) error {
+	ref := fetchPRHead(repoDir, branch, number, headRef)
 
 	// Only edits to tracked files count: git never removes an untracked
 	// file on a fast-forward or reset, and a stray build output or scratch
@@ -1033,10 +1036,7 @@ func RemoveWorktree(repoDir, worktreePath string) error {
 	return nil
 }
 
-type CIStatusInfo struct {
-	Statuses      []string
-	OverallStatus string
-}
+type CIStatusInfo = forge.CIStatusInfo
 
 type CacheEntry struct {
 	Value      interface{}
@@ -1547,15 +1547,15 @@ func currentPRStateSource() PRStateSource {
 }
 
 // ciStatusForPR is the PR's CI standing for the CI filters: from the registered
-// PRStateSource when it can answer, otherwise from the Actions runs on the
-// PR's branch.
+// PRStateSource when it can answer, otherwise from the CI runs on the PR's
+// branch, as the PR's forge reports them (on GitHub, its Actions runs).
 func ciStatusForPR(pr *github.PullRequest) CIStatusInfo {
 	if source := currentPRStateSource(); source != nil {
 		if info, ok := source.CIStatus(pr); ok {
 			return info
 		}
 	}
-	return GetCIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
+	return forge.ForPR(pr).CIStatus(*pr.Base.Repo.Owner.Login, *pr.Head.Repo.Name, *pr.Head.Label)
 }
 
 func GetInteractionState(owner, repo string, pr *github.PullRequest) InteractionState {
@@ -1576,7 +1576,8 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 		return val.(InteractionState)
 	}
 
-	client := GetGithubClient()
+	// The PR's own forge holds its reviews and comments.
+	f := forge.ForRepo(owner, repo)
 	// Add timeout to prevent hanging indefinitely
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1593,15 +1594,11 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	resultChan := make(chan result, 4)
 
-	// Every list below is paginated; see ListAllPages for why calling the client
-	// directly loses the newest entries. These fetches share the timeout ctx above
-	// rather than using the ListAll* helpers, which fetch on context.Background().
+	// Every list below is paginated, and shares the timeout ctx above.
 
 	// Fetch Reviews
 	go func() {
-		reviews, err := ListAllPages("pulls/reviews", func(opts *github.ListOptions) ([]*github.PullRequestReview, *github.Response, error) {
-			return client.PullRequests.ListReviews(ctx, owner, repo, *pr.Number, opts)
-		})
+		reviews, err := f.Reviews(ctx, owner, repo, *pr.Number)
 		if err != nil {
 			slog.Warn("Error listing reviews", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -1610,10 +1607,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Review Comments
 	go func() {
-		reviewComments, err := ListAllPages("pulls/comments", func(opts *github.ListOptions) ([]*github.PullRequestComment, *github.Response, error) {
-			return client.PullRequests.ListComments(ctx, owner, repo, *pr.Number,
-				&github.PullRequestListCommentsOptions{ListOptions: *opts})
-		})
+		reviewComments, err := f.ReviewComments(ctx, owner, repo, *pr.Number)
 		if err != nil {
 			slog.Warn("Error listing review comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -1622,10 +1616,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Issue Comments
 	go func() {
-		issueComments, err := ListAllPages("issues/comments", func(opts *github.ListOptions) ([]*github.IssueComment, *github.Response, error) {
-			return client.Issues.ListComments(ctx, owner, repo, *pr.Number,
-				&github.IssueListCommentsOptions{ListOptions: *opts})
-		})
+		issueComments, err := f.IssueComments(ctx, owner, repo, *pr.Number)
 		if err != nil {
 			slog.Warn("Error listing issue comments", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -1634,9 +1625,7 @@ func GetInteractionState(owner, repo string, pr *github.PullRequest) Interaction
 
 	// Fetch Commits
 	go func() {
-		commits, err := ListAllPages("pulls/commits", func(opts *github.ListOptions) ([]*github.RepositoryCommit, *github.Response, error) {
-			return client.PullRequests.ListCommits(ctx, owner, repo, *pr.Number, opts)
-		})
+		commits, err := f.Commits(ctx, owner, repo, *pr.Number)
 		if err != nil {
 			slog.Warn("Error listing commits", "owner", owner, "repo", repo, "number", *pr.Number, "error", err)
 		}
@@ -1777,7 +1766,7 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 	// interaction set (two search calls, shared and cached — see
 	// interaction_prefilter.go) rules them out for most PRs without fetching
 	// anything. Only PRs that pass the prefilter pay for a state fetch.
-	interacted := SearchMyOpenInteractions(myLogin)
+	interacted := openInteractions(prs, myLogin)
 
 	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
@@ -1809,7 +1798,7 @@ func filterWaitingOnMe(prs []*github.PullRequest, myLogin string) []*github.Pull
 			}
 
 			// Cases 2 and 3 are impossible without a past interaction of mine.
-			if !interacted.MayHaveInteracted(pr) {
+			if !interacted.mayHaveInteracted(pr) {
 				resultChan <- prResult{pr: pr, shouldFilter: false, prefiltered: true}
 				return
 			}
@@ -1894,7 +1883,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 	//     a nonzero LastMeTime, and only a review or comment of mine sets it.
 	//     A PR outside the interaction set (see interaction_prefilter.go)
 	//     cannot match, so its state fetch is skipped.
-	interacted := SearchMyOpenInteractions(myLogin)
+	interacted := openInteractions(prs, myLogin)
 
 	// Process the remaining PRs concurrently to avoid sequential API calls
 	type prResult struct {
@@ -1920,7 +1909,7 @@ func filterWaitingOnAuthor(prs []*github.PullRequest, myLogin string) []*github.
 				return
 			}
 
-			if !interacted.MayHaveInteracted(pr) {
+			if !interacted.mayHaveInteracted(pr) {
 				resultChan <- prResult{pr: pr, shouldFilter: false}
 				return
 			}

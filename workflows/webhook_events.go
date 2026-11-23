@@ -3,6 +3,7 @@ package workflows
 import (
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"encoding/json"
 	"fmt"
@@ -31,16 +32,18 @@ import (
 // variable so tests can stand in for GitHub.
 var refetchPR = func(key PRKey, pr *github.PullRequest, detail string) {
 	apiCalls := &apiCallCounter{}
-	fetchAuxDataForPR(git_tools.GetGithubClient(), apiCalls, webhookWorkflowName, key, warmRequirement(AuxDataRequirement{}), pr)
+	fetchAuxDataForPR(key.Forge(), apiCalls, webhookWorkflowName, key, warmRequirement(AuxDataRequirement{}), pr)
 	webhookActivity.refetches.Add(1)
 	webhookActivity.apiCalls.Add(apiCalls.total())
 	slog.Info("Fetched a PR in full after a webhook delivery", "pr", key.Number, "repo", key.Repo, "event", detail, "api_calls", apiCalls.total())
 	notifyPRsUpdated([]PRKey{key})
 }
 
-// fetchReviewThreads looks up a PR's review threads. A variable so tests can
-// stand in for GitHub.
-var fetchReviewThreads = git_tools.GetReviewThreads
+// fetchReviewThreads looks up a PR's review threads on its forge. A variable so
+// tests can stand in for GitHub.
+var fetchReviewThreads = func(owner, repo string, number int) ([]git_tools.ReviewThread, error) {
+	return forge.ForRepo(owner, repo).ReviewThreads(owner, repo, number)
+}
 
 // heldPR is a PR a delivery was about that we hold, with the PR as the delivery
 // describes it — nil for a delivery that carries no PR object (a comment on
@@ -297,7 +300,7 @@ func refreshFromPRPayload(db *database.DB, key PRKey, pr *github.PullRequest) []
 	// resolution reads the PR's whole review-request history, which is the
 	// cycle's job.
 	if _, hasRow := loadCachedTeamReviews(key); hasRow {
-		if teams := resolvePRTeamReviews(&apiCallCounter{}, key, pr, reviews); teams != nil {
+		if teams := resolvePRTeamReviews(key.Forge(), &apiCallCounter{}, key, pr, reviews); teams != nil {
 			if j, err := json.Marshal(teams); err == nil {
 				if err := db.UpsertPRTeamReviews(key.Number, key.Repo, string(j)); err != nil {
 					slog.Error("Failed to cache team reviews from a webhook", "pr", key.Number, "repo", key.Repo, "error", err)

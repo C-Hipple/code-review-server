@@ -11,6 +11,9 @@ SleepDuration = 10 # Time to wait between updates (in minutes)
 GithubUsername = "your-github-username"
 RepoLocation = "~/" # Base directory where repos are cloned
 AutoWorktree = false # Automatically manage worktrees for PRs
+# The forge (the service PRs live on) workflows talk to unless they set Forge;
+# GitHub, the only kind so far, when left out. See docs/configuration.md#forges.
+# DefaultForge = "github"
 [SectionPriority]
 "My Open PRs" = 10
 "Needs My Team's Review" = 20
@@ -24,6 +27,7 @@ Name = "My Open PRs"
 Filters = ["FilterNotDraft"]
 SectionTitle = "My Pull Requests"
 IncludeDiff = true
+# Forge = "github" # Which forge this workflow's PRs come from; default: DefaultForge
 
 [[Workflows]]
 WorkflowType = "SingleRepoSyncReviewRequestsWorkflow"

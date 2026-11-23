@@ -2,26 +2,25 @@ package git_tools
 
 import (
 	"context"
-	"errors"
+	"crs/forge"
 
 	"github.com/google/go-github/v74/github"
 )
 
 // Statuses CompareStatus reports, as GitHub's compare endpoint names them.
 const (
-	CompareAhead     = "ahead"
-	CompareBehind    = "behind"
-	CompareDiverged  = "diverged"
-	CompareIdentical = "identical"
+	CompareAhead     = forge.CompareAhead
+	CompareBehind    = forge.CompareBehind
+	CompareDiverged  = forge.CompareDiverged
+	CompareIdentical = forge.CompareIdentical
 	// CompareMissing is a base GitHub no longer has (or never had) a history
-	// in common with head — a commit a force-push left behind and that has
-	// since been collected. Not a GitHub status.
-	CompareMissing = "missing"
+	// in common with head. Not a GitHub status.
+	CompareMissing = forge.CompareMissing
 )
 
 // ErrNoCommonHistory is CompareDiff's answer when GitHub can't relate the two
 // commits at all.
-var ErrNoCommonHistory = errors.New("the commits share no history GitHub can compare")
+var ErrNoCommonHistory = forge.ErrNoCommonHistory
 
 // CompareDiff returns the unified diff between two commits. GitHub only offers
 // the three-dot comparison, which diffs head against its merge base with base:

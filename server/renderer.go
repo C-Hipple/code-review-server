@@ -5,6 +5,7 @@ import (
 	"crs/ai"
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"crs/org"
 	"crs/utils"
@@ -1091,7 +1092,7 @@ func writeCacheMissLog(state cacheMissState) {
 }
 
 func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDetails, error) {
-	client := git_tools.GetGithubClient()
+	remote := forge.ForRepo(owner, repo)
 	ctx := context.Background()
 
 	// Probe all caches upfront to record hit/miss state for the log.
@@ -1149,7 +1150,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	// 2. Fetch fresh PR details from GitHub if needed
 	if needsFreshFetch {
 		missState.missedFields = append(missState.missedFields, "metadata")
-		pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+		pr, err := remote.GetPR(ctx, owner, repo, number)
 		if err != nil {
 			// If we have cached data, return that instead of failing
 			if metadata.Number != 0 {
@@ -1338,7 +1339,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 	if diff == "" {
 		missState.missedFields = append(missState.missedFields, "diff")
-		d, _, err := client.PullRequests.GetRaw(ctx, owner, repo, number, github.RawOptions{Type: github.Diff})
+		d, err := remote.Diff(ctx, owner, repo, number)
 		if err != nil {
 			slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		} else {
@@ -1371,13 +1372,13 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	if githubComments == nil {
 		missState.missedFields = append(missState.missedFields, "comments")
 		var err error
-		githubComments, err = git_tools.ListAllPRComments(ctx, client, owner, repo, number)
+		githubComments, err = remote.ReviewComments(ctx, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching PR review comments", "pr", number, "repo", repo, "error", err)
 		}
 		reviewCommentsErr := err
 
-		issueComments, err := git_tools.ListAllIssueComments(ctx, client, owner, repo, number)
+		issueComments, err := remote.IssueComments(ctx, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching PR issue comments", "pr", number, "repo", repo, "error", err)
 		}
@@ -1445,7 +1446,7 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 	if commits == nil {
 		missState.missedFields = append(missState.missedFields, "commits")
-		ghCommits, err := git_tools.ListAllPRCommits(ctx, client, owner, repo, number)
+		ghCommits, err := remote.Commits(ctx, owner, repo, number)
 		if err != nil {
 			slog.Error("Error fetching commits", "error", err)
 		} else {
@@ -1745,7 +1746,7 @@ func GetFullPRResponse(owner string, repo string, number int, skipCache bool, de
 	// We effectively want to run `processPRDiffWithComments` but utilizing the data we already have.
 	// But `processPRDiffWithComments` is designed to fetch.
 
-	// Let's see: `processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)`
+	// Let's see: `processPRDiffWithComments(remote, owner, repo, number, diff, parsedDiff, skipCache, latestSha)`
 	// It checks DB or fetches.
 
 	// Since we already HAVE the comments in `details.Comments`, we should use them.
@@ -1870,7 +1871,7 @@ func (c *JSONPRComment) GetReviewID() int64      { return c.ReviewID }
 func (c *JSONPRComment) GetHTMLURL() string      { return c.HTMLURL }
 
 func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCache bool, pr *github.PullRequest) (string, int) {
-	client := git_tools.GetGithubClient()
+	remote := forge.ForRepo(owner, repo)
 
 	// Check database first - skip API call if cached
 	if !skipCache {
@@ -1886,7 +1887,7 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 				// Continue to fetch from API
 			} else {
 				// Process cached diff with comments
-				return processPRDiffWithComments(client, owner, repo, number, cachedBody, parsedDiff, skipCache, cachedSha)
+				return processPRDiffWithComments(remote, owner, repo, number, cachedBody, parsedDiff, skipCache, cachedSha)
 			}
 		}
 	}
@@ -1898,13 +1899,13 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 		latestSha = *pr.Head.SHA
 	} else {
 		// If no PR provided, fetch briefly
-		p, _, err := client.PullRequests.Get(context.Background(), owner, repo, number)
+		p, err := remote.GetPR(context.Background(), owner, repo, number)
 		if err == nil && p.Head != nil && p.Head.SHA != nil {
 			latestSha = *p.Head.SHA
 		}
 	}
 
-	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
+	diff, err := remote.Diff(context.Background(), owner, repo, number)
 	if err != nil {
 		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		return "", 0
@@ -1919,10 +1920,10 @@ func GetPRDiffWithInlineComments(owner string, repo string, number int, skipCach
 	}
 
 	// Store the result in the database (with latest_sha for future feature)
-	return processPRDiffWithComments(client, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
+	return processPRDiffWithComments(remote, owner, repo, number, diff, parsedDiff, skipCache, latestSha)
 }
 
-func processPRDiffWithComments(client *github.Client, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
+func processPRDiffWithComments(remote forge.Forge, owner string, repo string, number int, diff string, parsedDiff *utils.Diff, skipCache bool, latestSha string) (string, int) {
 	var githubComments []*github.PullRequestComment
 	var comments []PRComment
 
@@ -1949,7 +1950,7 @@ func processPRDiffWithComments(client *github.Client, owner string, repo string,
 	// Not in cache or error occurred, fetch from API
 	if comments == nil {
 		var apiErr error
-		githubComments, apiErr = git_tools.ListAllPRComments(context.Background(), client, owner, repo, number)
+		githubComments, apiErr = remote.ReviewComments(context.Background(), owner, repo, number)
 		if apiErr != nil {
 			slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", apiErr)
 			return diff, 0
@@ -2530,7 +2531,7 @@ func hiddenCommentAuthor(login string) bool {
 }
 
 func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*github.Reviewers, error) {
-	client := git_tools.GetGithubClient()
+	remote := forge.ForRepo(owner, repo)
 
 	if !skipCache {
 		cachedReviewersJSON, err := config.C().DB.GetRequestedReviewers(number, repo)
@@ -2546,7 +2547,7 @@ func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*git
 		}
 	}
 
-	reviewers, err := git_tools.ListAllRequestedReviewers(context.Background(), client, owner, repo, number)
+	reviewers, err := remote.RequestedReviewers(context.Background(), owner, repo, number)
 	if err != nil {
 		return nil, err
 	}
@@ -2582,8 +2583,8 @@ func GetPRReviews(owner, repo string, number int, skipCache bool) ([]ReviewJSON,
 		}
 	}
 
-	client := git_tools.GetGithubClient()
-	ghReviews, err := git_tools.ListAllPRReviews(context.Background(), client, owner, repo, number)
+	remote := forge.ForRepo(owner, repo)
+	ghReviews, err := remote.Reviews(context.Background(), owner, repo, number)
 	if err != nil {
 		return nil, err
 	}
@@ -2637,7 +2638,7 @@ func GetPRReviewThreads(owner, repo string, number int, skipCache bool) []git_to
 		}
 	}
 
-	threads, err := git_tools.GetReviewThreads(owner, repo, number)
+	threads, err := forge.ForRepo(owner, repo).ReviewThreads(owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching review threads", "pr", number, "repo", repo, "error", err)
 		return nil
@@ -2670,7 +2671,7 @@ func GetPRReactions(owner, repo string, number int, skipCache bool) *git_tools.P
 		}
 	}
 
-	reactions, err := git_tools.GetReactions(owner, repo, number)
+	reactions, err := forge.ForRepo(owner, repo).Reactions(owner, repo, number)
 	if err != nil {
 		slog.Error("Error fetching reactions", "pr", number, "repo", repo, "error", err)
 		return nil
@@ -2712,7 +2713,7 @@ type CombinedPRStatus struct {
 }
 
 func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache bool) (*CombinedPRStatus, error) {
-	client := git_tools.GetGithubClient()
+	remote := forge.ForRepo(owner, repo)
 
 	if !skipCache {
 		cachedStatusJSON, err := config.C().DB.GetCIStatus(prNumber, repo, sha)
@@ -2736,12 +2737,12 @@ func GetLatestCIStatus(owner, repo string, prNumber int, sha string, skipCache b
 		}
 	}
 
-	status, err := git_tools.GetCombinedStatus(client, owner, repo, sha)
+	status, err := remote.CombinedStatus(owner, repo, sha)
 	if err != nil {
 		slog.Error("Error fetching combined status", "error", err)
 	}
 
-	checkRuns, err := git_tools.GetCheckRuns(client, owner, repo, sha)
+	checkRuns, err := remote.CheckRuns(owner, repo, sha)
 	if err != nil {
 		slog.Error("Error fetching check runs", "error", err)
 	}

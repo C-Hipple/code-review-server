@@ -18,6 +18,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,15 +29,7 @@ import (
 )
 
 // PRRef identifies a single pull request.
-type PRRef struct {
-	Owner  string
-	Repo   string
-	Number int
-}
-
-func (r PRRef) String() string {
-	return fmt.Sprintf("%s/%s#%d", r.Owner, r.Repo, r.Number)
-}
+type PRRef = forge.PRRef
 
 const (
 	searchRefsPageSize = 100

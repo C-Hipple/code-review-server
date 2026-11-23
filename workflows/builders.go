@@ -1,11 +1,12 @@
 package workflows
 
 import (
+	"crs/config"
+	"crs/forge"
+	"crs/git_tools"
 	"fmt"
 	"log/slog"
 	"strings"
-	"crs/config"
-	"crs/git_tools"
 
 	"github.com/google/go-github/v74/github"
 )
@@ -13,6 +14,12 @@ import (
 func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDomain string) []Workflow {
 	workflows := []Workflow{}
 	for _, raw_workflow := range workflow_maps {
+		// Resolved here, so each builder copies the forge's ID as it is.
+		raw_workflow.Forge = config.C().WorkflowForgeID(raw_workflow)
+		if _, err := forge.For(raw_workflow.Forge); err != nil {
+			slog.Warn("Skipping workflow whose forge can't be opened", "name", raw_workflow.Name, "forge", raw_workflow.Forge, "error", err)
+			continue
+		}
 		var wf Workflow
 		var err error
 		switch raw_workflow.WorkflowType {
@@ -36,9 +43,28 @@ func MatchWorkflows(workflow_maps []config.RawWorkflow, repos *[]string, jiraDom
 			slog.Warn("Skipping improperly configured workflow", "name", raw_workflow.Name, "error", err)
 			continue
 		}
+		rememberRepos(wf, raw_workflow.Forge)
 		workflows = append(workflows, wf)
 	}
 	return workflows
+}
+
+// rememberRepos records the forge each repository wf lists is on, so that
+// what a client asks about one of its PRs goes there (forge.ForRepo). A search
+// workflow names no repositories; it remembers the ones it finds as it runs.
+func rememberRepos(wf Workflow, forgeID string) {
+	var entries []string
+	switch w := wf.(type) {
+	case SyncReviewRequestsWorkflow:
+		entries = w.Repos
+	case ProjectListWorkflow:
+		entries = w.Repos
+	}
+	for _, entry := range entries {
+		if owner, repo, err := git_tools.ParseRepoName(strings.TrimSpace(entry)); err == nil {
+			forge.Remember(owner, repo, forgeID)
+		}
+	}
 }
 
 func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow, error) {
@@ -49,6 +75,7 @@ func BuildSingleRepoReviewWorkflow(raw *config.RawWorkflow, repos *[]string) (Wo
 	}
 	wf := SyncReviewRequestsWorkflow{
 		Name:                 raw.Name,
+		Forge:                raw.Forge,
 		Owner:                raw.Owner,
 		Repos:                []string{raw.Repo},
 		Filters:              filters,
@@ -73,6 +100,7 @@ func BuildSyncReviewRequestWorkflow(raw *config.RawWorkflow, repos *[]string) (W
 	}
 	wf := SyncReviewRequestsWorkflow{
 		Name:                 raw.Name,
+		Forge:                raw.Forge,
 		Owner:                raw.Owner,
 		Repos:                workflowRepos,
 		Filters:              filters,
@@ -106,6 +134,7 @@ func BuildListMyPRsWorkflow(raw *config.RawWorkflow, repos *[]string) (Workflow,
 	filters = append([]git_tools.PRFilter{git_tools.MakeAuthorFilter(login)}, filters...)
 	wf := SyncReviewRequestsWorkflow{
 		Name:                 raw.Name,
+		Forge:                raw.Forge,
 		Owner:                raw.Owner,
 		Repos:                workflowRepos,
 		Filters:              filters,
@@ -130,6 +159,7 @@ func BuildSearchWorkflow(raw *config.RawWorkflow, mode SearchMode) (Workflow, er
 	}
 	wf := SearchWorkflow{
 		Name:         raw.Name,
+		Forge:        raw.Forge,
 		SectionTitle: raw.SectionTitle,
 		Mode:         mode,
 		Login:        strings.TrimSpace(raw.GithubUsername),
@@ -165,6 +195,7 @@ func BuildProjectListWorkflow(raw *config.RawWorkflow, repos *[]string, jiraDoma
 	}
 	wf := ProjectListWorkflow{
 		Name:                 raw.Name,
+		Forge:                raw.Forge,
 		Repos:                workflowRepos,
 		JiraDomain:           jiraDomain,
 		JiraEpic:             raw.JiraEpic,

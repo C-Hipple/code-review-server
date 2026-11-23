@@ -4,6 +4,7 @@ import (
 	"context"
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"encoding/json"
 	"fmt"
@@ -395,7 +396,7 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			if _, statErr := os.Stat(existingPath); statErr == nil {
 				// Already tracked: keep it in sync with the PR head so the
 				// LSPs aren't looking at stale code after a push.
-				refreshWorktree(repoDir, branchName, existingPath, sha, prNumber)
+				refreshWorktree(repoDir, branchName, existingPath, sha, prNumber, prHeadRef(ownerName, repoName, prNumber))
 				return
 			}
 			// The directory was deleted out from under us; drop the record
@@ -407,7 +408,7 @@ func handleWorktreeChange(db *database.DB, change SerializedFileChange) {
 			}
 		}
 
-		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath, prNumber); err != nil {
+		if err := git_tools.CreateWorktree(repoDir, branchName, worktreePath, prNumber, prHeadRef(ownerName, repoName, prNumber)); err != nil {
 			// If it fails, we log it but don't stop the workflow
 			slog.Error("Failed to create worktree", "pr", prNumber, "repo", repoName, "path", worktreePath, "error", err)
 		} else {
@@ -466,14 +467,20 @@ func expandedRepoLocation() string {
 	return repoLocation
 }
 
+// prHeadRef is the ref the PR's forge keeps its head at, which a worktree
+// fetches from once the PR's branch is gone from origin.
+func prHeadRef(owner, repo string, number int) string {
+	return forge.ForRepo(owner, repo).PRHeadRef(number)
+}
+
 // refreshWorktree moves a review worktree to headSHA, the PR head the cached
 // diff was built from. A worktree already there is left alone without a
 // fetch, so a cycle costs a rev-parse per PR rather than a network round trip.
-func refreshWorktree(repoDir, branch, path, headSHA string, number int) {
+func refreshWorktree(repoDir, branch, path, headSHA string, number int, headRef string) {
 	if head, err := git_tools.HeadSHA(path); err == nil && head == headSHA {
 		return
 	}
-	if err := git_tools.UpdateWorktree(repoDir, branch, path, number); err != nil {
+	if err := git_tools.UpdateWorktree(repoDir, branch, path, number, headRef); err != nil {
 		slog.Warn("Failed to update worktree", "path", path, "error", err)
 	}
 }
@@ -497,7 +504,7 @@ func SyncPRWorktree(db *database.DB, owner, repo string, number int) {
 	if sha == "" || branch == "" {
 		return
 	}
-	refreshWorktree(filepath.Join(expandedRepoLocation(), repo), branch, path, sha, number)
+	refreshWorktree(filepath.Join(expandedRepoLocation(), repo), branch, path, sha, number, prHeadRef(owner, repo, number))
 }
 
 // prClaimedElsewhere reports whether the PR a Delete releases is still listed
@@ -544,6 +551,20 @@ func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullReques
 	return err
 }
 
+// repoSource is one repository on one forge: what the collection phase lists
+// PRs from. The same owner/repo on two forges is two sources.
+type repoSource struct {
+	// Forge is the forge's ID, resolved: never "".
+	Forge string
+	// Repo is "owner/repo".
+	Repo string
+}
+
+// source is the repository req asks for PRs from.
+func (req PRRequirement) source() repoSource {
+	return repoSource{Forge: config.C().ForgeID(req.Forge), Repo: fmt.Sprintf("%s/%s", req.Owner, req.Repo)}
+}
+
 // hasUnfetchedRequirements returns true if any PR data required by the workflow was
 // not successfully fetched. A nil slice in repoStatePRs or a nil PR pointer in
 // specificPRs indicates that the fetch either failed (e.g. 429 rate limit) or was
@@ -551,11 +572,11 @@ func (ms ManagerService) runWorkflow(workflow Workflow, prs []*github.PullReques
 // matching against an empty list would delete all existing database items.
 func hasUnfetchedRequirements(
 	workflow Workflow,
-	repoStatePRs map[string]map[string][]*github.PullRequest,
-	specificPRs map[string]map[int]*github.PullRequest,
+	repoStatePRs map[repoSource]map[string][]*github.PullRequest,
+	specificPRs map[repoSource]map[int]*github.PullRequest,
 ) bool {
 	for _, req := range workflow.GetPRRequirements() {
-		repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+		repoKey := req.source()
 		if len(req.PRNumbers) > 0 {
 			// Specific PRs: each entry starts nil and is set on success.
 			// If any required PR is still nil, the fetch failed.
@@ -576,7 +597,6 @@ func hasUnfetchedRequirements(
 }
 
 func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
-	client := git_tools.GetGithubClient()
 	apiCalls := &apiCallCounter{}
 	cacheAtStart := git_tools.GetHTTPCacheStats()
 
@@ -590,15 +610,15 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	defer func() { endWebhookCycle(config.C(), cycleStart, mode, !incomplete.Load()) }()
 
 	// Map to store fetched PRs: repo -> state -> PRs
-	repoStatePRs := make(map[string]map[string][]*github.PullRequest)
+	repoStatePRs := make(map[repoSource]map[string][]*github.PullRequest)
 	// Map to store specific PRs: repo -> PRNumber -> PR
-	specificPRs := make(map[string]map[int]*github.PullRequest)
+	specificPRs := make(map[repoSource]map[int]*github.PullRequest)
 
 	// Collection phase
 	for _, wf := range ms.Workflows {
 		reqs := wf.GetPRRequirements()
 		for _, req := range reqs {
-			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			repoKey := req.source()
 			if len(req.PRNumbers) > 0 {
 				if specificPRs[repoKey] == nil {
 					specificPRs[repoKey] = make(map[int]*github.PullRequest)
@@ -620,13 +640,18 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	// On failure it stays nil. This nil sentinel lets hasUnfetchedRequirements detect
 	// errors without a separate error-tracking map.
 	for repoKey, states := range repoStatePRs {
-		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		owner, repo, _ := git_tools.ParseRepoName(repoKey.Repo)
+		f, err := forge.For(repoKey.Forge)
+		if err != nil {
+			slog.Error("Failed to open the forge, will skip dependent workflows", "forge", repoKey.Forge, "repo", repoKey.Repo, "error", err)
+			continue
+		}
 		for state := range states {
-			slog.Debug("Fetching PRs", "repo", repoKey, "state", state)
-			prs, err := git_tools.GetPRs(client, state, owner, repo)
+			slog.Debug("Fetching PRs", "forge", repoKey.Forge, "repo", repoKey.Repo, "state", state)
+			prs, err := f.ListPRs(owner, repo, state)
 			apiCalls.PRList.Add(1)
 			if err != nil {
-				slog.Error("Failed to fetch PRs, will skip dependent workflows", "repo", repoKey, "state", state, "error", err)
+				slog.Error("Failed to fetch PRs, will skip dependent workflows", "forge", repoKey.Forge, "repo", repoKey.Repo, "state", state, "error", err)
 				// repoStatePRs[repoKey][state] remains nil — signals failure to hasUnfetchedRequirements
 				continue
 			}
@@ -635,17 +660,22 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	}
 
 	for repoKey, prMap := range specificPRs {
-		owner, repo, _ := git_tools.ParseRepoName(repoKey)
+		owner, repo, _ := git_tools.ParseRepoName(repoKey.Repo)
 		numbers := []int{}
 		for num := range prMap {
 			numbers = append(numbers, num)
 		}
+		f, err := forge.For(repoKey.Forge)
+		if err != nil {
+			slog.Error("Failed to open the forge, will skip dependent workflows", "forge", repoKey.Forge, "repo", repoKey.Repo, "error", err)
+			continue
+		}
 		if len(numbers) > 0 {
-			slog.Debug("Fetching specific PRs", "repo", repoKey, "count", len(numbers))
-			prs, err := git_tools.GetSpecificPRs(client, owner, repo, numbers)
+			slog.Debug("Fetching specific PRs", "forge", repoKey.Forge, "repo", repoKey.Repo, "count", len(numbers))
+			prs, err := f.GetPRs(owner, repo, numbers)
 			apiCalls.PRSpecific.Add(1)
 			if err != nil {
-				slog.Error("Failed to fetch specific PRs, will skip dependent workflows", "repo", repoKey, "error", err)
+				slog.Error("Failed to fetch specific PRs, will skip dependent workflows", "forge", repoKey.Forge, "repo", repoKey.Repo, "error", err)
 				// specificPRs[repoKey][num] entries remain nil — signals failure
 				continue
 			}
@@ -656,7 +686,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	}
 
 	// Pre-fetch auxiliary data for all PRs
-	auxDataStore := ms.prefetchAuxData(client, apiCalls, repoStatePRs, specificPRs)
+	auxDataStore := ms.prefetchAuxData(apiCalls, repoStatePRs, specificPRs)
 	SetCurrentAuxDataStore(auxDataStore)
 	defer SetCurrentAuxDataStore(nil)
 
@@ -674,7 +704,7 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 		var workflowPRs []*github.PullRequest
 		reqs := workflow.GetPRRequirements()
 		for _, req := range reqs {
-			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			repoKey := req.source()
 			if len(req.PRNumbers) > 0 {
 				for _, num := range req.PRNumbers {
 					if pr := specificPRs[repoKey][num]; pr != nil {
@@ -703,7 +733,9 @@ func (ms ManagerService) RunOnce(file_change_wg *sync.WaitGroup) {
 	apiCalls.log(mode)
 
 	// Fetch authoritative rate limit status from GitHub's /rate_limit endpoint.
-	rlLimit, rlRemaining, rlResetAt, rlErr := git_tools.GetRateLimitFromAPI(client)
+	// The cycle's API accounting is GitHub's: its budgets are what the
+	// APICallStats rows track.
+	rlLimit, rlRemaining, rlResetAt, rlErr := git_tools.GetRateLimitFromAPI(git_tools.GetGithubClient())
 	if rlErr != nil {
 		slog.Warn("Failed to fetch rate limit from GitHub API, using header-based estimate", "error", rlErr)
 		rlStatus := git_tools.GetRateLimitStatus()
@@ -1006,16 +1038,18 @@ func (ms *ManagerService) Initialize() {
 const prefetchConcurrency = 8
 
 // prefetchAuxData gathers auxiliary data for all PRs that need it
-func (ms ManagerService) prefetchAuxData(client *github.Client,
-	apiCalls *apiCallCounter,
-	repoStatePRs map[string]map[string][]*github.PullRequest,
-	specificPRs map[string]map[int]*github.PullRequest) *AuxDataStore {
+func (ms ManagerService) prefetchAuxData(apiCalls *apiCallCounter,
+	repoStatePRs map[repoSource]map[string][]*github.PullRequest,
+	specificPRs map[repoSource]map[int]*github.PullRequest) *AuxDataStore {
 
 	store := NewAuxDataStore()
 
 	// Collect all PRs and merge their aux data requirements
 	prRequirements := make(map[PRKey]AuxDataRequirement)
 	prObjects := make(map[PRKey]*github.PullRequest)
+	// The forge each PR is fetched from: its requirement's. The fetching phase
+	// already opened each one, so this can't fail where that didn't.
+	prForges := make(map[PRKey]forge.Forge)
 	// Requirements are merged across workflows, so a single fetch can be on
 	// behalf of several of them. Track every requester so the action log names
 	// them all rather than picking one arbitrarily.
@@ -1028,7 +1062,11 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				"comments", req.AuxData.Comments, "ci_status", req.AuxData.CIStatus,
 				"diff", req.AuxData.Diff, "reviews", req.AuxData.Reviews, "commits", req.AuxData.Commits)
 
-			repoKey := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			repoKey := req.source()
+			f, err := forge.For(repoKey.Forge)
+			if err != nil {
+				continue
+			}
 
 			var prs []*github.PullRequest
 			if len(req.PRNumbers) > 0 {
@@ -1047,6 +1085,7 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 				}
 				key := PRKey{Owner: req.Owner, Repo: req.Repo, Number: *pr.Number}
 				prObjects[key] = pr
+				prForges[key] = f
 				rememberPR(key, pr)
 				if !slices.Contains(prWorkflows[key], wf.GetName()) {
 					prWorkflows[key] = append(prWorkflows[key], wf.GetName())
@@ -1097,14 +1136,14 @@ func (ms ManagerService) prefetchAuxData(client *github.Client,
 		}
 
 		wg.Add(1)
-		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest, workflowName string) {
+		go func(key PRKey, auxReq AuxDataRequirement, pr *github.PullRequest, f forge.Forge, workflowName string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			auxData := fetchAuxDataForPR(client, apiCalls, workflowName, key, auxReq, pr)
+			auxData := fetchAuxDataForPR(f, apiCalls, workflowName, key, auxReq, pr)
 			fillCachedCIStatus(db, key, auxData)
 			store.Set(key, auxData)
-		}(key, auxReq, prObjects[key], strings.Join(prWorkflows[key], ","))
+		}(key, auxReq, prObjects[key], prForges[key], strings.Join(prWorkflows[key], ","))
 	}
 	wg.Wait()
 
@@ -1226,8 +1265,9 @@ func applyAuxImplications(req AuxDataRequirement) AuxDataRequirement {
 // fetchAuxDataForPR fetches the requested auxiliary data for a single PR
 // and persists it to the DB cache so that GetPRDetails can find it.
 // workflowName identifies who asked for the fetch; it is recorded in
-// WorkflowActionLog alongside the fields that actually landed.
-func fetchAuxDataForPR(client *github.Client,
+// WorkflowActionLog alongside the fields that actually landed. f is the forge
+// the PR is on.
+func fetchAuxDataForPR(f forge.Forge,
 	apiCalls *apiCallCounter,
 	workflowName string,
 	key PRKey, req AuxDataRequirement, pr *github.PullRequest) *PRAuxData {
@@ -1266,7 +1306,7 @@ func fetchAuxDataForPR(client *github.Client,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			prComments, err := git_tools.GetPRComments(client, key.Owner, key.Repo, key.Number)
+			prComments, err := f.ReviewComments(context.Background(), key.Owner, key.Repo, key.Number)
 			apiCalls.Comments.Add(1)
 			if err != nil {
 				slog.Warn("Failed to fetch comments for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
@@ -1282,7 +1322,7 @@ func fetchAuxDataForPR(client *github.Client,
 			combined := make([]*github.PullRequestComment, len(prComments))
 			copy(combined, prComments)
 			apiCalls.IssueComments.Add(1)
-			issueComments, err := git_tools.ListAllIssueComments(context.Background(), client, key.Owner, key.Repo, key.Number)
+			issueComments, err := f.IssueComments(context.Background(), key.Owner, key.Repo, key.Number)
 			if err == nil {
 				for _, ic := range issueComments {
 					combined = append(combined, convertIssueToPRComment(ic))
@@ -1301,13 +1341,13 @@ func fetchAuxDataForPR(client *github.Client,
 		}()
 	}
 
-	// 2. CI Status for workflow display (uses Actions API)
+	// 2. CI Status for workflow display (on GitHub, the Actions API)
 	if req.CIStatus && pr != nil && pr.Head != nil && pr.Head.Label != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			apiCalls.CIStatus.Add(1)
-			ciInfo := git_tools.GetCIStatus(key.Owner, key.Repo, *pr.Head.Label)
+			ciInfo := f.CIStatus(key.Owner, key.Repo, *pr.Head.Label)
 			auxData.CIStatus = &ciInfo
 		}()
 	}
@@ -1319,7 +1359,7 @@ func fetchAuxDataForPR(client *github.Client,
 			defer wg.Done()
 			ctx := context.Background()
 			apiCalls.Diff.Add(1)
-			diffResp, _, err := client.PullRequests.GetRaw(ctx, key.Owner, key.Repo, key.Number, github.RawOptions{Type: github.Diff})
+			diffResp, err := f.Diff(ctx, key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch diff for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
@@ -1335,7 +1375,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Reviews.Add(1)
-			reviews, err := git_tools.ListAllPRReviews(context.Background(), client, key.Owner, key.Repo, key.Number)
+			reviews, err := f.Reviews(context.Background(), key.Owner, key.Repo, key.Number)
 			if err != nil {
 				// Nothing gets written to PRReviews when this fails, so the next
 				// time the UI opens this PR it logs a "reviews" cache miss.
@@ -1354,12 +1394,12 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.CombinedStatus.Add(1)
-			status, err := git_tools.GetCombinedStatus(client, key.Owner, key.Repo, headSHA)
+			status, err := f.CombinedStatus(key.Owner, key.Repo, headSHA)
 			if err == nil {
 				combinedStatus = status
 			}
 			apiCalls.CheckRuns.Add(1)
-			cr, err := git_tools.GetCheckRuns(client, key.Owner, key.Repo, headSHA)
+			cr, err := f.CheckRuns(key.Owner, key.Repo, headSHA)
 			if err == nil {
 				checkRunsResult = cr
 			}
@@ -1372,7 +1412,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Commits.Add(1)
-			commits, err := git_tools.ListAllPRCommits(context.Background(), client, key.Owner, key.Repo, key.Number)
+			commits, err := f.Commits(context.Background(), key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch commits for pre-fetch", "pr", key.Number, "error", err)
 				return
@@ -1381,7 +1421,8 @@ func fetchAuxDataForPR(client *github.Client,
 		}()
 	}
 
-	// 7. Review threads (GraphQL — resolution state has no REST equivalent).
+	// 7. Review threads (on GitHub, GraphQL — resolution state has no REST
+	// equivalent).
 	// Nothing in the workflow filters reads this; it is fetched purely so the
 	// review view opens against a warm cache.
 	if req.ReviewThreads {
@@ -1389,7 +1430,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.ReviewThreads.Add(1)
-			threads, err := git_tools.GetReviewThreads(key.Owner, key.Repo, key.Number)
+			threads, err := f.ReviewThreads(key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch review threads for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
@@ -1406,7 +1447,7 @@ func fetchAuxDataForPR(client *github.Client,
 		go func() {
 			defer wg.Done()
 			apiCalls.Reactions.Add(1)
-			reactions, err := git_tools.GetReactions(key.Owner, key.Repo, key.Number)
+			reactions, err := f.Reactions(key.Owner, key.Repo, key.Number)
 			if err != nil {
 				slog.Warn("Failed to fetch reactions for pre-fetch", "pr", key.Number, "repo", key.Repo, "error", err)
 				return
@@ -1420,7 +1461,7 @@ func fetchAuxDataForPR(client *github.Client,
 	// Resolved after the wait rather than alongside the fetches above: it reads
 	// the reviews one of them just returned.
 	if req.Teams {
-		auxData.TeamReviews = resolvePRTeamReviews(apiCalls, key, pr, ghReviews)
+		auxData.TeamReviews = resolvePRTeamReviews(f, apiCalls, key, pr, ghReviews)
 	}
 
 	// Persist all fetched data to DB so GetPRDetails finds it cached

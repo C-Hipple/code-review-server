@@ -2,6 +2,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"log/slog"
 	"sort"
 	"strings"
@@ -46,20 +47,7 @@ const (
 )
 
 // TeamRef identifies one GitHub team.
-type TeamRef struct {
-	// Name is the display name, e.g. "Platform Engineering".
-	Name string `json:"name"`
-	// Slug is the API name, e.g. "platform-engineering".
-	Slug string `json:"slug"`
-	// Org is the login of the organization that owns the team.
-	Org string `json:"org"`
-}
-
-// Key is the "org/slug" form GitHub uses for team references, and the key both
-// the member cache and GetMyTeamRefs are indexed by.
-func (t TeamRef) Key() string {
-	return t.Org + "/" + t.Slug
-}
+type TeamRef = forge.TeamRef
 
 // TeamReviewStatus is one required reviewer as the review list displays it: a
 // team, or the authenticated user personally, together with where its review
@@ -82,10 +70,7 @@ type TeamReviewStatus struct {
 
 // ReviewRequestHistory is every reviewer a PR has ever been assigned, including
 // the ones GitHub has since cleared because they reviewed.
-type ReviewRequestHistory struct {
-	Teams []TeamRef
-	Users []string
-}
+type ReviewRequestHistory = forge.ReviewRequestHistory
 
 // reviewRequestHistoryQuery pages the PR timeline for review-request events.
 // 100 events per page is GitHub's maximum; PRs rarely have more than a handful.

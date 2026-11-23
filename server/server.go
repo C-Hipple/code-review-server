@@ -6,6 +6,7 @@ import (
 	"crs/chat"
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"crs/workflows"
 	"encoding/json"
@@ -629,7 +630,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 	// takes a path and a position per comment and has no notion of answering an
 	// existing one, so each reply is posted on its own against the comment it
 	// answers. Everything else goes out as part of the review below.
-	client := git_tools.GetGithubClient()
+	f := forge.ForRepo(args.Owner, args.Repo)
 	var reviewComments []*github.DraftReviewComment
 	// Local rows riding along with the review, deleted once GitHub has it.
 	var reviewCommentIDs []int64
@@ -643,7 +644,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			continue
 		}
 		if anchor, ok := resolveReplyAnchor(c, pending); ok {
-			if err := git_tools.SubmitReply(client, args.Owner, args.Repo, args.Number, *c.Body, anchor); err != nil {
+			if err := f.SubmitReply(args.Owner, args.Repo, args.Number, *c.Body, anchor); err != nil {
 				// Keep the local comment. Deleting it here is what used to make
 				// a failed reply vanish from both the PR and the dashboard,
 				// with only a server log to say it ever existed.
@@ -704,7 +705,7 @@ func (h *RPCHandler) SubmitReview(args *SubmitReviewArgs, reply *SubmitReviewRep
 			reviewRequest.Body = &args.Body
 		}
 
-		if err := git_tools.SubmitReview(client, args.Owner, args.Repo, args.Number, reviewRequest); err != nil {
+		if err := f.SubmitReview(args.Owner, args.Repo, args.Number, reviewRequest); err != nil {
 			// The comments that would have ridden along are still in the
 			// database, so a retry sends exactly what did not make it.
 			slog.Error("Error submitting review to GitHub", "error", err)
@@ -767,8 +768,7 @@ func (h *RPCHandler) MergePR(args *MergePRArgs, reply *MergePRReply) error {
 		method = "squash"
 	}
 
-	client := git_tools.GetGithubClient()
-	result, err := git_tools.MergePR(client, args.Owner, args.Repo, args.Number, method)
+	result, err := forge.ForRepo(args.Owner, args.Repo).MergePR(args.Owner, args.Repo, args.Number, method)
 	if err != nil {
 		slog.Error("Error merging PR", "owner", args.Owner, "repo", args.Repo, "number", args.Number, "method", method, "error", err)
 		if result != nil {
@@ -1323,6 +1323,7 @@ func (h *RPCHandler) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigRep
 func validateConfig(cfg *config.Config) []config.ValidationError {
 	problems := config.Validate(cfg)
 	problems = append(problems, workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	problems = append(problems, workflows.ValidateRepoForges(cfg)...)
 	return append(problems, aiRunner.Registry().Validate(cfg.AIFeatures)...)
 }
 
@@ -1702,10 +1703,10 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	} else {
 		ref = baseSHA
 	}
-	// Fall back to GitHub API only if the cached SHA is missing.
+	// Fall back to the forge's API only if the cached SHA is missing.
+	f := forge.ForRepo(args.Owner, args.Repo)
 	if ref == "" {
-		client := git_tools.GetGithubClient()
-		pr, _, err := client.PullRequests.Get(context.Background(), args.Owner, args.Repo, args.Number)
+		pr, err := f.GetPR(context.Background(), args.Owner, args.Repo, args.Number)
 		if err != nil {
 			return fmt.Errorf("error fetching PR: %w", err)
 		}
@@ -1717,12 +1718,11 @@ func (h *RPCHandler) GetHunkContext(args *GetHunkContextArgs, reply *GetHunkCont
 	}
 
 	// Try reading from the local repo first via "git show <ref>:<path>".
-	// Falls back to the GitHub API only if the local repo isn't available.
+	// Falls back to the forge's API only if the local repo isn't available.
 	content, err := getFileContentLocal(args.Repo, ref, args.Filename)
 	if err != nil {
-		slog.Info("Local git show failed, falling back to GitHub API", "file", args.Filename, "error", err)
-		client := git_tools.GetGithubClient()
-		content, err = git_tools.GetFileContent(client, args.Owner, args.Repo, args.Filename, ref)
+		slog.Info("Local git show failed, falling back to the forge's API", "file", args.Filename, "forge", f.ID(), "error", err)
+		content, err = f.FileContent(args.Owner, args.Repo, args.Filename, ref)
 		if err != nil {
 			slog.Error("Error fetching file content for hunk context", "file", args.Filename, "ref", ref, "error", err)
 			return err

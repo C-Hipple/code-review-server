@@ -2,6 +2,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -33,21 +34,14 @@ import (
 // A PR's mergeability: REST's mergeable true/false/null, or GraphQL's
 // MergeableState.
 const (
-	// MergeabilityMergeable means the head merges into the base cleanly.
-	MergeabilityMergeable = "mergeable"
-	// MergeabilityConflicting means the head conflicts with the base: GitHub
-	// won't merge the PR until the conflicts are resolved.
-	MergeabilityConflicting = "conflicting"
-	// MergeabilityUnknown means GitHub hasn't worked it out yet.
-	MergeabilityUnknown = "unknown"
+	MergeabilityMergeable   = forge.MergeabilityMergeable
+	MergeabilityConflicting = forge.MergeabilityConflicting
+	MergeabilityUnknown     = forge.MergeabilityUnknown
 )
 
 // Mergeability is GitHub's answer for one PR, together with the head commit it
 // was given for: the answer is about that commit, so a push makes it stale.
-type Mergeability struct {
-	State   string
-	HeadSHA string
-}
+type Mergeability = forge.Mergeability
 
 // RESTMergeability reads the answer a PR fetched over REST already carries.
 // Only the single-PR endpoint reports one, and it answers null while GitHub is

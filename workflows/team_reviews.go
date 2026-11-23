@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/forge"
 	"crs/git_tools"
 	"encoding/json"
 	"log/slog"
@@ -22,14 +23,15 @@ import (
 //     team that approved yesterday is still shown (in green) today;
 //   - the PR's full review-request history, the only source that can recover
 //     a team whose review was already satisfied before we first saw the PR.
-//     That one is a request of its own (a page of issue events, or a GraphQL
-//     query — see git_tools.RouteFor), so it is made once per PR — on first
-//     sight, when there is nothing cached to build on.
+//     That one is a request of its own (on GitHub a page of issue events, or a
+//     GraphQL query — see git_tools.RouteFor), so it is made once per PR — on
+//     first sight, when there is nothing cached to build on.
 //
-// Returns a non-nil slice whenever it resolved anything, including the empty
-// slice for a PR with no required reviewers: persisting that empty answer is
-// what stops the next cycle asking GitHub for the history all over again.
-func resolvePRTeamReviews(apiCalls *apiCallCounter, key PRKey,
+// f is the forge the PR is on. Returns a non-nil slice whenever it resolved
+// anything, including the empty slice for a PR with no required reviewers:
+// persisting that empty answer is what stops the next cycle asking the forge
+// for the history all over again.
+func resolvePRTeamReviews(f forge.Forge, apiCalls *apiCallCounter, key PRKey,
 	pr *github.PullRequest, reviews []*github.PullRequestReview) []git_tools.TeamReviewStatus {
 
 	if pr == nil {
@@ -88,7 +90,7 @@ func resolvePRTeamReviews(apiCalls *apiCallCounter, key PRKey,
 		addTeam(git_tools.TeamRef{Name: entry.Name, Slug: entry.Slug, Org: entry.Org})
 	}
 
-	myLogin := currentGitHubLogin()
+	myLogin := currentLogin(f)
 	personalPending := myLogin != "" && requestedFrom(pr, myLogin)
 	personal = personal || personalPending
 
@@ -96,7 +98,7 @@ func resolvePRTeamReviews(apiCalls *apiCallCounter, key PRKey,
 	// only way to learn about requests GitHub has already cleared.
 	if !hasCachedRow {
 		apiCalls.TeamReviews.Add(1)
-		history, err := git_tools.GetReviewRequestHistory(key.Owner, key.Repo, key.Number)
+		history, err := f.ReviewRequestHistory(key.Owner, key.Repo, key.Number)
 		if err != nil {
 			// Nothing is written for this PR, so the next cycle asks again.
 			// Storing the teams still listed on the PR instead would look like
@@ -121,8 +123,8 @@ func resolvePRTeamReviews(apiCalls *apiCallCounter, key PRKey,
 	return git_tools.ResolveTeamReviews(git_tools.TeamReviewInput{
 		Teams:           teams,
 		PendingKeys:     pendingKeys,
-		Members:         git_tools.GetTeamMembersForTeams(teams),
-		MyTeamKeys:      myTeamKeys(),
+		Members:         f.TeamMembers(teams),
+		MyTeamKeys:      myTeamKeys(f),
 		MyLogin:         myLogin,
 		Personal:        personal,
 		PersonalPending: personalPending,
@@ -154,23 +156,23 @@ func loadCachedTeamReviews(key PRKey) ([]git_tools.TeamReviewStatus, bool) {
 	return cached, true
 }
 
-// currentGitHubLogin is who the review list is being built for: the configured
-// username, or the identity behind the API token when the config leaves it
+// currentLogin is who the review list is being built for: the configured
+// username, or the identity behind the forge's token when the config leaves it
 // unset. Empty when neither is available, which leaves every chip unhighlighted
 // rather than highlighting the wrong ones.
-func currentGitHubLogin() string {
+func currentLogin(f forge.Forge) string {
 	if login := config.C().GithubUsername; login != "" {
 		return login
 	}
-	return git_tools.GetAuthenticatedLogin()
+	return f.AuthenticatedLogin()
 }
 
-// myTeamKeys is the authenticated user's own teams as "org/slug", the same key
-// TeamRef.Key() produces. It answers "is this my team" even for teams whose
+// myTeamKeys is the authenticated user's own teams on f as "org/slug", the same
+// key TeamRef.Key() produces. It answers "is this my team" even for teams whose
 // member list the token cannot read.
-func myTeamKeys() map[string]bool {
+func myTeamKeys(f forge.Forge) map[string]bool {
 	keys := map[string]bool{}
-	for _, ref := range git_tools.GetMyTeamRefs() {
+	for _, ref := range f.MyTeamRefs() {
 		keys[ref] = true
 	}
 	return keys

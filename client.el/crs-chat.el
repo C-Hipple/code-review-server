@@ -1320,10 +1320,17 @@ is answering ●.
 
 (defun crs--chat-sessions-show-chat (then)
   "Show the PR's chat buffer in this window in place of the list.
-THEN is called with the chat buffer first, to choose what it shows."
-  (let ((buffer (crs--chat-pr-buffer crs--chat-owner crs--chat-repo crs--chat-number)))
+THEN is called with the chat buffer first, to choose what it shows.
+The window forgets it showed the list, so quitting the chat
+\(`crs-chat-quit') closes the window, as it did before the list, rather
+than bringing the list back."
+  (let ((buffer (crs--chat-pr-buffer crs--chat-owner crs--chat-repo crs--chat-number))
+        (list (current-buffer))
+        (window (selected-window)))
     (funcall then buffer)
     (switch-to-buffer buffer nil t)
+    (set-window-prev-buffers window (seq-remove (lambda (entry) (eq (car entry) list))
+                                                (window-prev-buffers window)))
     (goto-char (point-max))
     buffer))
 
@@ -1337,7 +1344,10 @@ line there, \\[crs-chat-sessions-new] starts a new one, \\[crs-chat-sessions-for
 Interactively, the PR is the current chat's or review's, the one on the
 current line, or else one read from the minibuffer."
   (interactive (crs--chat-read-pr))
-  (unless (derived-mode-p 'crs-chat-mode)
+  ;; From the PR's chat, or its list already, the list takes this window;
+  ;; from anywhere else, the chat opens first and the list takes its window.
+  (unless (and (derived-mode-p 'crs-chat-mode 'crs-chat-sessions-mode)
+               (crs--chat-same-pr-p owner repo number))
     (crs-chat owner repo number))
   (let ((buffer (get-buffer-create (crs--chat-sessions-buffer-name owner repo number))))
     (with-current-buffer buffer

@@ -3046,6 +3046,40 @@ By age: chat-0, chat-1, then chat-2, a fork of chat-1.")
             (should (= (length calls) 1)))
         (kill-buffer list)))))
 
+(ert-deftest crs-test-chat-session-list-leaves-the-chat-window-closable ()
+  "Opening a session from the list leaves the chat's window as quitting expects.
+The list borrowed the chat's window, so the chat's quit closes it rather
+than bringing the list back; and asking for the list from the list itself
+opens no second chat window."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions)))
+        ("RPCHandler.GetChat" . crs-test--chat-get))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (delete-other-windows)
+    (let ((review (get-buffer-create "*crs-test review*")))
+      (unwind-protect
+          (progn
+            (switch-to-buffer review)
+            (let* ((chat (crs-chat "acme" "widgets" 42))
+                   (window (selected-window))
+                   (list (crs-chat-sessions "acme" "widgets" 42)))
+              (should (seq-set-equal-p (mapcar #'window-buffer (window-list)) (list review list)))
+              (should (eq (window-buffer window) list))
+              (crs-chat-sessions "acme" "widgets" 42)
+              (should (eq (selected-window) window))
+              (should (seq-set-equal-p (mapcar #'window-buffer (window-list)) (list review list)))
+              (with-current-buffer list
+                (goto-char (point-min))
+                (while (not (equal (tabulated-list-get-id) "chat-0")) (forward-line 1))
+                (crs-chat-sessions-open))
+              (should (eq (window-buffer window) chat))
+              (crs-chat-quit)
+              (should-not (window-live-p window))
+              (should (equal (mapcar #'window-buffer (window-list)) (list review)))))
+        (kill-buffer review)
+        (when-let ((list (get-buffer (crs--chat-sessions-buffer-name "acme" "widgets" 42))))
+          (kill-buffer list))))))
+
 ;; Keybindings are installed in crs-client.el, so an autoloaded command must
 ;; load crs-client, not just its own module.  A bare `;;;###autoload' cookie
 ;; before a defun autoloads the defining file (crs-start-server -> crs-rpc),

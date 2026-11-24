@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     deleteChat as deleteChatRpc,
+    forkChat as forkChatRpc,
     getChat,
     listChatBackends,
     listChats,
+    renameChat as renameChatRpc,
     rpcErrorMessage,
     sendChatMessage,
     startChat,
@@ -38,7 +40,7 @@ export interface ChatState {
     /** The model the next new chat asks for. */
     model: string;
     selectModel: (id: string) => void;
-    /** The PR's chats, the most recently active first. */
+    /** The PR's chats (sessions), the most recently active first. */
     chats: ChatSummary[];
     /** The chat on screen; null for a new one not yet started. */
     chat: Chat | null;
@@ -49,14 +51,24 @@ export interface ChatState {
     /** Sends a message: starts a chat when none is open, else continues it. Resolves true once the server took it. */
     send: (message: string) => Promise<boolean>;
     stop: () => void;
-    /** Leaves the open chat for a new one. */
+    /** Leaves the open chat for a new one: a fresh context. The old one stays in `chats`. */
     newChat: () => void;
     openChat: (id: string) => void;
+    /**
+     * Forks the open chat into a new session carrying its messages, and opens
+     * it; the agent starts afresh with the next message. Resolves true once
+     * the server made it.
+     */
+    forkChat: () => Promise<boolean>;
+    /** Retitles a chat. Resolves true once the server took the title. */
+    renameChat: (id: string, title: string) => Promise<boolean>;
     deleteChat: (id: string) => void;
 }
 
 /**
- * The review chat for a PR. Opening the PR lists its chats and reopens the
+ * The review chat for a PR. A PR holds any number of chats — sessions, each a
+ * context of its own — and the reviewer switches between them, starts a new
+ * one or forks the open one. Opening the PR lists its chats and reopens the
  * most recent; the chat is read again whenever the server says it changed —
  * a message landing, the reply growing, a turn ending — so an answer streams
  * in without polling.
@@ -189,6 +201,48 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
         }
     };
 
+    const forkChat = async (): Promise<boolean> => {
+        const id = chatIdRef.current;
+        if (!id || sending) return false;
+        setSending(true);
+        setError(null);
+        try {
+            const reply = await forkChatRpc(id);
+            if (!reply.okay || !reply.chat) {
+                setError(reply.message || 'The server refused to fork the session.');
+                return false;
+            }
+            chatIdRef.current = reply.chat.id;
+            show(++lastTicket.current, reply.chat);
+            void refreshList().catch(() => {});
+            return true;
+        } catch (e) {
+            setError(rpcErrorMessage(e));
+            return false;
+        } finally {
+            setSending(false);
+        }
+    };
+
+    const renameChat = async (id: string, title: string): Promise<boolean> => {
+        setError(null);
+        try {
+            const reply = await renameChatRpc(id, title);
+            if (reply.chat && reply.chat.id === chatIdRef.current) {
+                show(++lastTicket.current, reply.chat);
+            }
+            void refreshList().catch(() => {});
+            if (!reply.okay) {
+                setError(reply.message || 'The server refused the title.');
+                return false;
+            }
+            return true;
+        } catch (e) {
+            setError(rpcErrorMessage(e));
+            return false;
+        }
+    };
+
     return {
         backends,
         agent,
@@ -214,6 +268,8 @@ export function useChat({ owner, repo, number, events = serverEvents }: UseChatO
             setError(null);
             load(id).catch(e => setError(rpcErrorMessage(e)));
         },
+        forkChat,
+        renameChat,
         deleteChat: (id: string) => {
             deleteChatRpc(id)
                 .then(() => {

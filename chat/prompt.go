@@ -231,3 +231,11 @@ func titleFor(message string) string {
 	runes := []rune(t)
 	return strings.TrimSpace(string(runes[:maxTitle-1])) + "…"
 }
+
+// forkTitle is the title of a fork of a chat titled title.
+func forkTitle(title string) string {
+	if strings.TrimSpace(title) == "" {
+		return "Fork"
+	}
+	return titleFor("Fork: " + title)
+}

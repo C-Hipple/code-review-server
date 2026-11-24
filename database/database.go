@@ -352,6 +352,7 @@ func (db *DB) initSchema() error {
 		head_sha TEXT NOT NULL DEFAULT '',
 		title TEXT NOT NULL DEFAULT '',
 		cost_usd REAL NOT NULL DEFAULT 0,
+		forked_from TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
@@ -560,6 +561,16 @@ func (db *DB) initSchema() error {
 		_, err = db.conn.Exec("ALTER TABLE APICallStats ADD COLUMN team_reviews INTEGER NOT NULL DEFAULT 0")
 		if err != nil {
 			slog.Warn("Error adding team_reviews column to APICallStats", "error", err)
+		}
+	}
+
+	// Migration: Add forked_from to ChatSessions: the chat a session was
+	// forked from (ForkChatSession), empty for one started afresh.
+	err = db.conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('ChatSessions') WHERE name='forked_from'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE ChatSessions ADD COLUMN forked_from TEXT NOT NULL DEFAULT ''")
+		if err != nil {
+			slog.Warn("Error adding forked_from column to ChatSessions", "error", err)
 		}
 	}
 

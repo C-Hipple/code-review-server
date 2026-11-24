@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/forge"
 	"crs/git_tools"
 	"encoding/json"
 	"testing"
@@ -56,7 +57,7 @@ func TestResolvePRTeamReviewsUnionsCachedAndPendingTeams(t *testing.T) {
 		},
 	}
 
-	statuses := resolvePRTeamReviews(&apiCallCounter{}, key, pr, nil)
+	statuses := resolvePRTeamReviews(forge.Default(), &apiCallCounter{}, key, pr, nil)
 
 	got := map[string]string{}
 	for _, status := range statuses {
@@ -95,7 +96,7 @@ func TestResolvePRTeamReviewsKeepsPersonalRequestAfterItIsCleared(t *testing.T) 
 
 	// GitHub drops the reviewer from requested_reviewers once they review, so
 	// the entry only survives because the cache remembered it.
-	statuses := resolvePRTeamReviews(&apiCallCounter{}, key, &github.PullRequest{}, []*github.PullRequestReview{
+	statuses := resolvePRTeamReviews(forge.Default(), &apiCallCounter{}, key, &github.PullRequest{}, []*github.PullRequestReview{
 		{User: &github.User{Login: github.String("erin")}, State: github.String("APPROVED")},
 	})
 
@@ -118,7 +119,7 @@ func TestResolvePRTeamReviewsKeepsAnEmptyAnswerEmpty(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	statuses := resolvePRTeamReviews(&apiCallCounter{}, key, &github.PullRequest{}, nil)
+	statuses := resolvePRTeamReviews(forge.Default(), &apiCallCounter{}, key, &github.PullRequest{}, nil)
 	if statuses == nil || len(statuses) != 0 {
 		t.Fatalf("statuses = %+v, want an empty non-nil slice", statuses)
 	}
@@ -132,7 +133,7 @@ func TestResolvePRTeamReviewsLeavesNothingCachedWhenTheHistoryFails(t *testing.T
 	// listed on the PR would look like a complete answer and stop the retry,
 	// leaving out every team whose review GitHub had already cleared.
 	pr := &github.PullRequest{RequestedTeams: []*github.Team{teamRequest("Platform", "platform", "acme")}}
-	if statuses := resolvePRTeamReviews(&apiCallCounter{}, key, pr, nil); statuses != nil {
+	if statuses := resolvePRTeamReviews(forge.Default(), &apiCallCounter{}, key, pr, nil); statuses != nil {
 		t.Fatalf("statuses = %+v, want nil so the next cycle tries again", statuses)
 	}
 }
@@ -141,7 +142,7 @@ func TestResolvePRTeamReviewsSkipsPRsItCannotRead(t *testing.T) {
 	teamReviewTestConfig(t)
 	key := PRKey{Owner: "acme", Repo: "widgets", Number: 15}
 
-	if statuses := resolvePRTeamReviews(&apiCallCounter{}, key, nil, nil); statuses != nil {
+	if statuses := resolvePRTeamReviews(forge.Default(), &apiCallCounter{}, key, nil, nil); statuses != nil {
 		t.Fatalf("statuses = %+v, want nil so the cached row is left alone", statuses)
 	}
 }

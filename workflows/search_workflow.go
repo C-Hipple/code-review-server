@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"crs/config"
+	"crs/forge"
 	"crs/git_tools"
 	"errors"
 	"fmt"
@@ -34,7 +35,9 @@ const (
 // for comes from the config's GithubUsername, which the server fills in from the
 // API token when it isn't set.
 type SearchWorkflow struct {
-	Name         string
+	Name string
+	// Forge is the ID of the forge searched; empty means the default.
+	Forge        string
 	SectionTitle string
 	Mode         SearchMode
 	// Login is the GitHub user the searches are about.
@@ -56,6 +59,10 @@ type SearchWorkflow struct {
 
 func (w SearchWorkflow) GetName() string {
 	return w.Name
+}
+
+func (w SearchWorkflow) ForgeID() string {
+	return w.Forge
 }
 
 func (w SearchWorkflow) GetOrgSectionName() string {
@@ -84,7 +91,11 @@ func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_ch
 		return RunResult{}, fmt.Errorf("%s needs a GitHub login: set GithubUsername in the config, or give the server a token whose user it can look up", w.Name)
 	}
 
-	refs, err := w.candidateRefs(login)
+	f, err := forge.For(w.Forge)
+	if err != nil {
+		return RunResult{}, err
+	}
+	refs, err := w.candidateRefs(f, login)
 	if err != nil {
 		// Every early return in here leaves the section as it is. Falling
 		// through to ProcessPRsDB with an empty list would read as "none of
@@ -93,21 +104,28 @@ func (w SearchWorkflow) Run(_ []*github.PullRequest, c chan FileChanges, file_ch
 	}
 	slog.Info("Search workflow candidates", "workflow", w.Name, "mode", w.Mode, "candidates", len(refs))
 
-	prs, err := git_tools.GetPRsForRefs(git_tools.GetGithubClient(), refs)
+	prs, err := f.GetPRsForRefs(refs)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("fetching candidate PRs for %s: %w", w.Name, err)
+	}
+	// A search turns up repositories no config names. Remembering which forge
+	// they are on is what sends the filters' lookups, and later a client's
+	// questions about these PRs, back to it; a repository a workflow lists
+	// stays on that workflow's forge.
+	for _, ref := range refs {
+		forge.Remember(ref.Owner, ref.Repo, f.ID())
 	}
 
 	// Pre-filter fetch: only what this workflow's filters read from the store.
 	if w.AuxDataReq != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.AuxDataReq)
+		prefetchAuxForFilteredPRs(f, w.Name, prs, w.AuxDataReq)
 	}
 
 	prs = git_tools.ApplyPRFilters(prs, w.filters(login))
 
 	// Post-filter fetch: display data, for the survivors only.
 	if w.PostFilterAux != (AuxDataRequirement{}) {
-		prefetchAuxForFilteredPRs(w.Name, prs, w.PostFilterAux)
+		prefetchAuxForFilteredPRs(f, w.Name, prs, w.PostFilterAux)
 	}
 
 	db := config.C().DB
@@ -133,11 +151,11 @@ func (w SearchWorkflow) filters(login string) []git_tools.PRFilter {
 	return append([]git_tools.PRFilter{git_tools.MakeWaitingOnMeFilter(login)}, w.Filters...)
 }
 
-// candidateRefs runs the searches this mode draws its PRs from.
-func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
+// candidateRefs runs the searches this mode draws its PRs from, on f.
+func (w SearchWorkflow) candidateRefs(f forge.Forge, login string) ([]git_tools.PRRef, error) {
 	switch w.Mode {
 	case ModeReviewRequested:
-		return git_tools.ReviewRequestedRefs(login)
+		return f.ReviewRequestedRefs(login)
 
 	case ModeWaitingOnMe:
 		// A PR is waiting on me either because I have an open review request
@@ -147,11 +165,11 @@ func (w SearchWorkflow) candidateRefs(login string) ([]git_tools.PRRef, error) {
 		// only exists among PRs I have reviewed or commented on, so the union
 		// of the two searches is the complete candidate set. See
 		// git_tools/interaction_prefilter.go for the full argument.
-		requested, err := git_tools.ReviewRequestedRefs(login)
+		requested, err := f.ReviewRequestedRefs(login)
 		if err != nil {
 			return nil, err
 		}
-		interacted, err := git_tools.MyInteractionRefs(login)
+		interacted, err := f.MyInteractionRefs(login)
 		if err != nil {
 			return nil, err
 		}

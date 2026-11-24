@@ -25,6 +25,7 @@ package workflows
 import (
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"fmt"
 	"log/slog"
@@ -77,8 +78,8 @@ func ReprocessPR(owner, repo string, number int) error {
 		return nil
 	}
 
-	client := git_tools.GetGithubClient()
-	prs, err := git_tools.GetSpecificPRs(client, owner, repo, []int{number})
+	f := forge.ForRepo(owner, repo)
+	prs, err := f.GetPRs(owner, repo, []int{number})
 	if err != nil {
 		return fmt.Errorf("fetching PR %s/%s#%d for reprocess: %w", owner, repo, number, err)
 	}
@@ -92,19 +93,25 @@ func ReprocessPR(owner, repo string, number int) error {
 	}
 	// Refreshes the DB caches as a side effect, so the PR the user is still
 	// looking at reads back its new review state rather than a cache miss.
-	prefetchAuxDataForPRs(client, strings.Join(names, ","), owner, repo, prs,
+	prefetchAuxDataForPRs(f, strings.Join(names, ","), owner, repo, prs,
 		reprocessAuxRequirements(targets, owner, repo))
 
 	applyReprocessedPR(config.C().DB, targets, prs[0])
 	return nil
 }
 
-// WorkflowsTargetingRepo returns the workflows that draw PRs from owner/repo.
+// WorkflowsTargetingRepo returns the workflows that draw PRs from owner/repo,
+// on the forge it is on or another name for that service (forge.Same).
 // Workflows that can't report their repos are skipped: without that answer we
-// would have to run them to find out, which is exactly what reprocessing avoids.
+// would have to run them to find out, which is exactly what reprocessing
+// avoids.
 func WorkflowsTargetingRepo(wfs []Workflow, owner, repo string) []Workflow {
 	targets := []Workflow{}
+	repoForge := forge.IDForRepo(owner, repo)
 	for _, wf := range wfs {
+		if !forge.Same(workflowForgeID(wf), repoForge) {
+			continue
+		}
 		targeter, ok := wf.(RepoTargeter)
 		if !ok {
 			slog.Warn("Workflow cannot report its repos; skipping it during reprocess",

@@ -245,6 +245,7 @@ func reportWorkflows(cfg config.Config) string {
 	}
 
 	problems := workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)
+	problems = append(problems, workflows.ValidateRepoForges(&cfg)...)
 	if len(problems) > 0 {
 		fmt.Println("\n== Configuration problems ==")
 		for _, p := range problems {

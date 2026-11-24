@@ -3,6 +3,7 @@ package workflows
 import (
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"slices"
 	"strings"
@@ -122,6 +123,40 @@ func TestAReviewRequestPutsThePRIntoReviewRequested(t *testing.T) {
 		t.Errorf("row details not built from the caches: %v", details)
 	}
 	if a := takeWebhookActivity(); a.SectionAdds != 1 {
+		t.Errorf("activity = %+v", a)
+	}
+}
+
+// Two names for GitHub — DefaultForge "work", of kind github, and a workflow
+// on the built-in "github" — are one forge: a search on one keeps a PR whose
+// repository a workflow lists on the other, rather than dropping it on every
+// delivery until the next cycle adds it back.
+func TestMembershipTakesTwoNamesForGitHubAsOne(t *testing.T) {
+	wf := reviewRequestedWorkflow()
+	wf.Forge = config.ForgeGitHub
+	env := membershipEnv(t, wf)
+	cfg := config.C()
+	cfg.DefaultForge = "work"
+	cfg.Forges = map[string]config.ForgeSettings{"work": {Kind: config.ForgeKindGitHub}}
+	config.SetC(cfg)
+	forge.SetListedRepos(map[string]string{whOwner + "/" + whRepo: "work"})
+	t.Cleanup(func() { forge.SetListedRepos(nil) })
+
+	key := whKey(1)
+	seedCachedPR(t, env.db, key, "head1")
+	listIn(t, env.db, wf, 1)
+
+	applyWebhookEvent(webhookDelivery{event: &github.PullRequestEvent{
+		Action:      github.Ptr("review_requested"),
+		PullRequest: requestedOfMe(whPR(1, "head1")),
+		Repo:        whRepository(),
+	}})
+	drainReevaluations()
+
+	if !listedIn(t, env.db, wf, 1) {
+		t.Fatal("a PR my search on github found was dropped because its repository is listed on work, another name for GitHub")
+	}
+	if a := takeWebhookActivity(); a.SectionDrops != 0 {
 		t.Errorf("activity = %+v", a)
 	}
 }

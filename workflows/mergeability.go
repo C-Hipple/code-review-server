@@ -2,7 +2,9 @@ package workflows
 
 import (
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -14,8 +16,35 @@ import (
 // changing, so it is checked afresh for the PRs each cycle writes into a
 // section rather than only when a PR is pushed to.
 
-// lookupMergeability asks GitHub about a batch of PRs. A seam for tests.
-var lookupMergeability = git_tools.GetMergeability
+// lookupMergeability asks about a batch of PRs. A seam for tests.
+var lookupMergeability = mergeabilityOnForges
+
+// mergeabilityOnForges asks each forge the refs are on about its own, in one
+// batch per forge, and hands back every answer it got with the errors joined.
+func mergeabilityOnForges(refs []git_tools.PRRef) (map[git_tools.PRRef]git_tools.Mergeability, error) {
+	groups := map[string][]git_tools.PRRef{}
+	var order []string
+	for _, ref := range refs {
+		id := forge.IDForRepo(ref.Owner, ref.Repo)
+		if _, seen := groups[id]; !seen {
+			order = append(order, id)
+		}
+		groups[id] = append(groups[id], ref)
+	}
+	answers := map[git_tools.PRRef]git_tools.Mergeability{}
+	var errs []error
+	for _, id := range order {
+		group := groups[id]
+		got, err := forge.ForRepo(group[0].Owner, group[0].Repo).Mergeability(group)
+		for ref, answer := range got {
+			answers[ref] = answer
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return answers, errors.Join(errs...)
+}
 
 // mergeabilityRetryDelay is how long GitHub gets to finish the answers it
 // reported unknown before they are asked about once more. Asking is what sets

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"crs/utils"
 	"encoding/json"
@@ -22,6 +23,8 @@ import (
 )
 
 type PRRequirement struct {
+	// Forge is the ID of the forge the repo is on; empty means the default.
+	Forge     string
 	Owner     string
 	Repo      string
 	State     string // "open", "closed", etc.
@@ -75,6 +78,21 @@ type Workflow interface {
 	GetPRRequirements() []PRRequirement
 	Run(prs []*github.PullRequest, c chan FileChanges, file_change_wg *sync.WaitGroup) (RunResult, error)
 	GetOrgSectionName() string
+}
+
+// ForgeTargeter is implemented by workflows that know which forge they talk
+// to, by its config ID; "" means the default.
+type ForgeTargeter interface {
+	ForgeID() string
+}
+
+// workflowForgeID is the ID of the forge wf talks to, resolved: the default
+// for a workflow that names none, or that can't say.
+func workflowForgeID(wf Workflow) string {
+	if t, ok := wf.(ForgeTargeter); ok {
+		return config.C().ForgeID(t.ForgeID())
+	}
+	return config.C().DefaultForgeID()
 }
 
 type FileChanges struct {
@@ -266,7 +284,7 @@ func (prb PRToOrgBridge) Details() []string {
 		if auxData != nil && auxData.CIStatus != nil {
 			ciInfo = *auxData.CIStatus
 		} else {
-			ciInfo = git_tools.GetCIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
+			ciInfo = forge.ForPR(prb.PR).CIStatus(*prb.PR.Base.Repo.Owner.Login, *prb.PR.Head.Repo.Name, *prb.PR.Head.Label)
 		}
 		if len(ciInfo.Statuses) > 0 {
 			details = append(details, fmt.Sprintf("*** %s CI Status\n", ciInfo.OverallStatus))
@@ -438,7 +456,7 @@ func removePRBodySections(body *string) string {
 }
 
 func getComments(owner string, repo string, number int) (int, []string) {
-	comments, err := git_tools.GetPRComments(git_tools.GetGithubClient(), owner, repo, number)
+	comments, err := forge.ForRepo(owner, repo).ReviewComments(context.Background(), owner, repo, number)
 	if err != nil {
 		slog.Error("Error getting Comments", "pr", number, "repo", repo, "error", err)
 		return 0, []string{}
@@ -663,14 +681,9 @@ func SyncTODOToSectionDB(db *database.DB, workflowName string, pr *github.PullRe
 	}
 }
 
-// Assume git_tools.GetGithubClient() and processWorkflowRuns are defined elsewhere
-// and work as intended.
-
 // getPRDiff fetches and stores the PR diff. If headSHA is provided, it skips the API call to get the PR.
 func getPRDiff(owner string, repo string, number int, headSHA string) []string {
-	client := git_tools.GetGithubClient()
-
-	diff, _, err := client.PullRequests.GetRaw(context.Background(), owner, repo, number, github.RawOptions{Type: github.Diff})
+	diff, err := forge.ForRepo(owner, repo).Diff(context.Background(), owner, repo, number)
 	if err != nil {
 		slog.Error("Error getting PR diff", "pr", number, "repo", repo, "error", err)
 		return []string{}

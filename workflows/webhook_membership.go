@@ -3,6 +3,7 @@ package workflows
 import (
 	"crs/config"
 	"crs/database"
+	"crs/forge"
 	"crs/git_tools"
 	"fmt"
 	"log/slog"
@@ -127,7 +128,7 @@ func reviewRequestedOf(pr *github.PullRequest, login string) membership {
 	if len(pr.RequestedTeams) == 0 {
 		return memberNo
 	}
-	mine := git_tools.GetMyTeamRefs()
+	mine := forge.ForPR(pr).MyTeamRefs()
 	if mine == nil {
 		// The lookup failed; nil is never what it returns for no teams.
 		return memberUnknown
@@ -310,12 +311,20 @@ func reevaluateMembership(db *database.DB, key PRKey, pr *github.PullRequest) {
 
 	ttl := time.Now().Add(2 * time.Hour).Unix()
 	dropped, changed := false, false
+	prForge := key.Forge().ID()
 	for _, wf := range workflows {
 		member, ok := wf.(webhookMember)
 		if !ok {
 			continue
 		}
 		verdict := member.webhookMembership(pr)
+		// A workflow on another forge never lists this PR, whatever its
+		// filters would say of it. Two names for one service (two forges of
+		// kind github, say) are the same forge here: a search on either finds
+		// the PR.
+		if !forge.Same(workflowForgeID(wf), prForge) {
+			verdict = memberNo
+		}
 		if verdict == memberUnknown {
 			continue
 		}

@@ -341,9 +341,10 @@ func (c *webhookCoverage) covers(owner, repo string) bool {
 var activeCoverage atomic.Pointer[webhookCoverage]
 
 // webhookHandles reports whether the PR's updates are left to webhooks rather
-// than fetched: its repository is covered and webhooks are trusted.
+// than fetched: its repository is covered, webhooks are trusted, and it is on
+// GitHub, the only forge that delivers them.
 func webhookHandles(key PRKey) bool {
-	return activeCoverage.Load().covers(key.Owner, key.Repo)
+	return activeCoverage.Load().covers(key.Owner, key.Repo) && key.Forge().Kind() == config.ForgeKindGitHub
 }
 
 // lastFullRefresh is when the last cycle that polled every PR, while the

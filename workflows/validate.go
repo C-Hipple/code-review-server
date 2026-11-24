@@ -28,7 +28,7 @@ var workflowTypes = []WorkflowTypeInfo{
 		Name:           "SyncReviewRequestsWorkflow",
 		Description:    "Sync pull requests from the configured repositories into a section, narrowed by filters.",
 		RequiredFields: []string{},
-		OptionalFields: []string{"Repos", "Filters", "Teams", "PRState", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Repos", "Filters", "Teams", "PRState", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 	{
 		Name:           "SingleRepoSyncReviewRequestsWorkflow",
@@ -36,7 +36,7 @@ var workflowTypes = []WorkflowTypeInfo{
 		Deprecated:     true,
 		DeprecatedBy:   "SyncReviewRequestsWorkflow with a single-element Repos list",
 		RequiredFields: []string{"Repo"},
-		OptionalFields: []string{"Filters", "Teams", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Filters", "Teams", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 	{
 		Name:           "ListMyPRsWorkflow",
@@ -44,25 +44,25 @@ var workflowTypes = []WorkflowTypeInfo{
 		Deprecated:     true,
 		DeprecatedBy:   "SyncReviewRequestsWorkflow with FilterMyPRs in Filters",
 		RequiredFields: []string{},
-		OptionalFields: []string{"Repos", "Filters", "PRState", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Repos", "Filters", "PRState", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 	{
 		Name:           "WaitingOnMeWorkflow",
 		Description:    "PRs that are in your court right now — an open review request (yours or your team's), a dismissed approval, or a thread waiting on your reply. Found through GitHub search, so it needs no Repos; identity comes from GithubUsername or, failing that, the API token's own user.",
 		RequiredFields: []string{},
-		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 	{
 		Name:           "MyReviewRequestsWorkflow",
 		Description:    "Every open PR whose review was requested from you or from a team you belong to — the same list as github.com's \"Review requests\". Found through GitHub search, so it needs no Repos; identity comes from GithubUsername or, failing that, the API token's own user.",
 		RequiredFields: []string{},
-		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Filters", "IncludeDiff", "GithubUsername", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 	{
 		Name:           "ProjectListWorkflow",
 		Description:    "Sync the pull requests linked to the children of a Jira epic. Repos takes a list, so one workflow can cover a project spanning several repositories. Requires JiraDomain plus the JIRA_API_TOKEN and JIRA_API_EMAIL environment variables.",
 		RequiredFields: []string{"JiraEpic"},
-		OptionalFields: []string{"Repos", "Filters", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins"},
+		OptionalFields: []string{"Repos", "Filters", "IncludeDiff", "DesktopNotifications", "AlwaysRunPlugins", "Forge"},
 	},
 }
 
@@ -280,6 +280,62 @@ func validateTypeSpecific(index int, raw config.RawWorkflow, globalRepos []strin
 	}
 
 	return problems
+}
+
+// ValidateRepoForges checks that no repository is listed on two forges. The
+// DB caches and the clients know a PR by its repository and number, not by
+// the forge it is on, so the same owner/repo on two of them would be one PR to
+// everything after the fetch.
+func ValidateRepoForges(cfg *config.Config) []config.ValidationError {
+	type claim struct {
+		forge    string
+		workflow int
+	}
+	problems := []config.ValidationError{}
+	claims := map[string]claim{}
+	for i, raw := range cfg.RawWorkflows {
+		forgeID := cfg.WorkflowForgeID(raw)
+		for _, entry := range listedRepos(raw, cfg.Repos) {
+			key := strings.ToLower(strings.TrimSpace(entry))
+			first, seen := claims[key]
+			if !seen {
+				claims[key] = claim{forge: forgeID, workflow: i}
+				continue
+			}
+			if first.forge != forgeID {
+				problems = append(problems, config.ValidationError{
+					Workflow: i, Field: "Forge",
+					Message: fmt.Sprintf("lists %s on forge %q, but workflow %d lists it on %q; a repository's PRs can only come from one forge",
+						strings.TrimSpace(entry), forgeID, first.workflow, first.forge),
+				})
+			}
+		}
+	}
+	return problems
+}
+
+// listedRepos is the "owner/repo" entries a workflow lists PRs from, as its
+// builder works them out: its own, else the root Repos. The search types list
+// none.
+func listedRepos(raw config.RawWorkflow, globalRepos []string) []string {
+	switch raw.WorkflowType {
+	case "SingleRepoSyncReviewRequestsWorkflow":
+		return []string{raw.Repo}
+	case "SyncReviewRequestsWorkflow", "ListMyPRsWorkflow":
+		if len(raw.Repos) > 0 {
+			return raw.Repos
+		}
+		return globalRepos
+	case "ProjectListWorkflow":
+		switch {
+		case len(raw.Repos) > 0:
+			return raw.Repos
+		case raw.Owner != "" && raw.Repo != "":
+			return []string{raw.Owner + "/" + raw.Repo}
+		}
+		return globalRepos
+	}
+	return nil
 }
 
 // workflowTypeNames lists the registered type names, for error messages.

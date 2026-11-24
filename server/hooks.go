@@ -4,7 +4,7 @@ import (
 	"context"
 	"crs/ai"
 	"crs/config"
-	"crs/git_tools"
+	"crs/forge"
 	"crs/subprocess"
 	"encoding/json"
 	"errors"
@@ -133,7 +133,8 @@ func buildAIRequest(owner, repo string, number int) (ai.Request, error) {
 }
 
 // fileReaderAt reads files as of ref for an agent's read_file tool: from the
-// local clone when there is one, otherwise from GitHub. Nil without a ref.
+// local clone when there is one, otherwise from the repository's forge. Nil
+// without a ref.
 func fileReaderAt(owner, repo, ref string) func(ctx context.Context, path string) (string, error) {
 	if ref == "" {
 		return nil
@@ -146,7 +147,7 @@ func fileReaderAt(owner, repo, ref string) func(ctx context.Context, path string
 		if content, err := getFileContentLocal(repo, ref, clean); err == nil {
 			return content, nil
 		}
-		return git_tools.GetFileContent(git_tools.GetGithubClient(), owner, repo, clean, ref)
+		return forge.ForRepo(owner, repo).FileContent(owner, repo, clean, ref)
 	}
 }
 

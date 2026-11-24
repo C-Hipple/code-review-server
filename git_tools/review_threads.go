@@ -2,6 +2,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"log/slog"
 	"time"
 )
@@ -14,22 +15,7 @@ import (
 
 // ReviewThread is the resolution state of one review-comment thread, keyed back
 // to REST by the database IDs of the comments it contains.
-type ReviewThread struct {
-	// ID is the GraphQL node ID of the thread (usable with resolveReviewThread).
-	ID string `json:"id"`
-	// IsResolved is true once someone marked the conversation resolved.
-	IsResolved bool `json:"is_resolved"`
-	// IsOutdated is GitHub's own judgement that the thread's lines no longer
-	// exist in the current diff. It is tracked separately from the position-based
-	// outdated flag the REST path computes, and is the more reliable of the two.
-	IsOutdated bool `json:"is_outdated"`
-	// ResolvedBy is the login of whoever resolved it, empty when unresolved.
-	ResolvedBy string `json:"resolved_by"`
-	Path       string `json:"path"`
-	// CommentIDs are the REST/database IDs of every comment in the thread, in
-	// posting order. These match CommentJSON.ID on the wire.
-	CommentIDs []int64 `json:"comment_ids"`
-}
+type ReviewThread = forge.ReviewThread
 
 // reviewThreadsQuery pages through a PR's review threads. 100 threads and 100
 // comments per thread is GitHub's per-page maximum; threads paginate properly

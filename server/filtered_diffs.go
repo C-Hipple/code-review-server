@@ -5,6 +5,7 @@ import (
 	"crs/config"
 	"crs/database"
 	"crs/filtereddiff"
+	"crs/forge"
 	"crs/git_tools"
 	"crs/utils"
 	"errors"
@@ -43,11 +44,11 @@ const (
 	filteredDiffVersion = 1
 )
 
-// rangeDiffSource is the GitHub seam the filtered diffs fetch through; tests
-// swap it.
+// rangeDiffSource is the seam the filtered diffs fetch through; tests swap
+// it.
 type rangeDiffSource interface {
 	// Diff returns the raw unified diff from base to head, or
-	// git_tools.ErrNoCommonHistory when GitHub can't relate them.
+	// git_tools.ErrNoCommonHistory when the forge can't relate them.
 	Diff(ctx context.Context, owner, repo, base, head string) (string, error)
 	// Status reports how head relates to base, as git_tools.CompareStatus.
 	Status(ctx context.Context, owner, repo, base, head string) (string, error)
@@ -55,31 +56,41 @@ type rangeDiffSource interface {
 	Commits(ctx context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error)
 }
 
-var filteredDiffSource rangeDiffSource = githubCompare{}
+var filteredDiffSource rangeDiffSource = forgeCompare{}
 
-type githubCompare struct{}
+// forgeCompare asks the forge the repository is on.
+type forgeCompare struct{}
 
-var errNoToken = errors.New("no GitHub token is configured")
-
-func (githubCompare) Diff(ctx context.Context, owner, repo, base, head string) (string, error) {
-	if !git_tools.HasToken() {
-		return "", errNoToken
+// errNoToken is a forge's answer when it has no token to ask with.
+func errNoToken(f forge.Forge) error {
+	if f.Kind() == config.ForgeKindGitHub {
+		return errors.New("no GitHub token is configured")
 	}
-	return git_tools.CompareDiff(ctx, git_tools.GetGithubClient(), owner, repo, base, head)
+	return fmt.Errorf("no token is configured for forge %q", f.ID())
 }
 
-func (githubCompare) Status(ctx context.Context, owner, repo, base, head string) (string, error) {
-	if !git_tools.HasToken() {
-		return "", errNoToken
+func (forgeCompare) Diff(ctx context.Context, owner, repo, base, head string) (string, error) {
+	f := forge.ForRepo(owner, repo)
+	if !f.Configured() {
+		return "", errNoToken(f)
 	}
-	return git_tools.CompareStatus(ctx, git_tools.GetGithubClient(), owner, repo, base, head)
+	return f.CompareDiff(ctx, owner, repo, base, head)
 }
 
-func (githubCompare) Commits(ctx context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error) {
-	if !git_tools.HasToken() {
-		return nil, errNoToken
+func (forgeCompare) Status(ctx context.Context, owner, repo, base, head string) (string, error) {
+	f := forge.ForRepo(owner, repo)
+	if !f.Configured() {
+		return "", errNoToken(f)
 	}
-	listed, err := git_tools.ListAllPRCommits(ctx, git_tools.GetGithubClient(), owner, repo, number)
+	return f.CompareStatus(ctx, owner, repo, base, head)
+}
+
+func (forgeCompare) Commits(ctx context.Context, owner, repo string, number int) ([]filtereddiff.Commit, error) {
+	f := forge.ForRepo(owner, repo)
+	if !f.Configured() {
+		return nil, errNoToken(f)
+	}
+	listed, err := f.Commits(ctx, owner, repo, number)
 	if err != nil {
 		return nil, err
 	}

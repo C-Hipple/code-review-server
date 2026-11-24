@@ -39,6 +39,9 @@ type RawWorkflow struct {
 	// DesktopNotifications overrides the global DesktopNotifications setting
 	// for this workflow only. If nil, the global setting is used.
 	DesktopNotifications *bool `toml:"DesktopNotifications,omitempty"`
+	// Forge is the ID of the forge this workflow's PRs come from (see
+	// forges.go); empty means the config's DefaultForge.
+	Forge string `toml:"Forge,omitempty"`
 	// AlwaysRunPlugins names plugins that run on every PR in this workflow's
 	// section once per head SHA, as though someone had asked for each by
 	// name: with --call-type explicit. A deferred (OnlyOnDemand) one runs there
@@ -718,6 +721,11 @@ type Config struct {
 	// Chat picks the agent the review chat talks to and configures how each
 	// agent is run; empty, the chat talks to Claude Code when it is installed.
 	Chat ChatSettings
+	// DefaultForge is the ID of the forge workflows that name none talk to,
+	// and Forges configures each forge by ID (see forges.go). Both empty, every
+	// workflow talks to GitHub, as before forges could be named.
+	DefaultForge string
+	Forges       map[string]ForgeSettings
 	// legacy holds the root-level keys file ordering and review ease were
 	// configured by before they were AI features; see legacyLLMKeys.
 	legacy legacyLLMKeys
@@ -819,6 +827,8 @@ func parseConfig(data []byte) (*Config, error) {
 		GitHubAPI            GitHubAPISettings
 		Webhooks             WebhookSettings
 		Chat                 ChatSettings
+		DefaultForge         string
+		Forges               map[string]ForgeSettings
 		// The legacy keys; see legacyLLMKeys.
 		LegacyFileOrdering bool   `toml:"ExperimentalLLMFileOrdering"`
 		LegacyReviewEase   bool   `toml:"ExperimentalLLMReviewEase"`
@@ -899,6 +909,8 @@ func parseConfig(data []byte) (*Config, error) {
 		GitHubAPI:            intermediate_config.GitHubAPI,
 		Webhooks:             intermediate_config.Webhooks,
 		Chat:                 intermediate_config.Chat,
+		DefaultForge:         intermediate_config.DefaultForge,
+		Forges:               intermediate_config.Forges,
 		legacy: legacyLLMKeys{
 			FileOrdering: intermediate_config.LegacyFileOrdering,
 			ReviewEase:   intermediate_config.LegacyReviewEase,

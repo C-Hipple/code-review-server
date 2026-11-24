@@ -49,6 +49,7 @@ RepoLocation: str [optional, default="~/"]
 DesktopNotifications: bool [optional, default=false]
 SectionPriority: map[string]int [optional]
 SectionSorting: map[string]string [optional]
+DefaultForge: str [optional, default="github"]
 ```
 
 - **SectionPriority**: Allows you to define the order of sections in your client. Lower numbers come first. This map keys the section title to an integer.
@@ -57,6 +58,7 @@ SectionSorting: map[string]string [optional]
 - **GithubUsername**: Your GitHub login. Required by every filter that compares PRs against you (`FilterMyPRs`, `FilterNotMyPRs`, `FilterMyReviewRequested`, `FilterWaitingOnMe`, `FilterWaitingOnAuthor`) and by `ListMyPRsWorkflow`. A workflow may set its own `GithubUsername` to override this; if neither is set, workflows using those filters are skipped at startup with an error in the log rather than running with no identity and matching nothing.
 - **RepoLocation**: The directory where you keep your git repositories. It defaults to "~/" if not defined. This is used for LSP integration or other lookup tools which need to read the code of the repo you're reviewing.
 - **DesktopNotifications**: When `true`, sends a desktop notification each time a PR is newly added to a section. Defaults to `false`. Currently only macOS is supported (via `osascript`); enabling this on other operating systems will log an error.
+- **DefaultForge**: The forge — the service PRs live on — that workflows naming none talk to. Leave it out for GitHub. See [Forges](#forges).
 
 ## Editing the Config from a Client
 
@@ -80,6 +82,7 @@ Root level:
 - A `Repos` entry is not in `owner/repo` form.
 - A `SectionSorting` value is not `newest_first` or `oldest_first`.
 - A `[GitHubAPI]` key names something other than `rest` or `graphql` (see [GitHub API](#github-api)).
+- `DefaultForge` names a forge the config doesn't define, or a `[Forges.<id>]` table's `Kind` is one this server has no driver for (see [Forges](#forges)).
 - `[Webhooks]` sets a `ListenAddress` that isn't `host:port`, or sets one with no secret — neither `Secret` nor `CRS_WEBHOOK_SECRET` — to verify deliveries with; its `Path` doesn't start with `/`; a `Repos` entry is neither `owner/repo` nor `owner/*`; or `FullRefreshInterval` is negative (see [GitHub Webhooks](webhooks.md)).
 - `[Webhooks.PubSub]` sets other keys but no `Subscription`; its `Subscription` isn't `projects/<project>/subscriptions/<subscription>`; its `CredentialsFile` is a relative path; or `[Webhooks]` sets a `ListenAddress` as well — deliveries come from one or the other (see [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pubsub)).
 
@@ -93,6 +96,7 @@ Per workflow:
 - `PRState` is set to something other than `open`, `closed`, or `all`.
 - The workflow has no repositories to work with: neither its own `Repos` nor a root-level `Repos` list. (The search-driven types — `WaitingOnMeWorkflow` and `MyReviewRequestsWorkflow` — need no repositories and are exempt.)
 - `ProjectListWorkflow` is missing `JiraEpic`, or `SingleRepoSyncReviewRequestsWorkflow` is missing a valid `Repo`.
+- `Forge` names a forge the config doesn't define, or the workflow lists a repository that another workflow lists on a different forge (see [Forges](#forges)).
 
 Plugins and AI features:
 
@@ -115,11 +119,14 @@ IncludeDiff: bool
 Teams: list[str]
 DesktopNotifications: bool [optional]
 AlwaysRunPlugins: list[str] [optional]
+Forge: str [optional]
 ```
 
 The `GithubUsername` can be set at the top level of the config file. If a workflow does not have a `GithubUsername` set, it will inherit the top-level setting. This is useful for setting a default user for all workflows.
 
 `DesktopNotifications` on a workflow overrides the top-level `DesktopNotifications` setting for that workflow only. Omit it to inherit the global value; set it to `true` or `false` to force notifications on or off for this workflow. This lets you keep notifications globally off but opt in on a specific workflow (e.g. review requests) — or vice versa.
+
+`Forge` names the forge the workflow's PRs come from; leave it out for the config's `DefaultForge` — see [Forges](#forges).
 
 `AlwaysRunPlugins` names plugins to run on every PR in the workflow's section as though you had clicked Run on each (`--call-type explicit`): a deferred plugin (`OnlyOnDemand = true`) runs there anyway, and one that runs on its own gets an explicit run there instead of an automatic one — see [Always running a plugin in a section](plugins.md#always-running-a-plugin-in-a-section).
 
@@ -361,6 +368,40 @@ the flag always ran — or on the one `ExperimentalLLMProvider` names (`gemini` 
 `[AI]` defaults don't apply to them, and an `[[AIFeatures]]` entry for the same
 feature wins over its flag. With either flag on, `ExperimentalLLMProvider =
 "openrouter"` without a model is logged at startup and rejected by `UpdateConfig`.
+
+## Forges
+
+A *forge* is the service a workflow's pull requests live on. The server only talks to one kind today — GitHub — but it reaches it through a driver, so other kinds (GitLab, a self-hosted instance) can be added without touching the workflows or the RPCs, and a config can already say which forge each workflow uses. Nothing needs configuring: with none of the keys below, every workflow talks to GitHub, as before.
+
+```toml
+DefaultForge = "github"       # the forge workflows that name none talk to; default: github
+
+[Forges.github]               # the built-in GitHub forge; needs no table
+Kind = "github"               # the driver; default: the table's ID
+
+[[Workflows]]
+WorkflowType = "SyncReviewRequestsWorkflow"
+Name = "Team PRs"
+SectionTitle = "Team PRs"
+Repos = ["acme/widgets"]
+Forge = "github"              # default: DefaultForge
+```
+
+| Key | Meaning |
+| --- | --- |
+| `DefaultForge` | The ID of the forge workflows that name none talk to. `github`, the built-in forge, when left out. |
+| `[Forges.<id>]` | A forge the config can name by `<id>`. `github` is defined whether or not it has a table. |
+| `Kind` (in `[Forges.<id>]`) | Which driver talks to it: `github` (github.com, with `CRS_GITHUB_TOKEN`) is the only one so far. Defaults to the table's ID. What other kinds need to reach their forge — a base URL, the variable their token is in — will go in this table as they arrive. |
+| `Forge` (in `[[Workflows]]`) | The ID of the forge the workflow lists, searches and fetches its PRs from. Defaults to `DefaultForge`. |
+
+Clients don't see forges: a PR from any of them appears in its section the same way, links to its own page, and opens, comments and submits as any other — the server sends what a client asks about a PR to the forge its repository was listed on. A few things follow from that:
+
+- **A repository comes from one forge.** PRs are known by their repository and number everywhere after the fetch, so a config listing the same `owner/repo` on two forges is rejected. The search-driven workflows list no repositories; the ones their searches turn up are sent to the workflow's forge, unless a workflow lists the repository, whose forge wins. A PR whose repository no workflow lists and no search has found goes to `DefaultForge`.
+- **Two IDs with the same settings are one forge.** Every forge of kind `github` is github.com, so `DefaultForge = "work"` with `[Forges.work] Kind = "github"` and a workflow on `github` are two names for one GitHub: a search on either keeps the PRs it finds, whichever of the two lists their repository.
+- **A workflow on a forge the server can't open is skipped** rather than talking to GitHub instead: the configuration problems logged as errors at startup name it, and each cycle that skips it logs a warning. Anything else that needs a forge that can't be opened — a client opening a PR, say — falls back to the built-in GitHub forge, even when a broken `[Forges.github]` table is what can't be opened.
+- **GitHub's own settings stay GitHub's.** `[GitHubAPI]`, `[Webhooks]` and the rate-limit statistics are about GitHub, and `GithubUsername` is the identity every workflow's filters use.
+
+`UpdateConfig` doesn't model `DefaultForge` or the `[Forges]` tables; a save carries them over untouched, and a workflow's `Forge` travels with the workflow.
 
 ## GitHub API
 

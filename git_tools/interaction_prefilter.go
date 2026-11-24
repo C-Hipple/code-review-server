@@ -75,6 +75,7 @@ package git_tools
 
 import (
 	"context"
+	"crs/forge"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -86,7 +87,7 @@ import (
 // InteractionSet is the set of open PRs a login has reviewed or commented on,
 // keyed by lowercased "owner/repo#number". A nil set means the searches were
 // unavailable; see MayHaveInteracted for how that fails open.
-type InteractionSet map[string]bool
+type InteractionSet = forge.InteractionSet
 
 const (
 	// interactionSetTTL caches the search results for roughly one workflow
@@ -107,6 +108,34 @@ const (
 	searchInteractionPageSize = 100
 )
 
+// interactionSets is, for each forge a filter's PRs come from, the open PRs a
+// login has reviewed or commented on there, by forge ID. Only a PR's own forge
+// knows what the login did on it, so a filter asks each forge once.
+type interactionSets map[string]InteractionSet
+
+// openInteractions asks each forge prs come from for login's open
+// interactions (forge.PRSource.OpenInteractions: on GitHub,
+// SearchMyOpenInteractions).
+func openInteractions(prs []*github.PullRequest, login string) interactionSets {
+	sets := interactionSets{}
+	for _, pr := range prs {
+		if pr == nil {
+			continue
+		}
+		f := forge.ForPR(pr)
+		if _, asked := sets[f.ID()]; !asked {
+			sets[f.ID()] = f.OpenInteractions(login)
+		}
+	}
+	return sets
+}
+
+// mayHaveInteracted is InteractionSet.MayHaveInteracted against the set from
+// pr's forge; a forge that wasn't asked has a nil set, which fails open.
+func (s interactionSets) mayHaveInteracted(pr *github.PullRequest) bool {
+	return s[forge.ForPR(pr).ID()].MayHaveInteracted(pr)
+}
+
 // fetchInteractionSet is a seam for tests; production always points it at
 // fetchInteractionSetFromGithub.
 var fetchInteractionSet = fetchInteractionSetFromGithub
@@ -116,7 +145,7 @@ func interactionSetCacheKey(login string) string {
 }
 
 func interactionKey(owner, repo string, number int) string {
-	return strings.ToLower(fmt.Sprintf("%s/%s#%d", owner, repo, number))
+	return forge.InteractionKey(owner, repo, number)
 }
 
 // SearchMyOpenInteractions returns the set of open PRs login has reviewed or
@@ -146,21 +175,6 @@ func SearchMyOpenInteractions(login string) InteractionSet {
 	slog.Info("Interaction prefilter refreshed", "login", login, "open_prs_interacted", len(set))
 	GlobalCache.Set(cacheKey, set, interactionSetTTL)
 	return set
-}
-
-// MayHaveInteracted reports whether pr might carry a review or comment from
-// the login this set was built for. A nil set (searches unavailable) and a PR
-// with incomplete repo data both return true: the only safe direction to be
-// wrong in is doing a full InteractionState check unnecessarily.
-func (s InteractionSet) MayHaveInteracted(pr *github.PullRequest) bool {
-	if s == nil {
-		return true
-	}
-	if pr == nil || pr.Number == nil || pr.Base == nil || pr.Base.Repo == nil ||
-		pr.Base.Repo.Owner == nil || pr.Base.Repo.Owner.Login == nil || pr.Base.Repo.Name == nil {
-		return true
-	}
-	return s[interactionKey(*pr.Base.Repo.Owner.Login, *pr.Base.Repo.Name, *pr.Number)]
 }
 
 func fetchInteractionSetFromGithub(login string) (InteractionSet, error) {

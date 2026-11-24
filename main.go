@@ -134,6 +134,7 @@ func main() {
 // anything is wrong.
 func logConfigProblems(cfg *config.Config) {
 	problems := append(config.Validate(cfg), workflows.ValidateWorkflows(cfg.RawWorkflows, cfg.Repos)...)
+	problems = append(problems, workflows.ValidateRepoForges(cfg)...)
 	problems = append(problems, ai.ValidateFeatures(cfg.AIFeatures)...)
 	if len(problems) == 0 {
 		return

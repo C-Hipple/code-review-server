@@ -103,6 +103,7 @@ func Validate(cfg *Config) []ValidationError {
 	problems = append(problems, validateGitHubAPI(cfg)...)
 	problems = append(problems, validateWebhooks(cfg)...)
 	problems = append(problems, validateChat(cfg)...)
+	problems = append(problems, validateForges(cfg)...)
 	return append(problems, validateAI(cfg)...)
 }
 

@@ -151,9 +151,159 @@ uncollapses annotations."
     (error "No stored PR data. Please reload the review first"))
   (setq crs--buffer-show-comments (not crs--buffer-show-comments))
   (setq crs--buffer-show-annotations crs--buffer-show-comments)
-  (let ((current-line (line-number-at-pos)))
-    (crs--render-and-update (current-buffer) nil current-line))
+  (crs--rerender-keeping-view (current-buffer))
   (message "Comments %s" (if crs--buffer-show-comments "shown" "hidden")))
+
+;;; Keeping the view through a toggle
+;;
+;; Hiding or showing comments and annotations re-renders the whole buffer,
+;; which adds or drops their blocks, so every line below one moves: point
+;; put back by line number lands on another line, and the window, whose
+;; start the re-render resets, scrolls to wherever redisplay puts point.
+;; Every other line comes back, in the same order -- the preamble and the
+;; diff, a compact <C: ...> or <A: ...> indicator at most appended to one
+;; -- so the line at point is found again by counting those, and each
+;; window showing the buffer is scrolled to keep it on the row it was on.
+
+(defun crs--block-line-p ()
+  "Non-nil if the line at point may be part of a block.
+Comment blocks (`crs--render-comment-tree') and expanded annotations
+\(`crs--render-annotation-block') are drawn with \"│┌└\", each line of a
+comment's body included; a diff line never starts with one.  An empty
+line counts too: a body that renders with a trailing newline leaves one
+in its block, unprefixed.  The empty lines a toggle keeps are found again
+by their text, like any block line."
+  (save-excursion
+    (forward-line 0)
+    (looking-at-p "[[:cntrl:][:space:]]*[│┌└]\\|$")))
+
+(defun crs--line-text ()
+  "Return the text of the line at point, without properties."
+  (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+
+(defun crs--line-anchor (pos)
+  "Describe the line at POS so `crs--line-anchor-position' finds it again.
+Returns (N TEXT SKIP COLUMN).  N counts the lines up to POS's that are not
+part of a block (`crs--block-line-p'), so the Nth of them is POS's line
+or, on a block, the line the block hangs below.  On a block line, TEXT is
+its text and SKIP how many lines of that text come between the Nth line
+and it; off one, both are nil.  COLUMN is POS's column."
+  (save-excursion
+    (goto-char pos)
+    (let* ((column (current-column))
+           (target (line-beginning-position))
+           (text (when (crs--block-line-p) (crs--line-text)))
+           (n 0)
+           (skip 0))
+      (goto-char (point-min))
+      (while (< (point) target)
+        (if (crs--block-line-p)
+            (when (and text (string= text (crs--line-text)))
+              (setq skip (1+ skip)))
+          (setq n (1+ n)
+                skip 0))
+        (forward-line 1))
+      (if text
+          (list n text skip column)
+        (list (1+ n) nil nil column)))))
+
+(defun crs--line-anchor-position (anchor)
+  "Return (POS . EXACT): where the line ANCHOR describes is now.
+ANCHOR is a `crs--line-anchor'.  EXACT is nil when it was a block line
+that isn't drawn any more; POS is then the start of the line its block
+hung below."
+  (pcase-let ((`(,n ,text ,skip ,column) anchor))
+    (save-excursion
+      (goto-char (point-min))
+      ;; Stop on the Nth line that isn't part of a block.
+      (let ((seen 0))
+        (while (and (< seen n)
+                    (progn (unless (crs--block-line-p)
+                             (setq seen (1+ seen)))
+                           (< seen n))
+                    (zerop (forward-line 1)))))
+      (forward-line 0)
+      (let ((home (point))
+            (found (unless text (point))))
+        ;; A block line is one of those drawn below its home line.
+        (when (and text (or (zerop n) (zerop (forward-line 1))))
+          (while (and (not found) (not (eobp)) (crs--block-line-p))
+            (when (string= text (crs--line-text))
+              (if (zerop skip)
+                  (setq found (point))
+                (setq skip (1- skip))))
+            (forward-line 1)))
+        (if found
+            (progn (goto-char found)
+                   (move-to-column column)
+                   (cons (point) t))
+          (cons home nil))))))
+
+(defun crs--block-home (pos)
+  "Return the start of the line POS's block hangs below, or of POS's line.
+Off a block that is POS's own line."
+  (save-excursion
+    (goto-char pos)
+    (forward-line 0)
+    (while (and (crs--block-line-p) (zerop (forward-line -1))))
+    (point)))
+
+(defun crs--screen-lines (window from to)
+  "Count WINDOW's screen lines from the one holding FROM to the one holding TO.
+FROM is at or above TO."
+  (save-excursion
+    (goto-char to)
+    (vertical-motion 0 window)
+    (let ((end (point))
+          (rows 0))
+      (goto-char from)
+      (vertical-motion 0 window)
+      (while (and (< (point) end)
+                  (= (vertical-motion 1 window) 1))
+        (setq rows (1+ rows)))
+      rows)))
+
+(defun crs--window-row (window pos)
+  "Return the screen line of WINDOW that POS is on, counting from its top.
+Negative when POS is above the window's start."
+  (let ((start (window-start window)))
+    (if (>= pos start)
+        (crs--screen-lines window start pos)
+      (- (crs--screen-lines window pos start)))))
+
+(defun crs--rerender-keeping-view (buffer)
+  "Re-render the review BUFFER from its stored data, keeping the view.
+For a toggle, which only adds or drops comment and annotation blocks:
+point stays on its line, or, on a block that isn't drawn any more, goes
+to the line the block hung below; and each window showing BUFFER keeps
+that line on the screen line it was on, so the text around it stays put.
+A window whose point wasn't on screen is centered on it instead."
+  (with-current-buffer buffer
+    (let ((anchor (crs--line-anchor (point)))
+          (views
+           (mapcar
+            (lambda (window)
+              (let* ((pos (window-point window))
+                     (row (crs--window-row window pos))
+                     (on-screen (and (>= row 0)
+                                     (< row (window-body-height window)))))
+                (list window
+                      (crs--line-anchor pos)
+                      (when on-screen row)
+                      ;; Where the line a block hangs below sits, for when
+                      ;; the block goes; above the window, its top row.
+                      (when on-screen
+                        (max 0 (crs--window-row window (crs--block-home pos)))))))
+            (get-buffer-window-list buffer nil t))))
+      (crs--render-and-update buffer nil (line-number-at-pos))
+      (goto-char (car (crs--line-anchor-position anchor)))
+      (dolist (view views)
+        (pcase-let* ((`(,window ,window-anchor ,row ,home-row) view)
+                     (`(,pos . ,exact) (crs--line-anchor-position window-anchor)))
+          (when (window-live-p window)
+            (set-window-point window pos)
+            (with-selected-window window
+              (recenter (if exact row home-row)))))))))
 
 
 (defun crs--maybe-show-collapsed-comments ()
@@ -539,8 +689,7 @@ ones render full blocks beneath the annotated lines."
   (unless crs--buffer-diff
     (error "No stored PR data. Please reload the review first"))
   (setq crs--buffer-show-annotations (not crs--buffer-show-annotations))
-  (let ((current-line (line-number-at-pos)))
-    (crs--render-and-update (current-buffer) nil current-line))
+  (crs--rerender-keeping-view (current-buffer))
   (message "Annotations %s" (if crs--buffer-show-annotations "shown" "hidden")))
 
 (defun crs--render-diff (diff-content comment-map &optional show-full-comments)

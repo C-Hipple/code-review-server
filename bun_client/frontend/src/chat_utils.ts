@@ -30,7 +30,11 @@ export interface ChatBackendInfo {
 
 export type ChatStatus = 'idle' | 'running';
 
-/** A chat as the list of a PR's chats shows it. */
+/**
+ * A chat as the list of a PR's chats shows it. Each chat is a session: a
+ * conversation with the agent of its own, so starting another clears the
+ * context, and going back to an older one picks it up again.
+ */
 export interface ChatSummary {
     id: string;
     owner: string;
@@ -46,6 +50,12 @@ export interface ChatSummary {
     status: ChatStatus;
     created_at: string;
     updated_at: string;
+    /** The session this one was forked from; absent for one started afresh. */
+    forked_from?: string;
+    /** How many messages the reviewer sent. */
+    turns?: number;
+    /** The start of the agent's last reply (else the reviewer's last message), on one line. */
+    preview?: string;
 }
 
 export type ChatRole = 'user' | 'assistant' | 'tool' | 'error' | 'notice';
@@ -144,6 +154,46 @@ export function modelLabel(backend: ChatBackendInfo | undefined, model: string):
 /** The PR has moved on since the chat attached its diff. */
 export function chatIsStale(chat: Pick<Chat, 'head_sha' | 'current_sha'>): boolean {
     return !!chat.head_sha && !!chat.current_sha && chat.head_sha !== chat.current_sha;
+}
+
+/** "just now", "5m ago", "3h ago", "2d ago", else the date: when a session was last active. */
+export function relativeTime(iso: string | undefined, now: number): string {
+    if (!iso) return '';
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return '';
+    const seconds = Math.max(0, Math.floor((now - then) / 1000));
+    if (seconds < 45) return 'just now';
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    return iso.slice(0, 10);
+}
+
+/** What a session list says about a session besides its title: "2 turns · 5m ago · Sonnet · $0.04". */
+export function sessionDetail(
+    session: ChatSummary,
+    backends: ChatBackendInfo[] | null,
+    now: number
+): string {
+    const turns = session.turns ?? 0;
+    const parts = [
+        turns === 1 ? '1 turn' : `${turns} turns`,
+        relativeTime(session.updated_at, now),
+        modelLabel(
+            backends?.find(b => b.id === session.backend),
+            session.model
+        ),
+        formatCost(session.cost_usd),
+    ];
+    return parts.filter(Boolean).join(' · ');
+}
+
+/** Whether any of the PR's sessions has its agent answering, the open one included. */
+export function anySessionRunning(chats: ChatSummary[], open: Chat | null): boolean {
+    return open?.status === 'running' || chats.some(c => c.status === 'running');
 }
 
 /** A cost worth showing, or null: nothing for a chat that cost nothing yet. */

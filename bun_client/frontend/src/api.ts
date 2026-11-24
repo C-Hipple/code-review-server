@@ -215,6 +215,21 @@ export async function stopChat(chatId: string): Promise<boolean> {
     return reply.stopped;
 }
 
+/**
+ * Forks a session: a new one carrying its messages, which the agent gets with
+ * the reviewer's next message, along with the PR's description and diff as
+ * they are then. Nothing runs until that message. Refused (okay: false) while
+ * the agent is answering in the session forked.
+ */
+export async function forkChat(chatId: string, model = ''): Promise<ChatReply> {
+    return rpcCall<ChatReply>('RPCHandler.ForkChat', [{ ChatID: chatId, Model: model }]);
+}
+
+/** Retitles a session; an empty title is refused (okay: false). */
+export async function renameChat(chatId: string, title: string): Promise<ChatReply> {
+    return rpcCall<ChatReply>('RPCHandler.RenameChat', [{ ChatID: chatId, Title: title }]);
+}
+
 export async function deleteChat(chatId: string): Promise<void> {
     await rpcCall<{ okay: boolean }>('RPCHandler.DeleteChat', [{ ChatID: chatId }]);
 }

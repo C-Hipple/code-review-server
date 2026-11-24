@@ -226,7 +226,7 @@ says whether the diagram still describes the PR.
 a conversation about the PR with a coding agent the server runs on your machine:
 the one its config picks (`[Chat] Agent`), Claude Code by default. The chat opens in a window
 split off the bottom of the review's, which keeps the top three quarters
-(`crs-chat-window-height`), and shows the PR's most recent conversation, or a new
+(`crs-chat-window-height`), and shows the PR's most recent session, or a new
 one. The agent gets the PR's description and diff with your first message, and can
 read the repository but not change it.
 
@@ -234,29 +234,47 @@ The chat buffer is in `crs-chat-mode`, built on `markdown-mode`: the conversatio
 is Markdown, read-only, one level-1 heading per turn (`# You`, then the agent's
 name, with the tools it used as `>` lines), so markdown-mode's `C-c C-f` and
 `C-c C-b` step from turn to turn and `C-c C-o` follows a link. Write your message
-below the line at the bottom; the header line names the agent, the model, what the
-chat has cost and, while the agent works, for how long.
+below the line at the bottom; the header line says which of the PR's sessions this
+is (`Session 2/3`), and names the agent, the model, what the session has cost and,
+while the agent works, for how long.
+
+A PR can hold several sessions, each a conversation of its own with the agent:
+start a new one to clear the context, fork one to carry it into a fresh context
+(and the PR's latest diff), and go back to any of them later.
 
 | Key | Command | |
 |-----|---------|-|
 | `C-c C-c` | `crs-chat-send` | Send the message below the line (also `C-c RET`) |
 | `C-c C-k` | `crs-chat-stop` | Stop the agent answering |
-| `C-c C-n` | `crs-chat-new` | Start a new chat, which gets the PR's diff as it is now |
-| `C-c C-w` | `crs-chat-switch` | Open another of the PR's chats |
-| `C-c C-e` | `crs-chat-select-model` | Pick the model for new chats, of those the agent offers |
+| `C-c C-n` | `crs-chat-new` | Start a new session (clears the context), which gets the PR's diff as it is now |
+| `C-c C-y` | `crs-chat-fork` | Fork this session: a new one carrying its messages, whose first turn gets them and the PR's latest diff |
+| `C-c {` / `C-c }` | `crs-chat-previous-session` / `crs-chat-next-session` | Open the session started before / after this one |
+| `C-c C-w` | `crs-chat-switch` | Pick another of the PR's sessions by name |
+| `C-c C-v` | `crs-chat-sessions` | List the PR's sessions (below) |
+| `C-c C-t` | `crs-chat-rename` | Retitle this session |
+| `C-c C-e` | `crs-chat-select-model` | Pick the model for new sessions, of those the agent offers |
 | `C-c C-r` | `crs-chat-refresh` | Read the chat from the server again |
-| `C-c C-d` | `crs-chat-delete` | Delete the chat |
+| `C-c C-d` | `crs-chat-delete` | Delete this session |
 | `C-c C-q` | `crs-chat-quit` | Close the chat window, keeping what you were writing |
 
 With evil, the chat opens in insert state; in normal state `q` closes it and
-`, c`, `, k`, `, n`, `, w`, `, e`, `, r` and `, d` do as the `C-c` keys above.
+`, c`, `, k`, `, n`, `, f` (fork), `, [`, `, ]`, `, w`, `, s` (sessions), `, t`
+(rename), `, e`, `, r` and `, d` do as the `C-c` keys above.
+
+`crs-chat-sessions` shows the PR's sessions in the chat's window
+(`crs-chat-sessions-mode`, a tabulated list), the most recently active first: when
+each was last active, its turns, its title and a line of its last reply, `▸` by the
+one the chat shows and `●` by one whose agent is answering. `RET` opens the session
+on the line in the chat, `n` starts a new one, `f` forks the one on the line, `R`
+renames it, `d` deletes it, `g` lists them again and `q` goes back to the chat. The
+list follows `Server.ChatChanged` like the chat does.
 
 The answer streams in as the agent writes it: the server announces each step
 (`Server.ChatChanged`) and the buffer reads the chat again, redrawing only what
 changed. What you are writing, where point is and your undo history stay as they
 were, and a window whose point is in your message follows the conversation down.
-When the PR has new commits since the chat started, the chat says so; `C-c C-n`
-gives the agent the new diff. The agent is the server config's choice, not the
+When the PR has new commits since the session attached its diff, the chat says so;
+`C-c C-y` forks it with the new diff, and `C-c C-n` starts afresh with it. The agent is the server config's choice, not the
 client's; `crs-chat-model` sets the model new chats start with (by default the
 agent's own), and `C-c C-r` reads the agents again after the config changes.
 

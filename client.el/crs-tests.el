@@ -2376,7 +2376,7 @@ known to begin with, and the chat buffers are killed after."
         (should (string-match-p "\\`Ask Claude Code about acme/widgets #42\\." (crs-test--chat-text)))
         (should (string-match-p "C-c C-c sends" (crs-test--chat-text)))
         (should (equal (crs--chat-header-line)
-                       "New chat · acme/widgets #42 · Claude Code · Default"))
+                       "New session · acme/widgets #42 · Claude Code · Default"))
         (should (string-match-p "Your message · C-c C-c sends"
                                 (overlay-get crs--chat-prompt 'before-string)))))))
 
@@ -2412,7 +2412,7 @@ known to begin with, and the chat buffers are killed after."
     (with-current-buffer (crs-chat "acme" "widgets" 42)
       (should (equal crs-chat-agent "gemini"))
       (should (string-match-p "\\`Ask Gemini CLI about acme/widgets #42\\." (crs-test--chat-text)))
-      (should (equal (crs--chat-header-line) "New chat · acme/widgets #42 · Gemini CLI · Default"))
+      (should (equal (crs--chat-header-line) "New session · acme/widgets #42 · Gemini CLI · Default"))
       ;; It offers only its default model, so there is nothing to pick.
       (should-error (crs-chat-select-model) :type 'user-error)
       (goto-char (point-max))
@@ -2467,7 +2467,9 @@ known to begin with, and the chat buffers are killed after."
                                       '((id . 3) (role . "notice") (content . "Stopped.")))))))
         (should (string-match-p "> \\*\\*Error:\\*\\* claude exited\n> status 1\n\n" text))
         (should (string-match-p "> \\*Stopped\\.\\*\n\n" text))
-        (should (string-match-p "new commits since this chat started.*C-c C-n starts a new chat"
+        (should (string-match-p (concat "new commits since this session attached its diff.*"
+                                        "C-c C-y forks it with the latest diff; "
+                                        "C-c C-n starts a new session")
                                 text)))
       ;; Not loaded yet.
       (should (equal (crs--chat-transcript nil) "Loading the chat…\n\n")))))
@@ -2682,7 +2684,11 @@ the transcript, so the transcript's `read-only' must not rely on it."
     (cl-letf (((symbol-function 'crs--send-request)
                (lambda (method params callback) (push (list method params callback) pending)))
               ((symbol-function 'run-with-timer) (lambda (&rest _) 'crs-test-timer)))
-      (let ((buffer (crs--chat-create "acme" "widgets" 42)))
+      (let ((buffer (crs--chat-create "acme" "widgets" 42))
+            (take (lambda (method)
+                    (let ((request (assoc method pending)))
+                      (setq pending (delq request pending))
+                      request))))
         (unwind-protect
             (with-current-buffer buffer
               (setq crs--chat-id "chat-1")
@@ -2691,18 +2697,27 @@ the transcript, so the transcript's `read-only' must not rely on it."
               (crs--handle-notification "Server.ChatChanged"
                                         (vector '((chat_id . "other") (status . "idle"))))
               (crs--handle-notification "Server.AIOutputChanged" (vector change))
-              ;; One read in flight; another due once it lands.
-              (should (= (length pending) 1))
-              (should (equal (car (car pending)) "RPCHandler.GetChat"))
+              ;; One read of the chat in flight and one listing of the PR's
+              ;; sessions; another of each due once it lands.
+              (should (equal (sort (mapcar #'car pending) #'string<)
+                             '("RPCHandler.GetChat" "RPCHandler.ListChats")))
               (should (eq crs--chat-fetching 'again))
-              (funcall (nth 2 (pop pending))
+              (should (eq crs--chat-listing 'again))
+              (funcall (nth 2 (funcall take "RPCHandler.GetChat"))
                        `((chat . ,(crs-test--chat 'status "running" 'draft "Gre"))))
               (should (string-suffix-p "Gre\n\n" (crs-test--chat-text)))
-              (should (= (length pending) 1))
-              (funcall (nth 2 (pop pending))
+              (should (= (length pending) 2))
+              (funcall (nth 2 (funcall take "RPCHandler.GetChat"))
                        `((chat . ,(crs-test--chat 'status "running" 'draft "Greets"))))
               (should (string-suffix-p "Greets\n\n" (crs-test--chat-text)))
               (should-not crs--chat-fetching)
+              (funcall (nth 2 (funcall take "RPCHandler.ListChats")) '((chats . [((id . "chat-1"))])))
+              (should (equal (mapcar #'car pending) '("RPCHandler.ListChats")))
+              (funcall (nth 2 (funcall take "RPCHandler.ListChats"))
+                       '((chats . [((id . "chat-1") (created_at . "2026-11-19T10:00:00Z"))
+                                   ((id . "chat-0") (created_at . "2026-11-18T10:00:00Z"))])))
+              (should-not crs--chat-listing)
+              (should (string-prefix-p "Session 2/2 · " (crs--chat-header-line)))
               (should-not pending))
           (kill-buffer buffer))))))
 
@@ -2752,7 +2767,7 @@ the transcript, so the transcript's `read-only' must not rely on it."
     (with-current-buffer (crs--chat-create "acme" "widgets" 42)
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
-                   (should (equal (car (nth 0 collection)) "New chat"))
+                   (should (equal (car (nth 0 collection)) "New session"))
                    (should (string-match-p "\\`Older  (\\?, answering)\\'" (car (nth 2 collection))))
                    (car (nth 2 collection)))))
         (crs-chat-switch))
@@ -2761,8 +2776,10 @@ the transcript, so the transcript's `read-only' must not rely on it."
       (should (string-prefix-p "# You" (crs-test--chat-text)))
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
         (crs-chat-delete))
-      (should (equal (json-encode (cdar calls)) "[{\"ChatID\":\"chat-0\"}]"))
-      (should (equal (caar calls) "RPCHandler.DeleteChat"))
+      (should (equal (json-encode (cdr (assoc "RPCHandler.DeleteChat" calls)))
+                     "[{\"ChatID\":\"chat-0\"}]"))
+      ;; The PR's sessions are listed again after.
+      (should (equal (caar calls) "RPCHandler.ListChats"))
       (should-not crs--chat-id)
       (should (string-prefix-p "Ask Claude Code" (crs-test--chat-text))))))
 
@@ -2800,7 +2817,7 @@ the transcript, so the transcript's `read-only' must not rely on it."
             crs--chat-sending t)
       (run-hooks 'crs-server-subscribed-hook)
       (should (equal (mapcar #'car (reverse calls))
-                     '("RPCHandler.ListChatBackends" "RPCHandler.GetChat")))
+                     '("RPCHandler.ListChatBackends" "RPCHandler.GetChat" "RPCHandler.ListChats")))
       (should-not crs--chat-fetching)
       (should-not crs--chat-sending)
       (should (equal (crs-test--chat-text) crs-test--chat-transcript)))))
@@ -2811,11 +2828,223 @@ the transcript, so the transcript's `read-only' must not rely on it."
   (dolist (binding '(("C-c C-c" . crs-chat-send) ("C-c RET" . crs-chat-send)
                      ("C-c C-k" . crs-chat-stop) ("C-c C-n" . crs-chat-new)
                      ("C-c C-w" . crs-chat-switch) ("C-c C-e" . crs-chat-select-model)
+                     ("C-c C-y" . crs-chat-fork) ("C-c C-t" . crs-chat-rename)
+                     ("C-c C-v" . crs-chat-sessions) ("C-c {" . crs-chat-previous-session)
+                     ("C-c }" . crs-chat-next-session)
                      ("C-c C-r" . crs-chat-refresh) ("C-c C-d" . crs-chat-delete)
                      ("C-c C-q" . crs-chat-quit)))
     (should (eq (lookup-key crs-chat-mode-map (kbd (car binding))) (cdr binding))))
   (should (eq (lookup-key crs-chat-mode-map (kbd "C-c C-f")) #'markdown-outline-next-same-level))
-  (should (eq (lookup-key crs-chat-mode-map (kbd "C-c C-o")) #'markdown-follow-thing-at-point)))
+  (should (eq (lookup-key crs-chat-mode-map (kbd "C-c C-o")) #'markdown-follow-thing-at-point))
+  (dolist (binding '(("RET" . crs-chat-sessions-open) ("n" . crs-chat-sessions-new)
+                     ("f" . crs-chat-sessions-fork) ("R" . crs-chat-sessions-rename)
+                     ("d" . crs-chat-sessions-delete) ("g" . revert-buffer) ("q" . quit-window)))
+    (should (eq (lookup-key crs-chat-sessions-mode-map (kbd (car binding))) (cdr binding)))))
+
+(defconst crs-test--chat-sessions
+  [((id . "chat-2") (title . "Fork: What does greet do?") (forked_from . "chat-1")
+    (status . "running") (turns . 1) (preview . "Reading it again")
+    (created_at . "2026-11-19T12:00:00Z") (updated_at . "2026-11-19T12:05:00Z"))
+   ((id . "chat-0") (title . "Older") (turns . 3) (preview . "Long ago")
+    (created_at . "2026-11-18T09:00:00Z") (updated_at . "2026-11-19T11:00:00Z"))
+   ((id . "chat-1") (title . "What does greet do?") (turns . 1) (preview . "It greets.")
+    (created_at . "2026-11-19T10:00:00Z") (updated_at . "2026-11-19T10:01:00Z"))]
+  "ListChats' chats for acme/widgets #42, the most recently active first.
+By age: chat-0, chat-1, then chat-2, a fork of chat-1.")
+
+(defun crs-test--chat-get (params)
+  "A GetChat reply for the chat PARAMS name."
+  `((chat . ,(crs-test--chat 'id (cdr (assq 'ChatID (aref params 0)))))))
+
+(ert-deftest crs-test-chat-header-counts-sessions ()
+  "The header line says which of the PR's sessions the buffer shows, by age."
+  (let ((crs-chat-backends crs-test--chat-backends))
+    (with-temp-buffer
+      (crs-chat-mode)
+      (setq crs--chat-owner "acme" crs--chat-repo "widgets" crs--chat-number 42)
+      (should (string-prefix-p "New session · acme/widgets #42" (crs--chat-header-line)))
+      (setq crs--chat-sessions (append crs-test--chat-sessions nil))
+      (should (string-prefix-p "New session (3 earlier) · " (crs--chat-header-line)))
+      (setq crs--chat-id "chat-1"
+            crs--chat (crs-test--chat))
+      (should (string-prefix-p "Session 2/3 · acme/widgets #42 · Claude Code · Sonnet"
+                               (crs--chat-header-line)))
+      ;; A session the list doesn't hold yet (it just started) is still one.
+      (setq crs--chat-id "chat-9")
+      (should (string-prefix-p "Session · " (crs--chat-header-line))))))
+
+(ert-deftest crs-test-chat-steps-between-sessions ()
+  "Previous and next step through the PR's sessions in the order they started."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions)))
+        ("RPCHandler.GetChat" . crs-test--chat-get))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      ;; From a new session, the one before is the latest; there is none after.
+      (should-error (crs-chat-next-session) :type 'user-error)
+      (crs-chat-previous-session)
+      (should (equal crs--chat-id "chat-2"))
+      (should (equal (json-encode (cdr (assoc "RPCHandler.GetChat" calls))) "[{\"ChatID\":\"chat-2\"}]"))
+      (crs-chat-previous-session)
+      (should (equal crs--chat-id "chat-1"))
+      (should (string-prefix-p "Session 2/3 · " (crs--chat-header-line)))
+      (crs-chat-previous-session)
+      (should (equal crs--chat-id "chat-0"))
+      (should-error (crs-chat-previous-session) :type 'user-error)
+      (should (equal crs--chat-id "chat-0"))
+      (crs-chat-next-session)
+      (crs-chat-next-session)
+      (should (equal crs--chat-id "chat-2"))
+      (should-error (crs-chat-next-session) :type 'user-error))))
+
+(ert-deftest crs-test-chat-fork ()
+  "Forking opens the new session the server made; a running or new one can't fork."
+  (let ((reply `((okay . t) (message . "")
+                 (chat . ,(crs-test--chat
+                           'id "chat-2" 'title "Fork: What does greet do?" 'forked_from "chat-1"
+                           'head_sha ""
+                           'messages (vconcat (cdr (assq 'messages (crs-test--chat)))
+                                              [((id . 4) (role . "notice")
+                                                (content . "Forked from “What does greet do?”."))]))))))
+    (crs-test--with-chat
+        `(("RPCHandler.ForkChat" . ,(lambda (_params) reply))
+          ("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions))))
+      (setq crs-chat-backends crs-test--chat-backends)
+      (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+        (should-error (crs-chat-fork) :type 'user-error)
+        (setq crs--chat-id "chat-1")
+        (crs--chat-show (crs--chat-ticket) (crs-test--chat 'status "running"))
+        (should-error (crs-chat-fork) :type 'user-error)
+        (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+        (setq calls nil)
+        (crs-chat-fork)
+        (should (equal (json-encode (cdr (assoc "RPCHandler.ForkChat" calls)))
+                       "[{\"ChatID\":\"chat-1\",\"Model\":\"\"}]"))
+        (should (equal crs--chat-id "chat-2"))
+        (should (string-suffix-p "> *Forked from “What does greet do?”.*\n\n" (crs-test--chat-text)))
+        ;; The new session counts among the PR's, which are listed again.
+        (should (equal (caar calls) "RPCHandler.ListChats"))
+        (should (string-prefix-p "Session 3/3 · " (crs--chat-header-line)))
+        ;; A refusal says why and leaves the buffer where it was.
+        (setq reply '((okay . :json-false) (message . "the agent is still answering") (chat)))
+        (crs-chat-fork)
+        (should (equal crs--chat-id "chat-2"))))))
+
+(ert-deftest crs-test-chat-rename ()
+  "Renaming retitles the session, then lists the sessions and reads the chat again."
+  (crs-test--with-chat
+      `(("RPCHandler.RenameChat" . ((okay . t) (chat . ,(crs-test--chat 'title "Greeting"))))
+        ("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions)))
+        ("RPCHandler.GetChat" . ((chat . ,(crs-test--chat 'title "Greeting")))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (with-current-buffer (crs--chat-create "acme" "widgets" 42)
+      (should-error (crs-chat-rename) :type 'user-error)
+      (setq crs--chat-id "chat-1")
+      (crs--chat-show (crs--chat-ticket) (crs-test--chat))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (_prompt initial) (should (equal initial "What does greet do?")) "  Greeting ")))
+        (crs-chat-rename))
+      (should (equal (mapcar #'car (reverse calls))
+                     '("RPCHandler.RenameChat" "RPCHandler.ListChats" "RPCHandler.GetChat")))
+      (should (equal (json-encode (cdr (assoc "RPCHandler.RenameChat" calls)))
+                     "[{\"ChatID\":\"chat-1\",\"Title\":\"Greeting\"}]"))
+      (should (equal (cdr (assq 'title crs--chat)) "Greeting"))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "  ")))
+        (should-error (crs-chat-rename) :type 'user-error)))))
+
+(ert-deftest crs-test-chat-session-list ()
+  "The session list takes the chat's window, opens, starts, forks, renames and deletes."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions)))
+        ("RPCHandler.GetChat" . crs-test--chat-get)
+        ("RPCHandler.ForkChat" . ((okay . t) (chat . ,(crs-test--chat 'id "chat-3" 'forked_from "chat-0"))))
+        ("RPCHandler.RenameChat" . ((okay . t) (chat . ,(crs-test--chat 'id "chat-0" 'title "Renamed"))))
+        ("RPCHandler.DeleteChat" . ((okay . t))))
+    (setq crs-chat-backends crs-test--chat-backends)
+    (delete-other-windows)
+    (let ((chat (crs--chat-create "acme" "widgets" 42)))
+      (unwind-protect
+          (progn
+            (switch-to-buffer chat)
+            (with-current-buffer chat
+              (setq crs--chat-id "chat-1")
+              (crs--chat-show (crs--chat-ticket) (crs-test--chat)))
+            (let* ((window (selected-window))
+                   (list (crs-chat-sessions "acme" "widgets" 42)))
+              (should (eq (window-buffer window) list))
+              (with-current-buffer list
+                (should (eq major-mode 'crs-chat-sessions-mode))
+                (should (equal (mapcar #'car tabulated-list-entries) '("chat-2" "chat-0" "chat-1")))
+                ;; The open session is marked, the running one too.
+                (should (equal (aref (cadr (assoc "chat-1" tabulated-list-entries)) 0) "▸ "))
+                (should (equal (substring-no-properties
+                                (aref (cadr (assoc "chat-2" tabulated-list-entries)) 0))
+                               " ●"))
+                (should (equal (aref (cadr (assoc "chat-0" tabulated-list-entries)) 2) "3"))
+                (should (string-match-p "Older" (buffer-string)))
+                (should (string-match-p "Long ago" (buffer-string)))
+                ;; RET opens the session on the line in the chat, in this window.
+                (goto-char (point-min))
+                (while (not (equal (tabulated-list-get-id) "chat-0")) (forward-line 1))
+                (crs-chat-sessions-open))
+              (should (eq (window-buffer window) chat))
+              (with-current-buffer chat
+                (should (equal crs--chat-id "chat-0")))
+              (with-current-buffer list
+                (should (equal (aref (cadr (assoc "chat-0" tabulated-list-entries)) 0) "▸ ")))
+              ;; Rename and fork the one on the line.
+              (switch-to-buffer list)
+              (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "Renamed")))
+                (crs-chat-sessions-rename))
+              (should (equal (json-encode (cdr (assoc "RPCHandler.RenameChat" calls)))
+                             "[{\"ChatID\":\"chat-0\",\"Title\":\"Renamed\"}]"))
+              (crs-chat-sessions-fork)
+              (should (equal (json-encode (cdr (assoc "RPCHandler.ForkChat" calls)))
+                             "[{\"ChatID\":\"chat-0\",\"Model\":\"\"}]"))
+              (should (eq (window-buffer window) chat))
+              (should (equal (buffer-local-value 'crs--chat-id chat) "chat-3"))
+              ;; A running session can't be forked.
+              (switch-to-buffer list)
+              (goto-char (point-min))
+              (while (not (equal (tabulated-list-get-id) "chat-2")) (forward-line 1))
+              (should-error (crs-chat-sessions-fork) :type 'user-error)
+              ;; Delete the one the chat shows: the chat becomes a new session.
+              (with-current-buffer chat (setq crs--chat-id "chat-2"))
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
+                (crs-chat-sessions-delete))
+              (should (equal (json-encode (cdr (assoc "RPCHandler.DeleteChat" calls)))
+                             "[{\"ChatID\":\"chat-2\"}]"))
+              (should-not (buffer-local-value 'crs--chat-id chat))
+              ;; n starts a new session, q goes back to the chat.
+              (with-current-buffer chat (setq crs--chat-id "chat-1"))
+              (crs-chat-sessions-new)
+              (should (eq (window-buffer window) chat))
+              (should-not (buffer-local-value 'crs--chat-id chat))
+              (switch-to-buffer list)
+              (quit-window)
+              (should (eq (window-buffer window) chat))))
+        (when-let ((list (get-buffer (crs--chat-sessions-buffer-name "acme" "widgets" 42))))
+          (kill-buffer list))))))
+
+(ert-deftest crs-test-chat-session-list-follows-notifications ()
+  "A change to any of the PR's chats lists its sessions again; another PR's doesn't."
+  (crs-test--with-chat
+      `(("RPCHandler.ListChats" . ((chats . ,crs-test--chat-sessions))))
+    (let ((list (get-buffer-create (crs--chat-sessions-buffer-name "acme" "widgets" 42))))
+      (unwind-protect
+          (with-current-buffer list
+            (crs-chat-sessions-mode)
+            (setq crs--chat-owner "acme" crs--chat-repo "widgets" crs--chat-number 42)
+            (crs--chat-on-notification "Server.ChatChanged"
+                                       '((owner . "ACME") (repo . "widgets") (number . 42)
+                                         (chat_id . "chat-9") (status . "idle")))
+            (should (equal (mapcar #'car calls) '("RPCHandler.ListChats")))
+            (should (= (length tabulated-list-entries) 3))
+            (crs--chat-on-notification "Server.ChatChanged"
+                                       '((owner . "acme") (repo . "widgets") (number . 7)
+                                         (chat_id . "chat-8") (status . "idle")))
+            (should (= (length calls) 1)))
+        (kill-buffer list)))))
 
 ;; Keybindings are installed in crs-client.el, so an autoloaded command must
 ;; load crs-client, not just its own module.  A bare `;;;###autoload' cookie

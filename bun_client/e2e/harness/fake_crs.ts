@@ -106,6 +106,7 @@ interface FakeChat {
     messages: FakeChatMessage[];
     draft: string;
     started_at?: string;
+    forked_from?: string;
     // Bumped by each turn and by StopChat, so a stopped turn's steps land nowhere.
     turn: number;
 }
@@ -345,13 +346,25 @@ function chatMessage(fields: Omit<FakeChatMessage, 'id' | 'created_at'>): FakeCh
     return { id: state.nextChatMessageId++, created_at: new Date().toISOString(), ...fields };
 }
 
+/** What a list of chats shows of one's messages: the reviewer's turns, and the last reply. */
+function chatCounts(chat: FakeChat) {
+    const last = (role: string) => chat.messages.filter(m => m.role === role).at(-1)?.content;
+    return {
+        turns: chat.messages.filter(m => m.role === 'user').length,
+        preview: (last('assistant') ?? last('user') ?? '')
+            .replace(/\*\*|__|`/g, '')
+            .replace(/\s+/g, ' ')
+            .slice(0, 140),
+    };
+}
+
 function chatSummary(chat: FakeChat) {
     const { messages: _m, draft: _d, started_at: _s, turn: _t, ...summary } = chat;
-    return summary;
+    return { ...summary, ...chatCounts(chat) };
 }
 
 function chatPayload(chat: FakeChat) {
-    return { ...chat, turn: undefined, current_sha: CHAT_HEAD_SHA };
+    return { ...chat, ...chatCounts(chat), turn: undefined, current_sha: CHAT_HEAD_SHA };
 }
 
 function findChat(id: string): FakeChat {
@@ -999,7 +1012,61 @@ const handlers: Record<string, (args: any) => unknown> = {
                 chat: chatPayload(chat),
             };
         }
-        chatTurn(chat, message, false);
+        // A fork's first turn opens its conversation, attaching the PR.
+        const attach = !chat.head_sha;
+        if (attach) chat.head_sha = CHAT_HEAD_SHA;
+        chatTurn(chat, message, attach);
+        return { okay: true, message: '', chat: chatPayload(chat) };
+    },
+
+    'RPCHandler.ForkChat': args => {
+        const from = findChat(args.ChatID);
+        if (from.status === 'running') {
+            return {
+                okay: false,
+                message: 'the agent is still answering; wait for it, or stop it',
+                chat: null,
+            };
+        }
+        const now = new Date().toISOString();
+        const chat: FakeChat = {
+            ...from,
+            id: `chat-${state.nextChatId++}`,
+            model: args.Model || from.model,
+            title: `Fork: ${from.title}`.slice(0, 80),
+            head_sha: '',
+            cost_usd: 0,
+            status: 'idle',
+            created_at: now,
+            updated_at: now,
+            forked_from: from.id,
+            messages: [
+                ...from.messages
+                    .filter(m => ['user', 'assistant', 'tool'].includes(m.role))
+                    .map(m => ({ ...m, id: state.nextChatMessageId++ })),
+                chatMessage({
+                    role: 'notice',
+                    content: `Forked from “${from.title}”. Your next message starts a new conversation with Claude Code, which gets the messages above and the PR's description and diff as they are then.`,
+                }),
+            ],
+            draft: '',
+            started_at: undefined,
+            turn: 0,
+        };
+        state.chats.set(chat.id, chat);
+        chatChanged(chat);
+        return { okay: true, message: '', chat: chatPayload(chat) };
+    },
+
+    'RPCHandler.RenameChat': args => {
+        const chat = findChat(args.ChatID);
+        const title = String(args.Title ?? '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 80);
+        if (!title) return { okay: false, message: 'the title is empty', chat: chatPayload(chat) };
+        chat.title = title;
+        chatChanged(chat);
         return { okay: true, message: '', chat: chatPayload(chat) };
     },
 

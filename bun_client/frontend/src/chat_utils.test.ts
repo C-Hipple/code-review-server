@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
     agentBackend,
+    anySessionRunning,
     attachedLabel,
     chatIsStale,
     elapsedLabel,
@@ -9,9 +10,13 @@ import {
     modelLabel,
     parseChatChanged,
     pickModel,
+    relativeTime,
+    sessionDetail,
     shouldCloseOnLeave,
+    type Chat,
     type ChatBackendInfo,
     type ChatMessage,
+    type ChatSummary,
 } from './chat_utils';
 
 const claude: ChatBackendInfo = {
@@ -143,5 +148,54 @@ describe('panel behavior', () => {
             isSendKey({ key: 'Enter', shiftKey: false, nativeEvent: { isComposing: true } })
         ).toBe(false);
         expect(isSendKey({ key: 'a', shiftKey: false })).toBe(false);
+    });
+});
+
+describe('sessions', () => {
+    const now = Date.parse('2026-11-24T12:00:00Z');
+    const session: ChatSummary = {
+        id: 'c1',
+        owner: 'acme',
+        repo: 'widgets',
+        number: 42,
+        backend: 'claude',
+        model: 'opus',
+        title: 'Why?',
+        head_sha: 'sha-1',
+        cost_usd: 0.04,
+        status: 'idle',
+        created_at: '2026-11-24T10:00:00Z',
+        updated_at: '2026-11-24T11:55:00Z',
+        turns: 3,
+    };
+
+    test('when a session was last active', () => {
+        expect(relativeTime('2026-11-24T11:59:30Z', now)).toBe('just now');
+        expect(relativeTime('2026-11-24T11:55:00Z', now)).toBe('5m ago');
+        expect(relativeTime('2026-11-24T09:00:00Z', now)).toBe('3h ago');
+        expect(relativeTime('2026-11-22T12:00:00Z', now)).toBe('2d ago');
+        expect(relativeTime('2026-10-01T12:00:00Z', now)).toBe('2026-10-01');
+        expect(relativeTime('', now)).toBe('');
+        expect(relativeTime('not a time', now)).toBe('');
+    });
+
+    test('what a session list says about one', () => {
+        expect(sessionDetail(session, [claude], now)).toBe('3 turns · 5m ago · Opus · $0.04');
+        expect(sessionDetail({ ...session, turns: 1, cost_usd: 0, model: '' }, [claude], now)).toBe(
+            '1 turn · 5m ago · Default'
+        );
+        // An older server that doesn't count turns, and an agent no longer offered.
+        expect(sessionDetail({ ...session, turns: undefined, backend: 'gone' }, null, now)).toBe(
+            '0 turns · 5m ago · opus · $0.04'
+        );
+    });
+
+    test('whether any session is answering', () => {
+        const open = { ...session, status: 'running' } as Chat;
+        expect(anySessionRunning([session], null)).toBe(false);
+        expect(
+            anySessionRunning([session, { ...session, id: 'c2', status: 'running' }], null)
+        ).toBe(true);
+        expect(anySessionRunning([session], open)).toBe(true);
     });
 });

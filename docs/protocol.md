@@ -109,7 +109,7 @@ Deliveries come in bursts — a push sets off one per check, then the section ch
 
 ### `Server.ChatChanged`
 
-Sent each time what [`GetChat`](#rpchandlergetchat) returns for a [review chat](#review-chat) changes: the reviewer's message is stored and the agent starts (`running`), each step of its turn lands (a tool call, a finished block of the reply, the reply being written growing — that last at most five times a second), and the turn ends, is stopped, or the chat is deleted (`idle`). A client showing the chat reads `GetChat` again when one names it, instead of polling. Like the others it names what changed, never the messages.
+Sent each time what [`GetChat`](#rpchandlergetchat) returns for a [review chat](#review-chat) changes: the reviewer's message is stored and the agent starts (`running`), each step of its turn lands (a tool call, a finished block of the reply, the reply being written growing — that last at most five times a second), and the turn ends, is stopped, or the chat is deleted (`idle`); also when a chat is forked (naming the new chat) or renamed. A client showing the chat reads `GetChat` again when one names it, instead of polling, and one listing the PR's sessions lists them again (`ListChats`). Like the others it names what changed, never the messages.
 
 ```json
 {"method": "Server.ChatChanged", "params": [{"owner": "C-Hipple", "repo": "code-review-server", "number": 303, "chat_id": "6f1c0a52-8d3e-4f4b-9a51-0c2d7e1b9a33", "status": "running"}], "id": null}
@@ -1061,6 +1061,7 @@ A reviewer can chat with a local coding agent about the PR they are reviewing. T
 - **Later messages** resume the agent's own session (Claude Code's `--resume`; an ACP agent's session, picked up again with `session/resume` or `session/load` when its process has exited), which keeps the full transcript; the server keeps only its handle. If the agent no longer has the session, the server starts a new one carrying what was said so far, and the PR again.
 - **Read-only**: the agent may read and search files — the working directory and a checkout of the repository (the PR's worktree when there is one, else the local clone) — but not edit them, run commands or reach the network. Claude Code gets only `Read`, `Grep` and `Glob`, and the checkout with `--add-dir`. An ACP agent is offered file reads (of those directories only) and no writing or terminals; the server answers its permission requests itself (yes to `read`, `search` and `think` calls, no to the rest), and stops a turn in which the agent completes any other call — an edit, a command, a fetch, a tool of kind `other` or none — without asking, or after it was refused. A system prompt says so, and where the files are (an ACP agent, which takes no system prompt, gets it ahead of the first message).
 - **In the background**: `StartChat` and `SendChatMessage` reply as soon as the message is stored; the agent answers afterwards, announcing each step with [`Server.ChatChanged`](#serverchatchanged). One turn runs per chat at a time, for at most 20 minutes; `StopChat` ends one sooner (an ACP agent gets `session/cancel`).
+- **Several sessions per PR**: a PR holds any number of chats — sessions, as the clients call them — each a conversation of its own with the agent, and any number may run at once. A new `StartChat` is how a reviewer clears the context; the older sessions stay, listed by `ListChats` (with how many turns each had and a line of its last reply), for the reviewer to go back to and continue. `ForkChat` starts a new session carrying an old one's messages: nothing runs until the reviewer's next message, which opens a new conversation that gets the old one's history (as a conversation the agent lost does) and the PR's description and diff as they are then — so a fork is also how a session follows a PR that has moved on. `RenameChat` retitles a session.
 
 Agents are configured in the optional [`[Chat]`](configuration.md#review-chat) table; with none, Claude Code is the agent, available whenever `claude` is on the server's `PATH`.
 
@@ -1083,15 +1084,18 @@ Agents are configured in the optional [`[Chat]`](configuration.md#review-chat) t
 | `owner`, `repo`, `number` | | The PR |
 | `backend`     | string | The ID of the agent the chat talks to |
 | `model`       | string | The model asked for; empty for the backend's default |
-| `title`       | string | The start of the first message, on one line |
-| `head_sha`    | string | The PR head whose description and diff the chat attached |
-| `current_sha` | string | The PR head now, from the caches; differs from `head_sha` once the PR has moved on (start a new chat to give the agent the new diff) |
+| `title`       | string | The start of the first message, on one line, unless `RenameChat` set another (a fork's is `Fork: ` and its original's) |
+| `head_sha`    | string | The PR head whose description and diff the chat's conversation attached; empty for a fork whose first turn hasn't run |
+| `current_sha` | string | The PR head now, from the caches; differs from `head_sha` once the PR has moved on (fork the chat, or start a new one, to give the agent the new diff) |
 | `cost_usd`    | float  | What the agent reported its turns cost, summed |
 | `status`      | string | `running` while the agent is answering, else `idle` |
 | `messages`    | `ChatMessage[]` | The conversation, oldest first |
 | `draft`       | string | The part of the reply the agent is writing right now, not yet a message (Markdown); empty between replies |
 | `started_at`  | string | When the running turn started (RFC 3339); omitted when idle |
-| `created_at`, `updated_at` | string | RFC 3339 |
+| `created_at`, `updated_at` | string | RFC 3339; `updated_at` moves with each message (not with a rename) |
+| `forked_from` | string | The chat this one was forked from (`ForkChat`); omitted for one started afresh |
+| `turns`       | int    | How many messages the reviewer has sent |
+| `preview`     | string | The start of the agent's last reply (else of the reviewer's last message) as plain text on one line, at most 140 characters, for a list of sessions |
 
 `ListChats` returns the same without `messages`, `draft`, `started_at` and `current_sha`.
 
@@ -1118,7 +1122,7 @@ Lists the chat agents the config defines, available or not — the one new chats
 
 ### `RPCHandler.ListChats`
 
-A PR's chats, the most recently active first. Owner and repo match whatever their case.
+A PR's chats (sessions), the most recently active first, for a client to switch between. Owner and repo match whatever their case.
 
 - **Params**: `{"Owner": "...", "Repo": "...", "Number": 42}`
 - **Result**: `{"chats": [Chat, ...]}` (summaries, without messages)
@@ -1142,6 +1146,22 @@ Continues a chat with the reviewer's next message. Refused (`okay: false`) while
 
 - **Params**: `{"ChatID": "...", "Message": "..."}`
 - **Result**: as `StartChat`; `chat` is the chat as it now stands either way. An unknown `ChatID` is an error.
+
+### `RPCHandler.ForkChat`
+
+Starts a new chat (session) carrying a chat's messages — the reviewer's, the agent's replies and the tools it used, not errors or notices — and a `notice` saying where it came from. Nothing runs: the reviewer's next message (`SendChatMessage`) opens a new conversation with the config's agent, which gets the forked conversation as history and the PR's description and diff as they are then (that message's `attached` says so, and `head_sha` is set). The chat forked is left as it was. Announced with a `Server.ChatChanged` (`idle`) for the new chat.
+
+- **Params**:
+  - `ChatID` (string): the chat to fork.
+  - `Model` (string): one of the agent's models; empty takes the forked chat's when the config's agent is the one it talks to, else the agent's `default_model`.
+- **Result**: as `StartChat`; `chat` is the new chat, `idle`. Refused (`okay: false`) while the agent is still answering in the chat forked. An unknown `ChatID` is an error.
+
+### `RPCHandler.RenameChat`
+
+Retitles a chat. The title is put on one line and cut at 80 characters; the chat keeps its place in `ListChats`. Announced with a `Server.ChatChanged`.
+
+- **Params**: `{"ChatID": "...", "Title": "..."}`
+- **Result**: as `StartChat`; `chat` is the chat as it now stands either way. An empty title is refused (`okay: false`); an unknown `ChatID` is an error.
 
 ### `RPCHandler.GetChat`
 

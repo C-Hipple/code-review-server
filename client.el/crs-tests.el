@@ -1903,6 +1903,131 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
         (should (equal (cdr (assq 'Body args))
                        "Automated comment by Lint\n\nthree-lint"))))))
 
+;;; --- Keeping the view through a toggle ---
+;;
+;; Hiding or showing comments and annotations re-renders the buffer, adding
+;; or dropping blocks above point; the line at point stays at point and on
+;; the row of the window it was on.
+
+(defmacro crs-test--with-shown-review (payload &rest body)
+  "Run BODY in `buffer' showing PAYLOAD in the only window.
+Comments are shown and annotations collapsed, as a review opens."
+  (declare (indent 1))
+  `(crs-test--with-review-buffer nil
+     (save-window-excursion
+       (delete-other-windows)
+       (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+         (crs--render-and-update buffer ,payload))
+       (switch-to-buffer buffer)
+       ,@body)))
+
+(defun crs-test--put-line-on-row (regexp row &optional window)
+  "Move WINDOW's point to the end of the match for REGEXP, its line on ROW."
+  (with-selected-window (or window (selected-window))
+    (goto-char (point-min))
+    (re-search-forward regexp)
+    (recenter row)))
+
+(defun crs-test--row (&optional window)
+  "The row of WINDOW (default the selected one) that its point is on."
+  (let ((window (or window (selected-window))))
+    (crs--window-row window (window-point window))))
+
+(defun crs-test--line-at (&optional window)
+  "The text of the line WINDOW's (default the selected one's) point is on."
+  (with-selected-window (or window (selected-window))
+    (crs--line-text)))
+
+(defconst crs-test--replied-pr-payload
+  `((okay . t)
+    (metadata . ((number . 42) (title . "Widgets")))
+    (diff . ,crs-test--full-diff)
+    (comments . [((id . "7") (author . "bob") (body . "two-nit")
+                  (path . "a.txt") (position . "2"))
+                 ((id . "10") (author . "alice") (body . "two-reply")
+                  (path . "a.txt") (position . "2"))])
+    (reviews . [])
+    (commits . [])
+    (annotations . [((filename . "a.txt") (line . 2) (severity . "info")
+                     (content . "two-lint") (plugin . "Lint"))]))
+  "A GetPR reply whose thread on a.txt's \"+two\" has a reply.
+Its block has two \"    │\" lines, and \"+two\" an annotation that opens
+between the line and the block.")
+
+(ert-deftest crs-test-toggle-comments-keeps-the-line-on-its-row ()
+  "Hiding and showing comments keeps point's line, column and row."
+  (crs-test--with-shown-review crs-test--pr-payload
+    (crs-test--put-line-on-row "^\\+extra" 4)
+    (let ((column (current-column))
+          (line (line-number-at-pos)))
+      (crs-toggle-comments)
+      (should-not crs--buffer-show-comments)
+      ;; a.txt's comment block above it went.
+      (should (< (line-number-at-pos) line))
+      (should (string-prefix-p "+extra b" (crs--line-text)))
+      (should (= (current-column) column))
+      (should (= (crs-test--row) 4))
+      (crs-toggle-comments)
+      (should crs--buffer-show-comments)
+      (should (= (line-number-at-pos) line))
+      (should (= (current-column) column))
+      (should (= (crs-test--row) 4)))))
+
+(ert-deftest crs-test-toggle-comments-from-a-comment-keeps-its-line-in-place ()
+  "Hidden from inside a comment, point goes to the line it hung below, which stays put."
+  (crs-test--with-shown-review crs-test--pr-payload
+    (crs-test--put-line-on-row "^    │   two-nit" 8)
+    (let ((two-row (save-excursion
+                     (re-search-backward "^\\+two")
+                     (crs--window-row (selected-window) (point)))))
+      (should (> two-row 0))
+      (crs-toggle-comments)
+      (should (string-prefix-p "+two " (crs--line-text)))
+      (should (= (crs-test--row) two-row))
+      ;; Shown again, the comment opens below the line, which stays put.
+      (crs-toggle-comments)
+      (should (string-prefix-p "+two" (crs--line-text)))
+      (should (= (crs-test--row) two-row)))))
+
+(ert-deftest crs-test-toggle-annotations-keeps-a-comment-line-on-its-row ()
+  "An annotation opening above point's comment line leaves point on it and its row.
+Of the block's lines with the same text, it is the one point was on."
+  (crs-test--with-shown-review crs-test--replied-pr-payload
+    (crs-test--put-line-on-row "^    │\n    │ Reply by \\[alice\\]" 12)
+    (forward-line -1)
+    (should (equal (crs--line-text) "    │"))
+    (let ((line (line-number-at-pos))
+          (row (crs-test--row)))
+      (dolist (shown '(t nil))
+        (crs-toggle-annotations)
+        (should (eq crs--buffer-show-annotations shown))
+        (should (equal (crs--line-text) "    │"))
+        (should (string-prefix-p "    │ Reply by [alice]"
+                                 (save-excursion (forward-line 1) (crs--line-text))))
+        (should (= (crs-test--row) row))
+        (should (eq (> (line-number-at-pos) line) shown))))))
+
+(ert-deftest crs-test-toggle-comments-keeps-each-windows-view ()
+  "Every window on the review keeps its own line on its row, or centers it."
+  (crs-test--with-shown-review crs-test--pr-payload
+    (let* ((top (selected-window))
+           (bottom (split-window top)))
+      (crs-test--put-line-on-row "^\\+extra" 2 top)
+      (crs-test--put-line-on-row "^ three" 3 bottom)
+      (crs-toggle-comments)
+      (should (string-prefix-p "+extra b" (crs-test--line-at top)))
+      (should (= (crs-test--row top) 2))
+      (should (string-prefix-p " three" (crs-test--line-at bottom)))
+      (should (= (crs-test--row bottom) 3))
+      ;; A window whose point is off its screen is centered on it.
+      (set-window-start bottom (with-current-buffer buffer (point-max)) t)
+      (should (< (crs-test--row bottom) 0))
+      (crs-toggle-comments)
+      (should (string-prefix-p " three" (crs-test--line-at bottom)))
+      (let ((row (crs-test--row bottom)))
+        (with-selected-window bottom (recenter))
+        (should (= (crs-test--row bottom) row))))))
+
 ;;; --- Hunk expansion ---
 
 (defconst crs-test--hunks-diff

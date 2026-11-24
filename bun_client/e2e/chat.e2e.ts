@@ -11,6 +11,8 @@ const chatButton = (page: Page) =>
     page.getByRole('button', { name: 'Chat with an agent about this PR' });
 const panel = (page: Page) => page.getByRole('dialog', { name: 'Review chat' });
 const messageBox = (page: Page) => panel(page).getByRole('textbox', { name: 'Message' });
+const sessionList = (page: Page) =>
+    panel(page).getByRole('region', { name: 'Sessions on this PR' });
 
 // The panel spans 80% of the 1400px-wide viewport from the left edge, so the
 // pointer leaves it by moving right of that.
@@ -119,12 +121,90 @@ test.describe('Review chat', () => {
         await expect(panel(page)).toContainText('to: Remember me');
         expect((await backend.calls('GetChat')).at(-1)?.params).toEqual({ ChatID: 'chat-1' });
 
-        // A new chat leaves the old one in the history.
-        await panel(page).getByRole('button', { name: 'New chat' }).click();
+        // A new session leaves the old one in the list.
+        await panel(page).getByRole('button', { name: 'New session' }).click();
         await expect(panel(page)).toContainText('Ask Claude Code about this PR');
-        await expect(panel(page).getByRole('combobox', { name: 'Chats on this PR' })).toContainText(
-            'Remember me'
-        );
+        await panel(page).getByRole('button', { name: 'Sessions' }).click();
+        await expect(sessionList(page)).toContainText('Remember me');
+    });
+
+    test('keeps several sessions to switch between, fork, rename and delete', async ({
+        page,
+        backend,
+    }) => {
+        await openReview(page);
+        await hoverOpen(page);
+        const dialog = panel(page);
+        const sessions = dialog.getByRole('button', { name: 'Sessions' });
+
+        await messageBox(page).fill('First thread');
+        await messageBox(page).press('Enter');
+        await expect(dialog).toContainText('to: First thread');
+        await expect(sessions).toContainText('First thread');
+
+        // Clearing the context starts a second session; the first stays.
+        await dialog.getByRole('button', { name: 'New session' }).click();
+        await expect(sessions).toContainText('New session');
+        await messageBox(page).fill('Second thread');
+        await messageBox(page).press('Enter');
+        await expect(dialog).toContainText('to: Second thread');
+        await expect(dialog).not.toContainText('First thread');
+        await expect(sessions).toContainText('2');
+
+        // Back to the first, from the list.
+        await sessions.click();
+        const list = sessionList(page);
+        await expect(list.locator('.crs-chat-session')).toHaveCount(2);
+        await expect(list.locator('.crs-chat-session').first()).toContainText('Second thread');
+        await expect(list).toContainText('1 turn');
+        await expect(list).toContainText('Fake answer to: First thread');
+        await list
+            .getByRole('button', { name: /First thread/ })
+            .first()
+            .click();
+        await expect(list).toHaveCount(0);
+        await expect(dialog).toContainText('to: First thread');
+        await expect(dialog).not.toContainText('Second thread');
+        expect((await backend.calls('GetChat')).at(-1)?.params).toEqual({ ChatID: 'chat-1' });
+
+        // A fork carries the conversation into a new session, which the next message starts.
+        await dialog.getByRole('button', { name: 'Fork session' }).click();
+        expect((await backend.calls('ForkChat')).map(c => c.params)).toEqual([
+            { ChatID: 'chat-1', Model: '' },
+        ]);
+        await expect(sessions).toContainText('Fork: First thread');
+        await expect(dialog).toContainText('Forked from “First thread”');
+        await expect(dialog).toContainText('to: First thread');
+        await messageBox(page).fill('Carry on');
+        await messageBox(page).press('Enter');
+        await expect(dialog).toContainText('to: Carry on');
+        expect((await backend.calls('SendChatMessage')).at(-1)?.params).toEqual({
+            ChatID: 'chat-3',
+            Message: 'Carry on',
+        });
+        await expect(sessions).toContainText('3');
+
+        // Rename and delete from the list.
+        await sessions.click();
+        await list.getByRole('button', { name: 'Rename Second thread' }).click();
+        const title = list.getByRole('textbox', { name: 'Session title' });
+        await title.fill('The other idea');
+        await title.press('Enter');
+        expect((await backend.calls('RenameChat')).map(c => c.params)).toEqual([
+            { ChatID: 'chat-2', Title: 'The other idea' },
+        ]);
+        await expect(list).toContainText('The other idea');
+        page.once('dialog', d => d.accept());
+        await list.getByRole('button', { name: 'Delete The other idea' }).click();
+        await expect(list.locator('.crs-chat-session')).toHaveCount(2);
+        await expect(list).not.toContainText('The other idea');
+
+        // Escape closes the list, not the panel.
+        await list.getByRole('button', { name: 'Rename Fork: First thread' }).focus();
+        await page.keyboard.press('Escape');
+        await expect(list).toHaveCount(0);
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('to: Carry on');
     });
 
     test('stops the agent', async ({ page, backend }) => {

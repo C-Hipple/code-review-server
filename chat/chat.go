@@ -17,6 +17,12 @@
 // agent's own session, which keeps the full transcript. The agent can read
 // and search files but not change anything or run commands.
 //
+// A PR can have any number of chats, each a conversation of its own, so the
+// reviewer can clear the context by starting another and go back to an older
+// one later. Fork starts a new conversation that carries an old one's
+// messages: the agent gets them, and the PR as it is now, with the next
+// message. Rename titles a chat.
+//
 // Nothing here waits on the agent: Start and Send store the reviewer's
 // message and return, the turn runs in the background, and the Manager's
 // OnChange announces each step so clients read the chat again (GetChat)
@@ -175,6 +181,9 @@ type Store interface {
 	GetChatSession(id string) (database.ChatSession, bool, error)
 	ListChatSessions(owner, repo string, number int) ([]database.ChatSession, error)
 	RecordChatTurn(id, backendSessionID string, costUSD float64) error
+	RenameChatSession(id, title string) error
+	SetChatHeadSHA(id, sha string) error
+	ForkChatSession(fork database.ChatSession, roles []string) error
 	DeleteChatSession(id string) error
 	AddChatMessage(m database.ChatMessage) (int64, error)
 	UpdateChatMessage(id int64, content, meta string) error
@@ -186,6 +195,7 @@ var (
 	ErrNotFound    = errors.New("there is no such chat")
 	ErrBusy        = errors.New("the agent is still answering; wait for it, or stop it")
 	ErrEmpty       = errors.New("the message is empty")
+	ErrEmptyTitle  = errors.New("the title is empty")
 	ErrNoStore     = errors.New("chats need the server's database, which isn't open")
 	ErrUnavailable = errors.New("no chat agent is configured")
 )
@@ -398,6 +408,98 @@ func (m *Manager) Send(ctx context.Context, id, message string) error {
 	return m.begin(store, session, backend, message, pr)
 }
 
+// forkedRoles are the messages a fork copies: the conversation and the tools
+// the agent used along the way, not the errors and notices of the old turns.
+var forkedRoles = []string{RoleUser, RoleAssistant, RoleTool}
+
+// Fork starts a new chat that carries the messages of chat id: a fresh
+// conversation with the agent that picks up where that one left off. Nothing
+// runs yet. The reviewer's next message starts it, and the agent gets this
+// chat's history with it, and the PR's description and diff as they are by
+// then; so a fork is also how a chat follows a PR that has moved on. The new
+// chat talks to the agent new chats do, with model (empty: the old chat's
+// when it is the same agent, else the agent's default). A chat whose agent
+// is still answering can't be forked.
+func (m *Manager) Fork(id, model string) (database.ChatSession, error) {
+	store, err := m.store()
+	if err != nil {
+		return database.ChatSession{}, err
+	}
+	from, ok, err := store.GetChatSession(id)
+	if err != nil {
+		return database.ChatSession{}, err
+	}
+	if !ok {
+		return database.ChatSession{}, ErrNotFound
+	}
+	if m.Running(id) {
+		return database.ChatSession{}, ErrBusy
+	}
+	backend, info, err := m.agentBackend()
+	if err != nil {
+		return database.ChatSession{}, err
+	}
+	if model == "" {
+		model = info.DefaultModel
+		if from.Backend == backend.ID() {
+			model = from.Model
+		}
+	}
+	fork := database.ChatSession{
+		ID:         newID(),
+		Owner:      from.Owner,
+		Repo:       from.Repo,
+		Number:     from.Number,
+		Backend:    backend.ID(),
+		Model:      model,
+		Title:      forkTitle(from.Title),
+		ForkedFrom: from.ID,
+		// HeadSHA stays empty until the first turn attaches the PR.
+	}
+	if err := store.ForkChatSession(fork, forkedRoles); err != nil {
+		return database.ChatSession{}, fmt.Errorf("storing the fork: %w", err)
+	}
+	notice := fmt.Sprintf("Forked from “%s”. Your next message starts a new conversation with %s, "+
+		"which gets the messages above and the PR's description and diff as they are then.", from.Title, info.Name)
+	if _, err := store.AddChatMessage(database.ChatMessage{SessionID: fork.ID, Role: RoleNotice, Content: notice}); err != nil {
+		slog.Warn("Could not note a chat's fork", "chat", fork.ID, "error", err)
+	}
+	if stored, ok, err := store.GetChatSession(fork.ID); err == nil && ok {
+		fork = stored
+	}
+	m.changed(fork, StatusIdle)
+	return fork, nil
+}
+
+// Rename sets chat id's title, on one line and cut as a first message's is.
+func (m *Manager) Rename(id, title string) (database.ChatSession, error) {
+	title = titleFor(title)
+	if title == "" {
+		return database.ChatSession{}, ErrEmptyTitle
+	}
+	store, err := m.store()
+	if err != nil {
+		return database.ChatSession{}, err
+	}
+	session, ok, err := store.GetChatSession(id)
+	if err != nil {
+		return database.ChatSession{}, err
+	}
+	if !ok {
+		return database.ChatSession{}, ErrNotFound
+	}
+	if err := store.RenameChatSession(id, title); err != nil {
+		return database.ChatSession{}, err
+	}
+	session.Title = title
+	status := StatusIdle
+	if m.Running(id) {
+		status = StatusRunning
+	}
+	m.changed(session, status)
+	return session, nil
+}
+
 // begin claims the chat, stores the reviewer's message, and runs the turn on
 // a goroutine of its own. pr is set when the turn opens a new conversation
 // with the agent, which attaches the PR.
@@ -556,6 +658,13 @@ func (m *Manager) turn(ctx context.Context, store Store, session database.ChatSe
 	if pr != nil {
 		if err := writeContextFiles(workDir, *pr); err != nil {
 			return TurnResult{}, fmt.Errorf("writing the PR into the chat's working directory: %w", err)
+		}
+		// The head this conversation attaches, which a fork's first turn or
+		// one starting over may take further than the chat's first did.
+		if pr.HeadSHA != "" && pr.HeadSHA != session.HeadSHA {
+			if err := store.SetChatHeadSHA(session.ID, pr.HeadSHA); err != nil {
+				slog.Warn("Could not record the head a chat attached", "chat", session.ID, "error", err)
+			}
 		}
 		t.Prompt, _ = openingPrompt(*pr, history, message)
 		t.SessionID = newID()

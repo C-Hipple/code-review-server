@@ -261,3 +261,113 @@ func TestChatMessageJSONReadsTheMeta(t *testing.T) {
 func databaseMessage(meta string) database.ChatMessage {
 	return database.ChatMessage{ID: 1, Role: chat.RoleUser, Content: "x", Meta: meta}
 }
+
+func TestChatSessionRPCs(t *testing.T) {
+	db := aiTestSetup(t, nil)
+	seedAIPR(t, db, aiTestComments(), aiThreadsJSON(false))
+	backend := &stubChatBackend{}
+	useChatBackend(t, backend)
+	out := subscribedNotifier(t)
+	h := &RPCHandler{}
+
+	var started ChatReply
+	if err := h.StartChat(&StartChatArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, Model: "big",
+		Message: "What does the new field do?"}, &started); err != nil || !started.Okay {
+		t.Fatalf("StartChat = %+v, %v", started, err)
+	}
+	first := started.Chat.ID
+	untilIdle(t, out, first)
+
+	var list ListChatsReply
+	if err := h.ListChats(&ListChatsArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber}, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Chats) != 1 || list.Chats[0].Turns != 1 || list.Chats[0].Preview != "It adds a punctuation field." ||
+		list.Chats[0].ForkedFrom != "" {
+		t.Errorf("ListChats = %+v", list.Chats)
+	}
+
+	// A fork is a new session carrying the conversation; nothing runs yet.
+	var forked ChatReply
+	if err := h.ForkChat(&ForkChatArgs{ChatID: first}, &forked); err != nil || !forked.Okay || forked.Chat == nil {
+		t.Fatalf("ForkChat = %+v, %v", forked, err)
+	}
+	fork := forked.Chat
+	if fork.ID == first || fork.ForkedFrom != first || fork.Model != "big" || fork.Status != chat.StatusIdle ||
+		fork.HeadSHA != "" || fork.Turns != 1 || fork.Title != "Fork: What does the new field do?" {
+		t.Errorf("the fork = %+v", fork.ChatSummary)
+	}
+	if n := len(fork.Messages); n != 4 || fork.Messages[3].Role != chat.RoleNotice {
+		t.Errorf("the fork's messages = %+v", fork.Messages)
+	}
+	if got := chatChange(t, out); got != (ChatChanged{Owner: aiOwner, Repo: aiRepo, Number: aiNumber, ChatID: fork.ID, Status: chat.StatusIdle}) {
+		t.Errorf("the fork's announcement = %+v", got)
+	}
+
+	var sent ChatReply
+	if err := h.SendChatMessage(&SendChatMessageArgs{ChatID: fork.ID, Message: "And with no default?"}, &sent); err != nil || !sent.Okay {
+		t.Fatalf("SendChatMessage to the fork = %+v, %v", sent, err)
+	}
+	untilIdle(t, out, fork.ID)
+	turns := backend.recorded()
+	last := turns[len(turns)-1]
+	if last.Resume || last.SessionID == turns[0].SessionID ||
+		!strings.Contains(last.Prompt, "**Reviewer:** What does the new field do?") ||
+		!strings.Contains(last.Prompt, "And with no default?") || !strings.Contains(last.Prompt, "## Diff") {
+		t.Errorf("the fork's first turn should open a conversation carrying the old one: %+v", last)
+	}
+	var got GetChatReply
+	if err := h.GetChat(&GetChatArgs{ChatID: fork.ID}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Chat.HeadSHA != "sha-1" || got.Chat.CurrentSHA != "sha-1" {
+		t.Errorf("the fork attached the PR at %q (now %q)", got.Chat.HeadSHA, got.Chat.CurrentSHA)
+	}
+
+	// Renaming retitles it, and says so; an empty title is refused.
+	var renamed ChatReply
+	if err := h.RenameChat(&RenameChatArgs{ChatID: first, Title: " The new field "}, &renamed); err != nil || !renamed.Okay ||
+		renamed.Chat.Title != "The new field" {
+		t.Fatalf("RenameChat = %+v, %v", renamed, err)
+	}
+	if got := chatChange(t, out); got.ChatID != first || got.Status != chat.StatusIdle {
+		t.Errorf("the rename's announcement = %+v", got)
+	}
+	var empty ChatReply
+	if err := h.RenameChat(&RenameChatArgs{ChatID: first, Title: "  "}, &empty); err != nil || empty.Okay ||
+		empty.Message == "" || empty.Chat.Title != "The new field" {
+		t.Errorf("an empty title = %+v, %v", empty, err)
+	}
+
+	if err := h.ListChats(&ListChatsArgs{Owner: aiOwner, Repo: aiRepo, Number: aiNumber}, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Chats) != 2 || list.Chats[0].ID != fork.ID || list.Chats[0].Turns != 2 || list.Chats[1].Title != "The new field" {
+		t.Errorf("ListChats after the fork = %+v", list.Chats)
+	}
+
+	for _, err := range []error{
+		h.ForkChat(&ForkChatArgs{ChatID: "nope"}, &ChatReply{}),
+		h.RenameChat(&RenameChatArgs{ChatID: "nope", Title: "x"}, &ChatReply{}),
+	} {
+		if err == nil || !strings.Contains(err.Error(), `there is no chat "nope"`) {
+			t.Errorf("a missing chat = %v", err)
+		}
+	}
+}
+
+func TestChatPreviewIsOneShortLine(t *testing.T) {
+	if got := chatPreview("  It adds\n\na field.  "); got != "It adds a field." {
+		t.Errorf("chatPreview = %q", got)
+	}
+	if got := chatPreview("## Short answer\n\nIt adds a **punctuation** field:\n\n```ts\nconst x = 1;\n```\n\n- see `greet.ts`\n> quoted"); got != "Short answer It adds a punctuation field: const x = 1; see greet.ts quoted" {
+		t.Errorf("chatPreview of Markdown = %q", got)
+	}
+	if got := chatPreview("#123 fixed it"); got != "#123 fixed it" {
+		t.Errorf("a # that isn't a heading's stays: %q", got)
+	}
+	long := chatPreview(strings.Repeat("word ", 100))
+	if n := len([]rune(long)); n != maxChatPreview || !strings.HasSuffix(long, "…") {
+		t.Errorf("a long preview is cut to %d characters: %d %q", maxChatPreview, n, long)
+	}
+}

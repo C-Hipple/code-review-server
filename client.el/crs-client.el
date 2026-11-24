@@ -116,17 +116,32 @@
 
 ;; The chat buffer is editable below its line, so its keys are all C-c
 ;; ones, chosen to leave markdown-mode's useful ones alone: C-c C-f / C-c
-;; C-b still step between turns, C-c C-o follows a link.
+;; C-b still step between turns, C-c C-o follows a link.  The session keys:
+;; C-c C-v views the PR's sessions, C-c C-y forks this one (a Y is a fork),
+;; C-c C-t retitles it, and C-c { / C-c } step to the previous / next.
 (define-keymap :keymap crs-chat-mode-map
   "C-c C-c" #'crs-chat-send
   "C-c RET" #'crs-chat-send
   "C-c C-k" #'crs-chat-stop
   "C-c C-n" #'crs-chat-new
+  "C-c C-y" #'crs-chat-fork
+  "C-c C-t" #'crs-chat-rename
   "C-c C-w" #'crs-chat-switch
+  "C-c C-v" #'crs-chat-sessions
+  "C-c {" #'crs-chat-previous-session
+  "C-c }" #'crs-chat-next-session
   "C-c C-e" #'crs-chat-select-model
   "C-c C-r" #'crs-chat-refresh
   "C-c C-d" #'crs-chat-delete
   "C-c C-q" #'crs-chat-quit)
+
+(define-keymap :keymap crs-chat-sessions-mode-map
+  "RET" #'crs-chat-sessions-open
+  "n" #'crs-chat-sessions-new
+  "f" #'crs-chat-sessions-fork
+  "R" #'crs-chat-sessions-rename
+  "d" #'crs-chat-sessions-delete
+  "D" #'crs-chat-sessions-delete)
 
 (with-eval-after-load 'evil
   ;; Global normal-state leader bindings: available in any buffer/mode,
@@ -259,14 +274,29 @@
     ", c" #'crs-chat-send
     ", k" #'crs-chat-stop
     ", n" #'crs-chat-new
+    ", f" #'crs-chat-fork
+    ", t" #'crs-chat-rename
     ", w" #'crs-chat-switch
+    ", s" #'crs-chat-sessions
+    ", [" #'crs-chat-previous-session
+    ", ]" #'crs-chat-next-session
     ", e" #'crs-chat-select-model
     ", r" #'crs-chat-refresh
     ", d" #'crs-chat-delete
     "q" #'crs-chat-quit)
   (evil-define-key 'insert crs-chat-mode-map
     (kbd "C-c C-c") #'crs-chat-send
-    (kbd "C-c C-k") #'crs-chat-stop))
+    (kbd "C-c C-k") #'crs-chat-stop)
+  ;; The session list: a tabulated list, read in normal state.
+  (evil-define-key 'normal crs-chat-sessions-mode-map
+    (kbd "RET") #'crs-chat-sessions-open
+    "n" #'crs-chat-sessions-new
+    "f" #'crs-chat-sessions-fork
+    "R" #'crs-chat-sessions-rename
+    "d" #'crs-chat-sessions-delete
+    "D" #'crs-chat-sessions-delete
+    "gr" #'revert-buffer
+    "q" #'quit-window))
 
 (provide 'crs-client)
 

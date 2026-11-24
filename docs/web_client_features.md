@@ -761,12 +761,23 @@ or × closes it. On a touch screen the button toggles it.
   stream reconnects), with the same ticketing as the AI reports so a slow reply
   can't overwrite a newer one. The reply streams in as `draft`, with a cursor; tool
   calls show as a line each (`✓ Read pr.diff`); errors and stops show where they
-  happened. The button pulses while the agent works. **Stop** calls `StopChat`.
+  happened. The button pulses while the agent works in any of the PR's sessions.
+  **Stop** calls `StopChat`.
 - **Continuing**: later messages call `SendChatMessage`. Reopening the PR reopens
-  its most recent chat (`ListChats`); the header's select switches between the
-  PR's chats or starts a new one, **+** starts a new one, and **Delete** removes the
-  open one (`DeleteChat`). A chat whose PR has new commits since it attached the
-  diff says so, and suggests a new chat.
+  its most recent session (`ListChats`).
+- **Sessions**: a PR can hold several chats, each a context of its own. The header
+  names the open session and counts the PR's; clicking it lists them in place of
+  the conversation (`SessionList`), the most recently active first, each with its
+  title, how many turns it had, when it was last active, its model and cost, a line
+  of its last reply, a pulsing dot while its agent answers and a *fork* tag for a
+  fork. A row opens that session; **Rename** retitles it in place (Enter saves,
+  Escape cancels; `RenameChat`) and **Delete** removes it (`DeleteChat`). Escape
+  closes the list, not the panel. **+ New session** clears the context: the next
+  message starts a new session, the old one staying in the list. **Fork**
+  (`ForkChat`) carries the open session into a new one: its messages are copied
+  and the next message opens a fresh conversation that gets them and the PR's
+  latest diff. A session whose PR has new commits since it attached the diff says
+  so, with buttons to fork it or start a new one.
 
 ## 4. Protocol methods used — and not used
 
@@ -776,7 +787,8 @@ Called by the current client:
 `DeleteComment`, `SetFeedback`, `SubmitReview`, `GetPluginOutput`, `RerunPlugins`,
 `GetHunkContext`, `GetConfig`, `UpdateConfig`, `ListAIFeatures`, `RunAIFeature`,
 `GetAIOutput`, and the review chat's `ListChatBackends`, `ListChats`, `StartChat`,
-`SendChatMessage`, `GetChat`, `StopChat` and `DeleteChat` (through `/api/rpc`).
+`SendChatMessage`, `GetChat`, `StopChat`, `ForkChat`, `RenameChat` and `DeleteChat`
+(through `/api/rpc`).
 
 Bridged in `server.ts` but not called by the UI: `RemovePRComments`, `ListPlugins`.
 

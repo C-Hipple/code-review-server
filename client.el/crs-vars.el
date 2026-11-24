@@ -297,6 +297,16 @@ It is `again' when another read was asked for meanwhile, which runs once
 the one in flight lands.")
 (defvar-local crs--chat-sending nil
   "Non-nil while the buffer's last message is on its way to the server.")
+(defvar-local crs--chat-sessions nil
+  "The PR's chats (sessions), as ListChats last listed them for the buffer.
+A list of alists, the most recently active first.  A chat buffer keeps it
+for its header line and to step between sessions; a session list buffer
+draws it.")
+(defvar-local crs--chat-listing nil
+  "Non-nil while the buffer lists its PR's sessions again.
+It is `again' when another listing was asked for meanwhile.")
+(defvar-local crs--chat-list-callbacks nil
+  "Functions to call with the PR's sessions once the listing in flight lands.")
 (defvar-local crs--chat-input-start nil
   "Marker where the input starts: the transcript is everything before it.")
 (defvar-local crs--chat-prompt nil

@@ -27,6 +27,11 @@ import (
 // agent answers in the background, and GetChat reads a chat back. A
 // subscribed client hears Server.ChatChanged as each step lands and reads
 // GetChat again, as it does for plugin and AI output.
+//
+// A PR holds any number of chats — sessions, to the clients — each a context
+// of its own: ListChats lists them for a client to switch between, a new
+// StartChat clears the context, ForkChat carries one into a new context (and
+// the PR's latest diff), and RenameChat titles one.
 
 // chatManager runs the chats for the RPCs, with the agents the config
 // defines. Tests swap it.
@@ -158,13 +163,22 @@ type ChatSummary struct {
 	// Model is the model asked for; empty means the backend's default.
 	Model string `json:"model"`
 	Title string `json:"title"`
-	// HeadSHA is the PR head whose description and diff the chat attached.
+	// HeadSHA is the PR head whose description and diff the chat attached;
+	// empty for a fork whose first turn hasn't yet.
 	HeadSHA string  `json:"head_sha"`
 	CostUSD float64 `json:"cost_usd"`
 	// Status is "running" while the agent is answering, else "idle".
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// ForkedFrom is the chat this one was forked from; empty for one started
+	// afresh (or whose original is gone, when it names nothing ListChats has).
+	ForkedFrom string `json:"forked_from,omitempty"`
+	// Turns counts the reviewer's messages.
+	Turns int `json:"turns"`
+	// Preview is the start of the agent's last reply (else of the reviewer's
+	// last message) on one line, for a list of chats.
+	Preview string `json:"preview"`
 }
 
 // ChatMessageJSON is one message of a chat.
@@ -216,19 +230,57 @@ func chatSummary(s database.ChatSession) ChatSummary {
 		status = chat.StatusRunning
 	}
 	return ChatSummary{
-		ID:        s.ID,
-		Owner:     s.Owner,
-		Repo:      s.Repo,
-		Number:    s.Number,
-		Backend:   s.Backend,
-		Model:     s.Model,
-		Title:     s.Title,
-		HeadSHA:   s.HeadSHA,
-		CostUSD:   s.CostUSD,
-		Status:    status,
-		CreatedAt: formatTime(s.CreatedAt),
-		UpdatedAt: formatTime(s.UpdatedAt),
+		ID:         s.ID,
+		Owner:      s.Owner,
+		Repo:       s.Repo,
+		Number:     s.Number,
+		Backend:    s.Backend,
+		Model:      s.Model,
+		Title:      s.Title,
+		HeadSHA:    s.HeadSHA,
+		CostUSD:    s.CostUSD,
+		Status:     status,
+		CreatedAt:  formatTime(s.CreatedAt),
+		UpdatedAt:  formatTime(s.UpdatedAt),
+		ForkedFrom: s.ForkedFrom,
+		Turns:      s.Turns,
+		Preview:    chatPreview(s.Preview),
 	}
+}
+
+// maxChatPreview is how many characters of a message a chat's preview keeps.
+const maxChatPreview = 140
+
+// previewMarkup is the Markdown a preview leaves out: emphasis and code spans.
+var previewMarkup = strings.NewReplacer("**", "", "__", "", "`", "")
+
+// chatPreview is a message as plain text on one line, cut to maxChatPreview
+// characters: code fences, headings', quotes' and list items' markers, and
+// emphasis left out.
+func chatPreview(text string) string {
+	var words []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			continue
+		}
+		line = strings.TrimLeft(line, "> ")
+		if hashes := strings.TrimLeft(line, "#"); hashes != line && strings.HasPrefix(hashes, " ") {
+			line = hashes // a heading
+		}
+		for _, marker := range []string{"- ", "* ", "+ "} {
+			if rest, ok := strings.CutPrefix(line, marker); ok {
+				line = rest
+				break
+			}
+		}
+		words = append(words, strings.Fields(previewMarkup.Replace(line))...)
+	}
+	line := []rune(strings.Join(words, " "))
+	if len(line) <= maxChatPreview {
+		return string(line)
+	}
+	return strings.TrimSpace(string(line[:maxChatPreview-1])) + "…"
 }
 
 // chatMessageJSON reads a stored message's meta into its fields.
@@ -379,6 +431,52 @@ func fillChatReply(id string, reply *ChatReply) error {
 	c := chatJSON(v)
 	reply.Chat = &c
 	return nil
+}
+
+type ForkChatArgs struct {
+	ChatID string `json:"ChatID"`
+	// Model is one of the agent's models; empty takes the forked chat's when
+	// the config's agent is the one it talks to, else the agent's default.
+	Model string `json:"Model"`
+}
+
+// ForkChat starts a new chat (a session) carrying a chat's messages, for the
+// reviewer to continue with a fresh context: their next message starts a new
+// conversation with the config's agent, which gets those messages and the
+// PR's description and diff as they are then. Nothing runs until it. Refused
+// (okay false) while the forked chat's agent is still answering.
+func (h *RPCHandler) ForkChat(args *ForkChatArgs, reply *ChatReply) error {
+	fork, err := chatManager.Fork(args.ChatID, args.Model)
+	if errors.Is(err, chat.ErrNotFound) {
+		return fmt.Errorf("there is no chat %q", args.ChatID)
+	}
+	if err != nil {
+		reply.Message = err.Error()
+		slog.Warn("Could not fork a chat", "chat", args.ChatID, "error", err)
+		return nil
+	}
+	reply.Okay = true
+	return fillChatReply(fork.ID, reply)
+}
+
+type RenameChatArgs struct {
+	ChatID string `json:"ChatID"`
+	Title  string `json:"Title"`
+}
+
+// RenameChat sets a chat's title (on one line, at most 80 characters). An
+// empty title is refused (okay false).
+func (h *RPCHandler) RenameChat(args *RenameChatArgs, reply *ChatReply) error {
+	_, err := chatManager.Rename(args.ChatID, args.Title)
+	if errors.Is(err, chat.ErrNotFound) {
+		return fmt.Errorf("there is no chat %q", args.ChatID)
+	}
+	if err != nil {
+		reply.Message = err.Error()
+		return fillChatReply(args.ChatID, reply)
+	}
+	reply.Okay = true
+	return fillChatReply(args.ChatID, reply)
 }
 
 type GetChatArgs struct {

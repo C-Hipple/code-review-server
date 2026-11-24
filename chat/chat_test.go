@@ -341,3 +341,122 @@ func TestDeleteRemovesTheChatAndItsDirectory(t *testing.T) {
 		t.Errorf("List after Delete = %+v", list)
 	}
 }
+
+func TestForkCarriesTheConversationIntoANewOne(t *testing.T) {
+	h := newHarness(t, "ok")
+	session, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Model: "sonnet", Message: "First question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitIdle(t, session.ID)
+
+	fork, err := h.m.Fork(session.ID, "")
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	h.waitIdle(t, fork.ID) // announced, idle: nothing runs yet
+	if fork.ID == session.ID || fork.ForkedFrom != session.ID || fork.Title != "Fork: First question" ||
+		fork.Backend != "claude" || fork.Model != "sonnet" || fork.HeadSHA != "" || fork.BackendSessionID != "" {
+		t.Errorf("fork = %+v", fork)
+	}
+	if len(h.runs()) != 1 {
+		t.Errorf("forking ran the agent: %d runs", len(h.runs()))
+	}
+	v := h.view(t, fork.ID)
+	if got := roles(v.Messages); got != "user,tool,assistant,notice" ||
+		!strings.Contains(v.Messages[3].Content, "Forked from “First question”") {
+		t.Errorf("the fork's messages = %s %+v", got, v.Messages)
+	}
+
+	if err := h.m.Send(context.Background(), fork.ID, "Second question"); err != nil {
+		t.Fatalf("Send to the fork: %v", err)
+	}
+	h.waitIdle(t, fork.ID)
+	runs := h.runs()
+	if len(runs) != 2 {
+		t.Fatalf("expected two runs, got %d", len(runs))
+	}
+	first, second := runs[0], runs[1]
+	if second.flag("--resume") != "" || second.flag("--session-id") == "" || second.flag("--session-id") == first.flag("--session-id") {
+		t.Errorf("the fork's first turn should open a conversation of its own: %q", second.Args)
+	}
+	for _, want := range []string{"This conversation started earlier", "**Reviewer:** First question", "**You:** Looks fine.",
+		"The reviewer now says:\n\nSecond question", "+func Greet() {}"} {
+		if !strings.Contains(second.Stdin, want) {
+			t.Errorf("the fork's opening message should carry %q:\n%s", want, second.Stdin)
+		}
+	}
+	if strings.Contains(second.Stdin, "Forked from") {
+		t.Errorf("the fork's notice is for the reviewer, not the agent:\n%s", second.Stdin)
+	}
+	if mustEval(t, second.Dir) != mustEval(t, filepath.Join(h.dir, fork.ID)) {
+		t.Errorf("the fork ran in %s, not its own directory", second.Dir)
+	}
+
+	v = h.view(t, fork.ID)
+	if got := roles(v.Messages); got != "user,tool,assistant,notice,user,tool,assistant" {
+		t.Errorf("the fork's messages after a turn = %s", got)
+	}
+	if v.Session.HeadSHA != testPR.HeadSHA || v.Session.BackendSessionID != second.flag("--session-id") || v.Session.Turns != 2 {
+		t.Errorf("the fork after its first turn = %+v", v.Session)
+	}
+	if !strings.Contains(v.Messages[4].Meta, `"attached"`) {
+		t.Errorf("the fork's first message attaches the PR: %+v", v.Messages[4])
+	}
+	if got := roles(h.view(t, session.ID).Messages); got != "user,tool,assistant" {
+		t.Errorf("the original changed: %s", got)
+	}
+
+	// A model asked for wins over the original's.
+	other, err := h.m.Fork(session.ID, "opus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitIdle(t, other.ID)
+	if other.Model != "opus" {
+		t.Errorf("a fork asking for opus got %q", other.Model)
+	}
+	if list, _ := h.m.List("acme", "widgets", 42); len(list) != 3 {
+		t.Errorf("the PR should have the original and two forks, got %d", len(list))
+	}
+}
+
+func TestForkRefusals(t *testing.T) {
+	h := newHarness(t, "hang")
+	session, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Message: "Take your time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.m.Fork(session.ID, ""); !errors.Is(err, ErrBusy) {
+		t.Errorf("forking a running chat = %v, want ErrBusy", err)
+	}
+	if _, err := h.m.Fork("nope", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("forking a missing chat = %v, want ErrNotFound", err)
+	}
+	h.m.Stop(session.ID)
+	h.waitIdle(t, session.ID)
+}
+
+func TestRenameTitlesAChat(t *testing.T) {
+	h := newHarness(t, "ok")
+	session, err := h.m.Start(context.Background(), StartRequest{Owner: "acme", Repo: "widgets", Number: 42, Message: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitIdle(t, session.ID)
+
+	renamed, err := h.m.Rename(session.ID, "  The greeting,\n\tagain  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitIdle(t, session.ID)
+	if renamed.Title != "The greeting, again" || h.view(t, session.ID).Session.Title != "The greeting, again" {
+		t.Errorf("renamed = %+v", renamed)
+	}
+	if _, err := h.m.Rename(session.ID, " \n "); !errors.Is(err, ErrEmptyTitle) {
+		t.Errorf("an empty title = %v, want ErrEmptyTitle", err)
+	}
+	if _, err := h.m.Rename("nope", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("renaming a missing chat = %v, want ErrNotFound", err)
+	}
+}

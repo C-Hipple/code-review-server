@@ -1,14 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
+    anySessionRunning,
     attachedLabel,
     chatIsStale,
     elapsedLabel,
     formatCost,
     isSendKey,
     modelLabel,
+    sessionDetail,
     shouldCloseOnLeave,
     type ChatBackendInfo,
     type ChatMessage,
+    type ChatSummary,
 } from '../chat_utils';
 import { useChat, type ChatState } from '../hooks/useChat';
 import GitHubMarkdown from './GitHubMarkdown';
@@ -31,6 +34,10 @@ const CLOSE_DELAY_MS = 400;
  * also keeps it open). The panel stays open while the reviewer is working in
  * it — focus inside, or a message half written — and closes once the pointer
  * leaves otherwise. The conversation itself lives on the server (useChat).
+ *
+ * A PR can hold several sessions, each a context of its own: the header names
+ * the open one and lists them all, to switch to, rename or delete; New session
+ * clears the context and Fork carries the open one into a fresh context.
  */
 export default function ChatWidget({ owner, repo, number, raised = false }: ChatWidgetProps) {
     const state = useChat({ owner, repo, number });
@@ -111,7 +118,7 @@ export default function ChatWidget({ owner, repo, number, raised = false }: Chat
         if (await state.send(text)) setInput('');
     };
 
-    const running = state.chat?.status === 'running';
+    const running = anySessionRunning(state.chats, state.chat);
 
     return (
         <div
@@ -197,17 +204,6 @@ export function ChatPanel({
         return () => clearInterval(timer);
     }, [running]);
 
-    // Follow the conversation as it grows, unless the reviewer scrolled up to read.
-    const listRef = useRef<HTMLDivElement>(null);
-    const stick = useRef(true);
-    useLayoutEffect(() => {
-        const el = listRef.current;
-        if (el && stick.current) el.scrollTop = el.scrollHeight;
-    }, [chat?.id, chat?.messages.length, chat?.draft, running]);
-    useEffect(() => {
-        stick.current = true;
-    }, [chat?.id]);
-
     const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
         if (isSendKey(e)) {
             e.preventDefault();
@@ -218,39 +214,60 @@ export function ChatPanel({
     const cost = chat ? formatCost(chat.cost_usd) : null;
     const disabled = !!unavailable || noBackends || backends === null;
 
+    // The list of the PR's sessions, shown in place of the conversation.
+    const [listOpen, setListOpen] = useState(false);
+    const newSession = () => {
+        setListOpen(false);
+        state.newChat();
+        textareaRef.current?.focus();
+    };
+    const fork = async () => {
+        setListOpen(false);
+        if (await state.forkChat()) textareaRef.current?.focus();
+    };
+    const canFork = !!chat && !running && !state.sending;
+
     return (
         <div className="crs-chat-panel" role="dialog" aria-label="Review chat">
             <div className="crs-chat-header">
                 <span className="crs-chat-title">Chat</span>
-                {chats.length > 0 && (
-                    <select
-                        className="crs-chat-select crs-chat-history"
-                        aria-label="Chats on this PR"
-                        value={chat?.id ?? ''}
-                        onChange={e =>
-                            e.target.value ? state.openChat(e.target.value) : state.newChat()
-                        }
-                    >
-                        <option value="">New chat</option>
-                        {chats.map(c => (
-                            <option key={c.id} value={c.id}>
-                                {c.title || 'Untitled chat'}
-                            </option>
-                        ))}
-                    </select>
-                )}
+                <button
+                    type="button"
+                    className={`crs-chat-sessions-toggle${listOpen ? ' crs-chat-sessions-toggle--open' : ''}`}
+                    aria-label={`Sessions: ${chat ? chat.title || 'Untitled session' : 'New session'}`}
+                    aria-expanded={listOpen}
+                    title="The PR's sessions: switch to one, rename or delete it"
+                    onClick={() => setListOpen(o => !o)}
+                >
+                    <span className="crs-chat-sessions-current">
+                        {chat ? chat.title || 'Untitled session' : 'New session'}
+                    </span>
+                    {chats.length > 0 && (
+                        <span className="crs-chat-sessions-count">{chats.length}</span>
+                    )}
+                    <span aria-hidden="true">▾</span>
+                </button>
                 <span className="crs-chat-header-spacer" />
-                {chat && (
-                    <button
-                        type="button"
-                        className="crs-chat-icon-button"
-                        title="Start a new chat"
-                        aria-label="New chat"
-                        onClick={state.newChat}
-                    >
-                        +
-                    </button>
-                )}
+                <button
+                    type="button"
+                    className="crs-chat-text-button"
+                    title="Clear the context: start a new session, the agent getting the PR's latest diff. This one stays under Sessions."
+                    aria-label="New session"
+                    disabled={!chat}
+                    onClick={newSession}
+                >
+                    + New<span className="crs-chat-wide-only"> session</span>
+                </button>
+                <button
+                    type="button"
+                    className="crs-chat-text-button"
+                    title="Continue in a new session: the agent starts afresh with this conversation and the PR's latest diff. This one stays under Sessions."
+                    aria-label="Fork session"
+                    disabled={!canFork}
+                    onClick={fork}
+                >
+                    Fork
+                </button>
                 <button
                     type="button"
                     className={`crs-chat-icon-button${pinned ? ' crs-chat-icon-button--on' : ''}`}
@@ -272,77 +289,52 @@ export function ChatPanel({
                 </button>
             </div>
 
-            {chat ? (
-                <div className="crs-chat-meta">
-                    <span>
-                        {agentName} · {modelLabel(chatBackend, chat.model)}
-                        {cost && ` · ${cost}`}
-                    </span>
-                    <button
-                        type="button"
-                        className="crs-chat-link-button"
-                        title="Delete this chat"
-                        onClick={() => {
-                            if (window.confirm('Delete this chat?')) state.deleteChat(chat.id);
-                        }}
-                    >
-                        Delete
-                    </button>
-                </div>
+            {listOpen ? (
+                <SessionList
+                    state={state}
+                    onOpen={id => {
+                        setListOpen(false);
+                        if (id !== chat?.id) state.openChat(id);
+                    }}
+                    onNew={newSession}
+                    onClose={() => setListOpen(false)}
+                />
             ) : (
-                <AgentLine state={state} />
-            )}
-
-            <div
-                className="crs-chat-messages"
-                ref={listRef}
-                onScroll={e => {
-                    const el = e.currentTarget;
-                    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-                }}
-                aria-live="polite"
-            >
-                {chat && chatIsStale(chat) && (
-                    <div className="crs-chat-banner">
-                        The PR has new commits since this chat started. Start a new chat to give{' '}
-                        {agentName} the latest diff.
-                    </div>
-                )}
-                {!chat && (
-                    <div className="crs-chat-empty">
-                        {noBackends ? (
-                            'The server offers no chat agents.'
-                        ) : unavailable ? (
-                            <>
-                                <strong>{unavailable.name} isn't available.</strong>{' '}
-                                {unavailable.reason}
-                            </>
-                        ) : (
-                            <>
-                                Ask {selected?.name ?? 'an agent'} about this PR. Your first message
-                                goes with the PR's description and diff, and it can read the
-                                repository, but not change anything.
-                            </>
-                        )}
-                    </div>
-                )}
-                {chat?.messages.map(m => (
-                    <MessageView key={m.id} message={m} />
-                ))}
-                {running &&
-                    (chat?.draft ? (
-                        <div className="crs-chat-message crs-chat-message--assistant crs-chat-message--streaming">
-                            <div className="markdown-content">
-                                <GitHubMarkdown>{chat.draft}</GitHubMarkdown>
-                            </div>
+                <>
+                    {chat ? (
+                        <div className="crs-chat-meta">
+                            <span>
+                                {agentName} · {modelLabel(chatBackend, chat.model)}
+                                {cost && ` · ${cost}`}
+                            </span>
+                            <button
+                                type="button"
+                                className="crs-chat-link-button crs-chat-link-button--danger"
+                                title="Delete this session"
+                                onClick={() => {
+                                    if (window.confirm('Delete this session?'))
+                                        state.deleteChat(chat.id);
+                                }}
+                            >
+                                Delete
+                            </button>
                         </div>
                     ) : (
-                        <div className="crs-chat-thinking">
-                            <span className="crs-chat-spinner" aria-hidden="true" />
-                            {agentName} is working… {elapsedLabel(chat?.started_at, now)}
-                        </div>
-                    ))}
-            </div>
+                        <AgentLine state={state} />
+                    )}
+                    <Conversation
+                        state={state}
+                        agentName={agentName}
+                        selected={selected}
+                        unavailable={unavailable}
+                        noBackends={noBackends}
+                        now={now}
+                        canFork={canFork}
+                        onFork={fork}
+                        onNew={newSession}
+                    />
+                </>
+            )}
 
             {state.error && (
                 <div className="crs-chat-error" role="alert">
@@ -389,6 +381,258 @@ export function ChatPanel({
                 )}
             </form>
         </div>
+    );
+}
+
+interface ConversationProps {
+    state: ChatState;
+    agentName: string;
+    selected: ChatBackendInfo | undefined;
+    unavailable: ChatBackendInfo | null | undefined;
+    noBackends: boolean;
+    now: number;
+    canFork: boolean;
+    onFork: () => void;
+    onNew: () => void;
+}
+
+/** The open session's messages, or what a new one says before it starts. */
+function Conversation({
+    state,
+    agentName,
+    selected,
+    unavailable,
+    noBackends,
+    now,
+    canFork,
+    onFork,
+    onNew,
+}: ConversationProps) {
+    const { chat } = state;
+    const running = chat?.status === 'running';
+
+    // Follow the conversation as it grows, unless the reviewer scrolled up to read.
+    const listRef = useRef<HTMLDivElement>(null);
+    const stick = useRef(true);
+    useLayoutEffect(() => {
+        const el = listRef.current;
+        if (el && stick.current) el.scrollTop = el.scrollHeight;
+    }, [chat?.id, chat?.messages.length, chat?.draft, running]);
+    useEffect(() => {
+        stick.current = true;
+    }, [chat?.id]);
+
+    return (
+        <div
+            className="crs-chat-messages"
+            ref={listRef}
+            onScroll={e => {
+                const el = e.currentTarget;
+                stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            }}
+            aria-live="polite"
+        >
+            {chat && chatIsStale(chat) && (
+                <div className="crs-chat-banner">
+                    The PR has new commits since this session attached its diff.{' '}
+                    {canFork ? (
+                        <>
+                            <button
+                                type="button"
+                                className="crs-chat-inline-button"
+                                onClick={onFork}
+                            >
+                                Fork it
+                            </button>{' '}
+                            to carry this conversation to the latest diff, or{' '}
+                        </>
+                    ) : (
+                        'Fork it once the agent is done, or '
+                    )}
+                    <button type="button" className="crs-chat-inline-button" onClick={onNew}>
+                        start a new session
+                    </button>
+                    .
+                </div>
+            )}
+            {!chat && (
+                <div className="crs-chat-empty">
+                    {noBackends ? (
+                        'The server offers no chat agents.'
+                    ) : unavailable ? (
+                        <>
+                            <strong>{unavailable.name} isn't available.</strong>{' '}
+                            {unavailable.reason}
+                        </>
+                    ) : (
+                        <>
+                            Ask {selected?.name ?? 'an agent'} about this PR. Your first message
+                            goes with the PR's description and diff, and it can read the repository,
+                            but not change anything.
+                        </>
+                    )}
+                </div>
+            )}
+            {chat?.messages.map(m => (
+                <MessageView key={m.id} message={m} />
+            ))}
+            {running &&
+                (chat?.draft ? (
+                    <div className="crs-chat-message crs-chat-message--assistant crs-chat-message--streaming">
+                        <div className="markdown-content">
+                            <GitHubMarkdown>{chat.draft}</GitHubMarkdown>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="crs-chat-thinking">
+                        <span className="crs-chat-spinner" aria-hidden="true" />
+                        {agentName} is working… {elapsedLabel(chat?.started_at, now)}
+                    </div>
+                ))}
+        </div>
+    );
+}
+
+interface SessionListProps {
+    state: ChatState;
+    onOpen: (id: string) => void;
+    onNew: () => void;
+    onClose: () => void;
+}
+
+/**
+ * The PR's sessions, the most recently active first: a new one to start, and
+ * each to open, rename or delete. Escape closes the list, not the panel.
+ */
+export function SessionList({ state, onOpen, onNew, onClose }: SessionListProps) {
+    const { chats, chat, backends } = state;
+    const now = Date.now();
+    return (
+        <div
+            className="crs-chat-sessions"
+            role="region"
+            aria-label="Sessions on this PR"
+            onKeyDown={e => {
+                if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    onClose();
+                }
+            }}
+        >
+            <button
+                type="button"
+                className={`crs-chat-session-open crs-chat-session-new${chat ? '' : ' crs-chat-session-open--current'}`}
+                onClick={onNew}
+            >
+                <span className="crs-chat-session-title">+ New session</span>
+                <span className="crs-chat-session-preview">
+                    A fresh context: the agent starts over with the PR's latest diff. The sessions
+                    below stay, to come back to.
+                </span>
+            </button>
+            {chats.length === 0 ? (
+                <div className="crs-chat-empty">No sessions on this PR yet.</div>
+            ) : (
+                <ul className="crs-chat-session-list">
+                    {chats.map(c => (
+                        <SessionRow
+                            key={c.id}
+                            session={c}
+                            current={c.id === chat?.id}
+                            detail={sessionDetail(c, backends, now)}
+                            onOpen={() => onOpen(c.id)}
+                            onRename={title => state.renameChat(c.id, title)}
+                            onDelete={() => state.deleteChat(c.id)}
+                        />
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
+interface SessionRowProps {
+    session: ChatSummary;
+    current: boolean;
+    detail: string;
+    onOpen: () => void;
+    onRename: (title: string) => Promise<boolean>;
+    onDelete: () => void;
+}
+
+function SessionRow({ session, current, detail, onOpen, onRename, onDelete }: SessionRowProps) {
+    const [editing, setEditing] = useState(false);
+    const title = session.title || 'Untitled session';
+    const save = async (value: string) => {
+        setEditing(false);
+        const next = value.trim();
+        if (next && next !== session.title) await onRename(next);
+    };
+    return (
+        <li className={`crs-chat-session${current ? ' crs-chat-session--current' : ''}`}>
+            {editing ? (
+                <input
+                    className="crs-chat-rename"
+                    aria-label="Session title"
+                    defaultValue={session.title}
+                    autoFocus
+                    onFocus={e => e.currentTarget.select()}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void save(e.currentTarget.value);
+                        } else if (e.key === 'Escape') {
+                            e.stopPropagation();
+                            setEditing(false);
+                        }
+                    }}
+                    onBlur={e => void save(e.currentTarget.value)}
+                />
+            ) : (
+                <button
+                    type="button"
+                    className={`crs-chat-session-open${current ? ' crs-chat-session-open--current' : ''}`}
+                    aria-current={current ? 'true' : undefined}
+                    onClick={onOpen}
+                >
+                    <span className="crs-chat-session-title">
+                        {session.status === 'running' && (
+                            <span
+                                className="crs-chat-session-dot"
+                                title="The agent is answering"
+                                aria-label="answering"
+                            />
+                        )}
+                        <span className="crs-chat-session-name">{title}</span>
+                        {session.forked_from && <span className="crs-chat-session-tag">fork</span>}
+                    </span>
+                    <span className="crs-chat-session-detail">{detail}</span>
+                    {session.preview && (
+                        <span className="crs-chat-session-preview">{session.preview}</span>
+                    )}
+                </button>
+            )}
+            <span className="crs-chat-session-actions">
+                <button
+                    type="button"
+                    className="crs-chat-link-button"
+                    aria-label={`Rename ${title}`}
+                    onClick={() => setEditing(true)}
+                >
+                    Rename
+                </button>
+                <button
+                    type="button"
+                    className="crs-chat-link-button crs-chat-link-button--danger"
+                    aria-label={`Delete ${title}`}
+                    onClick={() => {
+                        if (window.confirm(`Delete the session "${title}"?`)) onDelete();
+                    }}
+                >
+                    Delete
+                </button>
+            </span>
+        </li>
     );
 }
 

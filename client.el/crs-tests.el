@@ -1863,6 +1863,31 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
                                    (list file position nil)))))
               (kill-buffer edit-buffer))))))))
 
+(defun crs-test--wash-with-overlays ()
+  "Colour each added line with an overlay, as magit-delta's washer does."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^\\+.*$" nil t)
+      (overlay-put (make-overlay (match-beginning 0) (match-end 0)) 'face 'diff-added))))
+
+(ert-deftest crs-test-comment-indicator-keeps-the-lines-colours ()
+  "A collapsed comment's indicator goes on the end of its line, which keeps its colours."
+  (crs-test--with-review-buffer nil
+    (with-current-buffer buffer
+      (setq crs--buffer-show-comments nil))
+    (cl-letf (((symbol-function 'crs--send-request) #'ignore)
+              ((symbol-function 'delta-wash) #'crs-test--wash-with-overlays))
+      (crs--render-and-update buffer crs-test--pr-payload))
+    (with-current-buffer buffer
+      (goto-char (point-min))
+      (re-search-forward "^\\+two +<C: bob>$")
+      (forward-line 0)
+      (let ((overlay (seq-find (lambda (o) (eq (overlay-get o 'face) 'diff-added))
+                               (overlays-at (point)))))
+        (should overlay)
+        (should (equal (buffer-substring-no-properties (overlay-start overlay) (overlay-end overlay))
+                       "+two"))))))
+
 (defun crs-test--faces-at (regexp &optional group)
   "The `font-lock-face' at the start of REGEXP's GROUP, searched from the top."
   (save-excursion

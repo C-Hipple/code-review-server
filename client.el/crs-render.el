@@ -1158,12 +1158,13 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (goto-char (car ins))
       (let ((content (cdr ins)))
         (if (and (listp content) (eq (car content) 'append))
-            ;; Handle append with alignment
+            ;; Append with alignment, at the line's end: rewriting the line
+            ;; would drop the washer's colours, overlays and all.
             (let* ((indicator (cadr content))
                    (current-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                    (new-line (crs--append-right-aligned current-line indicator 120)))
-              (delete-region (line-beginning-position) (line-end-position))
-              (insert new-line))
+              (goto-char (line-end-position))
+              (insert (substring new-line (length current-line))))
           ;; Normal insert
           (insert content))))))
 

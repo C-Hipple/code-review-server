@@ -514,6 +514,105 @@ annotations that could not be anchored to a visible diff line."
     (push "" lines)
     (mapconcat #'identity (nreverse lines) "\n")))
 
+;;; Block faces
+;;
+;; Comment threads and expanded annotations are boxed blocks of text drawn
+;; under the line they're about.  Their faces go on once the bodies are
+;; rendered, as `font-lock-face' properties: font-lock clears the `face'
+;; property of each region it fontifies, and a font-lock regexp can't
+;; tell which block a "│" line belongs to, nor whose comment it is part of.
+
+(defun crs--add-block-face (beg end face)
+  "Put FACE on BEG..END, in front of the block faces already there."
+  (let ((pos beg))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'font-lock-face nil end))
+            (old (get-text-property pos 'font-lock-face)))
+        (put-text-property pos next 'font-lock-face
+                           (cons face (if (listp old) old (list old))))
+        (setq pos next)))))
+
+(defun crs--block-face-match (group face)
+  "Put FACE on what GROUP of the last match matched, if anything."
+  (when (and (match-beginning group) (< (match-beginning group) (match-end group)))
+    (crs--add-block-face (match-beginning group) (match-end group) face)))
+
+(defun crs--annotation-severity-face (severity)
+  "The face for an annotation's SEVERITY, such as \"[warning]\"."
+  (pcase severity
+    ("[error]" 'crs-annotation-error)
+    ("[warning]" 'crs-annotation-warning)
+    (_ 'crs-annotation-info)))
+
+(defun crs--decorate-blocks ()
+  "Give each comment and annotation block in the current buffer its faces.
+Blocks are drawn by `crs--render-comment-tree' and
+`crs--render-annotation-block'; this runs once their bodies are rendered."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^    ┌─ " nil t)
+      (forward-line 0)
+      (crs--decorate-block))))
+
+(defun crs--decorate-block ()
+  "Give the block whose header is at point its faces, and move past it.
+The block takes the faces of a comment thread or of plugin annotations;
+in a thread, a local comment's lines take the pending faces."
+  (let* ((annotation (looking-at-p "    ┌─ PLUGIN ANNOTATION"))
+         (end (save-excursion
+                (if (re-search-forward "^    └.*$" nil t) (match-end 0) (point-max))))
+         (pending (and (not annotation)
+                       (save-excursion
+                         (and (re-search-forward "^    │ \\[\\([^]\n]*\\)\\]:$" end t)
+                              (string= (match-string 1) "local")))))
+         (done nil))
+    (while (and (not done) (< (point) end))
+      (let ((eol (line-end-position)))
+        ;; A reply starts the lines of its own comment.
+        (when (and (not annotation)
+                   (looking-at "    │ Reply by \\[\\([^]\n]*\\)\\]:"))
+          (setq pending (string= (match-string 1) "local")))
+        (let ((block (cond (annotation 'crs-annotation-block)
+                           (pending 'crs-pending-comment-block)
+                           (t 'crs-comment-block)))
+              (border (cond (annotation 'crs-annotation-border)
+                            (pending 'crs-pending-comment-border)
+                            (t 'crs-comment-border))))
+          ;; From the box's left edge, newline and all.
+          (crs--add-block-face (min (+ (point) 4) eol) (min (1+ eol) (point-max)) block)
+          (cond
+           ((looking-at "    \\(┌─\\) \\(.*?\\)\\(?: \\(\\[OUTDATED\\]\\)\\)?\\( ─*\\)$")
+            (crs--block-face-match 1 border)
+            (crs--block-face-match 2 'crs-block-title)
+            (crs--block-face-match 3 'crs-comment-outdated)
+            (crs--block-face-match 4 border))
+           ((looking-at "    \\(└─*\\)$")
+            (crs--block-face-match 1 border)
+            (setq done t))
+           ((looking-at "    \\(│\\)")
+            (crs--block-face-match 1 border)
+            (cond
+             ;; An annotation's severity and plugin.
+             ((and annotation (looking-at "    │ \\(\\[[^]\n]*\\]\\)? ?\\([^ \n].*\\)$"))
+              (when (match-beginning 1)
+                (crs--block-face-match 1 (crs--annotation-severity-face (match-string 1))))
+              (crs--block-face-match 2 'crs-annotation-plugin))
+             (annotation
+              (crs--add-block-face (min (+ (point) 5) eol) eol 'crs-annotation-body))
+             ;; A comment's author: "[bob]:", or "Reply by [bob]:[ID]".
+             ((looking-at "    │ \\(\\(?:Reply by \\)?\\[\\)\\([^]\n]*\\)\\(\\]:.*\\)$")
+              (crs--block-face-match 1 'crs-comment-metadata)
+              (crs--block-face-match 2 (if pending 'crs-pending-comment-author 'crs-comment-author))
+              (crs--block-face-match 3 'crs-comment-metadata))
+             ;; The file, date and ID lines.
+             ((looking-at "    │ \\([^ \n].*\\)$")
+              (crs--block-face-match 1 'crs-comment-metadata))
+             ((looking-at "    │   \\(Reactions: .*\\)$")
+              (crs--block-face-match 1 'crs-comment-metadata))
+             (t
+              (crs--add-block-face (min (+ (point) 5) eol) eol 'crs-comment-body))))))
+        (forward-line 1)))))
+
 (defun crs--insert-annotations-into-buffer (annotations show-full)
   "Insert plugin ANNOTATIONS into the current buffer's washed diff.
 An annotation anchors to the line matching its head-side line number, so
@@ -1483,6 +1582,7 @@ for more robust position restoration."
             ;; body needs the cached image paths, so put those back first.
             (setq crs--buffer-images (or new-images existing-images))
             (crs--process-html-placeholders)
+            (crs--decorate-blocks)
 
             ;; Re-set the buffer-local variables AFTER mode change
             (setq crs--buffer-diff (or new-diff existing-diff))

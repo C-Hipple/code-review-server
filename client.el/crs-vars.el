@@ -78,6 +78,83 @@ block's left edge rather than wrapping out of the block."
   :type 'integer
   :group 'crs)
 
+;; Faces of the blocks comments and plugin annotations are drawn in, under
+;; the diff line they're about (`crs--decorate-blocks').  They inherit from
+;; the standard faces, so they follow the theme.
+(defgroup crs-faces nil
+  "Faces of the comment and annotation blocks in a review buffer."
+  :group 'crs
+  :group 'faces)
+
+(defface crs-comment-block '((t))
+  "Each line of a review comment's block, from its box's left edge.
+It covers the newline too, so a background extends to the window's edge."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-block '((t :inherit crs-comment-block))
+  "The lines of a local comment, one not yet submitted, in its block."
+  :group 'crs-faces)
+
+(defface crs-annotation-block '((t))
+  "Each line of a plugin annotation's block, from its box's left edge."
+  :group 'crs-faces)
+
+(defface crs-comment-border '((t :inherit shadow))
+  "The box drawn around a review comment thread."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-border '((t :inherit crs-comment-border))
+  "The box beside a local comment, one not yet submitted."
+  :group 'crs-faces)
+
+(defface crs-annotation-border '((t :inherit shadow))
+  "The box drawn around plugin annotations."
+  :group 'crs-faces)
+
+(defface crs-block-title '((t :inherit shadow))
+  "A block's title: REVIEW COMMENT, FILE COMMENT or PLUGIN ANNOTATION."
+  :group 'crs-faces)
+
+(defface crs-comment-author '((t :inherit (bold font-lock-function-name-face)))
+  "Who wrote a comment."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-author '((t :inherit (bold warning)))
+  "The author of a local comment, one not yet submitted: \"local\"."
+  :group 'crs-faces)
+
+(defface crs-comment-metadata '((t :inherit shadow))
+  "A comment's file, date, ID and reactions, and the brackets around its author."
+  :group 'crs-faces)
+
+(defface crs-comment-body '((t))
+  "A comment's text."
+  :group 'crs-faces)
+
+(defface crs-comment-outdated '((t :inherit warning))
+  "The [OUTDATED] mark on a comment about code that has since changed."
+  :group 'crs-faces)
+
+(defface crs-annotation-plugin '((t :inherit bold))
+  "The plugin an annotation came from."
+  :group 'crs-faces)
+
+(defface crs-annotation-body '((t))
+  "An annotation's text."
+  :group 'crs-faces)
+
+(defface crs-annotation-error '((t :inherit error))
+  "The [error] severity of an annotation."
+  :group 'crs-faces)
+
+(defface crs-annotation-warning '((t :inherit warning))
+  "The [warning] severity of an annotation."
+  :group 'crs-faces)
+
+(defface crs-annotation-info '((t :inherit font-lock-keyword-face))
+  "The [info] severity of an annotation, and any other but error and warning."
+  :group 'crs-faces)
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")

@@ -1863,6 +1863,63 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
                                    (list file position nil)))))
               (kill-buffer edit-buffer))))))))
 
+(defun crs-test--faces-at (regexp &optional group)
+  "The `font-lock-face' at the start of REGEXP's GROUP, searched from the top."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward regexp)
+    (let ((faces (get-text-property (match-beginning (or group 0)) 'font-lock-face)))
+      (if (listp faces) faces (list faces)))))
+
+(ert-deftest crs-test-blocks-get-their-faces ()
+  "Each part of a comment or annotation block gets its face; the diff gets none."
+  (crs-test--with-annotated-review
+    (should (memq 'crs-comment-author (crs-test--faces-at "^    │ \\[\\(bob\\)\\]:" 1)))
+    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    │ \\(\\[\\)bob\\]:" 1)))
+    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    │ \\(File: a.txt\\)" 1)))
+    (should (memq 'crs-comment-border (crs-test--faces-at "^    \\(│\\)   two-nit" 1)))
+    (should (memq 'crs-block-title (crs-test--faces-at "^    ┌─ \\(REVIEW COMMENT\\)" 1)))
+    (let ((body (crs-test--faces-at "^    │   \\(two-nit\\)" 1)))
+      (should (memq 'crs-comment-body body))
+      (should (memq 'crs-comment-block body)))
+    ;; The block face starts at the box and runs through the newline, so a
+    ;; background reaches the window's edge.
+    (should-not (crs-test--faces-at "^\\(    \\)│   two-nit" 1))
+    (save-excursion
+      (goto-char (point-min))
+      (re-search-forward "^    │   two-nit$")
+      (should (memq 'crs-comment-block (ensure-list (get-text-property (point) 'font-lock-face)))))
+    ;; A local comment takes the pending faces.
+    (should (memq 'crs-pending-comment-author (crs-test--faces-at "^    │ \\[\\(local\\)\\]:" 1)))
+    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(local-nit\\)" 1)))
+    (should (memq 'crs-pending-comment-border (crs-test--faces-at "^    \\(│\\)   local-nit" 1)))
+    ;; An annotation, its own.
+    (should (memq 'crs-annotation-info (crs-test--faces-at "^    │ \\(\\[info\\]\\) Lint" 1)))
+    (should (memq 'crs-annotation-plugin (crs-test--faces-at "^    │ \\[info\\] \\(Lint\\)" 1)))
+    (should (memq 'crs-annotation-block (crs-test--faces-at "^    │   \\(two-lint\\)" 1)))
+    (should (memq 'crs-annotation-border (crs-test--faces-at "^    \\(┌─\\) PLUGIN ANNOTATION" 1)))
+    (should-not (memq 'crs-comment-block (crs-test--faces-at "^    │   \\(two-lint\\)" 1)))
+    ;; The diff's own lines are left to the washer.
+    (should-not (crs-test--faces-at "^\\+two"))))
+
+(ert-deftest crs-test-pending-reply-faces-start-at-the-reply ()
+  "In a thread, only a local reply's lines take the pending faces."
+  (with-temp-buffer
+    (insert " context\n"
+            (crs--render-comment-tree
+             '(((id . "5") (author . "bob") (body . "root-body")
+                (path . "a.txt") (position . "1") (outdated . t))
+               ((id . "6") (author . "local") (body . "draft-body")
+                (path . "a.txt") (position . "1")))))
+    (crs--process-html-placeholders)
+    (crs--decorate-blocks)
+    (should (memq 'crs-comment-block (crs-test--faces-at "^    │   \\(root-body\\)" 1)))
+    (should-not (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(root-body\\)" 1)))
+    (should (memq 'crs-comment-outdated (crs-test--faces-at "\\[OUTDATED\\]")))
+    (should (memq 'crs-pending-comment-author
+                  (crs-test--faces-at "^    │ Reply by \\[\\(local\\)\\]" 1)))
+    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(draft-body\\)" 1)))))
+
 (ert-deftest crs-test-delete-on-annotation-block-finds-no-local-comment ()
   "`d' finds a local comment in its own block, not from an annotation below it."
   (crs-test--with-annotated-review

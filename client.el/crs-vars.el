@@ -111,20 +111,16 @@ It covers the newline too, so a background extends to the window's edge."
   "The box drawn around plugin annotations."
   :group 'crs-faces)
 
-(defface crs-block-title '((t :inherit shadow))
-  "A block's title: REVIEW COMMENT, FILE COMMENT or PLUGIN ANNOTATION."
-  :group 'crs-faces)
-
 (defface crs-comment-author '((t :inherit (bold font-lock-function-name-face)))
   "Who wrote a comment."
   :group 'crs-faces)
 
 (defface crs-pending-comment-author '((t :inherit (bold warning)))
-  "The author of a local comment, one not yet submitted: \"local\"."
+  "The author of a local comment, one not yet submitted: \"you\"."
   :group 'crs-faces)
 
 (defface crs-comment-metadata '((t :inherit shadow))
-  "A comment's file, date, ID and reactions, and the brackets around its author."
+  "When a comment was written, its notes (\"pending\", \"on the file\") and reactions."
   :group 'crs-faces)
 
 (defface crs-comment-body '((t))
@@ -132,7 +128,7 @@ It covers the newline too, so a background extends to the window's edge."
   :group 'crs-faces)
 
 (defface crs-comment-outdated '((t :inherit warning))
-  "The [OUTDATED] mark on a comment about code that has since changed."
+  "The \"outdated\" note on a comment about code that has since changed."
   :group 'crs-faces)
 
 (defface crs-annotation-plugin '((t :inherit bold))
@@ -144,15 +140,15 @@ It covers the newline too, so a background extends to the window's edge."
   :group 'crs-faces)
 
 (defface crs-annotation-error '((t :inherit error))
-  "The [error] severity of an annotation."
+  "The \"error\" severity of an annotation."
   :group 'crs-faces)
 
 (defface crs-annotation-warning '((t :inherit warning))
-  "The [warning] severity of an annotation."
+  "The \"warning\" severity of an annotation."
   :group 'crs-faces)
 
 (defface crs-annotation-info '((t :inherit font-lock-keyword-face))
-  "The [info] severity of an annotation, and any other but error and warning."
+  "The \"info\" severity of an annotation, and any other but error and warning."
   :group 'crs-faces)
 
 (defvar crs--section-header-regexp

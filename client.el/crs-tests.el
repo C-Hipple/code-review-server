@@ -307,15 +307,14 @@ line the diff does not show, and one for a file outside the diff.")
     (goto-char (point-min))
     (search-forward "+line two")
     (forward-line 1)
-    (should (string-match-p "┌─ PLUGIN ANNOTATION"
+    (should (string-match-p "┌─ warning · Security Check"
                             (buffer-substring-no-properties
                              (line-beginning-position) (line-end-position))))
     (let ((text (buffer-string)))
-      (should (string-match-p "\\[warning\\] Security Check" text))
+      (should (string-match-p "├─ info · Style · line 99\\|┌─ info · Style · line 99" text))
       (should (string-match-p "this line looks wrong" text))
       ;; The unanchorable annotation renders before the hunk header, naming its line.
-      (should (string-match-p "\\[info\\] Style @ line 99" text))
-      (should (< (string-match "Style @ line 99" text)
+      (should (< (string-match "Style · line 99" text)
                  (string-match "@@ -1,3 \\+1,4 @@" text)))
       (should-not (string-match-p "not in the diff" text)))))
 
@@ -350,7 +349,7 @@ line the diff does not show, and one for a file outside the diff.")
     (should (equal (cdr (assq 'content (car (crs--annotations-on-current-line))))
                    "this line looks wrong"))
     ;; ...and the block rendered beneath it.
-    (forward-line 2)
+    (forward-line 1)
     (should (string-match-p "Security Check"
                             (buffer-substring-no-properties
                              (line-beginning-position) (line-end-position))))
@@ -634,7 +633,7 @@ newline until the very end."
          (crs--render-comment-tree
           (list '((id . "1") (author . "alice") (path . "a.go") (position . "3")
                   (body . "please rename this"))))))
-    (should-not (string-match-p "Reactions:" rendered))))
+    (should (equal (length (split-string rendered "\n" t)) 3))))
 
 (ert-deftest crs-test-conversation-renders-reactions ()
   "Conversation comments and review bodies both carry their reactions."
@@ -1773,7 +1772,7 @@ an annotation below it.")
 (defun crs-test--on-block-lines (text fn)
   "Call FN on each line of the block holding TEXT, and return its values.
 FN runs with point at the start of each line drawn as part of the block
-\(\"│┌└\"), from its header down to its footer."
+\(\"│┌├└\"), from its header down to its footer."
   (save-excursion
     (goto-char (point-min))
     (re-search-forward (concat "^    │.*" (regexp-quote text)))
@@ -1782,7 +1781,7 @@ FN runs with point at the start of each line drawn as part of the block
           (footer nil))
       (while (not footer)
         (setq footer (looking-at "    └"))
-        (when (looking-at "    [│┌└]")
+        (when (looking-at "    [│┌├└]")
           (push (save-excursion (funcall fn)) values))
         (forward-line 1))
       (nreverse values))))
@@ -1818,11 +1817,11 @@ FN runs with point at the start of each line drawn as part of the block
 Not a reply to a comment drawn above the block, nor an edit of a local one."
   (crs-test--with-annotated-review
     (should (equal (crs-test--on-block-lines "two-lint" #'crs-test--comment-target)
-                   (make-list 4 '("a.txt" 2 nil nil))))
+                   (make-list 3 '("a.txt" 2 nil nil))))
     (should (equal (crs-test--on-block-lines "three-lint" #'crs-test--comment-target)
-                   (make-list 4 '("a.txt" 3 nil nil))))
+                   (make-list 3 '("a.txt" 3 nil nil))))
     (should (equal (crs-test--on-block-lines "new-lint" #'crs-test--comment-target)
-                   (make-list 4 '("b.txt" 3 nil nil))))))
+                   (make-list 3 '("b.txt" 3 nil nil))))))
 
 (ert-deftest crs-test-comment-block-beside-annotations-keeps-its-thread ()
   "A comment block drawn beside annotation blocks is still replied to, or edited."
@@ -1896,34 +1895,86 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
     (let ((faces (get-text-property (match-beginning (or group 0)) 'font-lock-face)))
       (if (listp faces) faces (list faces)))))
 
+(ert-deftest crs-test-relative-time ()
+  "A comment's time reads as how long ago it was, then as its date."
+  (let ((now (parse-iso8601-time-string "2026-11-25T12:00:00Z")))
+    (should (equal (crs--relative-time "2026-11-25T11:59:30Z" now) "just now"))
+    (should (equal (crs--relative-time "2026-11-25T11:59:00Z" now) "1 minute ago"))
+    (should (equal (crs--relative-time "2026-11-25T09:00:00Z" now) "3 hours ago"))
+    (should (equal (crs--relative-time "2026-11-24T06:00:00Z" now) "yesterday"))
+    (should (equal (crs--relative-time "2026-11-20T12:00:00Z" now) "5 days ago"))
+    (should (equal (crs--relative-time "2026-11-03T12:00:00Z" now) "Nov 3"))
+    (should (equal (crs--relative-time "2025-02-03T12:00:00Z" now) "Feb 3, 2025"))
+    (should (equal (crs--relative-time "sometime" now) "sometime"))
+    (should-not (crs--relative-time "" now))
+    (should-not (crs--relative-time nil now))))
+
+(ert-deftest crs-test-comment-tree-draws-a-header-per-comment ()
+  "Each comment opens with its author and time; the IDs ride on the first line."
+  (cl-letf (((symbol-function 'crs--relative-time)
+             (lambda (timestamp &rest _) (and timestamp (concat "at " timestamp)))))
+    (let* ((thread '(((id . "1") (author . "alice") (path . "a.go") (created_at . "t1")
+                      (body . "b1") (outdated . t))
+                     ((id . "2") (author . "bob") (path . "a.go") (created_at . "t2") (body . "b2"))
+                     ((id . "3") (author . "local") (path . "a.go") (body . "b3"))))
+           (rendered (crs--render-comment-tree thread))
+           (lines (split-string rendered "\n" t)))
+      (should (equal (nth 0 lines) "    ┌─ alice · at t1 · on the file · outdated"))
+      (should (equal (nth 2 lines) "    ├─ bob · at t2"))
+      (should (equal (nth 4 lines) "    ├─ you · pending"))
+      (should (equal (car (last lines)) "    └─"))
+      (should (equal (length lines) 7))
+      (should (eq (get-text-property 0 'crs-thread rendered) thread))
+      (should (equal (get-text-property 0 'help-echo rendered) "t1 · ID 1"))
+      (should (equal (cdr (assq 'id (get-text-property (string-match "├─ bob" rendered)
+                                                       'crs-comment rendered)))
+                     "2")))))
+
+(ert-deftest crs-test-local-reply-is-edited-from-its-own-text ()
+  "On a thread with a local reply, `c' edits it, starting from its text as written."
+  (with-temp-buffer
+    (insert " context\n"
+            (crs--render-comment-tree
+             '(((id . "5") (author . "bob") (body . "root-body") (path . "a.txt") (position . "1"))
+               ((id . "6") (author . "local") (body . "first line\nsecond line")
+                (path . "a.txt") (position . "1")))))
+    (crs--process-html-placeholders)
+    (dolist (text '("root-body" "first line"))
+      (goto-char (point-min))
+      (re-search-forward (concat "^    │ " text))
+      (let ((ctx (crs--get-comment-context)))
+        (should-not (nth 5 ctx))
+        (should (equal (nth 6 ctx) 6))
+        (should (equal (nth 7 ctx) "first line\nsecond line"))))))
+
 (ert-deftest crs-test-blocks-get-their-faces ()
   "Each part of a comment or annotation block gets its face; the diff gets none."
   (crs-test--with-annotated-review
-    (should (memq 'crs-comment-author (crs-test--faces-at "^    │ \\[\\(bob\\)\\]:" 1)))
-    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    │ \\(\\[\\)bob\\]:" 1)))
-    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    │ \\(File: a.txt\\)" 1)))
-    (should (memq 'crs-comment-border (crs-test--faces-at "^    \\(│\\)   two-nit" 1)))
-    (should (memq 'crs-block-title (crs-test--faces-at "^    ┌─ \\(REVIEW COMMENT\\)" 1)))
-    (let ((body (crs-test--faces-at "^    │   \\(two-nit\\)" 1)))
+    (should (memq 'crs-comment-author (crs-test--faces-at "^    ┌─ \\(bob\\)$" 1)))
+    (should (memq 'crs-comment-border (crs-test--faces-at "^    \\(┌─\\) bob$" 1)))
+    (should (memq 'crs-comment-border (crs-test--faces-at "^    \\(│\\) two-nit" 1)))
+    (should (memq 'crs-comment-border (crs-test--faces-at "two-nit\n    \\(└─\\)$" 1)))
+    (let ((body (crs-test--faces-at "^    │ \\(two-nit\\)" 1)))
       (should (memq 'crs-comment-body body))
       (should (memq 'crs-comment-block body)))
     ;; The block face starts at the box and runs through the newline, so a
     ;; background reaches the window's edge.
-    (should-not (crs-test--faces-at "^\\(    \\)│   two-nit" 1))
+    (should-not (crs-test--faces-at "^\\(    \\)│ two-nit" 1))
     (save-excursion
       (goto-char (point-min))
-      (re-search-forward "^    │   two-nit$")
+      (re-search-forward "^    │ two-nit$")
       (should (memq 'crs-comment-block (ensure-list (get-text-property (point) 'font-lock-face)))))
-    ;; A local comment takes the pending faces.
-    (should (memq 'crs-pending-comment-author (crs-test--faces-at "^    │ \\[\\(local\\)\\]:" 1)))
-    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(local-nit\\)" 1)))
-    (should (memq 'crs-pending-comment-border (crs-test--faces-at "^    \\(│\\)   local-nit" 1)))
+    ;; A local comment is "you", and takes the pending faces.
+    (should (memq 'crs-pending-comment-author (crs-test--faces-at "^    ┌─ \\(you\\) · pending" 1)))
+    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    ┌─ you · \\(pending\\)" 1)))
+    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │ \\(local-nit\\)" 1)))
+    (should (memq 'crs-pending-comment-border (crs-test--faces-at "^    \\(│\\) local-nit" 1)))
     ;; An annotation, its own.
-    (should (memq 'crs-annotation-info (crs-test--faces-at "^    │ \\(\\[info\\]\\) Lint" 1)))
-    (should (memq 'crs-annotation-plugin (crs-test--faces-at "^    │ \\[info\\] \\(Lint\\)" 1)))
-    (should (memq 'crs-annotation-block (crs-test--faces-at "^    │   \\(two-lint\\)" 1)))
-    (should (memq 'crs-annotation-border (crs-test--faces-at "^    \\(┌─\\) PLUGIN ANNOTATION" 1)))
-    (should-not (memq 'crs-comment-block (crs-test--faces-at "^    │   \\(two-lint\\)" 1)))
+    (should (memq 'crs-annotation-info (crs-test--faces-at "^    ┌─ \\(info\\) · Lint" 1)))
+    (should (memq 'crs-annotation-plugin (crs-test--faces-at "^    ┌─ info · \\(Lint\\)" 1)))
+    (should (memq 'crs-annotation-block (crs-test--faces-at "^    │ \\(two-lint\\)" 1)))
+    (should (memq 'crs-annotation-border (crs-test--faces-at "^    \\(┌─\\) info · Lint" 1)))
+    (should-not (memq 'crs-comment-block (crs-test--faces-at "^    │ \\(two-lint\\)" 1)))
     ;; The diff's own lines are left to the washer.
     (should-not (crs-test--faces-at "^\\+two"))))
 
@@ -1933,17 +1984,18 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
     (insert " context\n"
             (crs--render-comment-tree
              '(((id . "5") (author . "bob") (body . "root-body")
-                (path . "a.txt") (position . "1") (outdated . t))
+                (path . "a.txt") (position . "1") (outdated . t)
+                (reactions . [((content . "+1") (emoji . "👍") (users . ["al"]) (count . 1))]))
                ((id . "6") (author . "local") (body . "draft-body")
                 (path . "a.txt") (position . "1")))))
     (crs--process-html-placeholders)
     (crs--decorate-blocks)
-    (should (memq 'crs-comment-block (crs-test--faces-at "^    │   \\(root-body\\)" 1)))
-    (should-not (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(root-body\\)" 1)))
-    (should (memq 'crs-comment-outdated (crs-test--faces-at "\\[OUTDATED\\]")))
-    (should (memq 'crs-pending-comment-author
-                  (crs-test--faces-at "^    │ Reply by \\[\\(local\\)\\]" 1)))
-    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │   \\(draft-body\\)" 1)))))
+    (should (memq 'crs-comment-block (crs-test--faces-at "^    │ \\(root-body\\)" 1)))
+    (should-not (memq 'crs-pending-comment-block (crs-test--faces-at "^    │ \\(root-body\\)" 1)))
+    (should (memq 'crs-comment-outdated (crs-test--faces-at "^    ┌─ bob · \\(outdated\\)$" 1)))
+    (should (memq 'crs-comment-metadata (crs-test--faces-at "^    │ \\(👍 al\\)" 1)))
+    (should (memq 'crs-pending-comment-author (crs-test--faces-at "^    ├─ \\(you\\)" 1)))
+    (should (memq 'crs-pending-comment-block (crs-test--faces-at "^    │ \\(draft-body\\)" 1)))))
 
 (ert-deftest crs-test-delete-on-annotation-block-finds-no-local-comment ()
   "`d' finds a local comment in its own block, not from an annotation below it."
@@ -1953,9 +2005,9 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
                               (lambda () (plist-get (crs--get-local-comment-at-point) :id))))
                    '(9)))
     (should (equal (crs-test--on-block-lines "new-lint" #'crs--get-local-comment-at-point)
-                   (make-list 4 nil)))
+                   (make-list 3 nil)))
     (goto-char (point-min))
-    (re-search-forward "^    │   new-lint")
+    (re-search-forward "^    │ new-lint")
     (let ((shown nil))
       (cl-letf (((symbol-function 'yes-or-no-p)
                  (lambda (&rest _) (ert-fail "should not offer to delete a comment")))
@@ -1975,7 +2027,7 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
                  (lambda (method params &optional _callback)
                    (setq sent (list method params)))))
         (goto-char (point-min))
-        (re-search-forward "^    │   three-lint")
+        (re-search-forward "^    │ three-lint")
         (crs-add-annotation-as-comment))
       (should (equal (nth 0 sent) "RPCHandler.AddComment"))
       (let ((args (aref (nth 1 sent) 0)))
@@ -2026,15 +2078,15 @@ Comments are shown and annotations collapsed, as a review opens."
     (diff . ,crs-test--full-diff)
     (comments . [((id . "7") (author . "bob") (body . "two-nit")
                   (path . "a.txt") (position . "2"))
-                 ((id . "10") (author . "alice") (body . "two-reply")
+                 ((id . "10") (author . "alice") (body . "two-nit")
                   (path . "a.txt") (position . "2"))])
     (reviews . [])
     (commits . [])
     (annotations . [((filename . "a.txt") (line . 2) (severity . "info")
                      (content . "two-lint") (plugin . "Lint"))]))
   "A GetPR reply whose thread on a.txt's \"+two\" has a reply.
-Its block has two \"    │\" lines, and \"+two\" an annotation that opens
-between the line and the block.")
+Its block has two \"    │ two-nit\" lines, and \"+two\" an annotation that
+opens between the line and the block.")
 
 (ert-deftest crs-test-toggle-comments-keeps-the-line-on-its-row ()
   "Hiding and showing comments keeps point's line, column and row."
@@ -2058,7 +2110,7 @@ between the line and the block.")
 (ert-deftest crs-test-toggle-comments-from-a-comment-keeps-its-line-in-place ()
   "Hidden from inside a comment, point goes to the line it hung below, which stays put."
   (crs-test--with-shown-review crs-test--pr-payload
-    (crs-test--put-line-on-row "^    │   two-nit" 8)
+    (crs-test--put-line-on-row "^    │ two-nit" 8)
     (let ((two-row (save-excursion
                      (re-search-backward "^\\+two")
                      (crs--window-row (selected-window) (point)))))
@@ -2075,17 +2127,16 @@ between the line and the block.")
   "An annotation opening above point's comment line leaves point on it and its row.
 Of the block's lines with the same text, it is the one point was on."
   (crs-test--with-shown-review crs-test--replied-pr-payload
-    (crs-test--put-line-on-row "^    │\n    │ Reply by \\[alice\\]" 12)
-    (forward-line -1)
-    (should (equal (crs--line-text) "    │"))
+    (crs-test--put-line-on-row "^    ├─ alice\n    │ two-nit" 12)
+    (should (equal (crs--line-text) "    │ two-nit"))
     (let ((line (line-number-at-pos))
           (row (crs-test--row)))
       (dolist (shown '(t nil))
         (crs-toggle-annotations)
         (should (eq crs--buffer-show-annotations shown))
-        (should (equal (crs--line-text) "    │"))
-        (should (string-prefix-p "    │ Reply by [alice]"
-                                 (save-excursion (forward-line 1) (crs--line-text))))
+        (should (equal (crs--line-text) "    │ two-nit"))
+        (should (string-prefix-p "    ├─ alice"
+                                 (save-excursion (forward-line -1) (crs--line-text))))
         (should (= (crs-test--row) row))
         (should (eq (> (line-number-at-pos) line) shown))))))
 

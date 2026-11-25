@@ -71,6 +71,13 @@ Set to nil to disable the timeout."
                  (const :tag "No timeout" nil))
   :group 'crs)
 
+(defcustom crs-comment-fill-column 80
+  "Widest a comment's text is filled to inside its block, in columns.
+A narrower window fills it narrower still, so that it fits beside the
+block's left edge rather than wrapping out of the block."
+  :type 'integer
+  :group 'crs)
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")

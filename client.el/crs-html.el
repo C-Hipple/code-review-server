@@ -106,25 +106,58 @@ On timeout or error, remove any partial output and insert HTML-STRING as plain t
           (funcall do-render))
       (funcall do-render))))
 
+(defun crs--prefixed-fill-width (prefix)
+  "How many columns a body drawn behind PREFIX is filled to.
+The body has to fit beside PREFIX in the window that shows it, or its
+long lines wrap back to the window's left edge, out of their block; and
+it is kept to `crs-comment-fill-column', which reads better than the
+window's full width."
+  (let ((window (or (get-buffer-window (current-buffer) t) (selected-window))))
+    (max 20 (min crs-comment-fill-column
+                 (- (window-body-width window) (string-width prefix) 1)))))
+
+(defun crs--trim-blank-lines (start end)
+  "Delete the blank lines shr leaves at the start and end of START..END.
+A paragraph comes out of shr with an empty line above and below it,
+which, prefixed, pad every comment block with lines that hold nothing."
+  (save-excursion
+    (goto-char start)
+    (while (and (< (point) end) (looking-at "[ \t]*\n"))
+      (delete-region (match-beginning 0) (match-end 0)))
+    (goto-char end)
+    (skip-chars-backward " \t\n" start)
+    (delete-region (point) end)))
+
 (defun crs--insert-html (html-string &optional prefix)
   "Insert HTML-STRING at point, rendering it with shr.
-If PREFIX is provided, it is prepended to each line of the rendered content.
+If PREFIX is provided, it is prepended to each line of the rendered
+content, which is filled to fit beside it (`crs--prefixed-fill-width'),
+in the buffer's own font: font-lock takes shr's faces back off, so a body
+filled for a proportional font would come out wider than planned.  Its
+blank first and last lines are dropped.
 Images will be displayed inline if running in graphical Emacs.
 Requires Emacs to be compiled with libxml support.
 Falls back to plain text if rendering times out (see `crs-shr-render-timeout')."
   (if (and html-string (not (string-empty-p html-string)))
-      (let ((start (point)))
+      (let ((start (point))
+            (prefixed (and prefix (not (string-empty-p prefix)))))
         (insert (crs--ensure-html html-string))
         (when (fboundp 'libxml-parse-html-region)
-          (crs--shr-render html-string start))
-        (when (and prefix (not (string-empty-p prefix)))
+          (if prefixed
+              (let ((shr-use-fonts nil)
+                    (shr-width (crs--prefixed-fill-width prefix)))
+                (crs--shr-render html-string start))
+            (crs--shr-render html-string start)))
+        (when prefixed
           (let ((end (point-marker)))
+            (crs--trim-blank-lines start end)
             (save-excursion
               (goto-char start)
               (while (< (point) end)
                 (insert prefix)
                 (unless (zerop (forward-line 1))
                   (goto-char end))))
+            (goto-char end)
             (set-marker end nil))))
     (insert (or prefix "") "(No content provided)")))
 

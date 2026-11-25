@@ -87,7 +87,9 @@
   (interactive)
   (font-lock-add-keywords nil
                           '(
-                            (".*[┌└][^[]*" 0 'washer-review-comment-seperator-face t)
+                            ;; Up to a "[", but never past the line: "[^[]" matches a newline,
+                            ;; which painted the code below a block up to the next "[".
+                            (".*[┌└][^[\n]*" 0 'washer-review-comment-seperator-face t)
                             ;; TODO: fix
                             ("\\[OUTDATED\\]" 0 'washer-outdated-face t)
                             ("\\[OUTDATED\\]\\([─ ]*\\)$" 1 'washer-review-comment-seperator-face t)

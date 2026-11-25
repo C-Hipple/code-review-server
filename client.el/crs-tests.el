@@ -1978,6 +1978,33 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
     ;; The diff's own lines are left to the washer.
     (should-not (crs-test--faces-at "^\\+two"))))
 
+(ert-deftest crs-test-block-tint-blends-the-border-into-the-background ()
+  "A block's background is the theme's, tinted with its border's colour."
+  (cl-letf (((symbol-function 'face-foreground) (lambda (&rest _) "#ffffff"))
+            ((symbol-function 'face-background) (lambda (&rest _) "#000000")))
+    (let ((crs-block-tint 0.2))
+      (should (equal (crs--block-tint 'crs-comment-border)
+                     '(:background "#333333" :extend t))))
+    (let ((crs-block-tint nil))
+      (should-not (crs--block-tint 'crs-comment-border))))
+  ;; No colours to blend, as on a terminal without them: no background.
+  (cl-letf (((symbol-function 'face-background) (lambda (&rest _) "unspecified-bg")))
+    (should-not (crs--block-tint 'crs-comment-border))))
+
+(ert-deftest crs-test-blocks-are-drawn-on-their-tint ()
+  "Each block line, newline and all, has its tint behind its block face."
+  (cl-letf (((symbol-function 'crs--block-tint)
+             (lambda (border) (list :background (symbol-name border) :extend t))))
+    (crs-test--with-annotated-review
+      (let ((faces (crs-test--faces-at "^    │ \\(two-nit\\)" 1)))
+        (should (equal (last faces 2)
+                       '(crs-comment-block (:background "crs-comment-border" :extend t)))))
+      (should (member '(:background "crs-pending-comment-border" :extend t)
+                      (crs-test--faces-at "^    │ \\(local-nit\\)" 1)))
+      (should (member '(:background "crs-annotation-border" :extend t)
+                      (crs-test--faces-at "^    │ \\(two-lint\\)" 1)))
+      (should-not (crs-test--faces-at "^\\(    \\)│ two-nit" 1)))))
+
 (ert-deftest crs-test-pending-reply-faces-start-at-the-reply ()
   "In a thread, only a local reply's lines take the pending faces."
   (with-temp-buffer

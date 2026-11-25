@@ -11,6 +11,8 @@
 (require 'crs-filtered-diff)
 (require 'washer)
 (require 'parse-time)
+(require 'color)
+(require 'cl-lib)
 
 (declare-function crs--get-comment-context "crs-comments")
 (declare-function crs--get-current-review-info "crs-review")
@@ -606,6 +608,26 @@ visible diff line."
   (when (and (match-beginning group) (< (match-beginning group) (match-end group)))
     (crs--add-block-face (match-beginning group) (match-end group) face)))
 
+(defun crs--block-tint (border)
+  "The background face of a block whose box is drawn in the face BORDER.
+The theme's background blended with `crs-block-tint' of BORDER's colour,
+as an anonymous face reaching the window's edge; nil when either colour
+is unknown, as on a terminal without them, or `crs-block-tint' is nil."
+  (let ((accent (face-foreground border nil t))
+        (background (face-background 'default nil t)))
+    (when (and (numberp crs-block-tint) accent background
+               (not (string-prefix-p "unspecified" accent))
+               (not (string-prefix-p "unspecified" background)))
+      (let ((a (color-name-to-rgb accent))
+            (b (color-name-to-rgb background))
+            (alpha (min 1.0 (max 0.0 crs-block-tint))))
+        (when (and a b)
+          (list :background
+                (apply #'color-rgb-to-hex
+                       (append (cl-mapcar (lambda (x y) (+ (* alpha x) (* (- 1 alpha) y))) a b)
+                               '(2)))
+                :extend t))))))
+
 (defun crs--annotation-severity-face (severity)
   "The face for an annotation's SEVERITY, such as \"[warning]\"."
   (pcase severity
@@ -617,11 +639,13 @@ visible diff line."
   "Give each comment and annotation block in the current buffer its faces.
 Blocks are drawn by `crs--render-comment-tree' and
 `crs--render-annotation-block'; this runs once their bodies are rendered."
-  (save-excursion
-    (goto-char (point-min))
-    (while (re-search-forward "^    ┌─ " nil t)
-      (forward-line 0)
-      (crs--decorate-block))))
+  (let ((tints (mapcar (lambda (border) (cons border (crs--block-tint border)))
+                       '(crs-comment-border crs-pending-comment-border crs-annotation-border))))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^    ┌─ " nil t)
+        (forward-line 0)
+        (crs--decorate-block tints)))))
 
 (defun crs--decorate-header (comment annotation border)
   "Give the header line at point its faces.
@@ -649,11 +673,13 @@ It opens COMMENT, or ANNOTATION, and its box is drawn in the face BORDER:
         (when (re-search-forward " · \\(outdated\\)$" eol t)
           (crs--block-face-match 1 'crs-comment-outdated))))))
 
-(defun crs--decorate-block ()
+(defun crs--decorate-block (tints)
   "Give the block whose header is at point its faces, and move past it.
 Each header line opens a comment, or an annotation, which its
 `crs-comment' or `crs-annotation' property holds; the lines under it take
-the faces of a comment, a local comment's pending ones, or an annotation."
+the faces of a comment, a local comment's pending ones, or an annotation.
+TINTS maps each border face to the background drawn beside it
+\(`crs--block-tint')."
   (let ((comment nil)
         (annotation nil)
         (done nil))
@@ -669,8 +695,14 @@ the faces of a comment, a local comment's pending ones, or an annotation."
                (border (cond (annotation 'crs-annotation-border)
                              (pending 'crs-pending-comment-border)
                              (t 'crs-comment-border))))
-          ;; From the box's left edge, newline and all.
-          (crs--add-block-face (min (+ (point) 4) eol) (min (1+ eol) (point-max)) block)
+          ;; From the box's left edge, newline and all: the tint behind
+          ;; the block's own face, which draws instead any background it has.
+          (let ((from (min (+ (point) 4) eol))
+                (to (min (1+ eol) (point-max)))
+                (tint (cdr (assq border tints))))
+            (when tint
+              (crs--add-block-face from to tint))
+            (crs--add-block-face from to block))
           (cond
            ((looking-at-p "    [┌├]─")
             (crs--decorate-header comment annotation border))

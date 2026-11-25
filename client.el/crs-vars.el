@@ -99,16 +99,44 @@ It covers the newline too, so a background extends to the window's edge."
   "Each line of a plugin annotation's block, from its box's left edge."
   :group 'crs-faces)
 
-(defface crs-comment-border '((t :inherit shadow))
-  "The box drawn around a review comment thread."
+(defface crs-comment-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#6ea8fe")
+    (((class color) (min-colors 256) (background light)) :foreground "#3b78d8")
+    (t :inherit shadow))
+  "The box drawn around a review comment thread.
+Its colour is also what the block's background is tinted with
+\=(`crs-block-tint')."
   :group 'crs-faces)
 
-(defface crs-pending-comment-border '((t :inherit crs-comment-border))
-  "The box beside a local comment, one not yet submitted."
+(defface crs-pending-comment-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#e5b454")
+    (((class color) (min-colors 256) (background light)) :foreground "#b7860b")
+    (t :inherit crs-comment-border))
+  "The box beside a local comment, one not yet submitted.
+Its colour also tints the comment's lines (`crs-block-tint')."
   :group 'crs-faces)
 
-(defface crs-annotation-border '((t :inherit shadow))
-  "The box drawn around plugin annotations."
+(defface crs-annotation-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#b495e8")
+    (((class color) (min-colors 256) (background light)) :foreground "#7d55c7")
+    (t :inherit shadow))
+  "The box drawn around plugin annotations.
+Its colour also tints the block's background (`crs-block-tint')."
+  :group 'crs-faces)
+
+(defcustom crs-block-tint 0.12
+  "How strongly a block's background is tinted with the colour of its box.
+Each comment and annotation block is drawn on the theme's background
+blended with this much of its border face's colour
+\=(`crs-comment-border', `crs-pending-comment-border',
+`crs-annotation-border'), from the box's left edge to the window's: 0
+leaves it untinted, 1 paints it the border's colour.  Nil draws no
+background.  A background set on `crs-comment-block',
+`crs-pending-comment-block' or `crs-annotation-block' is drawn instead.
+Blocks drawn before a theme change keep their old tint until the buffer
+is drawn again."
+  :type '(choice (const :tag "No background" nil)
+                 (number :tag "Tint strength (0-1)"))
   :group 'crs-faces)
 
 (defface crs-comment-author '((t :inherit (bold font-lock-function-name-face)))

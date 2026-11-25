@@ -3,10 +3,10 @@
 ;;; Commentary:
 
 ;; The server can run a local coding agent to chat about the PR under review
-;; (docs/protocol.md#review-chat): Claude Code, or any agent that speaks the
-;; Agent Client Protocol.  Which agent is the server config's choice ([Chat]
-;; Agent), not the client's.  The server holds the conversations and runs the
-;; agent; this module shows them.
+;; (docs/protocol.md#review-chat): Claude Code, Antigravity, or any agent that
+;; speaks the Agent Client Protocol.  Which agent is the server config's
+;; choice ([Chat] Agent), not the client's.  The server holds the
+;; conversations and runs the agent; this module shows them.
 ;;
 ;; `crs-chat' (`t' in a review buffer) opens the PR's chat in a window split
 ;; off the bottom of the review's: the review keeps the top three quarters

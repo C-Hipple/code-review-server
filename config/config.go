@@ -362,17 +362,21 @@ func (s GitHubAPISettings) Routes() map[string]string {
 // ChatSettings is the [Chat] table: which agent the review chat talks to (see
 // the chat package), and how each agent is run. The agent is the config's
 // choice, not a client's: every new chat talks to Agent. Each agent has a
-// table of its own — the built-in Claude Code one [Chat.Claude], any other
-// [Chat.Agents.<id>] — so a new one adds a table rather than reshaping the old
-// ones. Nothing needs setting: Claude Code is offered as is when `claude` is
-// on PATH.
+// table of its own — the built-in Claude Code one [Chat.Claude] and
+// Antigravity one [Chat.Antigravity], any other [Chat.Agents.<id>] — so a new
+// one adds a table rather than reshaping the old ones. Nothing needs setting:
+// Claude Code is offered as is when `claude` is on PATH, Antigravity when
+// `agy` is.
 type ChatSettings struct {
-	// Agent is the ID of the agent new chats talk to: ChatBackendClaude or a
-	// key of Agents. Empty means ChatBackendClaude. Chats started with another
-	// agent carry on with it while it is still defined.
+	// Agent is the ID of the agent new chats talk to: ChatBackendClaude,
+	// ChatBackendAntigravity or a key of Agents. Empty means
+	// ChatBackendClaude. Chats started with another agent carry on with it
+	// while it is still defined.
 	Agent string `toml:"Agent,omitempty"`
 	// Claude is [Chat.Claude]: the local Claude Code CLI, run headless.
 	Claude ChatBackendSettings `toml:"Claude,omitempty"`
+	// Antigravity is [Chat.Antigravity]: Google's Antigravity CLI, `agy acp`.
+	Antigravity ChatBackendSettings `toml:"Antigravity,omitempty"`
 	// Agents are further agents, [Chat.Agents.<id>], each run over the
 	// protocol its Protocol names: any agent that speaks the Agent Client
 	// Protocol (ACP) — Gemini CLI, claude-code-acp, opencode, goose, ... — by
@@ -384,17 +388,19 @@ type ChatSettings struct {
 type ChatBackendSettings struct {
 	// Disabled stops the server offering the agent at all.
 	Disabled bool `toml:"Disabled,omitempty"`
-	// Name is what clients call the agent; empty takes the protocol's name for
-	// [Chat.Claude] ("Claude Code") and the agent's ID otherwise.
+	// Name is what clients call the agent; empty takes the protocol's name
+	// ("Claude Code", "Antigravity"), or for a plain ACP agent its ID.
 	Name string `toml:"Name,omitempty"`
 	// Protocol is how the server talks to the agent: ChatProtocolACP (the
-	// default for [Chat.Agents]) or ChatProtocolClaudeCode. [Chat.Claude] is
-	// always ChatProtocolClaudeCode.
+	// default for [Chat.Agents]), ChatProtocolAntigravity or
+	// ChatProtocolClaudeCode. [Chat.Claude] is always ChatProtocolClaudeCode
+	// and [Chat.Antigravity] always ChatProtocolAntigravity.
 	Protocol string `toml:"Protocol,omitempty"`
 	// Command is the program to run, a name on PATH or a path, with any
 	// arguments (split like a shell would): for an ACP agent, the command line
 	// that starts it speaking ACP on stdio ("gemini --experimental-acp").
-	// Empty uses the protocol's own program, which only Claude Code has.
+	// Empty uses the protocol's own program: `claude` for Claude Code, `agy
+	// acp` for Antigravity; a plain ACP agent has none.
 	Command string `toml:"Command,omitempty"`
 	// Env adds environment variables to the agent's, over the server's own.
 	Env map[string]string `toml:"Env,omitempty"`
@@ -407,7 +413,9 @@ type ChatBackendSettings struct {
 	// empty leaves it to the agent.
 	DefaultModel string `toml:"DefaultModel,omitempty"`
 	// Mode is an ACP agent's session mode to switch each conversation to
-	// ("plan", say); empty leaves the agent's default.
+	// ("plan", say); empty leaves the agent's default, except for Antigravity,
+	// whose conversations are switched to its "default" mode, the one that
+	// asks before it acts.
 	Mode string `toml:"Mode,omitempty"`
 	// AuthMethod is the ACP authentication method (one the agent lists in its
 	// authMethods) to sign in with when the agent says it needs signing in;
@@ -425,18 +433,45 @@ const (
 	// ChatProtocolACP runs any agent that speaks the Agent Client Protocol
 	// (agentclientprotocol.com) over stdio.
 	ChatProtocolACP = "acp"
+	// ChatProtocolAntigravity runs Google's Antigravity CLI, `agy acp`: ACP,
+	// with what Antigravity does its own way taken care of.
+	ChatProtocolAntigravity = "antigravity"
 )
 
 // ChatProtocols are the protocols a [Chat.Agents] table may name.
-var ChatProtocols = []string{ChatProtocolACP, ChatProtocolClaudeCode}
+var ChatProtocols = []string{ChatProtocolACP, ChatProtocolAntigravity, ChatProtocolClaudeCode}
 
-// ChatBackend returns the settings of the chat agent id: [Chat.Claude] for
-// ChatBackendClaude, else its [Chat.Agents] table, with Protocol filled in.
-// An unknown id gets the zero settings.
+// chatBuiltins are the agents the config defines without a [Chat.Agents]
+// table, in the order they are listed, each with the protocol it always
+// speaks.
+var chatBuiltins = []struct{ id, protocol, table string }{
+	{ChatBackendClaude, ChatProtocolClaudeCode, "[Chat.Claude]"},
+	{ChatBackendAntigravity, ChatProtocolAntigravity, "[Chat.Antigravity]"},
+}
+
+// IsBuiltinChatAgent reports whether id is one of the agents the config
+// defines without a [Chat.Agents] table.
+func IsBuiltinChatAgent(id string) bool {
+	for _, b := range chatBuiltins {
+		if b.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+// ChatBackend returns the settings of the chat agent id: [Chat.Claude] or
+// [Chat.Antigravity] for the built-in agents, else its [Chat.Agents] table,
+// with Protocol filled in. An unknown id gets the zero settings.
 func (c Config) ChatBackend(id string) ChatBackendSettings {
-	if id == ChatBackendClaude {
+	switch id {
+	case ChatBackendClaude:
 		s := c.Chat.Claude
 		s.Protocol = ChatProtocolClaudeCode
+		return s
+	case ChatBackendAntigravity:
+		s := c.Chat.Antigravity
+		s.Protocol = ChatProtocolAntigravity
 		return s
 	}
 	s, ok := c.Chat.Agents[id]
@@ -460,11 +495,15 @@ func (c Config) ChatAgent() string {
 }
 
 // ChatAgentIDs are the IDs of every chat agent the config defines: the
-// built-in Claude Code one, then the [Chat.Agents] tables by ID.
+// built-in Claude Code and Antigravity ones, then the [Chat.Agents] tables by
+// ID. A [Chat.Agents] table with a built-in agent's ID is passed over.
 func (c Config) ChatAgentIDs() []string {
-	ids := []string{ChatBackendClaude}
+	var ids []string
+	for _, b := range chatBuiltins {
+		ids = append(ids, b.id)
+	}
 	for _, id := range slices.Sorted(maps.Keys(c.Chat.Agents)) {
-		if id != ChatBackendClaude {
+		if !IsBuiltinChatAgent(id) {
 			ids = append(ids, id)
 		}
 	}
@@ -472,10 +511,12 @@ func (c Config) ChatAgentIDs() []string {
 }
 
 // ChatTable names the table that configures the chat agent id, for messages:
-// "[Chat.Claude]" or "[Chat.Agents.<id>]".
+// "[Chat.Claude]", "[Chat.Antigravity]" or "[Chat.Agents.<id>]".
 func ChatTable(id string) string {
-	if id == ChatBackendClaude {
-		return "[Chat.Claude]"
+	for _, b := range chatBuiltins {
+		if b.id == id {
+			return b.table
+		}
 	}
 	return "[Chat.Agents." + tomlKey(id) + "]"
 }
@@ -496,10 +537,16 @@ func tomlKey(key string) string {
 	return strconv.Quote(key)
 }
 
-// ChatBackendClaude is the ID of the built-in Claude Code chat agent. It
-// lives here, beside the settings that name it, because config cannot import
-// the chat package (chat reads config).
-const ChatBackendClaude = "claude"
+// The IDs of the built-in chat agents. They live here, beside the settings
+// that name them, because config cannot import the chat package (chat reads
+// config).
+const (
+	// ChatBackendClaude is the built-in Claude Code agent, [Chat.Claude].
+	ChatBackendClaude = "claude"
+	// ChatBackendAntigravity is the built-in Antigravity agent,
+	// [Chat.Antigravity].
+	ChatBackendAntigravity = "antigravity"
+)
 
 // WebhookSettings is the [Webhooks] table: GitHub webhook deliveries the server
 // accepts in place of re-fetching every PR it lists on every cycle. With it set

@@ -29,6 +29,9 @@ var (
 		config.ChatProtocolACP: func(id string, settings func() config.ChatBackendSettings) Backend {
 			return NewACPBackend(id, settings)
 		},
+		config.ChatProtocolAntigravity: func(id string, settings func() config.ChatBackendSettings) Backend {
+			return NewAntigravityBackend(id, settings)
+		},
 	}
 )
 
@@ -73,7 +76,8 @@ func (f Fixed) Backends() []Backend { return f }
 func (f Fixed) Default() string     { return "" }
 
 // ConfigSource is the agents the server's config defines: the built-in Claude
-// Code one and each [Chat.Agents] table, new chats talking to [Chat] Agent.
+// Code and Antigravity ones and each [Chat.Agents] table, new chats talking
+// to [Chat] Agent.
 // An agent's Backend is made once per ID and protocol and then kept, since
 // one may hold a running agent between turns; it reads its settings from
 // config on every use.
@@ -199,6 +203,17 @@ func agentEnv(env []string, extra map[string]string) []string {
 		out = append(out, key+"="+extra[key])
 	}
 	return out
+}
+
+// withoutEnv is env less the variables keys names.
+func withoutEnv(env []string, keys []string) []string {
+	if len(keys) == 0 {
+		return env
+	}
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		key, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(keys, key)
+	})
 }
 
 // agentName is what clients call an agent: its configured Name, else

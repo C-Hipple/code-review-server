@@ -26,6 +26,40 @@ DefaultModel = "sonnet"
 	}
 }
 
+func TestParseConfigReadsTheAntigravityTable(t *testing.T) {
+	cfg, err := parseConfig([]byte(`
+[Chat]
+Agent = "antigravity"
+
+[Chat.Antigravity]
+Command = "/home/me/.local/bin/agy acp"
+Models = ["gemini-3-pro", "claude-sonnet-4-5"]
+DefaultModel = "gemini-3-pro"
+Mode = "plan"
+`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.ChatAgent() != ChatBackendAntigravity {
+		t.Errorf("ChatAgent() = %q", cfg.ChatAgent())
+	}
+	got := cfg.ChatBackend(ChatBackendAntigravity)
+	if got.Protocol != ChatProtocolAntigravity || got.Command != "/home/me/.local/bin/agy acp" || got.DefaultModel != "gemini-3-pro" ||
+		got.Mode != "plan" || !slices.Equal(got.Models, []string{"gemini-3-pro", "claude-sonnet-4-5"}) {
+		t.Errorf("[Chat.Antigravity] = %+v", got)
+	}
+	if problems := Validate(withChat(cfg.Chat)); len(problems) != 0 {
+		t.Errorf("problems = %v", problems)
+	}
+	// Without the table it is there all the same, at its defaults.
+	if got := (Config{}).ChatBackend(ChatBackendAntigravity); got.Protocol != ChatProtocolAntigravity || got.Command != "" {
+		t.Errorf("the built-in Antigravity agent = %+v", got)
+	}
+	if ids := (Config{}).ChatAgentIDs(); !slices.Equal(ids, []string{ChatBackendClaude, ChatBackendAntigravity}) {
+		t.Errorf("ChatAgentIDs() = %v", ids)
+	}
+}
+
 func TestChatSettingsDefaultToNothing(t *testing.T) {
 	cfg, err := parseConfig([]byte(`Repos = ["acme/widgets"]`))
 	if err != nil {
@@ -76,7 +110,7 @@ Command = "my-claude"
 	if cfg.ChatAgent() != "gemini" {
 		t.Errorf("ChatAgent() = %q", cfg.ChatAgent())
 	}
-	if ids := cfg.ChatAgentIDs(); !slices.Equal(ids, []string{"claude", "gemini", "wrapped"}) {
+	if ids := cfg.ChatAgentIDs(); !slices.Equal(ids, []string{"claude", "antigravity", "gemini", "wrapped"}) {
 		t.Errorf("ChatAgentIDs() = %v", ids)
 	}
 	g := cfg.ChatBackend("gemini")
@@ -103,10 +137,11 @@ func TestChatAgentDefaultsToClaude(t *testing.T) {
 
 func TestChatTable(t *testing.T) {
 	for id, want := range map[string]string{
-		ChatBackendClaude: "[Chat.Claude]",
-		"gemini":          "[Chat.Agents.gemini]",
-		"my-agent_2":      "[Chat.Agents.my-agent_2]",
-		"my agent":        `[Chat.Agents."my agent"]`,
+		ChatBackendClaude:      "[Chat.Claude]",
+		ChatBackendAntigravity: "[Chat.Antigravity]",
+		"gemini":               "[Chat.Agents.gemini]",
+		"my-agent_2":           "[Chat.Agents.my-agent_2]",
+		"my agent":             `[Chat.Agents."my agent"]`,
 	} {
 		if got := ChatTable(id); got != want {
 			t.Errorf("ChatTable(%q) = %q, want %q", id, got, want)
@@ -129,15 +164,21 @@ func TestValidateChecksTheChatAgents(t *testing.T) {
 	}{
 		{"an unknown agent", ChatSettings{Agent: "codex"}, "Chat.Agent", `there is no agent "codex": define it in [Chat.Agents.codex]`},
 		{"claude's table reused", ChatSettings{Agents: map[string]ChatBackendSettings{"claude": {Command: "claude-code-acp"}}},
-			"Chat.Agents.claude", "built-in Claude Code agent"},
+			"Chat.Agents.claude", "a built-in agent: configure it in [Chat.Claude]"},
+		{"antigravity's table reused", ChatSettings{Agents: map[string]ChatBackendSettings{"antigravity": {Command: "agy acp"}}},
+			"Chat.Agents.antigravity", "a built-in agent: configure it in [Chat.Antigravity]"},
 		{"an unknown protocol", ChatSettings{Agents: map[string]ChatBackendSettings{"x": {Command: "x", Protocol: "smoke"}}},
-			"Chat.Agents.x.Protocol", `unknown protocol "smoke" (expected one of: acp, claude-code)`},
+			"Chat.Agents.x.Protocol", `unknown protocol "smoke" (expected one of: acp, antigravity, claude-code)`},
 		{"an ACP agent without a command", ChatSettings{Agents: map[string]ChatBackendSettings{"x": {}}},
 			"Chat.Agents.x.Command", "is required"},
 		{"a command that won't split", ChatSettings{Agents: map[string]ChatBackendSettings{"x": {Command: `"open`}}},
 			"Chat.Agents.x.Command", ""},
 		{"a protocol for [Chat.Claude]", ChatSettings{Claude: ChatBackendSettings{Protocol: "acp"}},
 			"Chat.Claude.Protocol", "always Claude Code"},
+		{"a protocol for [Chat.Antigravity]", ChatSettings{Antigravity: ChatBackendSettings{Protocol: "acp"}},
+			"Chat.Antigravity.Protocol", "always Antigravity"},
+		{"a built-in agent's command that won't split", ChatSettings{Antigravity: ChatBackendSettings{Command: `"agy`}},
+			"Chat.Antigravity.Command", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			problems := Validate(withChat(tt.chat))
@@ -146,8 +187,16 @@ func TestValidateChecksTheChatAgents(t *testing.T) {
 			}
 		})
 	}
-	// A Claude Code agent of [Chat.Agents] may leave Command to the default.
+	// A Claude Code or Antigravity agent of [Chat.Agents] may leave Command to
+	// the default.
 	if problems := Validate(withChat(ChatSettings{Agent: "c2", Agents: map[string]ChatBackendSettings{"c2": {Protocol: ChatProtocolClaudeCode}}})); len(problems) != 0 {
+		t.Errorf("problems = %v", problems)
+	}
+	if problems := Validate(withChat(ChatSettings{Agent: "work", Agents: map[string]ChatBackendSettings{"work": {Protocol: ChatProtocolAntigravity}}})); len(problems) != 0 {
+		t.Errorf("problems = %v", problems)
+	}
+	// The built-in Antigravity agent needs no table.
+	if problems := Validate(withChat(ChatSettings{Agent: ChatBackendAntigravity})); len(problems) != 0 {
 		t.Errorf("problems = %v", problems)
 	}
 }

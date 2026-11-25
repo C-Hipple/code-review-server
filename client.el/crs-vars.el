@@ -71,6 +71,114 @@ Set to nil to disable the timeout."
                  (const :tag "No timeout" nil))
   :group 'crs)
 
+(defcustom crs-comment-fill-column 80
+  "Widest a comment's text is filled to inside its block, in columns.
+A narrower window fills it narrower still, so that it fits beside the
+block's left edge rather than wrapping out of the block."
+  :type 'integer
+  :group 'crs)
+
+;; Faces of the blocks comments and plugin annotations are drawn in, under
+;; the diff line they're about (`crs--decorate-blocks').  They inherit from
+;; the standard faces, so they follow the theme.
+(defgroup crs-faces nil
+  "Faces of the comment and annotation blocks in a review buffer."
+  :group 'crs
+  :group 'faces)
+
+(defface crs-comment-block '((t))
+  "Each line of a review comment's block, from its box's left edge.
+It covers the newline too, so a background extends to the window's edge."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-block '((t :inherit crs-comment-block))
+  "The lines of a local comment, one not yet submitted, in its block."
+  :group 'crs-faces)
+
+(defface crs-annotation-block '((t))
+  "Each line of a plugin annotation's block, from its box's left edge."
+  :group 'crs-faces)
+
+(defface crs-comment-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#6ea8fe")
+    (((class color) (min-colors 256) (background light)) :foreground "#3b78d8")
+    (t :inherit shadow))
+  "The box drawn around a review comment thread.
+Its colour is also what the block's background is tinted with
+\=(`crs-block-tint')."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#e5b454")
+    (((class color) (min-colors 256) (background light)) :foreground "#b7860b")
+    (t :inherit crs-comment-border))
+  "The box beside a local comment, one not yet submitted.
+Its colour also tints the comment's lines (`crs-block-tint')."
+  :group 'crs-faces)
+
+(defface crs-annotation-border
+  '((((class color) (min-colors 256) (background dark)) :foreground "#b495e8")
+    (((class color) (min-colors 256) (background light)) :foreground "#7d55c7")
+    (t :inherit shadow))
+  "The box drawn around plugin annotations.
+Its colour also tints the block's background (`crs-block-tint')."
+  :group 'crs-faces)
+
+(defcustom crs-block-tint 0.12
+  "How strongly a block's background is tinted with the colour of its box.
+Each comment and annotation block is drawn on the theme's background
+blended with this much of its border face's colour
+\=(`crs-comment-border', `crs-pending-comment-border',
+`crs-annotation-border'), from the box's left edge to the window's: 0
+leaves it untinted, 1 paints it the border's colour.  Nil draws no
+background.  A background set on `crs-comment-block',
+`crs-pending-comment-block' or `crs-annotation-block' is drawn instead.
+Blocks drawn before a theme change keep their old tint until the buffer
+is drawn again."
+  :type '(choice (const :tag "No background" nil)
+                 (number :tag "Tint strength (0-1)"))
+  :group 'crs-faces)
+
+(defface crs-comment-author '((t :inherit (bold font-lock-function-name-face)))
+  "Who wrote a comment."
+  :group 'crs-faces)
+
+(defface crs-pending-comment-author '((t :inherit (bold warning)))
+  "The author of a local comment, one not yet submitted: \"you\"."
+  :group 'crs-faces)
+
+(defface crs-comment-metadata '((t :inherit shadow))
+  "When a comment was written, its notes (\"pending\", \"on the file\") and reactions."
+  :group 'crs-faces)
+
+(defface crs-comment-body '((t))
+  "A comment's text."
+  :group 'crs-faces)
+
+(defface crs-comment-outdated '((t :inherit warning))
+  "The \"outdated\" note on a comment about code that has since changed."
+  :group 'crs-faces)
+
+(defface crs-annotation-plugin '((t :inherit bold))
+  "The plugin an annotation came from."
+  :group 'crs-faces)
+
+(defface crs-annotation-body '((t))
+  "An annotation's text."
+  :group 'crs-faces)
+
+(defface crs-annotation-error '((t :inherit error))
+  "The \"error\" severity of an annotation."
+  :group 'crs-faces)
+
+(defface crs-annotation-warning '((t :inherit warning))
+  "The \"warning\" severity of an annotation."
+  :group 'crs-faces)
+
+(defface crs-annotation-info '((t :inherit font-lock-keyword-face))
+  "The \"info\" severity of an annotation, and any other but error and warning."
+  :group 'crs-faces)
+
 (defvar crs--section-header-regexp
   "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
   "Regexp to match section headers in the code review buffer.")

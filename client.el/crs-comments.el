@@ -107,17 +107,17 @@
 
 (defun crs--comment-block-start ()
   "Return where the review-comment block at point starts, or nil.
-Point is in a block when its line is drawn with \"│┌└\", and the block is
-the one under the nearest header at or above it.  Expanded plugin
+Point is in a block when its line is drawn with \"│┌├└\", and the block
+is the one under the nearest header at or above it.  Expanded plugin
 annotations (`crs--render-annotation-block') are drawn the same way, so
-this answers only when that header opens a review comment: a REVIEW
-COMMENT, outdated or not, or a FILE COMMENT (`crs--render-comment-tree')."
+this answers only when that header opens a comment thread: its first line
+carries the thread as its `crs-thread' property (`crs--render-comment-tree')."
   (save-excursion
     (end-of-line)
     (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-      (when (and (string-match-p "^    [│┌└]" line-content)
+      (when (and (string-match-p "^    [│┌├└]" line-content)
                  (re-search-backward "^    ┌─" nil t)
-                 (looking-at "    ┌─ \\(?:REVIEW COMMENT\\|FILE COMMENT\\)"))
+                 (get-text-property (point) 'crs-thread))
         (point)))))
 
 (defun crs--get-comment-context ()
@@ -146,66 +146,26 @@ hunk header)."
         (target-line (line-number-at-pos))
         (first-hunk-line-num nil))
 
-    ;; 1. Check if inside a review-comment block and extract info.  An
-    ;; expanded plugin annotation is a block too but no thread: on one,
-    ;; this takes nothing, and step 3 gives the line the block hangs off.
+    ;; 1. Check if inside a review-comment block and take its thread: a
+    ;; reply goes to its first comment, and a local one in it, not yet
+    ;; submitted, is edited instead.  An expanded plugin annotation is a
+    ;; block too but no thread: on one, this takes nothing, and step 3
+    ;; gives the line the block hangs off.
     (let ((block-start (crs--comment-block-start)))
       (when block-start
-        (save-excursion
-          (goto-char block-start)
-          (forward-line 2) ;; ID is on the 3rd line of the block
-          (let ((id-line (buffer-substring-no-properties (point) (line-end-position))))
-            (when (string-match " : \\([0-9]+\\)$" id-line)
-              (setq reply-to-id (string-to-number (match-string 1 id-line)))
-              (message "Found Reply-To ID: %d" reply-to-id)))
-          ;; Check if this is a local comment or local reply
-          (goto-char block-start)
-          (let ((block-end (save-excursion
-                             (if (re-search-forward "^    └" nil t)
-                                 (point)
-                               (point-max)))))
-            (let ((local-reply-match
-                   (save-excursion
-                     (goto-char block-start)
-                     (re-search-forward "^    │ Reply by \\[local\\]:\\([0-9]+\\)" block-end t))))
-              (if local-reply-match
-                  ;; Local reply - ID is embedded in the "Reply by [local]:[ID]" line
-                  (progn
-                    (setq local-comment-id (string-to-number (match-string 1)))
-                    (message "Found local reply ID: %d" local-comment-id)
-                    (setq reply-to-id nil)
-                    ;; Extract the body - lines after "Reply by [local]:[ID]"
-                    (goto-char local-reply-match)
-                    (forward-line 1)
-                    (let ((body-lines nil))
-                      (while (and (< (point) block-end)
-                                  (looking-at "^    │   \\(.*\\)$"))
-                        (push (match-string 1) body-lines)
-                        (forward-line 1))
-                      (when body-lines
-                        (setq local-comment-body
-                              (string-join (nreverse body-lines) "\n")))))
-                ;; Local root comment - ID is on line 3 of the block
-                (when (re-search-forward "^    │ \\[local\\]:" block-end t)
-                  (goto-char block-start)
-                  (forward-line 2)
-                  (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-                    (when (string-match " : \\([0-9]+\\)$" header-line)
-                      (setq local-comment-id (string-to-number (match-string 1 header-line)))
-                      (message "Found local comment ID: %d" local-comment-id)
-                      (setq reply-to-id nil)))
-                  ;; Extract the body - lines after [local]:
-                  (goto-char block-start)
-                  (when (re-search-forward "^    │ \\[local\\]:" block-end t)
-                    (forward-line 1)
-                    (let ((body-lines nil))
-                      (while (and (< (point) block-end)
-                                  (looking-at "^    │   \\(.*\\)$"))
-                        (push (match-string 1) body-lines)
-                        (forward-line 1))
-                      (when body-lines
-                        (setq local-comment-body
-                              (string-join (nreverse body-lines) "\n"))))))))))))
+        (let* ((thread (get-text-property block-start 'crs-thread))
+               (root (car thread))
+               (local (or (seq-find #'crs--local-comment-p (cdr thread))
+                          (and (crs--local-comment-p root) root))))
+          (setq reply-to-id (crs--comment-id root))
+          (when reply-to-id
+            (message "Found Reply-To ID: %d" reply-to-id))
+          (when local
+            (setq local-comment-id (crs--comment-id local)
+                  local-comment-body (cdr (assq 'body local))
+                  reply-to-id nil)
+            (when local-comment-id
+              (message "Found local comment ID: %d" local-comment-id))))))
 
     ;; 2. Parse Owner, Repo, Number
     (condition-case nil
@@ -273,9 +233,9 @@ hunk header)."
                 (when base-line
                   (setq base-line (1+ base-line)))
                 (setq expanded t))
-               ;; Skip interleaved review-comment blocks (drawn with "│┌└" but
+               ;; Skip interleaved review-comment blocks (drawn with "│┌├└" but
                ;; no "⋮", so they never look like a gutter content line).
-               ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line-content)
+               ((string-match-p "^[[:cntrl:][:space:]]*[│┌├└]" line-content)
                 nil)
                ;; Content line.  Only added/removed/context lines advance the
                ;; position; this excludes blank separators and markers such as
@@ -475,23 +435,13 @@ Returns a plist with :id, :owner, :repo, :number if on a local comment."
                 repo (nth 1 info)
                 number (nth 2 info)))
       (error nil))
-    ;; Check if inside a local comment block (not an annotation block below one)
+    ;; Check if inside a thread whose first comment is a local one (not
+    ;; an annotation block below one)
     (let ((block-start (crs--comment-block-start)))
       (when block-start
-        (save-excursion
-          (goto-char block-start)
-          (let ((block-end (save-excursion
-                             (if (re-search-forward "^    └" nil t)
-                                 (point)
-                               (point-max)))))
-            ;; Check if this block contains [local]:
-            (when (save-excursion
-                    (re-search-forward "^    │ \\[local\\]:" block-end t))
-              ;; Extract the ID from line 3 of the block
-              (forward-line 2)
-              (let ((header-line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-                (when (string-match " : \\([0-9]+\\)$" header-line)
-                  (setq local-comment-id (string-to-number (match-string 1 header-line))))))))))
+        (let ((root (car (get-text-property block-start 'crs-thread))))
+          (when (crs--local-comment-p root)
+            (setq local-comment-id (crs--comment-id root))))))
     (when (and owner repo number local-comment-id)
       (list :id local-comment-id :owner owner :repo repo :number number))))
 

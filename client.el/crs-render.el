@@ -10,6 +10,9 @@
 (require 'crs-html)
 (require 'crs-filtered-diff)
 (require 'washer)
+(require 'parse-time)
+(require 'color)
+(require 'cl-lib)
 
 (declare-function crs--get-comment-context "crs-comments")
 (declare-function crs--get-current-review-info "crs-review")
@@ -168,14 +171,14 @@ uncollapses annotations."
 (defun crs--block-line-p ()
   "Non-nil if the line at point may be part of a block.
 Comment blocks (`crs--render-comment-tree') and expanded annotations
-\(`crs--render-annotation-block') are drawn with \"│┌└\", each line of a
+\(`crs--render-annotation-block') are drawn with \"│┌├└\", each line of a
 comment's body included; a diff line never starts with one.  An empty
 line counts too: a body that renders with a trailing newline leaves one
 in its block, unprefixed.  The empty lines a toggle keeps are found again
 by their text, like any block line."
   (save-excursion
     (forward-line 0)
-    (looking-at-p "[[:cntrl:][:space:]]*[│┌└]\\|$")))
+    (looking-at-p "[[:cntrl:][:space:]]*[│┌└├]\\|$")))
 
 (defun crs--line-text ()
   "Return the text of the line at point, without properties."
@@ -389,50 +392,111 @@ reports reactors it did not send names for as \"+N more\"."
           ((> hidden 0) (format "%s %s +%d more" label names hidden))
           (t (format "%s %s" label names)))))
 
+(defun crs--format-reaction-list (reactions)
+  "Format REACTIONS (a vector or list of reaction alists) as \"👍 alice  👀 bob\".
+Returns nil when nothing has been reacted to."
+  (let ((items (append (or reactions []) nil)))
+    (when items
+      (mapconcat #'crs--format-reaction items "  "))))
+
 (defun crs--format-reactions (reactions)
   "Format REACTIONS (a vector or list of reaction alists) as one line.
 Returns nil when nothing has been reacted to, so callers can skip the
 line entirely rather than printing an empty label."
-  (let ((items (append (or reactions []) nil)))
-    (when items
-      (concat "Reactions: "
-              (mapconcat #'crs--format-reaction items "  ")))))
+  (when-let ((reacted (crs--format-reaction-list reactions)))
+    (concat "Reactions: " reacted)))
+
+;;; Comment threads
+;;
+;; A thread is drawn as one block under the line it's about: a header line
+;; per comment, naming its author and when it was written, then its text.
+;;
+;;     ┌─ bob · 2 days ago
+;;     │ Should this back off?
+;;     │ 👍 alice
+;;     ├─ you · pending
+;;     │ Let's cap the total wait at a minute.
+;;     └─
+;;
+;; What the text leaves out rides on the header lines as text properties:
+;; the first carries the thread (`crs-thread'), which replying, editing and
+;; deleting read the comments' IDs and bodies from (crs-comments.el), and
+;; each carries its comment (`crs-comment'), for its faces.
+
+(defun crs--local-comment-p (comment)
+  "Non-nil if COMMENT is a local one, written here and not yet submitted."
+  (let ((author (cdr (assq 'author comment))))
+    (or (null author) (equal author "local"))))
+
+(defun crs--comment-id (comment)
+  "COMMENT's ID as a number, or nil if it has none."
+  (let ((id (cdr (assq 'id comment))))
+    (cond ((numberp id) id)
+          ((and (stringp id) (string-match-p "\\`[0-9]+\\'" id)) (string-to-number id)))))
+
+(defun crs--relative-time (timestamp &optional now)
+  "TIMESTAMP, such as GitHub's \"2026-11-23T15:04:05Z\", as how long before NOW.
+\"just now\", \"5 minutes ago\", \"3 hours ago\", \"yesterday\", \"4 days
+ago\", then the date.  NOW defaults to the current time.  Returns
+TIMESTAMP as it is when it can't be read, and nil when there is none."
+  (when (and (stringp timestamp) (not (string-empty-p timestamp)))
+    (let ((time (ignore-errors (parse-iso8601-time-string timestamp))))
+      (if (not time)
+          timestamp
+        (let* ((now (or now (current-time)))
+               (seconds (float-time (time-subtract now time)))
+               (ago (lambda (n unit)
+                      (let ((n (floor n)))
+                        (format "%d %s%s ago" n unit (if (= n 1) "" "s"))))))
+          (cond ((< seconds 60) "just now")
+                ((< seconds 3600) (funcall ago (/ seconds 60) "minute"))
+                ((< seconds 86400) (funcall ago (/ seconds 3600) "hour"))
+                ((< seconds (* 2 86400)) "yesterday")
+                ((< seconds (* 7 86400)) (funcall ago (/ seconds 86400) "day"))
+                ((equal (format-time-string "%Y" time) (format-time-string "%Y" now))
+                 (format-time-string "%b %-d" time))
+                (t (format-time-string "%b %-d, %Y" time))))))))
+
+(defun crs--comment-header (comment first &optional notes)
+  "The line opening COMMENT in its thread's block.
+FIRST non-nil for the thread's first comment.  The line names its author,
+\"you\" for a local one, and then, after \" · \", when it was written, or
+\"pending\" for a local one, and NOTES, a list of strings.  It carries
+COMMENT as its `crs-comment' property, and its date and ID as its tooltip."
+  (let* ((local (crs--local-comment-p comment))
+         (created (cdr (assq 'created_at comment)))
+         (id (cdr (assq 'id comment)))
+         (parts (delq nil (append (list (if local "you" (cdr (assq 'author comment)))
+                                        (if local "pending" (crs--relative-time created)))
+                                  notes))))
+    (propertize (concat "    " (if first "┌─ " "├─ ") (string-join parts " · "))
+                'crs-comment comment
+                'help-echo (string-join (delq nil (list (and (stringp created)
+                                                             (not (string-empty-p created))
+                                                             created)
+                                                        (and id (format "ID %s" id))))
+                                        " · "))))
 
 (defun crs--render-comment-tree (comments)
-  "Render a list of comments (presumably a thread) into a string."
+  "Render COMMENTS, a thread, as a block (see \"Comment threads\" above).
+The first is the thread's root, which an outdated or file-level note
+follows on its header; the rest its replies."
   (if (null comments)
       ""
     (let* ((root (car comments))
-           (replies (cdr comments))
-           (outdated (eq (cdr (assq 'outdated root)) t))
-           (file (cdr (assq 'path root)))
-           (id (cdr (assq 'id root)))
-           (created (cdr (assq 'created_at root)))
-           (author (cdr (assq 'author root)))
-           (header (cond (outdated "    ┌─ REVIEW COMMENT [OUTDATED] ──────")
-                         ((not (cdr (assq 'position root))) "    ┌─ FILE COMMENT ───────────────────")
-                         (t "    ┌─ REVIEW COMMENT ─────────────────")))
-           (lines (list "    │"
-                        (format "    │ %s : %s" (or created "") (or id "")) ;; Simplification: not merging authors
-                        (format "    │ File: %s" file)
-                        header)))
-      ;; Render root comment
-      (push (format "    │ [%s]:" (or author "local")) lines)
-      (push (crs--make-html-placeholder (cdr (assq 'body root)) "    │   ") lines)
-      (when-let ((reacted (crs--format-reactions (cdr (assq 'reactions root)))))
-        (push (format "    │   %s" reacted) lines))
-
-      ;; Render replies
-      (dolist (reply replies)
-        (push "    │" lines)
-        (let ((r-author (cdr (assq 'author reply)))
-              (r-id (cdr (assq 'id reply))))
-          (push (format "    │ Reply by [%s]:[%s]" (or r-author "local") (or r-id "")) lines)
-          (push (crs--make-html-placeholder (cdr (assq 'body reply)) "    │   ") lines)
-          (when-let ((reacted (crs--format-reactions (cdr (assq 'reactions reply)))))
-            (push (format "    │   %s" reacted) lines))))
-
-      (push "    └──────────────────────────────────" lines)
+           (notes (delq nil (list (when (not (cdr (assq 'position root))) "on the file")
+                                  (when (eq (cdr (assq 'outdated root)) t) "outdated"))))
+           (lines nil))
+      (dolist (comment comments)
+        (let ((header (crs--comment-header comment (eq comment root)
+                                           (when (eq comment root) notes))))
+          (when (eq comment root)
+            (setq header (propertize header 'crs-thread comments)))
+          (push header lines))
+        (push (crs--make-html-placeholder (cdr (assq 'body comment)) "    │ ") lines)
+        (when-let ((reacted (crs--format-reaction-list (cdr (assq 'reactions comment)))))
+          (push (propertize (concat "    │ " reacted) 'crs-block-part 'reactions) lines)))
+      (push "    └─" lines)
       (push "" lines)
       (mapconcat #'identity (nreverse lines) "\n"))))
 
@@ -495,24 +559,165 @@ Returns a string like <A: plugin1, plugin2>."
 
 (defun crs--render-annotation-block (annotations &optional show-line)
   "Render ANNOTATIONS (a list anchored to one spot) into a block string.
-When SHOW-LINE is non-nil each entry names the line it points at, for
-annotations that could not be anchored to a visible diff line."
-  (let ((lines (list "    ┌─ PLUGIN ANNOTATION ────────────")))
+Each opens with a header line, \"warning · plugin\", which carries it as
+its `crs-annotation' property.  When SHOW-LINE is non-nil each also names
+the line it points at, for annotations that could not be anchored to a
+visible diff line."
+  (let ((lines nil)
+        (first t))
     (dolist (annotation annotations)
       (let* ((severity (or (cdr (assq 'severity annotation)) ""))
              (plugin (or (cdr (assq 'plugin annotation)) "plugin"))
              (line (cdr (assq 'line annotation)))
              (content (or (cdr (assq 'content annotation)) "")))
-        (push (format "    │ %s%s%s"
-                      (if (string-empty-p severity) "" (format "[%s] " severity))
-                      plugin
-                      (if (and show-line line) (format " @ line %s" line) ""))
+        (push (propertize (concat "    " (if first "┌─ " "├─ ")
+                                  (string-join (delq nil (list (unless (string-empty-p severity) severity)
+                                                               plugin
+                                                               (when (and show-line line)
+                                                                 (format "line %s" line))))
+                                               " · "))
+                          'crs-annotation annotation)
               lines)
+        (setq first nil)
         (dolist (content-line (split-string content "\n"))
-          (push (concat "    │   " content-line) lines))))
-    (push "    └──────────────────────────────────" lines)
+          (push (concat "    │ " content-line) lines))))
+    (push "    └─" lines)
     (push "" lines)
     (mapconcat #'identity (nreverse lines) "\n")))
+
+;;; Block faces
+;;
+;; Comment threads and expanded annotations are boxed blocks of text drawn
+;; under the line they're about.  Their faces go on once the bodies are
+;; rendered, as `font-lock-face' properties: font-lock clears the `face'
+;; property of each region it fontifies, and a font-lock regexp can't
+;; tell which block a "│" line belongs to, nor whose comment it is part of.
+
+(defun crs--add-block-face (beg end face)
+  "Put FACE on BEG..END, in front of the block faces already there."
+  (let ((pos beg))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'font-lock-face nil end))
+            (old (get-text-property pos 'font-lock-face)))
+        (put-text-property pos next 'font-lock-face
+                           (cons face (if (listp old) old (list old))))
+        (setq pos next)))))
+
+(defun crs--block-face-match (group face)
+  "Put FACE on what GROUP of the last match matched, if anything."
+  (when (and (match-beginning group) (< (match-beginning group) (match-end group)))
+    (crs--add-block-face (match-beginning group) (match-end group) face)))
+
+(defun crs--block-tint (border)
+  "The background face of a block whose box is drawn in the face BORDER.
+The theme's background blended with `crs-block-tint' of BORDER's colour,
+as an anonymous face reaching the window's edge; nil when either colour
+is unknown, as on a terminal without them, or `crs-block-tint' is nil."
+  (let ((accent (face-foreground border nil t))
+        (background (face-background 'default nil t)))
+    (when (and (numberp crs-block-tint) accent background
+               (not (string-prefix-p "unspecified" accent))
+               (not (string-prefix-p "unspecified" background)))
+      (let ((a (color-name-to-rgb accent))
+            (b (color-name-to-rgb background))
+            (alpha (min 1.0 (max 0.0 crs-block-tint))))
+        (when (and a b)
+          (list :background
+                (apply #'color-rgb-to-hex
+                       (append (cl-mapcar (lambda (x y) (+ (* alpha x) (* (- 1 alpha) y))) a b)
+                               '(2)))
+                :extend t))))))
+
+(defun crs--annotation-severity-face (severity)
+  "The face for an annotation's SEVERITY, such as \"[warning]\"."
+  (pcase severity
+    ("[error]" 'crs-annotation-error)
+    ("[warning]" 'crs-annotation-warning)
+    (_ 'crs-annotation-info)))
+
+(defun crs--decorate-blocks ()
+  "Give each comment and annotation block in the current buffer its faces.
+Blocks are drawn by `crs--render-comment-tree' and
+`crs--render-annotation-block'; this runs once their bodies are rendered."
+  (let ((tints (mapcar (lambda (border) (cons border (crs--block-tint border)))
+                       '(crs-comment-border crs-pending-comment-border crs-annotation-border))))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^    ┌─ " nil t)
+        (forward-line 0)
+        (crs--decorate-block tints)))))
+
+(defun crs--decorate-header (comment annotation border)
+  "Give the header line at point its faces.
+It opens COMMENT, or ANNOTATION, and its box is drawn in the face BORDER:
+\"├─ bob · 2 days ago\" or \"├─ warning · plugin · line 5\"."
+  (when (looking-at "    \\([┌├]─\\) \\([^·\n]*?\\)\\(?: · \\([^·\n]*?\\)\\)?\\( · .*\\)?$")
+    (crs--block-face-match 1 border)
+    (cond
+     (annotation
+      (if (string-empty-p (or (cdr (assq 'severity annotation)) ""))
+          (progn (crs--block-face-match 2 'crs-annotation-plugin)
+                 (crs--block-face-match 3 'crs-comment-metadata))
+        (crs--block-face-match 2 (crs--annotation-severity-face
+                                  (format "[%s]" (match-string 2))))
+        (crs--block-face-match 3 'crs-annotation-plugin)))
+     (t
+      (crs--block-face-match 2 (if (and comment (crs--local-comment-p comment))
+                                   'crs-pending-comment-author
+                                 'crs-comment-author))
+      (crs--block-face-match 3 'crs-comment-metadata)))
+    (crs--block-face-match 4 'crs-comment-metadata)
+    ;; "outdated" is worth seeing.
+    (let ((eol (line-end-position)))
+      (save-excursion
+        (when (re-search-forward " · \\(outdated\\)$" eol t)
+          (crs--block-face-match 1 'crs-comment-outdated))))))
+
+(defun crs--decorate-block (tints)
+  "Give the block whose header is at point its faces, and move past it.
+Each header line opens a comment, or an annotation, which its
+`crs-comment' or `crs-annotation' property holds; the lines under it take
+the faces of a comment, a local comment's pending ones, or an annotation.
+TINTS maps each border face to the background drawn beside it
+\(`crs--block-tint')."
+  (let ((comment nil)
+        (annotation nil)
+        (done nil))
+    (while (and (not done) (not (eobp)))
+      (let ((eol (line-end-position)))
+        (when (looking-at-p "    [┌├]─")
+          (setq comment (get-text-property (point) 'crs-comment)
+                annotation (get-text-property (point) 'crs-annotation)))
+        (let* ((pending (and comment (crs--local-comment-p comment)))
+               (block (cond (annotation 'crs-annotation-block)
+                            (pending 'crs-pending-comment-block)
+                            (t 'crs-comment-block)))
+               (border (cond (annotation 'crs-annotation-border)
+                             (pending 'crs-pending-comment-border)
+                             (t 'crs-comment-border))))
+          ;; From the box's left edge, newline and all: the tint behind
+          ;; the block's own face, which draws instead any background it has.
+          (let ((from (min (+ (point) 4) eol))
+                (to (min (1+ eol) (point-max)))
+                (tint (cdr (assq border tints))))
+            (when tint
+              (crs--add-block-face from to tint))
+            (crs--add-block-face from to block))
+          (cond
+           ((looking-at-p "    [┌├]─")
+            (crs--decorate-header comment annotation border))
+           ((looking-at "    \\(└─*\\)$")
+            (crs--block-face-match 1 border)
+            (setq done t))
+           ((looking-at "    \\(│\\)")
+            (crs--block-face-match 1 border)
+            (crs--add-block-face (min (+ (point) 5) eol) eol
+                                 (cond ((eq (get-text-property (point) 'crs-block-part) 'reactions)
+                                        'crs-comment-metadata)
+                                       (annotation 'crs-annotation-body)
+                                       (t 'crs-comment-body))))
+           (t (setq done t)))))
+      (forward-line 1))))
 
 (defun crs--insert-annotations-into-buffer (annotations show-full)
   "Insert plugin ANNOTATIONS into the current buffer's washed diff.
@@ -567,7 +772,7 @@ positions are final and the washer's painting is untouched."
                 (puthash current-file (cons line-start line-end) first-hunks)))
 
              ;; Skip interleaved comment/annotation blocks
-             ((string-match-p "^[[:cntrl:][:space:]]*[│┌└]" line)
+             ((string-match-p "^[[:cntrl:][:space:]]*[│┌└├]" line)
               nil)
 
              ;; Content line (raw or delta-washed).  Only added and context
@@ -1059,12 +1264,13 @@ SHOW-FULL-COMMENTS determines whether to show full content or indicators."
       (goto-char (car ins))
       (let ((content (cdr ins)))
         (if (and (listp content) (eq (car content) 'append))
-            ;; Handle append with alignment
+            ;; Append with alignment, at the line's end: rewriting the line
+            ;; would drop the washer's colours, overlays and all.
             (let* ((indicator (cadr content))
                    (current-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                    (new-line (crs--append-right-aligned current-line indicator 120)))
-              (delete-region (line-beginning-position) (line-end-position))
-              (insert new-line))
+              (goto-char (line-end-position))
+              (insert (substring new-line (length current-line))))
           ;; Normal insert
           (insert content))))))
 
@@ -1276,7 +1482,7 @@ Returns the line number, or nil if not found."
                 (setq current-position (1+ current-position))))
 
              ;; Skip comment blocks
-             ((string-match-p "^[[:space:]]*[│┌└]" line)
+             ((string-match-p "^[[:space:]]*[│┌└├]" line)
               nil)
 
              ;; Skip context a hunk expansion spliced in: it has no position
@@ -1483,6 +1689,7 @@ for more robust position restoration."
             ;; body needs the cached image paths, so put those back first.
             (setq crs--buffer-images (or new-images existing-images))
             (crs--process-html-placeholders)
+            (crs--decorate-blocks)
 
             ;; Re-set the buffer-local variables AFTER mode change
             (setq crs--buffer-diff (or new-diff existing-diff))

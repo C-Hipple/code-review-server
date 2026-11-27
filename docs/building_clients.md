@@ -2,7 +2,7 @@
 
 Code Review Server is designed to be client-agnostic. It communicates via standard input/output (stdio) using JSON-RPC 1.0.
 
-If you want to build a new client (e.g. for VS Code, Vim, or a TUI), you should refer to the [Protocol Documentation](protocol.md).
+If you want to build a new client (e.g. for VS Code, Vim, or a TUI), you should refer to the [Protocol Documentation](protocol.md). For clients built outside this repository, see [Other Known Clients](clients.md#other-known-clients).
 
 The server binary `crs` (installed by `go install ./...`; `codereviewserver` before the module was renamed) should be spawned as a child process by your client. Your client send requests to the server's `stdin` and reads responses from `stdout`.
 

@@ -3,6 +3,7 @@
 // the e2e fixtures, but a review list that looks like a working day and a PR
 // whose diff is a real change from this repository's history.
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { comment, type PRFixture, type ReviewItem } from './prs';
@@ -81,6 +82,72 @@ function filler(
     };
 }
 
+// The commit MERGED_STATE_DIFF comes from, whose files hunk expansion reads.
+const MERGED_STATE_COMMIT = '0d8f9b3';
+const REPO_ROOT = resolve(import.meta.dirname, '../../..');
+
+/** PATH at MERGED_STATE_COMMIT, or '' where the history doesn't reach it. */
+function fileAtCommit(path: string): string {
+    try {
+        return execFileSync('git', ['show', `${MERGED_STATE_COMMIT}:${path}`], {
+            cwd: REPO_ROOT,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * The review list as the server's OrgRenderer writes it (GetAllReviews'
+ * `content`, which the Emacs client shows): a heading per section with its
+ * done count, then each PR's headline, tags and detail lines.
+ */
+export function orgContent(prs: PRFixture[]): string {
+    const sections = [...new Set(prs.map(p => p.item.section))];
+    const out: string[] = [];
+    for (const section of sections) {
+        const items = prs.filter(p => p.item.section === section);
+        const done = items.filter(p => p.item.status === 'DONE').length;
+        out.push(
+            `* ${done === items.length ? 'DONE' : 'TODO'} ${section} [${done}/${items.length}]`
+        );
+        for (const { item, headRef, reviews } of items) {
+            const tags = [
+                ...item.tags.split(',').filter(Boolean),
+                ...(item.merge_conflicts ? ['conflict'] : []),
+                ...(item.review_ease ? [item.review_ease] : []),
+            ];
+            const by = (state: string) =>
+                reviews
+                    .filter(r => r.state === state)
+                    .map(r => r.user)
+                    .join(', ');
+            out.push(
+                `** ${item.status} ${item.title}\t\t:${tags.join(':')}:`,
+                String(item.number),
+                `Repo: ${item.owner}/${item.repo}`,
+                item.url,
+                `Title: ${item.title}`,
+                `Author: ${item.author}`,
+                `Branch: ${item.author}:${headRef}`,
+                'Requested Reviewers: you',
+                'Requested Teams:'
+            );
+            if (item.status === 'TODO') {
+                out.push(
+                    `Approved By: ${by('APPROVED')}`,
+                    `Changes Requested By: ${by('CHANGES_REQUESTED')}`,
+                    `Commented By: ${by('COMMENTED')}`
+                );
+            }
+        }
+        out.push('');
+    }
+    return out.join('\n') + '\n';
+}
+
 export function buildFixtures(): PRFixture[] {
     const diff = MERGED_STATE_DIFF;
     const renderer = 'server/renderer.go';
@@ -106,6 +173,10 @@ export function buildFixtures(): PRFixture[] {
             baseRef: 'main',
             headRef: 'alice/merged-state',
             labels: ['bug', 'server'],
+            files: {
+                'server/renderer.go': fileAtCommit('server/renderer.go'),
+                'server/renderer_test.go': fileAtCommit('server/renderer_test.go'),
+            },
             chatReply: [
                 '`prState` only rewrites a **closed** PR, so open PRs and drafts keep',
                 "GitHub's state untouched. Two things worth checking:",
@@ -202,7 +273,21 @@ export function buildFixtures(): PRFixture[] {
                             'Adds `prState`, which reports a closed PR that was merged as **merged**, and uses it for `PRMetadata.State`. Covered by a table test over single-PR and listing objects.',
                         ].join('\n'),
                     },
-                    annotations: [],
+                    annotations: [
+                        {
+                            filename: 'server/renderer.go',
+                            line: 837,
+                            severity: 'info',
+                            content:
+                                "The heart of the change: a listing's PR objects carry merged_at but not merged.",
+                        },
+                        {
+                            filename: 'server/renderer.go',
+                            line: 1275,
+                            severity: 'info',
+                            content: 'The one caller: every client reads State from here.',
+                        },
+                    ],
                 },
                 security_check: {
                     result: 'No security issues found.',

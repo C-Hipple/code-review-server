@@ -48,11 +48,13 @@
 
 (defconst crs-shot-review "* CRS: #315 - code-review-server - acme *")
 
-(defun crs-shot (name)
-  "Redisplay, then save the screen as NAME.png in `crs-shot-dir'."
+(defun crs-shot (name &optional crop)
+  "Redisplay, then save the screen as NAME.png in `crs-shot-dir'.
+CROP, an ImageMagick geometry such as \"1600x400+0+0\", keeps only that part."
   (redisplay t)
-  (call-process "import" nil nil nil "-window" "root"
-                (expand-file-name (concat name ".png") crs-shot-dir))
+  (apply #'call-process "import" nil nil nil "-window" "root"
+         (append (and crop (list "-crop" crop))
+                 (list (expand-file-name (concat name ".png") crs-shot-dir))))
   (message "took %s" name))
 
 (defun crs-shot-review-only ()
@@ -74,7 +76,28 @@
 
 (defvar crs-shot-steps
   (list
+   ;; The review list, Needs Review and its first PR unfolded.
+   (cons 0 (lambda () (crs-get-reviews)))
+   (cons 3 (lambda ()
+             (switch-to-buffer crs-reviews-buffer-name)
+             (delete-other-windows)
+             (goto-char (point-min))
+             (re-search-forward "^\\* TODO Needs Review")
+             (crs-list-toggle-heading)
+             (re-search-forward "^\\*\\* TODO Report a merged")
+             (beginning-of-line)
+             (crs-list-toggle-heading)
+             (goto-char (point-min))))
+   (cons 1 (lambda () (crs-shot "emacs-list" "1600x380+0+0")))
    (cons 0 (lambda () (crs-get-review "acme" "code-review-server" 315)))
+   ;; The top of the review: the PR's header and description, the
+   ;; conversation folded.
+   (cons 3 (lambda ()
+             (switch-to-buffer crs-shot-review)
+             (delete-other-windows)
+             (goto-char (point-min))
+             (recenter 0)
+             (crs-shot "emacs-review-header")))
    ;; The review, with its discussion beside it.
    (cons 3 (lambda ()
              (crs-shot-review-only)
@@ -89,10 +112,22 @@
              (forward-line -8)
              (recenter 1)
              (crs-shot "emacs-review-comments")))
+   ;; Plugin annotations drawn in the diff.
+   (cons 0 (lambda ()
+             (crs-shot-review-only)
+             (crs-toggle-comments)))
+   (cons 1 (lambda ()
+             (crs-shot-review-only)
+             (crs-toggle-annotations)))
+   (cons 1 (lambda ()
+             (crs-shot-review-only)
+             (forward-line -8)
+             (recenter 1)
+             (crs-shot "emacs-annotations")))
    ;; Plugin output.
    (cons 0 (lambda ()
              (crs-shot-review-only)
-             (crs-toggle-comments)
+             (crs-toggle-annotations)
              (crs-get-plugin-output)))
    (cons 2 (lambda () (crs-shot "emacs-plugins")))
    ;; An AI feature's report.
@@ -122,6 +157,37 @@
              (goto-char (point-min))
              (recenter 0)
              (crs-shot "emacs-chat")))
+   ;; A second session, then the PR's sessions listed.
+   (cons 0 (lambda ()
+             (crs-shot-select-chat)
+             (crs-chat-new)))
+   (cons 1 (lambda ()
+             (crs-shot-select-chat)
+             (goto-char (point-max))
+             (insert "Does TestPRState cover a closed PR with neither field set?")
+             (crs-chat-send)))
+   (cons 4 (lambda ()
+             (crs-shot-select-chat)
+             (call-interactively #'crs-chat-sessions)))
+   (cons 2 (lambda () (crs-shot "emacs-chat-sessions")))
+   ;; More of the file below a hunk (`o').
+   (cons 0 (lambda ()
+             (crs-shot-review-only)
+             (re-search-backward "^@@ -636")
+             (forward-line 4)
+             (crs-expand-hunk-after)))
+   (cons 2 (lambda ()
+             (switch-to-buffer crs-shot-review)
+             (delete-other-windows)
+             (goto-char (point-min))
+             (re-search-forward "^@@ -636")
+             (recenter 1)
+             (crs-shot "emacs-hunk-expansion")))
+   ;; The change diagram's Mermaid source.
+   (cons 0 (lambda ()
+             (crs-shot-review-only)
+             (crs-show-change-diagram "acme" "code-review-server" 315)))
+   (cons 4 (lambda () (crs-shot "emacs-change-diagram")))
    (cons 0 (lambda () (kill-emacs 0))))
   "Each step: seconds to wait before it, and what it does.")
 

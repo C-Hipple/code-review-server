@@ -223,7 +223,7 @@ type ReviewItem struct {
 	RequiredTeams []git_tools.TeamReviewStatus `json:"required_teams"`
 	// CommentCount is how many comments the PR has: conversation comments and
 	// review comments on the code together, the number GitHub's pull request
-	// list shows, less the ones the review view hides (see filterComments).
+	// list shows.
 	// Read from the PRComments cache the workflow layer fills, so it is 0 until
 	// a cycle has fetched the PR's comments.
 	CommentCount int `json:"comment_count"`
@@ -337,9 +337,9 @@ func (r *OrgRenderer) requiredTeams(number int, repo string) []git_tools.TeamRev
 }
 
 // commentCount totals a PR's cached comments for its row on the review list,
-// skipping the authors the review view also hides (hiddenCommentAuthor). Like
-// requiredTeams it never fails a render: an unreadable cache entry just leaves
-// the row without a count.
+// every author's alike, as the review view shows them all. Like requiredTeams
+// it never fails a render: an unreadable cache entry just leaves the row
+// without a count.
 func (r *OrgRenderer) commentCount(number int, repo string) int {
 	counts, err := r.db.GetPRCommentCountsByAuthor(number, repo)
 	if err != nil {
@@ -347,10 +347,8 @@ func (r *OrgRenderer) commentCount(number int, repo string) int {
 		return 0
 	}
 	total := 0
-	for login, count := range counts {
-		if !hiddenCommentAuthor(login) {
-			total += count
-		}
+	for _, count := range counts {
+		total += count
 	}
 	return total
 }
@@ -1403,7 +1401,6 @@ func GetPRDetails(owner string, repo string, number int, skipCache bool) (*PRDet
 	}
 
 	comments := convertToPRComments(githubComments)
-	comments = filterComments(comments)
 
 	localComments, err := config.C().DB.GetLocalCommentsForPR(owner, repo, number)
 	if err != nil {
@@ -1941,7 +1938,6 @@ func processPRDiffWithComments(remote forge.Forge, owner string, repo string, nu
 			} else {
 				// Convert to PRComment interface
 				comments = convertToPRComments(githubComments)
-				comments = filterComments(comments)
 				// Continue with processing cached comments
 			}
 		}
@@ -1969,7 +1965,6 @@ func processPRDiffWithComments(remote forge.Forge, owner string, repo string, nu
 
 		// Convert to PRComment interface
 		comments = convertToPRComments(githubComments)
-		comments = filterComments(comments)
 	}
 
 	// Fetch LocalComments from database for this specific PR and add them to the comments list
@@ -2510,24 +2505,6 @@ func reviewCommentHeadLines(rawComments string) map[string]int {
 		}
 	}
 	return lines
-}
-
-func filterComments(comments []PRComment) []PRComment {
-	output := []PRComment{}
-	for _, comment := range comments {
-		if hiddenCommentAuthor(comment.GetLogin()) {
-			continue
-		}
-		output = append(output, comment)
-	}
-	return output
-}
-
-// hiddenCommentAuthor reports whether the review leaves out this login's
-// comments. The review list's comment counts skip the same authors.
-func hiddenCommentAuthor(login string) bool {
-	// I don't care about the lint warning stuff
-	return strings.Contains(login, "advanced")
 }
 
 func GetRequestedReviewers(owner, repo string, number int, skipCache bool) (*github.Reviewers, error) {

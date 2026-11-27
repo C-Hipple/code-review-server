@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { AIFeatureInfo, AIFeatureOutput, CommentsReport, ReportItem } from './ai_utils';
 import AIReportModal from './components/AIReportModal';
+import AIReportPane from './components/AIReportPane';
 
 const feature: AIFeatureInfo = {
     id: 'comments-addressed',
@@ -85,7 +86,11 @@ function output(fields: Partial<AIFeatureOutput> = {}): AIFeatureOutput {
     };
 }
 
-const render = (initialOutput: AIFeatureOutput, f: AIFeatureInfo = feature) =>
+const render = (
+    initialOutput: AIFeatureOutput,
+    f: AIFeatureInfo = feature,
+    onDock: (() => void) | null = () => {}
+) =>
     renderToStaticMarkup(
         <AIReportModal
             feature={f}
@@ -96,6 +101,22 @@ const render = (initialOutput: AIFeatureOutput, f: AIFeatureInfo = feature) =>
             onClose={() => {}}
             onOutput={() => {}}
             onJumpToItem={() => {}}
+            onDock={onDock ?? undefined}
+        />
+    );
+
+const renderPane = (initialOutput: AIFeatureOutput, featureId = feature.id, name?: string) =>
+    renderToStaticMarkup(
+        <AIReportPane
+            featureId={featureId}
+            name={name}
+            owner="acme"
+            repo="widgets"
+            number={42}
+            initialOutput={initialOutput}
+            onOutput={() => {}}
+            onJumpToItem={() => {}}
+            onUndock={() => {}}
         />
     );
 
@@ -231,5 +252,45 @@ describe('AIReportModal', () => {
         );
         expect(html).toContain('<h2>Flow</h2>');
         expect(html).toContain('<strong>left</strong>');
+    });
+
+    test('offers to pin the report beside the code when the view can take it', () => {
+        expect(render(output())).toContain('◫ Pin beside code');
+        expect(render(output(), feature, null)).not.toContain('Pin beside code');
+    });
+});
+
+describe('AIReportPane', () => {
+    test('shows the report as the modal does, with a way back to the modal', () => {
+        const html = renderPane(output(), feature.id, feature.name);
+        expect(html).toContain('data-testid="ai-report-pane"');
+        expect(html).toContain('Comments addressed?');
+        expect(html).toContain(report.summary);
+        expect(html).toContain('Needs attention (1)');
+        expect(html).toContain('Show this thread in the diff');
+        expect(html).toContain('↻ Re-run');
+        expect(html).toContain('aria-label="Open in a dialog"');
+        // It scrolls within the pane rather than growing the page.
+        expect(html).toContain('overflow-y:auto');
+        expect(html).not.toContain('Pin beside code');
+    });
+
+    test('names the feature by its id until the features load', () => {
+        expect(renderPane(output())).toContain('comments-addressed');
+    });
+
+    test('fits the change diagram to the pane', () => {
+        const html = renderPane(
+            output({
+                feature: 'change-diagram',
+                name: 'Change diagram',
+                report: { mermaid: 'flowchart TD\n  a --> b', diagram_type: 'flowchart' },
+                outstanding: null,
+            }),
+            'change-diagram',
+            'Change diagram'
+        );
+        expect(html).toContain('data-testid="mermaid-diagram"');
+        expect(html).toContain('flex:1;min-height:0');
     });
 });

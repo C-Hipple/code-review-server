@@ -20,8 +20,11 @@ interface UseAIBackgroundRunsOptions {
     outputs: Record<string, AIFeatureOutput>;
     /** Merges the outputs this hook loads into the caller's. */
     onOutputs: (outputs: Record<string, AIFeatureOutput>) => void;
-    /** The feature whose report is open; its modal follows it for itself. */
-    openFeature: string | null;
+    /**
+     * The features whose report is open, in its modal or a docked pane;
+     * each follows its feature for itself.
+     */
+    openFeatures: string[];
     onToast: (message: string, variant?: StatusVariant) => void;
     events?: ServerEvents;
 }
@@ -50,7 +53,7 @@ export function useAIBackgroundRuns({
     features,
     outputs,
     onOutputs,
-    openFeature,
+    openFeatures,
     onToast,
     events = serverEvents,
 }: UseAIBackgroundRunsOptions): AIBackgroundRuns {
@@ -79,15 +82,15 @@ export function useAIBackgroundRuns({
     }, [pr]);
 
     // Read every output again when the server says one of the toolbar's
-    // features changed for this PR. The open report's modal reads its own and
-    // passes it on.
+    // features changed for this PR. An open report reads its own and passes
+    // it on.
     useServerChanges(
         AI_OUTPUT_CHANGED_EVENT,
         data => {
             const change = parseAIOutputChanged(data);
             return (
                 !!change &&
-                change.feature !== openFeature &&
+                !openFeatures.includes(change.feature) &&
                 features.some(f => f.id === change.feature) &&
                 isChangeFor(change, { owner, repo, number })
             );

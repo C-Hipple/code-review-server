@@ -551,6 +551,11 @@ Optional, and degrades cleanly when the binaries or the local clone aren't there
 - **Split view** — two side-by-side panels; tabs can be dragged between them
   (`application/x-tab` drag payload). Turning split off merges the right panel into
   the left. Split is force-disabled on phones.
+- **AI reports** dock too: an AI report's **◫ Pin beside code** moves it out of its
+  modal into a tab (`AIReportPane.tsx`), in the right panel with the view split, so
+  it stays beside the diff the left panel scrolls (see 3.17). A split that pinning
+  opened closes again with the right panel's last tab, unless the reviewer has
+  rearranged the tabs since.
 - The docking state machine is pure and separately unit-tested (`dock_utils.test.ts`)
   — worth reading if you implement something similar.
 
@@ -637,14 +642,19 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ---
 
-### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
+### 3.17 AI reports (`AIReportModal.tsx`, `AIReportPane.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
 
 The server's [AI features](ai_features.md) — comments-addressed, feature-flags and
 change-diagram — have two
 surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
 enabled by default, and an older server without the AI RPCs just shows neither.
 
-- **Review toolbar** — a button per feature, opening its report in a modal. The
+- **Review toolbar** — a button per feature, opening its report in a modal, which
+  **◫ Pin beside code** turns into a pane of the review's split view, to read the
+  report beside the diff: jumping to a thread from the pane reveals it in the diff and
+  leaves the pane open, **↗** puts it back into the modal, and the toolbar button
+  brings a pinned report to the front rather than opening the modal. On a phone,
+  where the view never splits, it is a tab of the single panel. The
   review view loads `GetAIOutput` for the enabled features on open (and after a sync
   or a submit), and each button counts the items needing attention, or shows ✓ when
   none do. comments-addressed counts its outstanding and unclear items; any other
@@ -657,10 +667,10 @@ enabled by default, and an older server without the AI RPCs just shows neither.
 
 Both run and render a report the same way (`useAIReport`, `AIReportView`):
 
-- **Run on open** — opening a report (the modal, or each card of the AI view) loads
-  the feature's output and calls `RunAIFeature` (not forced) when the feature never
-  ran for the PR (`not-run`) or its result is `stale`; the server answers from its
-  cache when nothing changed. **↻ Re-run** forces a run.
+- **Run on open** — opening a report (the modal, a pinned pane, or each card of the
+  AI view) loads the feature's output and calls `RunAIFeature` (not forced) when the
+  feature never ran for the PR (`not-run`) or its result is `stale`; the server
+  answers from its cache when nothing changed. **↻ Re-run** forces a run.
 - **Following runs** — nothing is polled. The server sends a
   [`Server.AIOutputChanged`](protocol.md#serveraioutputchanged) as a run of the
   feature starts and as it lands, whoever asked for it, and the report reads

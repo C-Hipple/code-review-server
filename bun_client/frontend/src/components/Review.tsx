@@ -59,9 +59,13 @@ import {
     moveTabToPanel,
     toggleSplit,
     allDockedTabs,
+    dockAIFeature,
+    findAITab,
+    revealReview,
 } from '../dock_utils';
 import type { ActiveTab, DockState, PanelId, PanelState } from '../dock_utils';
 import AIReportModal from './AIReportModal';
+import AIReportPane from './AIReportPane';
 import ChatWidget from './ChatWidget';
 import CodeViewerModal from './CodeViewerModal';
 import AddCommentModal from './review/AddCommentModal';
@@ -173,7 +177,8 @@ export default function Review({
     const [activeLspIndex, setActiveLspIndex] = useState<number | null>(null); // For LSP display
     const [showPlugins, setShowPlugins] = useState(false);
     // AI features the server has switched on, each one's latest output for
-    // this PR (for the toolbar count), and whose report is open.
+    // this PR (for the toolbar count), and whose report is open in a modal
+    // (a report docked beside the code is a tab of dockState instead).
     const [aiFeatures, setAIFeatures] = useState<AIFeatureInfo[]>([]);
     const [aiOutputs, setAIOutputs] = useState<Record<string, AIFeatureOutput>>({});
     const [openAIFeature, setOpenAIFeature] = useState<string | null>(null);
@@ -283,7 +288,6 @@ export default function Review({
 
     // LSP Hook
     const lsp = useLsp({
-        mode: 'diff',
         repoPath: metadata?.repo_path || null,
         worktreePath: metadata?.worktree_path || '',
         repoName: repo,
@@ -443,7 +447,10 @@ export default function Review({
         features: aiFeatures,
         outputs: aiOutputs,
         onOutputs: outputs => setAIOutputs(prev => ({ ...prev, ...outputs })),
-        openFeature: openAIFeature,
+        openFeatures: [
+            ...(openAIFeature ? [openAIFeature] : []),
+            ...dockedTabs.flatMap(t => (t.tabType === 'ai' && t.featureId ? [t.featureId] : [])),
+        ],
         onToast: showToast,
     });
 
@@ -1100,6 +1107,20 @@ export default function Review({
         setDockState(prev => dockDiffFileState(prev, filePath, panel));
     };
 
+    // Move an AI report out of its modal into a pane beside the code: the
+    // right panel of a split view, or a tab on a phone, where the view never
+    // splits. A report already docked is brought to the front.
+    const handleDockAIFeature = (featureId: string) => {
+        setOpenAIFeature(null);
+        setDockState(prev => dockAIFeature(prev, featureId, { beside: !isMobile }));
+    };
+
+    // Move a docked AI report back into its modal.
+    const handleUndockAIFeature = (tabId: number, featureId: string) => {
+        setDockState(prev => closeDockedTabState(prev, tabId));
+        setOpenAIFeature(featureId);
+    };
+
     // Toggle split pane
     const handleToggleSplit = () => {
         setDockState(prev => toggleSplit(prev));
@@ -1288,9 +1309,15 @@ export default function Review({
     };
 
     // Take the reviewer from an AI report item to its thread: open it in the
-    // tray and scroll the diff to its line (or file, when it's outdated).
-    const jumpToReportItem = (item: ReportItem) => {
-        setOpenAIFeature(null);
+    // tray and scroll the diff to its line (or file, when it's outdated). The
+    // modal closes; a docked report (`fromTab`) stays where it is, the review
+    // shown beside it.
+    const jumpToReportItem = (item: ReportItem, fromTab?: number) => {
+        if (fromTab === undefined) {
+            setOpenAIFeature(null);
+        } else {
+            setDockState(prev => revealReview(prev, fromTab, prev.split && !isMobile));
+        }
         setSelectedThreadId(item.root_comment_id);
         setTrayOpen(true);
         if (!isMobile && item.path) revealThreadInDiff(item.root_comment_id, item.path);
@@ -1486,17 +1513,23 @@ export default function Review({
                     const output = aiOutputs[feature.id];
                     const count = attentionCount(output);
                     const generating = aiRuns.generating(feature.id);
+                    const docked = findAITab(dockState, feature.id) !== null;
                     return (
                         <Button
                             key={feature.id}
-                            // Without a result there is nothing to open yet:
-                            // generate one in the background instead.
+                            // A docked report is brought to the front of its
+                            // pane. Without a result there is nothing to open
+                            // yet: generate one in the background instead.
                             onClick={() =>
-                                hasResult(output)
-                                    ? setOpenAIFeature(feature.id)
-                                    : aiRuns.generate(feature)
+                                docked
+                                    ? handleDockAIFeature(feature.id)
+                                    : hasResult(output)
+                                      ? setOpenAIFeature(feature.id)
+                                      : aiRuns.generate(feature)
                             }
-                            variant={openAIFeature === feature.id ? 'primary' : 'secondary'}
+                            variant={
+                                openAIFeature === feature.id || docked ? 'primary' : 'secondary'
+                            }
                             loading={generating}
                             title={generating ? `Generating ${feature.name}…` : feature.description}
                         >
@@ -1648,6 +1681,11 @@ export default function Review({
                             Review
                         </button>
                         {panel.dockedTabs.map(tab => {
+                            const aiName =
+                                tab.tabType === 'ai'
+                                    ? (aiFeatures.find(f => f.id === tab.featureId)?.name ??
+                                      tab.featureId)
+                                    : undefined;
                             const tabFilename = tab.filePath.split('/').pop() || tab.filePath;
                             const isActive = panel.activeTab === tab.id;
                             return (
@@ -1678,14 +1716,21 @@ export default function Review({
                                             fontSize: '13px',
                                             fontWeight: isActive ? 600 : 400,
                                             cursor: 'inherit',
-                                            fontFamily: 'var(--font-mono)',
+                                            fontFamily: aiName ? undefined : 'var(--font-mono)',
                                             display: 'flex',
                                             alignItems: 'center',
                                             gap: '6px',
                                         }}
-                                        title={tab.filePath}
+                                        title={aiName ?? tab.filePath}
                                     >
-                                        {tabFilename}
+                                        {aiName !== undefined ? (
+                                            <>
+                                                <span style={{ color: 'var(--accent)' }}>✦</span>
+                                                {aiName}
+                                            </>
+                                        ) : (
+                                            tabFilename
+                                        )}
                                         {tab.line > 1 && (
                                             <span
                                                 style={{
@@ -1976,7 +2021,29 @@ export default function Review({
                                     height: '70vh',
                                 }}
                             >
-                                {tab.tabType === 'diff' ? (
+                                {tab.tabType === 'ai' && tab.featureId ? (
+                                    <AIReportPane
+                                        // Mounted afresh for each PR, so one
+                                        // never shows another's report.
+                                        key={prRef}
+                                        featureId={tab.featureId}
+                                        name={aiFeatures.find(f => f.id === tab.featureId)?.name}
+                                        owner={owner}
+                                        repo={repo}
+                                        number={number}
+                                        initialOutput={aiOutputs[tab.featureId]}
+                                        onOutput={output =>
+                                            setAIOutputs(prev => ({
+                                                ...prev,
+                                                [output.feature]: output,
+                                            }))
+                                        }
+                                        onJumpToItem={item => jumpToReportItem(item, tab.id)}
+                                        onUndock={() =>
+                                            handleUndockAIFeature(tab.id, tab.featureId!)
+                                        }
+                                    />
+                                ) : tab.tabType === 'diff' ? (
                                     <div
                                         style={{
                                             height: '100%',
@@ -2084,7 +2151,8 @@ export default function Review({
                     onOutput={output =>
                         setAIOutputs(prev => ({ ...prev, [output.feature]: output }))
                     }
-                    onJumpToItem={jumpToReportItem}
+                    onJumpToItem={item => jumpToReportItem(item)}
+                    onDock={() => handleDockAIFeature(openFeature.id)}
                 />
             )}
 

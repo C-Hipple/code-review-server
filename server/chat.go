@@ -21,7 +21,8 @@ import (
 //
 // A reviewer can chat with a local agent about the PR they're reviewing; the
 // chat package runs it. Which agent is the config's choice ([Chat] Agent):
-// Claude Code, or any agent that speaks ACP ([Chat.Agents.<id>]). The server
+// Claude Code, Antigravity, or any agent that speaks ACP
+// ([Chat.Agents.<id>]). The server
 // holds the conversations: StartChat opens one and SendChatMessage continues
 // it, each returning as soon as the reviewer's message is stored while the
 // agent answers in the background, and GetChat reads a chat back. A

@@ -34,7 +34,7 @@ func TestConfigSourceListsTheConfiguredAgents(t *testing.T) {
 	for _, b := range backends {
 		ids = append(ids, b.ID())
 	}
-	if !slices.Equal(ids, []string{"claude", "gemini", "odd", "zed"}) {
+	if !slices.Equal(ids, []string{"claude", "antigravity", "gemini", "odd", "zed"}) {
 		t.Fatalf("ids = %v", ids)
 	}
 	if src.Default() != "gemini" {
@@ -43,18 +43,21 @@ func TestConfigSourceListsTheConfiguredAgents(t *testing.T) {
 	if _, ok := backends[0].(*ClaudeBackend); !ok {
 		t.Errorf("claude should be Claude Code: %T", backends[0])
 	}
-	if _, ok := backends[1].(*ACPBackend); !ok {
-		t.Errorf("an agent naming no protocol should speak ACP: %T", backends[1])
+	if b, ok := backends[1].(*ACPBackend); !ok || b.dialect.command != "agy acp" {
+		t.Errorf("antigravity should be Antigravity's ACP: %T", backends[1])
 	}
-	if info := backends[3].Info(); info.Name != "Claude (ACP)" {
+	if b, ok := backends[2].(*ACPBackend); !ok || b.dialect.command != "" {
+		t.Errorf("an agent naming no protocol should speak plain ACP: %T", backends[2])
+	}
+	if info := backends[4].Info(); info.Name != "Claude (ACP)" {
 		t.Errorf("zed's name = %q", info.Name)
 	}
-	if info := backends[2].Info(); info.Available || !strings.Contains(info.Reason, `its protocol "smoke-signals" isn't one the server speaks`) {
+	if info := backends[3].Info(); info.Available || !strings.Contains(info.Reason, `its protocol "smoke-signals" isn't one the server speaks`) {
 		t.Errorf("odd = %+v", info)
 	}
 
 	// Backends are kept, so an agent running between turns is too.
-	if again := src.Backends(); again[1] != backends[1] {
+	if again := src.Backends(); again[2] != backends[2] || again[1] != backends[1] {
 		t.Error("a backend should be kept across calls")
 	}
 
@@ -62,11 +65,11 @@ func TestConfigSourceListsTheConfiguredAgents(t *testing.T) {
 	cfg.Chat.Agents = map[string]config.ChatBackendSettings{"gemini": {Command: "gemini", Protocol: config.ChatProtocolClaudeCode}}
 	cfg.Chat.Agent = ""
 	backends = src.Backends()
-	if len(backends) != 2 || backends[1].ID() != "gemini" {
+	if len(backends) != 3 || backends[2].ID() != "gemini" {
 		t.Fatalf("backends = %v", backends)
 	}
-	if _, ok := backends[1].(*ClaudeBackend); !ok {
-		t.Errorf("gemini should now be Claude Code: %T", backends[1])
+	if _, ok := backends[2].(*ClaudeBackend); !ok {
+		t.Errorf("gemini should now be Claude Code: %T", backends[2])
 	}
 	if src.Default() != config.ChatBackendClaude {
 		t.Errorf("with no Agent, new chats talk to Claude Code: %q", src.Default())

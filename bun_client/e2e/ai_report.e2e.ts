@@ -149,6 +149,106 @@ test.describe('AI report', () => {
     });
 });
 
+// A report moved out of its modal into the review's split view, beside the code.
+test.describe('AI report beside the code', () => {
+    async function pin(page: Page, name: string) {
+        const dialog = await generateAndOpen(page, name);
+        await dialog.getByRole('button', { name: '◫ Pin beside code' }).click();
+        await expect(dialog).toHaveCount(0);
+        const pane = page.getByTestId('ai-report-pane');
+        await expect(pane).toBeVisible();
+        return pane;
+    }
+
+    test('pins the report in a pane beside the diff', async ({ page, backend }) => {
+        await openReview(page);
+        const pane = await pin(page, 'Comments addressed?');
+        await expect(pane.getByText('Needs attention (1)')).toBeVisible();
+        await expect(pane.getByText('Should punctuation have a default?')).toBeVisible();
+
+        // The view split: the diff on the left, the report on the right.
+        const diff = page.locator('.diff-section');
+        await expect(diff).toHaveCount(1);
+        await expect(diff).toBeVisible();
+        const diffBox = (await diff.boundingBox())!;
+        const paneBox = (await pane.boundingBox())!;
+        expect(paneBox.x).toBeGreaterThanOrEqual(diffBox.x + diffBox.width);
+        expect(paneBox.width).toBeGreaterThan(500);
+        await expect(page.getByTitle('Close split view')).toBeVisible();
+
+        // Moving it there ran nothing again.
+        expect(await backend.calls('RunAIFeature')).toHaveLength(1);
+
+        // Its toolbar button brings the pane to the front, not the modal.
+        await page.getByRole('button', { name: /Comments addressed\? \(1\)/ }).click();
+        await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
+        await expect(pane).toBeVisible();
+
+        // Jumping opens the thread in the comment tray, and the report stays put.
+        await pane.getByRole('button', { name: 'src/greet.ts:3' }).click();
+        await expect(trayThread(page, 'Should punctuation have a default?')).toHaveAttribute(
+            'aria-current',
+            'true'
+        );
+        await expect(pane).toBeVisible();
+        await page.getByRole('button', { name: 'Close comments' }).click();
+
+        // Re-run works from the pane too.
+        await pane.getByRole('button', { name: '↻ Re-run' }).click();
+        await expect
+            .poll(async () => (await backend.calls('RunAIFeature')).map(c => c.params.Force))
+            .toEqual([false, true]);
+        await expect(pane.getByText('Needs attention (1)')).toBeVisible();
+
+        // Closing its tab closes the split the pin opened.
+        await page.getByTitle('Close tab').click();
+        await expect(pane).toHaveCount(0);
+        await expect(page.getByTitle('Close split view')).toHaveCount(0);
+        await expect(page.getByTitle('Split view vertically')).toHaveCount(0);
+        await expect(diff).toHaveCount(1);
+    });
+
+    test('goes back into its modal', async ({ page }) => {
+        await openReview(page);
+        const pane = await pin(page, 'Comments addressed?');
+
+        await pane.getByRole('button', { name: 'Open in a dialog' }).click();
+        await expect(pane).toHaveCount(0);
+        const dialog = modal(page, 'Comments addressed?');
+        await expect(dialog.getByText('Needs attention (1)')).toBeVisible();
+        await expect(page.getByTitle('Close split view')).toHaveCount(0);
+    });
+
+    test('draws the change diagram fitted to the pane', async ({ page, backend }) => {
+        await backend.setDiagram(true);
+        await openReview(page);
+        const pane = await pin(page, 'Change diagram');
+
+        const svg = pane.locator('.mermaid-canvas svg');
+        await expect(svg).toContainText('src/greet.ts: greet');
+        const paneBox = (await pane.boundingBox())!;
+        const svgBox = (await svg.boundingBox())!;
+        expect(svgBox.width).toBeLessThanOrEqual(paneBox.width);
+        expect(svgBox.y + svgBox.height).toBeLessThanOrEqual(paneBox.y + paneBox.height);
+    });
+
+    test('on a phone, pins it as a tab of the single panel', async ({ page }) => {
+        await page.setViewportSize({ width: 400, height: 800 });
+        await openReview(page);
+        const pane = await pin(page, 'Comments addressed?');
+        // No split on a phone: the report takes the panel, the review a tab away.
+        await expect(page.locator('.diff-section')).toHaveCount(0);
+
+        // Jumping brings the review forward and opens the thread in the
+        // comment tray, which takes the screen on a phone.
+        await pane.getByRole('button', { name: 'src/greet.ts:3' }).click();
+        const thread = trayThread(page, 'Should punctuation have a default?');
+        await expect(thread).toBeVisible();
+        await expect(thread).toHaveAttribute('aria-current', 'true');
+        await expect(pane).toBeHidden();
+    });
+});
+
 // The full-page view the list's AI button opens: one card per enabled feature.
 test.describe('AI view', () => {
     const aiView = '/?owner=acme&repo=widgets&number=42&view=ai';

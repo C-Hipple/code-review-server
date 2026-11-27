@@ -1,12 +1,14 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"crs/config"
 	"crs/subprocess"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,8 +53,76 @@ type ACPBackend struct {
 	// chat's next one; zero means acpIdleTimeout.
 	IdleTimeout time.Duration
 
+	// dialect is what the agent needs beyond ACP itself; the zero value is
+	// plain ACP. NewAntigravityBackend sets Antigravity's.
+	dialect acpDialect
+
 	mu    sync.Mutex
 	conns map[string]*acpEntry // by the chat's working directory
+	// offered are the models the agent offered when a session last opened,
+	// which Info lists when the table names none.
+	offered []Model
+}
+
+// acpDialect is what one agent needs beyond ACP itself: the tools of its own
+// it reports with a kind that says nothing, how it signs in, what its stop
+// reasons mean (Antigravity's, antigravity.go). The zero value is plain ACP.
+type acpDialect struct {
+	// name is what clients call the agent when its table names none; empty
+	// takes the agent's ID.
+	name string
+	// command is the command line to run when the table names none; empty
+	// requires one.
+	command string
+	// mode is the session mode each conversation is switched to when the
+	// table names none, if the agent offers it.
+	mode string
+	// tools are the agent's own tools, by the name a call's title gives
+	// (acpToolID): how a call to each is shown, and whether it is let through
+	// whatever kind the agent reports it as.
+	tools map[string]acpNamedTool
+	// questionPrefix starts the tool call ID of a permission request that asks
+	// the reviewer a question, its options the answers, rather than for leave
+	// to act; empty when the agent asks none.
+	questionPrefix string
+	// refusal says what the "refusal" stop reason means, when the agent gives
+	// it a meaning of its own.
+	refusal string
+	// signIn says how the reviewer signs the agent in ("running `agy` in a
+	// terminal"); empty says to run it in a terminal.
+	signIn string
+	// needsSignIn reports whether an error the agent answered with means it
+	// needs signing in, besides ACP's own auth_required.
+	needsSignIn func(*acpError) bool
+	// stdoutLine looks at a line the agent wrote to stdout that isn't
+	// JSON-RPC: an error ends the agent with it (one waiting for a sign-in
+	// that can't come, say).
+	stdoutLine func(line string) error
+	// dropEnv are variables of the server's environment the agent isn't
+	// given unless its table's Env sets them.
+	dropEnv []string
+	// privateTemp gives each of the agent's processes a temporary directory
+	// of its own (TMPDIR), removed once the process has exited.
+	privateTemp bool
+	// sessionMeta is the _meta a session is opened or picked up again with,
+	// from what the agent said of itself in initialize: how an agent that
+	// takes a system prompt is given one. nil sends none, and the system
+	// prompt goes ahead of the first message.
+	sessionMeta func(caps acpAgentCapabilities, systemPrompt string) map[string]any
+}
+
+// acpNamedTool is one of an agent's own tools.
+type acpNamedTool struct {
+	// tool names it, as acpToolName names a kind ("List"), when its kind
+	// names nothing.
+	tool string
+	// readOnly lets it through whatever kind the agent reports it as, "other"
+	// say: it only reads, plans or hands work to a subagent that asks before
+	// it acts. A call of a kind that acts (an edit, a command) never is.
+	readOnly bool
+	// detail picks what a call is on out of its rawInput; nil, or "", leaves
+	// it to the title and locations.
+	detail func(input map[string]json.RawMessage) string
 }
 
 // acpEntry is a chat's agent: running a turn (busy) or waiting for the next.
@@ -108,11 +178,14 @@ func (b *ACPBackend) settings() config.ChatBackendSettings {
 	return b.Settings()
 }
 
-func (b *ACPBackend) name(s config.ChatBackendSettings) string { return agentName(s, b.ID()) }
+func (b *ACPBackend) name(s config.ChatBackendSettings) string {
+	return agentName(s, cmp.Or(b.dialect.name, b.ID()))
+}
 
-// argv is the configured command line, split like a shell would.
+// argv is the configured command line, else the dialect's, split like a
+// shell would.
 func (b *ACPBackend) argv(s config.ChatBackendSettings) ([]string, error) {
-	command := strings.TrimSpace(s.Command)
+	command := cmp.Or(strings.TrimSpace(s.Command), b.dialect.command)
 	if command == "" {
 		return nil, fmt.Errorf("no Command is set: set %s Command to the command that starts the agent speaking ACP", config.ChatTable(b.ID()))
 	}
@@ -127,6 +200,13 @@ func (b *ACPBackend) Info() BackendInfo {
 	s := b.settings()
 	table := config.ChatTable(b.ID())
 	info := BackendInfo{ID: b.ID(), Name: b.name(s), DefaultModel: s.DefaultModel, Models: modelChoices(s, nil)}
+	// With none configured, the models the agent offered its last session:
+	// which depends on the agent's account, as Antigravity's do.
+	b.mu.Lock()
+	if offered := b.offered; len(s.Models) == 0 && len(offered) > 0 {
+		info.Models = append([]Model{{ID: "", Name: "Default"}}, offered...)
+	}
+	b.mu.Unlock()
 	switch argv, err := b.argv(s); {
 	case s.Disabled:
 		info.Reason = "it is disabled in the config (" + table + " Disabled)"
@@ -152,13 +232,15 @@ func (b *ACPBackend) Turn(ctx context.Context, t Turn, emit func(Event)) (TurnRe
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("the %s Command can't be read: %w", config.ChatTable(b.ID()), err)
 	}
-	conn, err := b.acquire(ctx, s, t.WorkDir, argv, agentEnv(os.Environ(), s.Env))
+	env := agentEnv(withoutEnv(os.Environ(), b.dialect.dropEnv), s.Env)
+	conn, err := b.acquire(ctx, s, t.WorkDir, argv, env)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	defer b.park(t.WorkDir, conn)
 
 	turn := newACPTurn(b.name(s), emit, t)
+	turn.dialect = &b.dialect
 	conn.attach(turn)
 	res, err := b.turn(ctx, conn, turn, t, s)
 	conn.attach(nil)
@@ -175,7 +257,7 @@ func (b *ACPBackend) Turn(ctx context.Context, t Turn, emit func(Event)) (TurnRe
 
 // turn opens the chat's session on conn and sends the prompt.
 func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t Turn, s config.ChatBackendSettings) (TurnResult, error) {
-	sessionID, err := b.openSession(ctx, conn, t, s)
+	sessionID, systemPromptSent, err := b.openSession(ctx, conn, t, s)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -188,10 +270,10 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 		turn.session, turn.quiet, turn.accepted = sessionID, false, t.Resume
 	})
 
-	// ACP has no system prompt for a client to add to, so a new
-	// conversation's first prompt carries it.
+	// ACP has no system prompt for a client to add to, so unless the agent
+	// took it with the session, a new conversation's first prompt carries it.
 	var prompt []acpContent
-	if !t.Resume && strings.TrimSpace(t.SystemPrompt) != "" {
+	if !t.Resume && strings.TrimSpace(t.SystemPrompt) != "" && !systemPromptSent {
 		prompt = append(prompt, acpText(t.SystemPrompt))
 	}
 	prompt = append(prompt, acpText(t.Prompt))
@@ -229,10 +311,16 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		var refused string
-		conn.locked(func() { refused = turn.refused })
+		var (
+			refused string
+			asked   bool
+		)
+		conn.locked(func() { refused, asked = turn.refused, turn.asked })
 		if refused != "" {
 			return res, fmt.Errorf("%s stopped when the server refused to let it %s: the chat is read-only.", b.name(s), refused)
+		}
+		if asked {
+			return res, nil // it stopped for an answer to its question, which the reply shows
 		}
 		return res, errors.New("The agent cancelled its answer.")
 	case "max_tokens":
@@ -240,6 +328,9 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 	case "max_turn_requests":
 		return res, errors.New("The agent stopped: it reached its turn limit.")
 	case "refusal":
+		if b.dialect.refusal != "" {
+			return res, errors.New(b.dialect.refusal)
+		}
 		return res, errors.New("The agent refused to answer.")
 	}
 	return res, fmt.Errorf("The agent stopped (%s).", pr.StopReason)
@@ -247,15 +338,20 @@ func (b *ACPBackend) turn(ctx context.Context, conn *acpConn, turn *acpTurn, t T
 
 // openSession makes the chat's session the one conn has open: a new one, or
 // the one the turn resumes, picked up again when this process hasn't had it.
-// It returns the session's ID.
-func (b *ACPBackend) openSession(ctx context.Context, conn *acpConn, t Turn, s config.ChatBackendSettings) (string, error) {
+// It returns the session's ID, and whether the agent took the turn's system
+// prompt with the session (the dialect's sessionMeta).
+func (b *ACPBackend) openSession(ctx context.Context, conn *acpConn, t Turn, s config.ChatBackendSettings) (string, bool, error) {
 	if t.Resume && t.SessionID != "" && conn.sessionID == t.SessionID {
-		return t.SessionID, nil // open since an earlier turn, mode and model chosen
+		return t.SessionID, false, nil // open since an earlier turn, mode and model chosen
 	}
 	name := b.name(s)
 	var dirs []string
 	if conn.caps.SessionCapabilities.AdditionalDirectories != nil {
 		dirs = t.ReadDirs
+	}
+	var meta map[string]any
+	if b.dialect.sessionMeta != nil && strings.TrimSpace(t.SystemPrompt) != "" {
+		meta = b.dialect.sessionMeta(conn.caps, t.SystemPrompt)
 	}
 	var (
 		sessionID string
@@ -265,17 +361,17 @@ func (b *ACPBackend) openSession(ctx context.Context, conn *acpConn, t Turn, s c
 	case !t.Resume:
 		var r acpNewSessionResponse
 		err := b.signedIn(ctx, conn, s, func() error {
-			return setupCall(ctx, conn, "session/new", acpNewSessionRequest{Cwd: t.WorkDir, AdditionalDirectories: dirs, McpServers: []any{}}, &r)
+			return setupCall(ctx, conn, "session/new", acpNewSessionRequest{Cwd: t.WorkDir, AdditionalDirectories: dirs, McpServers: []any{}, Meta: meta}, &r)
 		})
 		if err != nil {
-			return "", b.failed(conn, s, "start a conversation", err)
+			return "", false, b.failed(conn, s, "start a conversation", err)
 		}
 		if r.SessionID == "" {
-			return "", fmt.Errorf("%s started a conversation without naming it", name)
+			return "", false, fmt.Errorf("%s started a conversation without naming it", name)
 		}
 		sessionID, state = r.SessionID, r.acpSessionState
 	case t.SessionID == "":
-		return "", fmt.Errorf("there is no conversation with %s to resume", name)
+		return "", false, fmt.Errorf("there is no conversation with %s to resume", name)
 	case conn.caps.SessionCapabilities.Resume != nil || conn.caps.LoadSession:
 		method := "session/load" // the agent replays the conversation, which the turn, quiet until the prompt, drops
 		if conn.caps.SessionCapabilities.Resume != nil {
@@ -283,46 +379,52 @@ func (b *ACPBackend) openSession(ctx context.Context, conn *acpConn, t Turn, s c
 		}
 		var r acpSessionState
 		err := b.signedIn(ctx, conn, s, func() error {
-			return setupCall(ctx, conn, method, acpLoadSessionRequest{SessionID: t.SessionID, Cwd: t.WorkDir, AdditionalDirectories: dirs, McpServers: []any{}}, &r)
+			return setupCall(ctx, conn, method, acpLoadSessionRequest{SessionID: t.SessionID, Cwd: t.WorkDir, AdditionalDirectories: dirs, McpServers: []any{}, Meta: meta}, &r)
 		})
 		if err != nil {
-			return "", b.failed(conn, s, "pick up the conversation again", err)
+			return "", false, b.failed(conn, s, "pick up the conversation again", err)
 		}
 		sessionID, state = t.SessionID, r
 	default:
-		return "", fmt.Errorf("%s can't pick up a conversation once it has exited: it offers neither session/load nor session/resume", name)
+		return "", false, fmt.Errorf("%s can't pick up a conversation once it has exited: it offers neither session/load nor session/resume", name)
 	}
 	conn.sessionID = sessionID
-	if mode := strings.TrimSpace(s.Mode); mode != "" {
-		if err := b.choose(ctx, conn, s, sessionID, state, "mode", mode); err != nil {
-			return "", err
+	if models := state.models(); len(models) > 0 {
+		b.mu.Lock()
+		b.offered = models
+		b.mu.Unlock()
+	}
+	// The table's mode is one the reviewer chose, so the agent must offer it;
+	// the dialect's is only switched to where it does.
+	if mode, required := cmp.Or(strings.TrimSpace(s.Mode), b.dialect.mode), strings.TrimSpace(s.Mode) != ""; mode != "" {
+		if err := b.choose(ctx, conn, s, sessionID, state, "mode", mode, required); err != nil {
+			return "", false, err
 		}
 	}
 	if model := strings.TrimSpace(t.Model); model != "" {
-		if err := b.choose(ctx, conn, s, sessionID, state, "model", model); err != nil {
-			return "", err
+		if err := b.choose(ctx, conn, s, sessionID, state, "model", model, true); err != nil {
+			return "", false, err
 		}
 	}
-	return sessionID, nil
+	return sessionID, meta != nil, nil
 }
 
 // choose sets the session's mode or model: through the agent's config option
-// of that category when it has one, else its older session/set_mode or
-// session/set_model.
-func (b *ACPBackend) choose(ctx context.Context, conn *acpConn, s config.ChatBackendSettings, sessionID string, state acpSessionState, category, value string) error {
+// of that category (or, failing one, of that ID) when it has one, else its
+// older session/set_mode or session/set_model. Nothing is sent when the
+// session already has it. A choice that isn't required is left alone when
+// the agent offers no way to make it, or doesn't offer it.
+func (b *ACPBackend) choose(ctx context.Context, conn *acpConn, s config.ChatBackendSettings, sessionID string, state acpSessionState, category, value string, required bool) error {
 	name := b.name(s)
 	var (
 		method  string
 		params  any
 		choices []string
+		current string
 	)
-	for _, opt := range state.ConfigOptions {
-		if opt.Category != category {
-			continue
-		}
+	if opt := state.configOption(category); opt != nil {
 		method, params = "session/set_config_option", acpSetConfigOptionRequest{SessionID: sessionID, ConfigID: opt.ID, Value: value}
-		choices = opt.values()
-		break
+		choices, current = opt.values(), opt.current()
 	}
 	if method == "" {
 		switch {
@@ -331,11 +433,15 @@ func (b *ACPBackend) choose(ctx context.Context, conn *acpConn, s config.ChatBac
 			for _, m := range state.Modes.AvailableModes {
 				choices = append(choices, m.ID)
 			}
+			current = state.Modes.CurrentModeID
 		case category == "model" && state.Models != nil:
 			method, params = "session/set_model", acpSetModelRequest{SessionID: sessionID, ModelID: value}
 			for _, m := range state.Models.AvailableModels {
 				choices = append(choices, m.ModelID)
 			}
+			current = state.Models.CurrentModelID
+		case !required:
+			return nil
 		default:
 			setting := "Mode"
 			if category == "model" {
@@ -344,10 +450,20 @@ func (b *ACPBackend) choose(ctx context.Context, conn *acpConn, s config.ChatBac
 			return fmt.Errorf("%s doesn't let a client choose its %s: take %s out of %s", name, category, setting, config.ChatTable(b.ID()))
 		}
 	}
+	if current == value {
+		return nil
+	}
 	if len(choices) > 0 && !slices.Contains(choices, value) {
+		if !required {
+			return nil
+		}
 		return fmt.Errorf("%s has no %s %q; it offers %s", name, category, value, strings.Join(choices, ", "))
 	}
 	if err := setupCall(ctx, conn, method, params, nil); err != nil {
+		if !required && conn.alive() {
+			slog.Warn("Chat agent kept its own session "+category, "agent", name, category, value, "error", err)
+			return nil
+		}
 		return b.failed(conn, s, fmt.Sprintf("switch to the %s %q", category, value), err)
 	}
 	return nil
@@ -380,12 +496,20 @@ func (b *ACPBackend) failed(conn *acpConn, s config.ChatBackendSettings, what st
 	return fmt.Errorf("%s couldn't %s: %w", b.name(s), what, err)
 }
 
+// needsSignIn reports whether err is the agent saying it needs signing in.
+func (b *ACPBackend) needsSignIn(err error) bool {
+	var rpcErr *acpError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	return rpcErr.Code == acpErrAuthRequired || b.dialect.needsSignIn != nil && b.dialect.needsSignIn(rpcErr)
+}
+
 // describe adds to an error from the agent what the reviewer can do about
 // it: for a request the agent refused until it is signed in, how to sign in.
 // Any other error comes back as it is.
 func (b *ACPBackend) describe(conn *acpConn, s config.ChatBackendSettings, err error) error {
-	var rpcErr *acpError
-	if !errors.As(err, &rpcErr) || rpcErr.Code != acpErrAuthRequired {
+	if !b.needsSignIn(err) {
 		return err
 	}
 	var methods, ids []string
@@ -401,10 +525,14 @@ func (b *ACPBackend) describe(conn *acpConn, s config.ChatBackendSettings, err e
 		methods = append(methods, method)
 	}
 	msg := b.name(s) + " needs signing in first"
-	if len(methods) > 0 {
-		msg += " (" + strings.Join(methods, "; ") + ")"
+	if b.dialect.signIn != "" {
+		msg += ". Sign in by " + b.dialect.signIn
+	} else {
+		if len(methods) > 0 {
+			msg += " (" + strings.Join(methods, "; ") + ")"
+		}
+		msg += ". Sign in by running it in a terminal"
 	}
-	msg += ". Sign in by running it in a terminal"
 	if len(ids) > 0 {
 		msg += fmt.Sprintf(", or set %s AuthMethod to one of: %s", config.ChatTable(b.ID()), strings.Join(ids, ", "))
 	}
@@ -451,7 +579,9 @@ func (b *ACPBackend) acquire(ctx context.Context, s config.ChatBackendSettings, 
 	}
 	b.mu.Unlock()
 
-	conn, err := startACP(b.name(s), argv, env, workDir, key)
+	// A temporary directory the table's Env names is the agent's to keep.
+	_, tempSet := s.Env["TMPDIR"]
+	conn, err := startACP(b.name(s), argv, env, workDir, key, b.dialect.privateTemp && !tempSet, b.dialect.stdoutLine)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +603,7 @@ func (b *ACPBackend) acquire(ctx context.Context, s config.ChatBackendSettings, 
 // initialize is the handshake: the server says what it offers the agent —
 // reading files, nothing else — and the agent what it can do.
 func (b *ACPBackend) initialize(ctx context.Context, conn *acpConn, s config.ChatBackendSettings) error {
-	var r acpInitializeResponse
+	var raw json.RawMessage
 	err := setupCall(ctx, conn, "initialize", acpInitializeRequest{
 		ProtocolVersion: acpProtocolVersion,
 		ClientCapabilities: acpClientCapabilities{
@@ -481,16 +611,41 @@ func (b *ACPBackend) initialize(ctx context.Context, conn *acpConn, s config.Cha
 			Terminal: false,
 		},
 		ClientInfo: acpImplementation{Name: "code-review-server", Title: "Code Review Server", Version: serverVersion()},
-	}, &r)
+	}, &raw)
 	if err != nil {
+		if b.needsSignIn(err) {
+			return b.describe(conn, s, err)
+		}
 		return fmt.Errorf("%s didn't start speaking ACP (is %s Command the command that starts it in ACP mode?): %w",
 			b.name(s), config.ChatTable(b.ID()), err)
 	}
-	if r.ProtocolVersion != acpProtocolVersion {
+	var r acpInitializeResponse
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("%s answered initialize with something the server can't read: %w", b.name(s), err)
+	}
+	if r.ProtocolVersion != acpProtocolVersion && !acpVersion1Shape(raw) {
 		return fmt.Errorf("%s speaks ACP version %d; the server speaks version %d", b.name(s), r.ProtocolVersion, acpProtocolVersion)
 	}
 	conn.caps, conn.authMethods = r.AgentCapabilities, r.AuthMethods
 	return nil
+}
+
+// acpVersion1Shape reports whether an answer to initialize is in version 1's
+// shape, whatever version it names. Agents don't all name the version they
+// speak — Antigravity names 2 and answers as version 1 does — so the answer's
+// shape is what counts: version 1's agentCapabilities, agentInfo or
+// authMethods, which a later version names otherwise.
+func acpVersion1Shape(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for _, name := range []string{"agentCapabilities", "agentInfo", "authMethods"} {
+		if _, ok := fields[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // park keeps the chat's agent for its next turn, for IdleTimeout, unless it
@@ -574,6 +729,8 @@ func (b *ACPBackend) running() int {
 type acpTurn struct {
 	agent string
 	emit  func(Event)
+	// dialect is the agent's own way with tools and questions; never nil.
+	dialect *acpDialect
 	// dirs are the directories the agent may read, as given and resolved.
 	dirs []string
 	// session is the session the turn prompts; quiet drops its updates until
@@ -594,12 +751,17 @@ type acpTurn struct {
 	stop    chan string
 	// refused is the last call the server refused, in words ("Run \"make\"").
 	refused string
+	// asked is set once the agent has asked the reviewer a question, which
+	// the reply shows for them to answer in their next message.
+	asked bool
 }
 
 // acpTool is a tool call as the agent has described it so far.
 type acpTool struct {
 	title, kind string
 	locations   []string
+	// input is the call's rawInput, the tool's arguments, as last given.
+	input json.RawMessage
 	// shown is the tool and detail last emitted.
 	shown     string
 	announced bool
@@ -608,7 +770,7 @@ type acpTool struct {
 
 func newACPTurn(agent string, emit func(Event), t Turn) *acpTurn {
 	turn := &acpTurn{
-		agent: agent, emit: emit, quiet: true,
+		agent: agent, emit: emit, quiet: true, dialect: &acpDialect{},
 		tools: map[string]*acpTool{}, denied: map[string]string{}, stop: make(chan string, 1),
 	}
 	for _, dir := range append([]string{t.WorkDir}, t.ReadDirs...) {
@@ -681,6 +843,9 @@ func (t *acpTurn) notify(method string, params json.RawMessage) {
 // may describe a call more than once as it learns what it is for (its title
 // gains the file read), so a later description updates the first.
 func (t *acpTurn) toolCall(u acpUpdate) {
+	if t.question(u.ToolCallID) {
+		return // the reply shows the question
+	}
 	call := t.tools[u.ToolCallID]
 	if call == nil {
 		call = &acpTool{}
@@ -701,7 +866,10 @@ func (t *acpTurn) toolCall(u acpUpdate) {
 			call.locations = append(call.locations, l.Path)
 		}
 	}
-	tool, detail := acpToolName(call.kind), t.detail(call)
+	if len(u.RawInput) > 0 && string(u.RawInput) != "null" {
+		call.input = u.RawInput
+	}
+	tool, detail := t.describe(call)
 	if shown := tool + "\x00" + detail; !call.announced || shown != call.shown {
 		t.answered = true
 		call.announced, call.shown = true, shown
@@ -714,7 +882,7 @@ func (t *acpTurn) toolCall(u acpUpdate) {
 		// other call that completed was made without its leave: unasked, or
 		// refused and made anyway.
 		deniedAs, denied := t.denied[u.ToolCallID]
-		if *u.Status == "completed" && !t.stopped && (!acpReadOnlyKinds[call.kind] || denied) {
+		if *u.Status == "completed" && !t.stopped && (!t.readOnly(call) || denied) {
 			t.stopped = true
 			kind, how := call.kind, "without asking first"
 			if denied {
@@ -800,21 +968,110 @@ func acpToolName(kind string) string {
 // detail says in a few words what a tool call is on: its title, with paths
 // shown relative to the turn's directories, less a first word that only
 // repeats the tool's name ("Read pr.diff" under "Read" is "pr.diff"); else the
-// first file it touches.
+// first file it touches. A title that only names the tool ("Running
+// view_file") says less than the file it is on, so that comes first.
 func (t *acpTurn) detail(call *acpTool) string {
-	detail := strings.Join(strings.Fields(t.relativeAll(call.title)), " ")
-	if tool := acpToolName(call.kind); tool != "" {
-		if first, rest, _ := strings.Cut(detail, " "); repeatsTool(first, tool) {
-			detail = rest
-		}
-	}
-	if detail == "" && len(call.locations) > 0 {
+	var detail string
+	switch id := acpToolID(call.title); {
+	case id != "" && len(call.locations) > 0:
 		detail = t.relativeAll(call.locations[0])
+	case id != "":
+		detail = id
+	default:
+		detail = strings.Join(strings.Fields(t.relativeAll(call.title)), " ")
+		if tool := acpToolName(call.kind); tool != "" {
+			if first, rest, _ := strings.Cut(detail, " "); repeatsTool(first, tool) {
+				detail = rest
+			}
+		}
+		if detail == "" && len(call.locations) > 0 {
+			detail = t.relativeAll(call.locations[0])
+		}
 	}
 	if len(detail) > 200 {
 		detail = cutAtLine(detail, 199) + "…"
 	}
 	return detail
+}
+
+// describe names a tool call and says what it is on, for the reviewer: by
+// its kind and title, or for one of the agent's own tools as the dialect
+// shows it.
+func (t *acpTurn) describe(call *acpTool) (tool, detail string) {
+	tool = acpToolName(call.kind)
+	named, ok := t.dialect.tools[acpToolID(call.title)]
+	if !ok {
+		return tool, t.detail(call)
+	}
+	if tool == "" {
+		tool = named.tool
+	}
+	if named.detail != nil {
+		var input map[string]json.RawMessage
+		if json.Unmarshal(call.input, &input) == nil {
+			detail = strings.Join(strings.Fields(t.relativePath(named.detail(input))), " ")
+		}
+	}
+	// Else the file it is on; its own name, only when nothing else names it.
+	if detail == "" && (tool == "" || len(call.locations) > 0) {
+		detail = t.detail(call)
+	}
+	if len(detail) > 200 {
+		detail = cutAtLine(detail, 199) + "…"
+	}
+	return tool, detail
+}
+
+// acpToolID is the tool a title names when it says nothing else — "Running
+// list_dir", "Run edit_file?" and "list_dir" are list_dir and edit_file, as
+// Antigravity titles its calls — and "" for a title that says more ("Read
+// /src/a.go").
+func acpToolID(title string) string {
+	s := strings.TrimSuffix(strings.TrimSpace(title), "?")
+	for _, prefix := range []string{"Running ", "Run "} {
+		if rest, ok := strings.CutPrefix(s, prefix); ok {
+			s = rest
+			break
+		}
+	}
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return ""
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			return ""
+		}
+	}
+	return s
+}
+
+// readOnly reports whether the server lets a tool call through: one that
+// reads, searches or thinks, or one of the agent's own tools that only reads,
+// plans or hands work on, reported with a kind that says nothing. A call of a
+// kind that acts — an edit, a command, a fetch — never is, whatever its name.
+func (t *acpTurn) readOnly(call *acpTool) bool {
+	if acpReadOnlyKinds[call.kind] {
+		return true
+	}
+	if call.kind != "" && call.kind != "other" {
+		return false
+	}
+	return t.dialect.tools[acpToolID(call.title)].readOnly
+}
+
+// question reports whether a tool call ID is that of a question the agent
+// asks the reviewer.
+func (t *acpTurn) question(toolCallID string) bool {
+	return t.dialect.questionPrefix != "" && strings.HasPrefix(toolCallID, t.dialect.questionPrefix)
+}
+
+// relativePath shows s relative to the turn's directories: "." for one of
+// them, and as relativeAll does otherwise.
+func (t *acpTurn) relativePath(s string) string {
+	if filepath.IsAbs(strings.TrimSpace(s)) && slices.Contains(t.dirs, filepath.Clean(strings.TrimSpace(s))) {
+		return "."
+	}
+	return t.relativeAll(s)
 }
 
 // relativeAll shows each path under one of the turn's directories in s
@@ -844,7 +1101,8 @@ func (t *acpTurn) request(method string, params json.RawMessage) (any, *acpError
 }
 
 // permission answers the agent's request to make a tool call: yes when the
-// call only reads, no otherwise.
+// call only reads, no otherwise. A question for the reviewer is shown in the
+// reply and left unanswered, for them to answer in their next message.
 func (t *acpTurn) permission(params json.RawMessage) (any, *acpError) {
 	var r acpPermissionRequest
 	if err := json.Unmarshal(params, &r); err != nil {
@@ -853,28 +1111,31 @@ func (t *acpTurn) permission(params json.RawMessage) (any, *acpError) {
 	if !t.quiet && r.SessionID == t.session {
 		t.accept() // asking is working on the prompt
 	}
-	kind := ""
-	if r.ToolCall.Kind != nil {
-		kind = *r.ToolCall.Kind
+	if t.question(r.ToolCall.ToolCallID) {
+		t.ask(r)
+		return acpPermissionResponse{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
 	}
-	if call := t.tools[r.ToolCall.ToolCallID]; kind == "" && call != nil {
-		kind = call.kind
+	// The call as the request describes it, over what the agent said of it.
+	call := &acpTool{}
+	if known := t.tools[r.ToolCall.ToolCallID]; known != nil {
+		*call = *known
+	}
+	if r.ToolCall.Kind != nil && *r.ToolCall.Kind != "" {
+		call.kind = *r.ToolCall.Kind // the request's, which the call is let through or refused for
+	}
+	if r.ToolCall.Title != nil && strings.TrimSpace(*r.ToolCall.Title) != "" {
+		call.title = *r.ToolCall.Title
+	}
+	if len(r.ToolCall.RawInput) > 0 && string(r.ToolCall.RawInput) != "null" {
+		call.input = r.ToolCall.RawInput
 	}
 	want := []string{"reject_once", "reject_always"}
-	if acpReadOnlyKinds[kind] {
+	if t.readOnly(call) {
 		want = []string{"allow_once", "allow_always"}
-	}
-	if !acpReadOnlyKinds[kind] {
-		t.denied[r.ToolCall.ToolCallID] = kind
-		call := &acpTool{}
-		if known := t.tools[r.ToolCall.ToolCallID]; known != nil {
-			*call = *known
-		}
-		call.kind = kind // the request's, which the call was refused for
-		if r.ToolCall.Title != nil && strings.TrimSpace(*r.ToolCall.Title) != "" {
-			call.title = *r.ToolCall.Title
-		}
-		t.refused = strings.TrimSpace(strings.ToLower(acpToolName(call.kind)) + " " + strconvQuote(t.detail(call)))
+	} else {
+		t.denied[r.ToolCall.ToolCallID] = call.kind
+		tool, detail := t.describe(call)
+		t.refused = strings.TrimSpace(strings.ToLower(tool) + " " + strconvQuote(detail))
 		if t.refused == "" {
 			t.refused = "use a tool"
 		}
@@ -887,6 +1148,28 @@ func (t *acpTurn) permission(params json.RawMessage) (any, *acpError) {
 		}
 	}
 	return acpPermissionResponse{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
+}
+
+// ask shows a question the agent asks the reviewer in the reply, with the
+// answers it offers.
+func (t *acpTurn) ask(r acpPermissionRequest) {
+	question := ""
+	if r.ToolCall.Title != nil {
+		question = strings.TrimSpace(*r.ToolCall.Title)
+	}
+	if question == "" {
+		question = "Which of these?"
+	}
+	var b strings.Builder
+	b.WriteString("**" + t.agent + " asks:** " + question + "\n")
+	for _, o := range r.Options {
+		if answer := cmp.Or(strings.TrimSpace(o.Name), o.OptionID); answer != "" {
+			b.WriteString("\n- " + answer)
+		}
+	}
+	t.flush()
+	t.answered, t.asked = true, true
+	t.emit(Event{Kind: EventText, Text: strings.TrimRight(b.String(), "\n")})
 }
 
 // readFile reads a file for the agent, from the turn's directories only.
@@ -1015,6 +1298,8 @@ type acpAgentCapabilities struct {
 		Resume                *struct{} `json:"resume"`
 		AdditionalDirectories *struct{} `json:"additionalDirectories"`
 	} `json:"sessionCapabilities"`
+	// Meta is what the agent offers beyond ACP, which a dialect reads.
+	Meta json.RawMessage `json:"_meta"`
 }
 
 type acpAuthMethod struct {
@@ -1028,32 +1313,71 @@ type acpAuthenticateRequest struct {
 }
 
 type acpNewSessionRequest struct {
-	Cwd                   string   `json:"cwd"`
-	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
-	McpServers            []any    `json:"mcpServers"`
+	Cwd                   string         `json:"cwd"`
+	AdditionalDirectories []string       `json:"additionalDirectories,omitempty"`
+	McpServers            []any          `json:"mcpServers"`
+	Meta                  map[string]any `json:"_meta,omitempty"`
 }
 
 type acpLoadSessionRequest struct {
-	SessionID             string   `json:"sessionId"`
-	Cwd                   string   `json:"cwd"`
-	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
-	McpServers            []any    `json:"mcpServers"`
+	SessionID             string         `json:"sessionId"`
+	Cwd                   string         `json:"cwd"`
+	AdditionalDirectories []string       `json:"additionalDirectories,omitempty"`
+	McpServers            []any          `json:"mcpServers"`
+	Meta                  map[string]any `json:"_meta,omitempty"`
 }
 
 // acpSessionState is what opening a session says about choosing its mode and
 // model: config options (the current way), or the older modes and models.
 type acpSessionState struct {
 	Modes *struct {
+		CurrentModeID  string `json:"currentModeId"`
 		AvailableModes []struct {
 			ID string `json:"id"`
 		} `json:"availableModes"`
 	} `json:"modes"`
 	Models *struct {
+		CurrentModelID  string `json:"currentModelId"`
 		AvailableModels []struct {
 			ModelID string `json:"modelId"`
+			Name    string `json:"name"`
 		} `json:"availableModels"`
 	} `json:"models"`
 	ConfigOptions []acpConfigOption `json:"configOptions"`
+}
+
+// models are the models the session offers to switch to, with the names the
+// agent gives them; nil when it offers no choice.
+func (s acpSessionState) models() []Model {
+	if opt := s.configOption("model"); opt != nil {
+		return opt.choices()
+	}
+	if s.Models == nil {
+		return nil
+	}
+	var out []Model
+	for _, m := range s.Models.AvailableModels {
+		if m.ModelID != "" {
+			out = append(out, Model{ID: m.ModelID, Name: cmp.Or(strings.TrimSpace(m.Name), m.ModelID)})
+		}
+	}
+	return out
+}
+
+// configOption is the session's config option of category, else the one
+// whose ID is the category's name; nil when it has neither.
+func (s acpSessionState) configOption(category string) *acpConfigOption {
+	for _, match := range []func(acpConfigOption) bool{
+		func(o acpConfigOption) bool { return o.Category == category },
+		func(o acpConfigOption) bool { return o.Category == "" && o.ID == category },
+	} {
+		for i := range s.ConfigOptions {
+			if match(s.ConfigOptions[i]) {
+				return &s.ConfigOptions[i]
+			}
+		}
+	}
+	return nil
 }
 
 type acpNewSessionResponse struct {
@@ -1062,33 +1386,48 @@ type acpNewSessionResponse struct {
 }
 
 type acpConfigOption struct {
-	ID       string          `json:"id"`
-	Category string          `json:"category"`
-	Options  json.RawMessage `json:"options"`
+	ID           string          `json:"id"`
+	Category     string          `json:"category"`
+	Options      json.RawMessage `json:"options"`
+	CurrentValue json.RawMessage `json:"currentValue"`
+}
+
+// current is the option's value now, "" when it isn't a string.
+func (o acpConfigOption) current() string {
+	var v string
+	json.Unmarshal(o.CurrentValue, &v)
+	return v
 }
 
 // values are the option's choices. They come as a list, or as groups of them.
 func (o acpConfigOption) values() []string {
+	var values []string
+	for _, c := range o.choices() {
+		values = append(values, c.ID)
+	}
+	return values
+}
+
+// choices are the option's choices with the names the agent gives them.
+func (o acpConfigOption) choices() []Model {
 	type choice struct {
 		Value   string   `json:"value"`
+		Name    string   `json:"name"`
 		Options []choice `json:"options"`
 	}
 	var choices []choice
 	if json.Unmarshal(o.Options, &choices) != nil {
 		return nil
 	}
-	var values []string
+	var out []Model
 	for _, c := range choices {
-		if c.Value != "" {
-			values = append(values, c.Value)
-		}
-		for _, inner := range c.Options {
-			if inner.Value != "" {
-				values = append(values, inner.Value)
+		for _, c := range append([]choice{c}, c.Options...) {
+			if c.Value != "" {
+				out = append(out, Model{ID: c.Value, Name: cmp.Or(strings.TrimSpace(c.Name), c.Value)})
 			}
 		}
 	}
-	return values
+	return out
 }
 
 type acpSetConfigOptionRequest struct {
@@ -1143,6 +1482,8 @@ type acpUpdate struct {
 	Locations     []struct {
 		Path string `json:"path"`
 	} `json:"locations"`
+	// RawInput is a tool call's arguments, as the agent's tool takes them.
+	RawInput json.RawMessage `json:"rawInput"`
 }
 
 // UnmarshalJSON reads content as a chunk's content block; a tool call's is a
@@ -1169,12 +1510,14 @@ func (u *acpUpdate) UnmarshalJSON(data []byte) error {
 type acpPermissionRequest struct {
 	SessionID string `json:"sessionId"`
 	ToolCall  struct {
-		ToolCallID string  `json:"toolCallId"`
-		Kind       *string `json:"kind"`
-		Title      *string `json:"title"`
+		ToolCallID string          `json:"toolCallId"`
+		Kind       *string         `json:"kind"`
+		Title      *string         `json:"title"`
+		RawInput   json.RawMessage `json:"rawInput"`
 	} `json:"toolCall"`
 	Options []struct {
 		OptionID string `json:"optionId"`
+		Name     string `json:"name"`
 		Kind     string `json:"kind"`
 	} `json:"options"`
 }

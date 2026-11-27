@@ -8,6 +8,9 @@ import {
     toggleSplit,
     findTabPanel,
     allDockedTabs,
+    dockAIFeature,
+    findAITab,
+    revealReview,
 } from './dock_utils';
 import type { DockState } from './dock_utils';
 
@@ -404,5 +407,146 @@ describe('round-trip: dock then undock', () => {
         expect(closed.codeViewers).toHaveLength(0);
         expect(closed.left.dockedTabs).toHaveLength(0);
         expect(closed.left.activeTab).toBe('review');
+    });
+});
+
+describe('dockAIFeature', () => {
+    test('docks the report beside the review, splitting the view', () => {
+        const next = dockAIFeature(makeState(), 'comments-addressed');
+        expect(next.split).toBe(true);
+        expect(next.autoSplit).toBe(true);
+        expect(next.left).toEqual(emptyPanel());
+        expect(next.right.dockedTabs).toHaveLength(1);
+        const tab = next.right.dockedTabs[0];
+        expect(tab.tabType).toBe('ai');
+        expect(tab.featureId).toBe('comments-addressed');
+        expect(next.right.activeTab).toBe(tab.id);
+        expect(findAITab(next, 'comments-addressed')).toEqual(tab);
+        expect(findAITab(next, 'change-diagram')).toBeNull();
+    });
+
+    test('keeps what the left panel shows', () => {
+        const state = makeState({
+            left: { dockedTabs: [{ id: 1, filePath: 'src/a.ts', line: 3 }], activeTab: 1 },
+        });
+        const next = dockAIFeature(state, 'comments-addressed');
+        expect(next.left).toEqual(state.left);
+    });
+
+    test('joins a split the reviewer opened, which stays theirs', () => {
+        const state = makeState({
+            split: true,
+            right: { dockedTabs: [{ id: 1, filePath: 'src/a.ts', line: 3 }], activeTab: 1 },
+        });
+        const next = dockAIFeature(state, 'change-diagram');
+        expect(next.autoSplit).toBeUndefined();
+        expect(next.right.dockedTabs).toHaveLength(2);
+        expect(next.right.dockedTabs[0].id).toBe(1);
+        expect(next.right.activeTab).toBe(next.right.dockedTabs[1].id);
+    });
+
+    test('without beside, it is a tab of the single panel', () => {
+        const next = dockAIFeature(makeState(), 'comments-addressed', { beside: false });
+        expect(next.split).toBe(false);
+        expect(next.right.dockedTabs).toHaveLength(0);
+        expect(next.left.dockedTabs[0].featureId).toBe('comments-addressed');
+        expect(next.left.activeTab).toBe(next.left.dockedTabs[0].id);
+    });
+
+    test('brings a docked report to the front rather than docking it twice', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const id = docked.right.dockedTabs[0].id;
+        const withDiff = dockDiffFile(docked, 'src/app.ts', 'right');
+        expect(withDiff.right.activeTab).not.toBe(id);
+        const again = dockAIFeature(withDiff, 'comments-addressed');
+        expect(again.right.dockedTabs).toHaveLength(2);
+        expect(again.right.activeTab).toBe(id);
+    });
+
+    test('gives two reports docked in the same millisecond different ids', () => {
+        const first = dockAIFeature(makeState(), 'comments-addressed');
+        const second = dockAIFeature(first, 'change-diagram');
+        const ids = second.right.dockedTabs.map(t => t.id);
+        expect(new Set(ids).size).toBe(2);
+    });
+
+    test('closing the report closes the split it opened', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const closed = closeDockedTab(docked, docked.right.dockedTabs[0].id);
+        expect(closed.split).toBe(false);
+        expect(closed.autoSplit).toBe(false);
+        expect(closed.right).toEqual(emptyPanel());
+    });
+
+    test('a split it opened stays while the right panel holds another tab', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const withDiff = dockDiffFile(docked, 'src/app.ts', 'right');
+        const closed = closeDockedTab(withDiff, docked.right.dockedTabs[0].id);
+        expect(closed.split).toBe(true);
+        expect(closed.right.dockedTabs).toHaveLength(1);
+    });
+
+    test('a split the reviewer opened stays when the report closes', () => {
+        const docked = dockAIFeature(makeState({ split: true }), 'comments-addressed');
+        const closed = closeDockedTab(docked, docked.right.dockedTabs[0].id);
+        expect(closed.split).toBe(true);
+        expect(closed.right).toEqual(emptyPanel());
+    });
+
+    test("moving the report makes the split the reviewer's", () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const id = docked.right.dockedTabs[0].id;
+        const moved = moveTabToPanel(docked, id, 'left');
+        expect(moved.autoSplit).toBe(false);
+        // Back again, then closed: the reviewer's split stays open.
+        const back = moveTabToPanel(moved, id, 'right');
+        expect(closeDockedTab(back, id).split).toBe(true);
+    });
+
+    test('undocking the report closes it rather than floating a code viewer', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const undocked = undockTab(docked, docked.right.dockedTabs[0].id);
+        expect(undocked.codeViewers).toHaveLength(0);
+        expect(allDockedTabs(undocked)).toHaveLength(0);
+        expect(undocked.split).toBe(false);
+    });
+});
+
+describe('revealReview', () => {
+    test('leaves a view that shows the review alone', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed');
+        const id = docked.right.dockedTabs[0].id;
+        expect(revealReview(docked, id, true)).toBe(docked);
+    });
+
+    test('shows the review in the other panel, keeping the report in view', () => {
+        const state = makeState({
+            split: true,
+            left: { dockedTabs: [{ id: 1, filePath: 'src/a.ts', line: 3 }], activeTab: 1 },
+        });
+        const docked = dockAIFeature(state, 'comments-addressed');
+        const id = docked.right.dockedTabs[0].id;
+        const next = revealReview(docked, id, true);
+        expect(next.left.activeTab).toBe('review');
+        expect(next.right.activeTab).toBe(id);
+    });
+
+    test('in a single panel, switches it to the review', () => {
+        const docked = dockAIFeature(makeState(), 'comments-addressed', { beside: false });
+        const id = docked.left.dockedTabs[0].id;
+        const next = revealReview(docked, id, false);
+        expect(next.left.activeTab).toBe('review');
+        expect(next.left.dockedTabs).toHaveLength(1);
+    });
+
+    test('when the split is not shown, only the left panel counts', () => {
+        // A split opened on a wide screen, seen on a phone: only the left
+        // panel is drawn, so the right one showing the review doesn't help.
+        const state = makeState({
+            split: true,
+            left: { dockedTabs: [{ id: 1, filePath: 'src/a.ts', line: 3 }], activeTab: 1 },
+        });
+        const next = revealReview(state, 1, false);
+        expect(next.left.activeTab).toBe('review');
     });
 });

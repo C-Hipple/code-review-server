@@ -18,6 +18,7 @@ type Msg = any;
 
 interface FakeServer {
     argv: string[];
+    cwd?: string;
     sent: Msg[];
     killed: boolean;
     reply(msg: Msg): void;
@@ -30,9 +31,10 @@ function fakePool(opts: Partial<LspPoolOptions> = {}) {
         idleTimeoutMs: 1000,
         maxIdle: 2,
         ...opts,
-        start(argv, onMessage, onExit) {
+        start(argv, onMessage, onExit, cwd) {
             const server: FakeServer = {
                 argv,
+                cwd,
                 sent: [],
                 killed: false,
                 reply: msg => onMessage(JSON.stringify(msg)),
@@ -273,6 +275,113 @@ describe('LspSession', () => {
         expect(b.sent).toHaveLength(1);
     });
 
+    test("answers the server's own requests rather than asking a client", () => {
+        const { pool, servers } = fakePool();
+        const session = pool.acquire('k', [], ['pyright-langserver', '--stdio']);
+        const peer = fakePeer();
+        const peerId = session.attach(peer);
+        const folders = [{ uri: 'file:///src/app', name: 'app' }];
+        session.fromPeer(
+            peerId,
+            request(1, 'initialize', { rootUri: 'file:///src/app', workspaceFolders: folders })
+        );
+        const server = servers[0];
+        server.reply({ jsonrpc: '2.0', id: server.sent[0].id, result: { capabilities: {} } });
+        server.sent = [];
+        peer.sent = [];
+
+        const ask = (id: number | string, method: string, params?: Msg) =>
+            server.reply({ jsonrpc: '2.0', id, method, params });
+        ask(1, 'workspace/configuration', {
+            items: [{ section: 'python' }, { section: 'pyright' }],
+        });
+        ask('p1', 'window/workDoneProgress/create', { token: 't' });
+        ask(2, 'workspace/workspaceFolders');
+        ask(3, 'client/registerCapability', { registrations: [] });
+        ask(4, 'workspace/diagnostic/refresh');
+        ask(5, 'workspace/applyEdit', { edit: {} });
+        ask(6, 'custom/unknown');
+
+        // Nothing reaches the client, whose own request ids these could clash with.
+        expect(peer.sent).toEqual([]);
+        expect(server.sent).toEqual([
+            { jsonrpc: '2.0', id: 1, result: [null, null] },
+            { jsonrpc: '2.0', id: 'p1', result: null },
+            { jsonrpc: '2.0', id: 2, result: folders },
+            { jsonrpc: '2.0', id: 3, result: null },
+            { jsonrpc: '2.0', id: 4, result: null },
+            {
+                jsonrpc: '2.0',
+                id: 5,
+                result: { applied: false, failureReason: 'The code viewer is read-only' },
+            },
+            {
+                jsonrpc: '2.0',
+                id: 6,
+                error: { code: -32601, message: 'Unhandled method custom/unknown' },
+            },
+        ]);
+    });
+
+    test('answers workspaceFolders from the root a client without folders gave', () => {
+        const { pool, servers } = fakePool();
+        const session = pool.acquire('k', [], ['gopls']);
+        session.fromPeer(
+            session.attach(fakePeer()),
+            request(1, 'initialize', { rootUri: 'file:///src/crs' })
+        );
+        servers[0].reply({ jsonrpc: '2.0', id: 9, method: 'workspace/workspaceFolders' });
+        expect(servers[0].sent.at(-1)).toEqual({
+            jsonrpc: '2.0',
+            id: 9,
+            result: [{ uri: 'file:///src/crs', name: 'crs' }],
+        });
+    });
+
+    test('tells a client that attaches late what the server is still working on', () => {
+        const { pool, servers } = fakePool();
+        const session = pool.acquire('k', [], ['rust-analyzer']);
+        const first = fakePeer();
+        const firstId = session.attach(first);
+        session.fromPeer(firstId, request(1, 'initialize'));
+        const server = servers[0];
+        server.reply({ jsonrpc: '2.0', id: server.sent[0].id, result: { capabilities: {} } });
+        const progress = (token: string, value: Msg) =>
+            server.reply({ jsonrpc: '2.0', method: '$/progress', params: { token, value } });
+        progress('fetch', { kind: 'begin', title: 'Fetching' });
+        progress('fetch', { kind: 'end' });
+        progress('index', { kind: 'begin', title: 'Indexing', percentage: 0 });
+        progress('index', { kind: 'report', message: '3/10 (core)', percentage: 30 });
+        // The first client heard it all as it happened.
+        expect(first.sent.filter(m => m.method === '$/progress')).toHaveLength(4);
+
+        const late = fakePeer();
+        const lateId = session.attach(late);
+        session.fromPeer(lateId, request(4, 'initialize'));
+        expect(late.sent).toEqual([
+            { jsonrpc: '2.0', id: 4, result: { capabilities: {} } },
+            {
+                jsonrpc: '2.0',
+                method: '$/progress',
+                params: {
+                    token: 'index',
+                    value: {
+                        kind: 'begin',
+                        title: 'Indexing',
+                        message: '3/10 (core)',
+                        percentage: 30,
+                    },
+                },
+            },
+        ]);
+
+        progress('index', { kind: 'end' });
+        const later = fakePeer();
+        const laterId = session.attach(later);
+        session.fromPeer(laterId, request(1, 'initialize'));
+        expect(later.sent).toEqual([{ jsonrpc: '2.0', id: 1, result: { capabilities: {} } }]);
+    });
+
     test("closes a detached peer's documents unless another peer has them open", () => {
         const { pool, servers } = fakePool();
         const session = pool.acquire('k', [], ['gopls']);
@@ -327,6 +436,12 @@ describe('LspSessionPool', () => {
             '/tmp/diff_lsp_3',
             '/tmp/diff_lsp_4',
         ]);
+    });
+
+    test('starts a server in the directory it is given', () => {
+        const { pool, servers } = fakePool();
+        pool.acquire('gopls\0/src/crs', [], ['gopls', 'serve'], '/src/crs');
+        expect(servers[0].cwd).toBe('/src/crs');
     });
 
     test('keeps a session with no peers until it has been idle for the timeout', () => {

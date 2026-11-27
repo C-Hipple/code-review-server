@@ -482,6 +482,9 @@ func TestACPToolDetail(t *testing.T) {
 		{acpTool{kind: "edit", title: "editor.go"}, "editor.go"},
 		{acpTool{kind: "execute", title: "Runner.sh --fast"}, "Runner.sh --fast"},
 		{acpTool{kind: "execute", title: "run_shell_command: make"}, "make"},
+		// A title that only names the tool says less than the file it is on.
+		{acpTool{kind: "read", title: "Running view_file", locations: []string{"/src/repo/a.go"}}, "a.go"},
+		{acpTool{kind: "other", title: "Run list_dir?"}, "list_dir"},
 	} {
 		if got := turn.detail(&tt.call); got != tt.want {
 			t.Errorf("detail(%+v) = %q, want %q", tt.call, got, tt.want)

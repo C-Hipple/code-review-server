@@ -111,6 +111,12 @@ SectionTitle = "Needs My Team's Review"
 # Models = ["opus", "sonnet"]           # the models to offer; default opus, sonnet, haiku
 # DefaultModel = "sonnet"               # preselected; default: Claude's own default
 # Disabled = true                       # don't offer it at all
+#
+# Or Google's Antigravity CLI, signed in once by running `agy` in a terminal:
+# [Chat]
+# Agent = "antigravity"
+# [Chat.Antigravity]
+# Command = "/home/me/.local/bin/agy acp"  # when agy isn't on the server's PATH
 
 # Plugins allow extending the server with custom checks
 [[Plugins]]

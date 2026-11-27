@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -29,6 +31,12 @@ type acpConn struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stderr *tailBuffer
+	// tempDir is the process's own temporary directory, removed once it has
+	// exited; "" when it uses the server's.
+	tempDir string
+	// stdoutLine looks at what the agent writes to stdout that isn't
+	// JSON-RPC; an error ends the agent with it (abort).
+	stdoutLine func(line string) error
 
 	writeMu sync.Mutex
 	nextID  atomic.Int64
@@ -37,7 +45,10 @@ type acpConn struct {
 	pending map[int64]chan acpResponse
 	ended   bool
 	endErr  error
-	done    chan struct{}
+	// abortErr, once set, is why the agent was stopped, and what whatever
+	// still waits on it gets.
+	abortErr error
+	done     chan struct{}
 	// stopping is set once the agent is being stopped, before it has exited.
 	stopping atomic.Bool
 
@@ -117,32 +128,63 @@ type acpResponse struct {
 
 // startACP starts the agent in dir. It runs in a process group of its own, so
 // stopping it also stops whatever it started (Claude Code under
-// claude-code-acp, say).
-func startACP(name string, argv, env []string, dir, key string) (*acpConn, error) {
+// claude-code-acp, say). With privateTemp it gets a temporary directory of
+// its own (TMPDIR, TMP and TEMP over env's), removed once it has exited: an
+// agent that unpacks itself there each time it starts (Antigravity) leaves
+// nothing behind when it is killed. stdoutLine, when set, sees each line it
+// writes to stdout that isn't JSON-RPC.
+func startACP(name string, argv, env []string, dir, key string, privateTemp bool, stdoutLine func(string) error) (*acpConn, error) {
+	c := &acpConn{
+		key: key, name: name, stderr: &tailBuffer{max: 8000}, stdoutLine: stdoutLine,
+		pending: map[int64]chan acpResponse{}, done: make(chan struct{}),
+	}
+	if privateTemp {
+		var err error
+		if c.tempDir, err = os.MkdirTemp("", "crs-agent-"); err != nil {
+			return nil, fmt.Errorf("could not make %s a temporary directory: %w", name, err)
+		}
+		temp := []string{"TMPDIR", "TMP", "TEMP"}
+		env = withoutEnv(env, temp)
+		for _, key := range temp {
+			env = append(env, key+"="+c.tempDir)
+		}
+	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.WaitDelay = claudeWaitDelay
+	cmd.Stderr = c.stderr
 	setProcessGroup(cmd)
+	c.cmd = cmd
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		c.removeTempDir()
 		return nil, err
 	}
+	c.stdin = stdin
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
+		c.removeTempDir()
 		return nil, err
 	}
-	c := &acpConn{
-		key: key, name: name, cmd: cmd, stdin: stdin, stderr: &tailBuffer{max: 8000},
-		pending: map[int64]chan acpResponse{}, done: make(chan struct{}),
-	}
-	cmd.Stderr = c.stderr
 	if err := cmd.Start(); err != nil {
+		c.removeTempDir()
 		return nil, fmt.Errorf("could not start %s: %w", filepath.Base(argv[0]), err)
 	}
 	running.add(c)
 	go c.read(stdout)
 	return c, nil
+}
+
+// removeTempDir removes the agent's own temporary directory, if it has one.
+func (c *acpConn) removeTempDir() {
+	if c.tempDir == "" {
+		return
+	}
+	if err := os.RemoveAll(c.tempDir); err != nil {
+		slog.Warn("Could not remove a chat agent's temporary directory", "agent", c.name, "dir", c.tempDir, "error", err)
+	}
 }
 
 // running are the agents started and not yet exited, for StopAgents.
@@ -204,13 +246,21 @@ func (c *acpConn) read(stdout io.Reader) {
 	// Whatever the agent started goes with it. Its process ID was only just
 	// freed, so the group's ID can't have been taken by another yet.
 	killGroup(c.cmd)
+	c.removeTempDir()
 	c.end(waitErr)
 }
 
 func (c *acpConn) dispatch(line []byte) {
 	var msg acpMessage
 	if json.Unmarshal(line, &msg) != nil {
-		return // not JSON-RPC: something the agent logged to stdout
+		// Not JSON-RPC: something the agent logged to stdout, which may say
+		// it is waiting on something it won't get.
+		if c.stdoutLine != nil {
+			if err := c.stdoutLine(strings.TrimSpace(string(line))); err != nil {
+				c.abort(err)
+			}
+		}
+		return
 	}
 	hasID := len(msg.ID) > 0 && string(msg.ID) != "null"
 	switch {
@@ -271,6 +321,8 @@ func (c *acpConn) end(waitErr error) {
 	running.remove(c)
 	detail := lastLines(c.stderr.String(), 10, 1500)
 	switch {
+	case c.abortErr != nil:
+		c.endErr = c.abortErr
 	case detail != "":
 		c.endErr = fmt.Errorf("%s exited: %s", c.name, detail)
 	case waitErr != nil:
@@ -378,6 +430,17 @@ func (c *acpConn) kill() {
 	c.killRunning()
 }
 
+// abort stops the agent at once for err, which whatever still waits on it
+// gets in place of its answer.
+func (c *acpConn) abort(err error) {
+	c.mu.Lock()
+	if c.abortErr == nil && !c.ended {
+		c.abortErr = err
+	}
+	c.mu.Unlock()
+	c.kill()
+}
+
 // killRunning kills the agent's process group unless the agent has exited:
 // its process ID, and so the group's, may belong to another process by now
 // (read killed what it left behind as it exited).
@@ -390,7 +453,10 @@ func (c *acpConn) killRunning() {
 }
 
 // close stops the agent: its stdin is closed, which an ACP agent takes as the
-// end, and it is killed when it hasn't exited after acpCloseGrace.
+// end, and it is killed when it hasn't exited after acpCloseGrace. It
+// returns once the agent has gone (or its pipes were given up on), so what
+// it leaves — its temporary directory — is cleared before a server that is
+// shutting down goes too.
 func (c *acpConn) close() {
 	c.stopping.Store(true)
 	_ = c.stdin.Close()
@@ -398,6 +464,10 @@ func (c *acpConn) close() {
 	case <-c.done:
 	case <-time.After(acpCloseGrace):
 		c.killRunning()
+		select {
+		case <-c.done:
+		case <-time.After(2 * claudeWaitDelay):
+		}
 	}
 }
 

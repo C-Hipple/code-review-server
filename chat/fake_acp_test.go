@@ -22,15 +22,25 @@ import (
 // Its flags say what it offers: load (session/load), resume (session/resume),
 // dirs (additionalDirectories), auth (sign in with the "key" method first),
 // configopts (mode and model as config options rather than modes and models),
-// nomodels (no choice of model at all). What a prompt does is picked by a word
-// in it: @hang (wait for session/cancel), @ignore-cancel (never answer),
-// @crash, @unasked (run a command without asking), @unasked-other (make a
-// call of kind "other" without asking), @unasked-nokind (one of no kind),
-// @refused-anyway (run a command it was refused), @refuse-quits (end the turn
-// when a permission is refused), @refuse-kind (ask for a call announced
-// without a kind, then give up), @refusal (refuse to answer, saying nothing),
-// @reject (fail the prompt before working on it), @plain (just answer);
-// otherwise the full flow of reading, asking and answering.
+// nomodels (no choice of model at all). antigravity makes it answer as
+// Antigravity's `agy acp` does: initialize names protocol version 2 in version
+// 1's shape, with Antigravity's sign-in methods and system prompt, sessions
+// start in its "auto" mode with its model option, and it logs (as "_env") the
+// TMPDIR and GEMINI_API_KEY it was given, unpacking itself into the first.
+// With agysignin it prints the link it signs in with over SSH as a session is
+// opened, and never answers; with agynobrowser it says it needs signing in,
+// and answers authenticate as it does without a browser. What a prompt does
+// is picked by a word in it: @hang (wait for session/cancel), @ignore-cancel
+// (never answer), @crash, @unasked (run a command without asking),
+// @unasked-other (make a call of kind "other" without asking), @unasked-nokind
+// (one of no kind), @refused-anyway (run a command it was refused),
+// @refuse-quits (end the turn when a permission is refused), @refuse-kind (ask
+// for a call announced without a kind, then give up), @refusal (refuse to
+// answer, saying nothing), @reject (fail the prompt before working on it),
+// @plain (just answer), @agy-tools (use Antigravity's own tools, as it reports
+// them), @agy-question (ask the reviewer a question, as Antigravity does, then
+// stop), @agy-schedule (schedule a wake-up without asking); otherwise the full
+// flow of reading, asking and answering.
 const (
 	fakeACPEnv    = "CRS_FAKE_ACP"
 	fakeACPLogEnv = "CRS_FAKE_ACP_LOG"
@@ -128,6 +138,18 @@ func (f *fakeACP) log(raw []byte) {
 func (f *fakeACP) run() {
 	// A line on stdout that isn't JSON-RPC, as some agents print.
 	fmt.Println("fake agent starting")
+	if f.has("antigravity") {
+		// What it was given, and its unpacking, as a one-file bundle does.
+		tmp := os.Getenv("TMPDIR")
+		if tmp != "" {
+			os.MkdirAll(filepath.Join(tmp, "_MEIfake"), 0o755)
+			os.WriteFile(filepath.Join(tmp, "_MEIfake", "agy"), []byte("1 GB"), 0o644)
+		}
+		env, _ := json.Marshal(map[string]any{"method": "_env", "params": map[string]string{
+			"TMPDIR": tmp, "GEMINI_API_KEY": os.Getenv("GEMINI_API_KEY"), "AGY_EXTRA": os.Getenv("AGY_EXTRA"),
+		}})
+		f.log(env)
+	}
 	in := bufio.NewReader(os.Stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -182,6 +204,22 @@ func (f *fakeACP) handle(raw []byte) {
 	json.Unmarshal(m.Params, &p)
 	switch m.Method {
 	case "initialize":
+		if f.has("antigravity") {
+			f.reply(m.ID, map[string]any{
+				"protocolVersion": 2,
+				"agentCapabilities": map[string]any{
+					"loadSession":         true,
+					"sessionCapabilities": map[string]any{"list": map[string]any{}, "resume": map[string]any{}},
+					"_meta":               map[string]any{"antigravity": map[string]any{"systemPrompt": map[string]any{"append": true}}},
+				},
+				"authMethods": []any{
+					map[string]any{"id": "oauth-personal", "name": "Log in with Google", "description": "Log in with your Google account"},
+					map[string]any{"id": "gemini-api-key", "name": "Gemini API key", "description": "Use an API key with Gemini Developer API"},
+				},
+				"agentInfo": map[string]any{"name": "Antigravity ACP Server", "title": "Google Antigravity", "version": "1.5.12"},
+			})
+			return
+		}
 		caps := map[string]any{}
 		session := map[string]any{}
 		if f.has("load") {
@@ -200,6 +238,10 @@ func (f *fakeACP) handle(raw []byte) {
 			"agentInfo":   map[string]any{"name": "fake", "version": "1"},
 		})
 	case "authenticate":
+		if f.has("agynobrowser") {
+			f.fail(m.ID, -32603, "No browser is available here. Run `agy acp --login` in a terminal to sign in.")
+			return
+		}
 		if p.MethodID != "key" {
 			f.fail(m.ID, -32602, "unknown method")
 			return
@@ -207,7 +249,13 @@ func (f *fakeACP) handle(raw []byte) {
 		f.signedIn = true
 		f.reply(m.ID, map[string]any{})
 	case "session/new":
-		if f.has("auth") && !f.signedIn {
+		if f.has("agysignin") {
+			// Over SSH it signs in with a link, and waits for a code typed
+			// into its stdin, which on ACP is the client's.
+			fmt.Println("Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/auth?response_type=code&state=s&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback")
+			return
+		}
+		if (f.has("auth") || f.has("agynobrowser")) && !f.signedIn {
 			f.fail(m.ID, -32000, "Authentication required")
 			return
 		}
@@ -272,6 +320,16 @@ func (f *fakeACP) handle(raw []byte) {
 
 func (f *fakeACP) sessionState(state map[string]any) map[string]any {
 	switch {
+	case f.has("antigravity"):
+		// Its own "auto" mode acts unasked.
+		state["modes"] = map[string]any{"currentModeId": "auto", "availableModes": []any{
+			map[string]any{"id": "default", "name": "Default"}, map[string]any{"id": "auto", "name": "Auto"}}}
+		state["configOptions"] = []any{
+			map[string]any{"id": "model", "name": "Model", "type": "select", "currentValue": "gemini-flash",
+				"options": []any{map[string]any{"value": "gemini-flash", "name": "Gemini Flash"}, map[string]any{"value": "claude-sonnet", "name": "Claude Sonnet"}}},
+			map[string]any{"id": "thinking", "name": "Thinking", "category": "thought_level", "type": "select", "currentValue": "high",
+				"options": []any{map[string]any{"value": "low", "name": "Low"}, map[string]any{"value": "high", "name": "High"}}},
+		}
 	case f.has("nomodels"):
 	case f.has("configopts"):
 		state["configOptions"] = []any{
@@ -375,6 +433,56 @@ func (f *fakeACP) prompt(id json.RawMessage, session, text string, cancel chan s
 	case strings.Contains(text, "@plain"):
 		f.chunk(session, "Plain answer.")
 		end("end_turn")
+	case strings.Contains(text, "@agy-tools"):
+		// Its checklist, a directory listed and a subagent, unasked and of
+		// kind "other"; a file read through the client, asked about.
+		diff := filepath.Join(f.cwd, DiffFile)
+		tool(map[string]any{"toolCallId": "s1", "title": "Run update_steps", "kind": "other", "status": "in_progress",
+			"rawInput": map[string]any{"steps": []any{
+				map[string]any{"title": "Read the diff", "status": "in_progress"}, map[string]any{"title": "Answer", "status": "pending"}}}})
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "s1", "status": "completed"})
+		tool(map[string]any{"toolCallId": "l1", "title": "Run list_dir", "kind": "other", "status": "in_progress",
+			"rawInput": map[string]any{"DirectoryPath": f.cwd + "/"}})
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "l1", "status": "completed"})
+		tool(map[string]any{"toolCallId": "v1", "title": "Running client_view_file", "kind": "read", "status": "pending",
+			"rawInput": map[string]any{"absolute_path": diff}, "locations": []any{map[string]any{"path": diff}}})
+		f.request("session/request_permission", map[string]any{"sessionId": session, "toolCall": map[string]any{
+			"toolCallId": "v1", "title": "Run client_view_file?", "kind": "read", "rawInput": map[string]any{"absolute_path": diff}},
+			"options": []any{
+				map[string]any{"optionId": "proceed_once", "name": "Allow", "kind": "allow_once"},
+				map[string]any{"optionId": "cancel", "name": "Deny", "kind": "reject_once"},
+			}})
+		f.request("fs/read_text_file", map[string]any{"sessionId": "subagent-conversation", "path": diff})
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "v1", "status": "completed"})
+		tool(map[string]any{"toolCallId": "a1", "title": "Run invoke_subagent", "kind": "other", "status": "in_progress",
+			"rawInput": map[string]any{"Role": "Code explorer", "Prompt": "Find the callers"}})
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "a1", "status": "completed"})
+		// A command, asked about and refused.
+		tool(map[string]any{"toolCallId": "c1", "title": "run_command", "kind": "execute", "status": "pending",
+			"rawInput": map[string]any{"CommandLine": "go test ./...", "Cwd": f.cwd}})
+		f.request("session/request_permission", map[string]any{"sessionId": session, "toolCall": map[string]any{
+			"toolCallId": "c1", "title": "run_command", "kind": "execute"},
+			"options": []any{
+				map[string]any{"optionId": "proceed_once", "name": "Allow", "kind": "allow_once"},
+				map[string]any{"optionId": "cancel", "name": "Deny", "kind": "reject_once"},
+			}})
+		f.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "failed"})
+		f.chunk(session, "It looks fine.")
+		f.update(session, map[string]any{"sessionUpdate": "usage_update", "used": 10, "size": 100})
+		end("end_turn")
+	case strings.Contains(text, "@agy-question"):
+		f.chunk(session, "Before I answer:")
+		f.request("session/request_permission", map[string]any{"sessionId": session, "toolCall": map[string]any{
+			"toolCallId": "interaction_9960062f", "status": "pending", "title": "Which file should I look at first?", "rawInput": map[string]any{}},
+			"options": []any{
+				map[string]any{"optionId": "1", "name": "server/chat.go", "kind": "allow_once"},
+				map[string]any{"optionId": "2", "name": "chat/acp.go", "kind": "allow_once"},
+			}})
+		end("cancelled")
+	case strings.Contains(text, "@agy-schedule"):
+		tool(map[string]any{"toolCallId": "w1", "title": "Run schedule", "kind": "other", "status": "completed",
+			"rawInput": map[string]any{"DurationSeconds": 30, "Prompt": "Check again."}})
+		waitCancel()
 	default:
 		diff := filepath.Join(f.cwd, DiffFile)
 		f.chunk(session, "")
@@ -428,11 +536,12 @@ func useFakeACP(t *testing.T, b *ACPBackend, flags string, settings config.ChatB
 	}
 }
 
-// methods are the methods of the messages logged, in order.
+// methods are the methods of the messages logged, in order, less what the
+// fake logged of itself ("_env").
 func methods(entries []fakeACPEntry) []string {
 	var out []string
 	for _, e := range entries {
-		if m := e.method(); m != "" {
+		if m := e.method(); m != "" && !strings.HasPrefix(m, "_") {
 			out = append(out, m)
 		}
 	}

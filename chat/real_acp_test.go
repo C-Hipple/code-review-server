@@ -29,7 +29,33 @@ func TestRealACP(t *testing.T) {
 	}
 	model := os.Getenv("CRS_CHAT_REAL_ACP_MODEL")
 	settings := config.ChatBackendSettings{Protocol: config.ChatProtocolACP, Command: command, DefaultModel: model}
-	backend := NewACPBackend("real", func() config.ChatBackendSettings { return settings })
+	testRealAgent(t, NewACPBackend("real", func() config.ChatBackendSettings { return settings }), model)
+}
+
+// TestRealAntigravity runs the same chat against Antigravity's `agy acp`,
+// signed in. It is skipped unless CRS_CHAT_REAL_ANTIGRAVITY is set: to 1 for
+// `agy acp` on PATH, or to the command that starts it;
+// CRS_CHAT_REAL_ANTIGRAVITY_MODEL picks its model:
+//
+//	CRS_CHAT_REAL_ANTIGRAVITY=1 go test -run TestRealAntigravity -v ./chat/
+//	CRS_CHAT_REAL_ANTIGRAVITY="$HOME/.local/bin/agy acp" go test -run TestRealAntigravity -v ./chat/
+func TestRealAntigravity(t *testing.T) {
+	command := os.Getenv("CRS_CHAT_REAL_ANTIGRAVITY")
+	if command == "" {
+		t.Skip("set CRS_CHAT_REAL_ANTIGRAVITY to 1, or to the command that starts `agy acp`")
+	}
+	if command == "1" {
+		command = ""
+	}
+	model := os.Getenv("CRS_CHAT_REAL_ANTIGRAVITY_MODEL")
+	settings := config.ChatBackendSettings{Command: command, DefaultModel: model}
+	testRealAgent(t, NewAntigravityBackend(config.ChatBackendAntigravity, func() config.ChatBackendSettings { return settings }), model)
+}
+
+// testRealAgent has a chat with a real agent: it answers from the attached
+// diff, reads the working directory, can't write a file, and picks the
+// conversation up again in a new process.
+func testRealAgent(t *testing.T, backend *ACPBackend, model string) {
 	if info := backend.Info(); !info.Available {
 		t.Skipf("the agent is not available: %s", info.Reason)
 	}

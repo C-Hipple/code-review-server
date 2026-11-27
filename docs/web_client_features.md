@@ -779,7 +779,7 @@ since whatever was sent meanwhile is lost.
 A round chat button sits in the review's bottom-left corner (above the bottom bar
 on mobile). Resting the pointer on it opens a chat panel above it: a conversation
 with a local coding agent about the PR — the one the server's config picks (Claude
-Code, or any ACP agent), run by the server (see [Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
+Code, Antigravity, or any ACP agent), run by the server (see [Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
 unless the reviewer is working in it: focus inside it, a message half written, or
 pinned open (📌, or clicking the button, which also focuses the message box). Escape
 or × closes it. On a touch screen the button toggles it.

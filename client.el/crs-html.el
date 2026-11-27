@@ -178,7 +178,10 @@ The content and prefix are base64 encoded to avoid issues with special character
 
 (defun crs--process-html-placeholders ()
   "Find and replace all HTML placeholders in the current buffer with rendered HTML.
-This should be called after inserting content but before setting the buffer to read-only."
+This should be called after inserting content but before setting the buffer to read-only.
+Each rendered body carries a `crs-body' text property: a line of one can
+read like a section heading (\"I renamed it\"), and isn't one
+\(`crs--section-header-line-p')."
   (save-excursion
     (goto-char (point-min))
     (while (re-search-forward crs--html-placeholder-regexp nil t)
@@ -190,7 +193,8 @@ This should be called after inserting content but before setting the buffer to r
              (start (match-beginning 0)))
         (delete-region (match-beginning 0) (match-end 0))
         (goto-char start)
-        (crs--insert-html html-string prefix)))))
+        (crs--insert-html html-string prefix)
+        (put-text-property start (point) 'crs-body t)))))
 
 (defun crs--strip-comments-tree (content)
   "Remove *** Comments sub-trees from CONTENT org string.

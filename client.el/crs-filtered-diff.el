@@ -223,6 +223,17 @@ doesn't show it.  Call it in the review buffer."
    ((and filename (integerp position))
     (cdr (assq (intern (number-to-string position)) (crs--filtered-diff-rows filename))))))
 
+(defun crs--displayed-diff-position (filename position)
+  "The row of the displayed diff showing row POSITION of FILENAME's full diff.
+POSITION itself while the full diff is shown; on a filtered diff, the row
+there showing the same line, or nil when it doesn't show it.  The inverse
+of `crs--full-diff-position'.  Call it in the review buffer."
+  (cond
+   ((not (crs--filtered-diff-displayed-p)) position)
+   ((and filename (integerp position))
+    (when-let ((row (rassq position (crs--filtered-diff-rows filename))))
+      (string-to-number (symbol-name (car row)))))))
+
 (defun crs--full-diff-position-or-refuse (filename position)
   "Like `crs--full-diff-position', but a `user-error' for a row that has none."
   (or (crs--full-diff-position filename position)

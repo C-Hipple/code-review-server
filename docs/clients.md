@@ -33,81 +33,6 @@ Under **AI Features**, the defaults every feature inherits (`[AI]`: provider, co
 
 The editor validates as you go and blocks a save while anything is wrong — a missing section title, a duplicate workflow name, a repository that isn't in `owner/repo` form, an OpenRouter plugin or feature with no model, an enabled feature that would run a command when none is set. The server validates again before writing and reports anything the client missed against the field that caused it, so a config that can't run never reaches disk. See [Configuration](configuration.md#editing-the-config-from-a-client) for what saving does to the file and when the changes take effect.
 
-## TUI Client
-
-The TUI client (`tui_client/`) is a fast, keyboard-driven terminal interface built in Rust. It's well-suited for quick access to your review queue from any terminal.
-
-### Installation
-
-**Prerequisites:** The `crs` binary must be installed and in your `$PATH` (see [Quickstart](index.md)).
-
-```bash
-cd tui_client
-cargo build --release
-# Optionally install to PATH:
-cargo install --path tui_client
-```
-
-### Running
-
-```bash
-crs-tui
-```
-
-The client automatically spawns `crs --server` as a child process, so no separate server process is needed.
-
-### Keybindings
-
-The TUI uses vim-style keybindings throughout.
-
-#### PR List (Sections View)
-
-| Key(s) | Action |
-|--------|--------|
-| `j` / `↓` | Move cursor down |
-| `k` / `↑` | Move cursor up |
-| `d` | Jump down 10 items |
-| `u` | Jump up 10 items |
-| `g` | Jump to top |
-| `G` | Jump to bottom |
-| `Enter` / `l` | Open PR detail view |
-| `o` | Open PR in browser |
-| `r` | Refresh from server |
-| `q` | Quit |
-
-#### PR Detail View
-
-| Key(s) | Action |
-|--------|--------|
-| `j` / `↓` | Scroll down 1 line |
-| `k` / `↑` | Scroll up 1 line |
-| `d` | Page down 20 lines |
-| `u` | Page up 20 lines |
-| `g` | Jump to top |
-| `G` | Jump to bottom |
-| `o` | Open PR in browser |
-| `r` | Sync PR from GitHub |
-| `q` / `Esc` / `h` / `Backspace` | Back to PR list |
-
-### Running a Background Sync Daemon
-
-The TUI client spawns a fresh server process each time it starts, which means it won't have any locally cached PR data until a sync completes. The first load can be slow if the cache is cold.
-
-More importantly, GitHub API rate limits mean that frequent short-lived syncs are wasteful. The server uses lock files to prevent concurrent workflow runs from over-querying the API, so having a single long-running sync process in the background is the recommended approach.
-
-Run a persistent sync daemon alongside your normal workflow:
-
-```bash
-# Run as a background daemon (workflows repeat on schedule, default every 10 min)
-crs &
-
-# Or use a more persistent approach via systemd, tmux, etc.
-```
-
-With a daemon running, the TUI client will find an already-warm cache on startup and load reviews nearly instantly. The daemon's lock files also ensure the TUI's own `r` (refresh) calls don't race with background syncs.
-
-See [Configuration](configuration.md) for `WorkflowInterval` and other scheduling options.
-
 ## Emacs Client
 
 The emacs client lives in the `client.el/` directory. It is split into
@@ -410,6 +335,81 @@ unfolded:
 
 How much of the frame's width the discussion buffer's window takes: a fraction, or
 a number of columns.
+
+## TUI Client
+
+The TUI client (`tui_client/`) is a fast, keyboard-driven terminal interface built in Rust. It's well-suited for quick access to your review queue from any terminal.
+
+### Installation
+
+**Prerequisites:** The `crs` binary must be installed and in your `$PATH` (see [Quickstart](index.md)).
+
+```bash
+cd tui_client
+cargo build --release
+# Optionally install to PATH:
+cargo install --path tui_client
+```
+
+### Running
+
+```bash
+crs-tui
+```
+
+The client automatically spawns `crs --server` as a child process, so no separate server process is needed.
+
+### Keybindings
+
+The TUI uses vim-style keybindings throughout.
+
+#### PR List (Sections View)
+
+| Key(s) | Action |
+|--------|--------|
+| `j` / `↓` | Move cursor down |
+| `k` / `↑` | Move cursor up |
+| `d` | Jump down 10 items |
+| `u` | Jump up 10 items |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `Enter` / `l` | Open PR detail view |
+| `o` | Open PR in browser |
+| `r` | Refresh from server |
+| `q` | Quit |
+
+#### PR Detail View
+
+| Key(s) | Action |
+|--------|--------|
+| `j` / `↓` | Scroll down 1 line |
+| `k` / `↑` | Scroll up 1 line |
+| `d` | Page down 20 lines |
+| `u` | Page up 20 lines |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `o` | Open PR in browser |
+| `r` | Sync PR from GitHub |
+| `q` / `Esc` / `h` / `Backspace` | Back to PR list |
+
+### Running a Background Sync Daemon
+
+The TUI client spawns a fresh server process each time it starts, which means it won't have any locally cached PR data until a sync completes. The first load can be slow if the cache is cold.
+
+More importantly, GitHub API rate limits mean that frequent short-lived syncs are wasteful. The server uses lock files to prevent concurrent workflow runs from over-querying the API, so having a single long-running sync process in the background is the recommended approach.
+
+Run a persistent sync daemon alongside your normal workflow:
+
+```bash
+# Run as a background daemon (workflows repeat on schedule, default every 10 min)
+crs &
+
+# Or use a more persistent approach via systemd, tmux, etc.
+```
+
+With a daemon running, the TUI client will find an already-warm cache on startup and load reviews nearly instantly. The daemon's lock files also ensure the TUI's own `r` (refresh) calls don't race with background syncs.
+
+See [Configuration](configuration.md) for `WorkflowInterval` and other scheduling options.
 
 ## Chrome Extension
 

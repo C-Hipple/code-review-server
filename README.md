@@ -90,7 +90,7 @@ Full documentation is available at [https://code-review-server.readthedocs.io/en
 
 4.  **Run a Client**
 
-    See [Clients](docs/clients.md) for detailed instructions on running the Web, TUI or Emacs clients, or the Chrome extension ([chrome_extension/README.md](chrome_extension/README.md)).
+    See [Clients](docs/clients.md) for detailed instructions on running the Web, Emacs or TUI clients, or the Chrome extension ([chrome_extension/README.md](chrome_extension/README.md)).
 
     **Web Client (Brief):**
     ```bash

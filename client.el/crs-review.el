@@ -188,43 +188,55 @@ SHA-256 of its path.  Without SIDE and LINE the link goes to the file."
         (format "%s/files#%s%s%d" base anchor side line)
       (format "%s/files#%s" base anchor))))
 
+(defun crs--diff-row-at-position (diff filename position)
+  "The row at POSITION of FILENAME in DIFF, as a plist, or nil if it has none.
+DIFF is a raw unified diff, POSITION a GitHub diff position (the file's first
+hunk header is 0, and every later header and content line counts one).  The
+plist holds `:marker' (?+, ?- or ?\\s), `:text' (the row as the diff has it,
+marker and all), `:head' (its line number in the PR's head, nil on a removed
+line) and `:base' (on the base side, nil on an added line).  Context a hunk
+expansion spliced in (`crs-expanded') takes no position, but is a line of
+the file all the same."
+  (catch 'found
+    (let ((in-target nil)
+          (count nil)
+          (head-line nil)
+          (base-line nil))
+      (dolist (line (split-string (or diff "") "\n"))
+        (cond
+         ((string-match "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" line)
+          (setq in-target (string= (if (string= (match-string 2 line) "dev/null")
+                                       (match-string 1 line)
+                                     (match-string 2 line))
+                                   filename)
+                count nil))
+         ((not in-target) nil)
+         ((string-match "^@@ -\\([0-9]+\\)\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)" line)
+          (setq count (if count (1+ count) 0)
+                base-line (string-to-number (match-string 1 line))
+                head-line (string-to-number (match-string 2 line))))
+         ((null count) nil)
+         ((memq (and (> (length line) 0) (aref line 0)) '(?+ ?- ?\s))
+          (let ((marker (aref line 0)))
+            (unless (get-text-property 0 'crs-expanded line)
+              (setq count (1+ count))
+              (when (= count position)
+                (throw 'found (list :marker marker
+                                    :text (substring-no-properties line)
+                                    :head (unless (eq marker ?-) head-line)
+                                    :base (unless (eq marker ?+) base-line)))))
+            (unless (eq marker ?-)
+              (setq head-line (1+ head-line)))
+            (unless (eq marker ?+)
+              (setq base-line (1+ base-line)))))))
+      nil)))
+
 (defun crs--diff-base-line-at-position (diff filename position)
   "The base-side line number of the row at POSITION of FILENAME in DIFF.
 DIFF is a raw unified diff, POSITION a GitHub diff position (the file's first
 hunk header is 0, and every later header and content line counts one).  Nil
 when that row is an added line, or DIFF has no such row."
-  (with-temp-buffer
-    (insert diff)
-    (goto-char (point-min))
-    (let ((in-target nil)
-          (count nil)
-          (base-line nil)
-          (found nil)
-          (done nil))
-      (while (and (not done) (not (eobp)))
-        (let ((line (buffer-substring-no-properties
-                     (line-beginning-position) (line-end-position))))
-          (cond
-           ((string-match "^diff --git a/\\(.*?\\) b/\\(.*?\\)$" line)
-            (setq in-target (string= (if (string= (match-string 2 line) "dev/null")
-                                         (match-string 1 line)
-                                       (match-string 2 line))
-                                     filename)
-                  count nil))
-           ((not in-target) nil)
-           ((string-match "^@@ -\\([0-9]+\\)" line)
-            (setq count (if count (1+ count) 0)
-                  base-line (string-to-number (match-string 1 line))))
-           ((null count) nil)
-           ((memq (and (> (length line) 0) (aref line 0)) '(?+ ?- ?\s))
-            (setq count (1+ count))
-            (when (= count position)
-              (setq found (unless (eq (aref line 0) ?+) base-line)
-                    done t))
-            (unless (eq (aref line 0) ?+)
-              (setq base-line (1+ base-line))))))
-        (forward-line 1))
-      found)))
+  (plist-get (crs--diff-row-at-position diff filename position) :base))
 
 (defun crs--github-line-target (ctx)
   "Where the GitHub link for the line CTX describes points: (SIDE . LINE).

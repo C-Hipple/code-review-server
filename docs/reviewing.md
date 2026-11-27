@@ -23,16 +23,37 @@ right away instead of at the next background cycle. A PR drops out of a
 "needs review" section the moment its filters stop matching, and appears in
 any section whose filters now match it.
 
-![Bun Review Interface](img/bun-review-1.png)
-![Bun Review File Tree](img/bun-review-filetree.png)
+In the web client, a review opens on the PR's header and diff; comment threads
+live in a tray down the right edge, and each commented line carries a badge that
+opens its thread there.
+
+![Web client review with the comment tray](img/bun-review.png)
+
+The Emacs client opens a review on the code, each thread marked by a `<C: …>`
+indicator, and `s` shows the PR's discussion — description, conversation and
+every thread under its line — in a buffer beside it.
+
+![Emacs client review with the discussion buffer](img/emacs-review.png)
+
+`H` draws the threads inline in the diff instead.
+
+![Emacs client review with threads drawn inline](img/emacs-review-comments.png)
+
+### Asking an agent about the PR
+The review chat talks to a local coding agent (Claude Code, or any agent that
+speaks ACP) about the PR under review: it reads the description and diff with
+your first message, and can read the repository but not change it. See
+[Review chat](protocol.md#review-chat) and its [`[Chat]`](configuration.md#review-chat) config.
+
+![Review chat in the web client](img/bun-review-chat.png)
+
+![Review chat in the Emacs client](img/emacs-chat.png)
 
 ## LSP Integration
 Because the server runs locally and can manage git worktrees, it can integrate with Language Server Protocols (LSP). This allows features like:
 - **Go to Definition**: Jump to symbols in the PR code.
 - **Hover Information**: See types and documentation.
 - **Find References**: Explore codebase usage.
-
-![Emacs Review Interface](img/emacs-review-1.png)
 
 ![Emacs LSP Integration](img/emacs-review-lsp.png)
 

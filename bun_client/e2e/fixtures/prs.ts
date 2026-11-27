@@ -68,6 +68,12 @@ export interface PRFixture {
     comments: CommentJSON[];
     reviews: ReviewJSON[];
     plugins: Record<string, unknown>;
+    // The PR's labels; ['e2e'] when left out.
+    labels?: string[];
+    // What the fake chat agent answers about this PR, and the change diagram
+    // it serves for it (demo.ts); a stock answer and DIAGRAM_SOURCE otherwise.
+    chatReply?: string;
+    diagram?: string;
 }
 
 const created = (daysAgo: number) =>
@@ -409,6 +415,29 @@ export function commentsAddressedReport(pr: PRFixture) {
             missing: [],
         },
         outstanding,
-        body: `**${summary}**`,
+        // The markdown body, laid out as the server's renderCommentsReport does.
+        body: [
+            `**${summary}**`,
+            ...reportSection('Outstanding', outstanding),
+            ...reportSection(
+                'Addressed',
+                items.filter(i => i.status === 'addressed')
+            ),
+        ].join('\n'),
     };
+}
+
+function reportSection(
+    title: string,
+    items: { path: string; line: number; author: string; excerpt: string; rationale: string }[]
+) {
+    if (items.length === 0) return [];
+    return [
+        '',
+        `### ${title} (${items.length})`,
+        ...items.map(
+            i =>
+                `- **${i.path}:${i.line}** — ${i.author}: “${i.excerpt}” _(GitHub)_  \n  ${i.rationale}`
+        ),
+    ];
 }

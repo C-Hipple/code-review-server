@@ -18,6 +18,7 @@
 (declare-function crs--get-current-review-info "crs-review")
 (declare-function delta-wash "washer")
 (declare-function my-code-review-mode "crs-review")
+(declare-function crs--refresh-discussion "crs-discussion")
 
 (defun crs--diff-line-marker (line)
   "Return the unified-diff marker for a diff content LINE, or nil.
@@ -73,76 +74,144 @@ either side, so together they read as one hunk."
        (= (+ (plist-get above :new-start) (plist-get above :new-length))
           (plist-get below :new-start))))
 
-(defun crs-toggle-section ()
-  "Toggle visibility of the section under the current header."
-  (interactive)
-  (let ((line-content (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
-    (if (string-match crs--section-header-regexp line-content)
-        (let* ((header-text-end (line-end-position))
-               (next-line-start (save-excursion (forward-line 1) (point)))
-               (content-end (save-excursion
-                              (forward-line 1)
-                              (if (re-search-forward crs--section-header-regexp nil t)
-                                  (1- (match-beginning 0))
-                                (point-max))))
-               (overlays (overlays-in header-text-end content-end))
-               (found-collapsed nil))
-          (dolist (ov overlays)
-            (when (overlay-get ov 'codereview-hide)
-              (delete-overlay ov)
-              (setq found-collapsed t)))
-          (unless found-collapsed
-            ;; 1. Ellipsis on the newline
-            (when (< header-text-end next-line-start)
-              (let ((ov (make-overlay header-text-end next-line-start)))
-                (overlay-put ov 'codereview-hide t)
-                ;; (overlay-put ov 'display "...")
-                ))
-            ;; 2. Hide content
-            (when (< next-line-start content-end)
-              (let ((ov (make-overlay next-line-start content-end)))
-                (overlay-put ov 'codereview-hide t)
-                (overlay-put ov 'invisible 'codereview-hide)))))
-      (message "Not on a section header"))))
+;;; Sections
+;;
+;; A review buffer is a run of sections, each under a heading line that
+;; `crs--section-header-regexp' matches: Description, Conversation, Changes,
+;; then one per file.  TAB folds the one at point.  Folding hides the
+;; section's text behind an invisible `codereview-hide' overlay, which
+;; drawing the buffer again would lose with the text it hid, so the buffer
+;; remembers the headings it has folded (`crs--buffer-collapsed-sections')
+;; and folds them again after each render.  A new review buffer starts with
+;; `crs-review-collapsed-sections' folded.
 
-(defun crs-collapse-all-sections ()
-  "Collapse all sections in the current buffer."
-  (interactive)
+(defun crs--section-header-line-p ()
+  "Non-nil if the line at point is a section's heading.
+It matches `crs--section-header-regexp', and isn't a line of a body
+\(`crs-body', see `crs--process-html-placeholders') or of the diff: either
+can read like a heading -- \"I renamed the helper\", \"+  modified := true\"
+-- and taking one for a heading would end the section above it there."
   (save-excursion
-    (goto-char (point-min))
-    (while (re-search-forward crs--section-header-regexp nil t)
-      (let* ((header-text-end (line-end-position))
-             (next-line-start (save-excursion (forward-line 1) (point)))
-             (content-end (save-excursion
-                            (forward-line 1)
-                            (if (re-search-forward crs--section-header-regexp nil t)
-                                (1- (match-beginning 0))
-                              (point-max)))))
-        ;; Check if already collapsed
-        (let ((overlays (overlays-in header-text-end content-end))
-              (already-collapsed nil))
-          (dolist (ov overlays)
-            (when (overlay-get ov 'codereview-hide)
-              (setq already-collapsed t)))
+    (forward-line 0)
+    (and (looking-at crs--section-header-regexp)
+         (not (get-text-property (point) 'crs-body))
+         (not (crs--diff-line-marker
+               (buffer-substring-no-properties (point) (line-end-position)))))))
 
-          (unless already-collapsed
-            (when (< header-text-end next-line-start)
-              (let ((ov (make-overlay header-text-end next-line-start)))
-                (overlay-put ov 'codereview-hide t)
-                ;; (overlay-put ov 'display "...\n")
-                ))
-            (when (< next-line-start content-end)
-              (let ((ov (make-overlay next-line-start content-end)))
-                (overlay-put ov 'codereview-hide t)
-                (overlay-put ov 'invisible 'codereview-hide)))))))))
+(defun crs--next-section-header ()
+  "Move to the next section heading below point's line, and return its start.
+Return nil, and leave point anywhere, when no heading follows."
+  (let ((found nil))
+    (while (and (not found)
+                (zerop (forward-line 1))
+                (re-search-forward crs--section-header-regexp nil t))
+      (goto-char (match-beginning 0))
+      (when (crs--section-header-line-p)
+        (setq found (point))))
+    found))
 
-(defun crs-expand-all-sections ()
-  "Expand all sections in the current buffer."
-  (interactive)
+(defun crs--section-bounds (header)
+  "Return (HEADER-END CONTENT-START CONTENT-END) for the heading at HEADER.
+HEADER is the start of a section's heading line; its text runs from the
+line after it to just before the newline ending the line above the next
+heading, or to the end of the buffer."
   (save-excursion
-    (dolist (ov (overlays-in (point-min) (point-max)))
+    (goto-char header)
+    (let ((header-end (line-end-position))
+          (content-start (progn (forward-line 1) (point)))
+          (content-end (progn (goto-char header)
+                              (if (crs--next-section-header)
+                                  (1- (point))
+                                (point-max)))))
+      (list header-end content-start (max content-start content-end)))))
+
+(defun crs--section-folded-p (header)
+  "Non-nil if the section whose heading starts at HEADER is folded."
+  (pcase-let ((`(,header-end ,_ ,content-end) (crs--section-bounds header)))
+    (seq-some (lambda (ov) (overlay-get ov 'codereview-hide))
+              (overlays-in header-end content-end))))
+
+(defun crs--fold-section (header)
+  "Fold the section whose heading starts at HEADER, unless it already is."
+  (unless (crs--section-folded-p header)
+    (pcase-let ((`(,header-end ,content-start ,content-end) (crs--section-bounds header)))
+      ;; The heading's newline marks the section folded even when it has
+      ;; no text to hide.
+      (when (< header-end content-start)
+        (overlay-put (make-overlay header-end content-start) 'codereview-hide t))
+      (when (< content-start content-end)
+        (let ((ov (make-overlay content-start content-end)))
+          (overlay-put ov 'codereview-hide t)
+          (overlay-put ov 'invisible 'codereview-hide))))))
+
+(defun crs--unfold-section (header)
+  "Unfold the section whose heading starts at HEADER."
+  (pcase-let ((`(,header-end ,_ ,content-end) (crs--section-bounds header)))
+    (dolist (ov (overlays-in header-end content-end))
       (when (overlay-get ov 'codereview-hide)
         (delete-overlay ov)))))
+
+(defun crs--section-headers ()
+  "Return the start of each section heading in the buffer, in order."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((headers (when (crs--section-header-line-p) (list (point)))))
+      (while (crs--next-section-header)
+        (push (point) headers))
+      (nreverse headers))))
+
+(defun crs--apply-collapsed-sections ()
+  "Fold the sections whose headings `crs--buffer-collapsed-sections' names.
+Called once the buffer is drawn, which leaves every section open.  It
+reads no further than the last of them: by default the Conversation,
+near the top, and not the diff below."
+  (let ((wanted crs--buffer-collapsed-sections))
+    (when wanted
+      (save-excursion
+        (goto-char (point-min))
+        (let ((header (when (crs--section-header-line-p) (point))))
+          (while (and wanted
+                      (or header (setq header (crs--next-section-header))))
+            (let ((title (crs--line-text)))
+              (when (member title wanted)
+                (crs--fold-section header)
+                (setq wanted (remove title wanted))))
+            (setq header nil)))))))
+
+(defun crs-toggle-section ()
+  "Fold the section whose heading is at point, or unfold it.
+The buffer keeps it so when it is drawn again: after a sync, or hiding
+comments."
+  (interactive)
+  (if (not (crs--section-header-line-p))
+      (message "Not on a section header")
+    (let ((header (line-beginning-position))
+          (title (crs--line-text)))
+      (if (crs--section-folded-p header)
+          (progn
+            (crs--unfold-section header)
+            (setq crs--buffer-collapsed-sections
+                  (remove title crs--buffer-collapsed-sections)))
+        (crs--fold-section header)
+        (setq crs--buffer-collapsed-sections
+              (cons title (remove title crs--buffer-collapsed-sections)))))))
+
+(defun crs-collapse-all-sections ()
+  "Fold every section in the current buffer."
+  (interactive)
+  (save-excursion
+    (let ((titles nil))
+      (dolist (header (crs--section-headers))
+        (crs--fold-section header)
+        (goto-char header)
+        (push (crs--line-text) titles))
+      (setq crs--buffer-collapsed-sections (nreverse titles)))))
+
+(defun crs-expand-all-sections ()
+  "Unfold every section in the current buffer."
+  (interactive)
+  (remove-overlays (point-min) (point-max) 'codereview-hide t)
+  (setq crs--buffer-collapsed-sections nil))
 
 (defun crs-toggle-comments ()
   "Toggle visibility of all comments in the current review buffer.
@@ -1517,9 +1586,13 @@ for more robust position restoration."
           (new-preamble nil)
           (new-images nil)
           (new-annotations nil)
+          ;; A new buffer opens on the code: comments as indicators, the
+          ;; conversation folded (`crs-review-show-comments',
+          ;; `crs-review-collapsed-sections').  After that it keeps what the
+          ;; reviewer toggled.
           (new-show-comments (if (local-variable-p 'crs--buffer-show-comments)
                                  crs--buffer-show-comments
-                               t))
+                               crs-review-show-comments))
           ;; Annotations start collapsed; `crs-toggle-comments' and
           ;; `crs-toggle-annotations' flip this buffer-locally.
           (new-show-annotations (if (local-variable-p 'crs--buffer-show-annotations)
@@ -1601,8 +1674,14 @@ for more robust position restoration."
       (setq crs--buffer-show-annotations new-show-annotations)
       (setq crs--buffer-review-feedback existing-review-feedback)
 
+      (unless (local-variable-p 'crs--buffer-collapsed-sections)
+        (setq crs--buffer-collapsed-sections
+              (copy-sequence crs-review-collapsed-sections)))
+
       (unwind-protect
           (progn
+            ;; The folds go with the text they hid; they're put back below.
+            (remove-overlays (point-min) (point-max) 'codereview-hide t)
             (erase-buffer)
 
             (cond
@@ -1690,6 +1769,8 @@ for more robust position restoration."
             (setq crs--buffer-images (or new-images existing-images))
             (crs--process-html-placeholders)
             (crs--decorate-blocks)
+            ;; Once the bodies are in, whose lines can read like headings.
+            (crs--apply-collapsed-sections)
 
             ;; Re-set the buffer-local variables AFTER mode change
             (setq crs--buffer-diff (or new-diff existing-diff))
@@ -1753,7 +1834,12 @@ for more robust position restoration."
           (let ((inhibit-read-only nil))
             (run-mode-hooks))))
       (when refresh-filter
-        (crs--refresh-diff-filter buffer)))))
+        (crs--refresh-diff-filter buffer))
+      ;; A fresh payload can bring new comments, reviews or a new
+      ;; description: an open discussion buffer shows them too.  A toggle
+      ;; (CONTENT nil) changes nothing it shows.
+      (when (and content (listp content))
+        (crs--refresh-discussion buffer)))))
 
 (provide 'crs-render)
 ;;; crs-render.el ends here

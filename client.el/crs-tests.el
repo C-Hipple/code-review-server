@@ -23,7 +23,7 @@
   (should (featurep 'crs-client))
   (dolist (feat '(crs-vars crs-html crs-rpc crs-render crs-list-mode
                   crs-review crs-comments crs-review-actions crs-plugins
-                  crs-ai crs-diagram crs-filtered-diff crs-chat))
+                  crs-ai crs-diagram crs-filtered-diff crs-chat crs-discussion))
     (should (featurep feat))))
 
 (ert-deftest crs-test-key-commands-defined ()
@@ -47,6 +47,9 @@
                 crs-chat-select-model crs-chat-refresh crs-chat-delete crs-chat-quit
                 crs-show-filtered-diff crs-show-full-diff
                 crs-show-diff-since-last-review crs-show-diff-since-last-interaction
+                crs-show-discussion crs-discussion-visit-thread
+                crs-discussion-next-thread crs-discussion-previous-thread
+                crs-discussion-sync crs-collapse-all-sections crs-expand-all-sections
                 crs-get-rate-limit-status))
     (should (fboundp fn))
     (should (commandp fn))))
@@ -1201,9 +1204,13 @@ first, and `events' to what the user was shown, most recent first: each is
 
 (defmacro crs-test--with-review-buffer (feedback &rest body)
   "Run BODY in a fresh review buffer for acme/widgets #42 holding FEEDBACK.
-The buffer is bound to `buffer' and killed afterwards."
+The buffer is bound to `buffer' and killed afterwards.  It draws its
+comment threads in the diff, which most tests look for there; a review
+buffer opens with them as indicators (`crs-review-show-comments'), which
+the tests of the opening view check."
   (declare (indent 1))
-  `(let ((buffer (get-buffer-create (crs--review-buffer-name "acme" "widgets" 42))))
+  `(let ((buffer (get-buffer-create (crs--review-buffer-name "acme" "widgets" 42)))
+         (crs-review-show-comments t))
      (clrhash crs--review-submits)
      (unwind-protect
          (progn
@@ -2072,7 +2079,7 @@ Not a reply to a comment drawn above the block, nor an edit of a local one."
 
 (defmacro crs-test--with-shown-review (payload &rest body)
   "Run BODY in `buffer' showing PAYLOAD in the only window.
-Comments are shown and annotations collapsed, as a review opens."
+Comments are shown and annotations collapsed."
   (declare (indent 1))
   `(crs-test--with-review-buffer nil
      (save-window-excursion
@@ -3364,6 +3371,298 @@ opens no second chat window."
         (kill-buffer review)
         (when-let ((list (get-buffer (crs--chat-sessions-buffer-name "acme" "widgets" 42))))
           (kill-buffer list))))))
+
+;;; --- Opening on the code, and the discussion beside it ---
+
+(defconst crs-test--discussion-payload
+  `((okay . t)
+    (metadata . ((number . 42) (title . "Widgets") (author . "alice")
+                 (url . "https://github.com/acme/widgets/pull/42")
+                 (body . "Adds widgets.")))
+    (diff . ,crs-test--full-diff)
+    (comments . [((id . "7") (author . "bob") (body . "two-nit")
+                  (path . "a.txt") (position . "2"))
+                 ((id . "8") (author . "bob") (body . "extra-nit")
+                  (path . "b.txt") (position . "4") (resolved . t))
+                 ((id . "9") (author . "carol") (body . "file-note")
+                  (path . "b.txt") (position . ""))
+                 ;; On the PR: the conversation's.  Its first line reads
+                 ;; like a file's heading.
+                 ((id . "10") (author . "carol")
+                  (body . "I renamed the helper\n\nconversation-tail")
+                  (path . "") (created_at . "2026-10-01T11:00:00Z"))])
+    (outdated_comments . [((id . "3") (author . "dave") (body . "stale-nit")
+                           (path . "c.txt") (position . "") (outdated . t)
+                           (thread_id . "T1")
+                           (diff_hunk . "@@ -1,2 +1,2 @@\n one\n-gone\n+went"))
+                          ((id . "4") (author . "alice") (body . "stale-reply")
+                           (path . "c.txt") (position . "") (outdated . t)
+                           (thread_id . "T1") (in_reply_to . 3))])
+    (reviews . [((user . "erin") (state . "APPROVED") (body . "review-body")
+                 (submitted_at . "2026-10-02T09:00:00Z"))])
+    (commits . []))
+  "A GetPR reply with a conversation, three review threads and an outdated one.
+In b.txt, the thread on row 4 is about head line 3, and one is on the file.")
+
+(defmacro crs-test--with-new-review (payload &rest body)
+  "Run BODY in `buffer', a new review buffer that PAYLOAD opened.
+With the options as they are by default, in the only window, as a review
+opens.  The buffer and its discussion buffer are killed afterwards.
+Bodies are filled by character: batch Emacs fills one drawn in a
+proportional font a word to a line, and these tests read whole lines."
+  (declare (indent 1))
+  `(let ((buffer (get-buffer-create (crs--review-buffer-name "acme" "widgets" 42)))
+         (shr-use-fonts nil))
+     (unwind-protect
+         (save-window-excursion
+           (delete-other-windows)
+           (switch-to-buffer buffer)
+           (cl-letf (((symbol-function 'crs--send-request) #'ignore))
+             (crs--render-and-update buffer ,payload))
+           (with-current-buffer buffer
+             ,@body))
+       (kill-buffer buffer)
+       (when-let ((discussion (get-buffer (crs--discussion-buffer-name "acme" "widgets" 42))))
+         (kill-buffer discussion)))))
+
+(defun crs-test--shown-p (regexp)
+  "Non-nil if the text the first match for REGEXP starts at isn't folded away."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward regexp)
+    (not (invisible-p (match-beginning 0)))))
+
+(ert-deftest crs-test-review-opens-on-the-code ()
+  "A new review buffer opens with comments as indicators and its conversation folded."
+  (should-not (eval (car (get 'crs-review-show-comments 'standard-value))))
+  (should (equal (eval (car (get 'crs-review-collapsed-sections 'standard-value)))
+                 '("Conversation")))
+  (crs-test--with-new-review crs-test--discussion-payload
+    (should-not crs--buffer-show-comments)
+    (should (equal crs--buffer-collapsed-sections '("Conversation")))
+    (let ((text (buffer-string)))
+      (should (string-match-p "^\\+two +<C: bob>$" text))
+      (should-not (string-match-p "two-nit" text)))
+    ;; All of the conversation is folded, a line of it reading like a
+    ;; heading too...
+    (should-not (crs-test--shown-p "^From: carol"))
+    (should-not (crs-test--shown-p "renamed the helper"))
+    (should-not (crs-test--shown-p "conversation-tail"))
+    (should-not (crs-test--shown-p "review-body"))
+    ;; ...and nothing else.
+    (should (crs-test--shown-p "^Conversation$"))
+    (should (crs-test--shown-p "Adds widgets"))
+    (should (crs-test--shown-p "^Changes$"))
+    (should (crs-test--shown-p "^\\+two"))
+    (should (crs-test--shown-p "^\\+extra b"))))
+
+(ert-deftest crs-test-review-opens-as-configured ()
+  "The options pick what a new review buffer shows and folds."
+  (let ((crs-review-show-comments t)
+        (crs-review-collapsed-sections '("Description")))
+    (crs-test--with-new-review crs-test--discussion-payload
+      (should (string-match-p "two-nit" (buffer-string)))
+      (should-not (crs-test--shown-p "Adds widgets"))
+      (should (crs-test--shown-p "review-body")))))
+
+(ert-deftest crs-test-folds-survive-a-redraw ()
+  "What is folded stays folded as the buffer is drawn again, and what isn't, open."
+  (crs-test--with-new-review crs-test--discussion-payload
+    ;; Showing comments draws the buffer again.
+    (crs-toggle-comments)
+    (should (string-match-p "two-nit" (buffer-string)))
+    (should-not (crs-test--shown-p "review-body"))
+    ;; Fold a.txt and unfold the conversation; a sync keeps both so.
+    (goto-char (point-min))
+    (re-search-forward "^modified +a\\.txt$")
+    (crs-toggle-section)
+    (should-not (crs-test--shown-p "^\\+two"))
+    (goto-char (point-min))
+    (re-search-forward "^Conversation$")
+    (crs-toggle-section)
+    (should (crs-test--shown-p "review-body"))
+    (crs--render-and-update buffer crs-test--discussion-payload)
+    (should (crs-test--shown-p "review-body"))
+    (should-not (crs-test--shown-p "^\\+two"))
+    (should (crs-test--shown-p "^\\+extra b"))
+    (should (equal crs--buffer-collapsed-sections '("modified     a.txt")))
+    (crs-expand-all-sections)
+    (should (crs-test--shown-p "^\\+two"))
+    (should-not crs--buffer-collapsed-sections)
+    (crs-collapse-all-sections)
+    (should-not (crs-test--shown-p "Adds widgets"))
+    (should-not (crs-test--shown-p "^\\+extra b"))
+    (should (member "Description" crs--buffer-collapsed-sections))))
+
+(ert-deftest crs-test-section-ends-at-the-next-heading ()
+  "A fold runs to the next heading, past body and diff lines that read like one."
+  (let ((payload (cons (cons 'diff (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                                           "@@ -1 +1,3 @@\n one\n+x renamed y\n+tail\n"
+                                           "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
+                                           "@@ -1 +1,2 @@\n b\n+bee\n"))
+                       crs-test--discussion-payload)))
+    (crs-test--with-new-review payload
+      (goto-char (point-min))
+      (re-search-forward "^modified +a\\.txt$")
+      (crs-toggle-section)
+      (should-not (crs-test--shown-p "^\\+tail"))
+      (should (crs-test--shown-p "^modified +b\\.txt$"))
+      (should (crs-test--shown-p "^\\+bee"))
+      (dolist (line '("renamed the helper" "^\\+x renamed y"))
+        (goto-char (point-min))
+        (re-search-forward line)
+        (should-not (crs--section-header-line-p))))))
+
+(ert-deftest crs-test-diff-row-at-position ()
+  "A diff's row is read by its position, with its line on each side."
+  (should (equal (crs--diff-row-at-position crs-test--full-diff "b.txt" 4)
+                 '(:marker ?+ :text "+extra b" :head 3 :base nil)))
+  (should (equal (crs--diff-row-at-position crs-test--full-diff "b.txt" 2)
+                 '(:marker ?- :text "-old b" :head nil :base 2)))
+  (should (equal (crs--diff-row-at-position crs-test--full-diff "a.txt" 1)
+                 '(:marker ?\s :text " one" :head 1 :base 1)))
+  (should-not (crs--diff-row-at-position crs-test--full-diff "a.txt" 4))
+  (should-not (crs--diff-row-at-position crs-test--full-diff "c.txt" 1))
+  ;; Context an expansion spliced in takes no position, but is a line.
+  (let ((diff (concat "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                      "@@ -1,3 +1,4 @@\n"
+                      (propertize " zero\n" 'crs-expanded t)
+                      " one\n+two\n three\n")))
+    (should (equal (crs--diff-row-at-position diff "a.txt" 2)
+                   '(:marker ?+ :text "+two" :head 3 :base nil)))))
+
+(ert-deftest crs-test-discussion-keys-bound ()
+  "s opens the discussion; in it, RET, n and p lead to the code."
+  (should (eq (lookup-key my-code-review-mode-map (kbd "s")) #'crs-show-discussion))
+  (should (eq (lookup-key crs-discussion-mode-map (kbd "RET")) #'crs-discussion-visit-thread))
+  (should (eq (lookup-key crs-discussion-mode-map (kbd "n")) #'crs-discussion-next-thread))
+  (should (eq (lookup-key crs-discussion-mode-map (kbd "p")) #'crs-discussion-previous-thread))
+  (should (eq (lookup-key crs-discussion-mode-map (kbd "TAB")) #'crs-toggle-section))
+  (should (eq (lookup-key crs-discussion-mode-map (kbd "g")) #'crs-discussion-sync)))
+
+(ert-deftest crs-test-discussion-shows-the-discussion ()
+  "The discussion opens beside the code: description, conversation and threads."
+  (crs-test--with-new-review crs-test--discussion-payload
+    (let ((review-window (selected-window)))
+      (crs-show-discussion)
+      (let ((discussion (get-buffer (crs--discussion-buffer-name "acme" "widgets" 42))))
+        (should (eq (current-buffer) discussion))
+        (should (eq major-mode 'crs-discussion-mode))
+        (should buffer-read-only)
+        (should (eq (window-buffer (window-in-direction 'right review-window)) discussion))
+        (should (eq (window-buffer review-window) buffer))
+        (let ((text (buffer-string)))
+          (should (string-prefix-p
+                   (concat "#42: Widgets\n"
+                           "acme/widgets · @alice · https://github.com/acme/widgets/pull/42\n")
+                   text))
+          (should (string-match-p "^Description\n\\(?:.*\n\\)*?Adds widgets" text))
+          (should (string-match-p
+                   (concat "^Conversation\n\\(?:.*\n\\)*?From: carol .*\n"
+                           "\\(?:.*\n\\)*?I renamed the helper\n\\(?:.*\n\\)*?conversation-tail\n"
+                           "\\(?:.*\n\\)*?From: erin .*\\[APPROVED\\]\n\\(?:.*\n\\)*?review-body")
+                   text))
+          ;; The threads come in the order the diff shows their lines, each
+          ;; under its file and line, then the line's row; the comment on
+          ;; the PR is in none.
+          (should (string-match-p
+                   (concat "^Review threads (3)\n\n"
+                           "a\\.txt:2\n    \\+two\n    ┌─ bob.*\n    │ two-nit\n    └─\n\n"
+                           "b\\.txt · on the file\n    ┌─ carol.*\n    │ file-note\n    └─\n\n"
+                           "b\\.txt:3 · resolved\n    \\+extra b\n    ┌─ bob.*\n    │ extra-nit\n    └─\n")
+                   text))
+          (should (string-match-p
+                   (concat "^Outdated threads (1)\n\n"
+                           "c\\.txt\n    \\+went\n    ┌─ dave · outdated\n    │ stale-nit\n"
+                           "    ├─ alice.*\n    │ stale-reply\n    └─")
+                   text)))
+        ;; Its blocks get their faces, and its headings fold.
+        (goto-char (point-min))
+        (re-search-forward "^    ┌─ bob")
+        (should (memq 'crs-comment-author
+                      (ensure-list (get-text-property (- (point) 1) 'font-lock-face))))
+        (goto-char (point-min))
+        (re-search-forward "^Conversation$")
+        (crs-toggle-section)
+        (should-not (crs-test--shown-p "review-body"))
+        (should (crs-test--shown-p "^Review threads"))))))
+
+(ert-deftest crs-test-discussion-leads-to-the-code ()
+  "The discussion opens on the thread at point, and its threads lead to their lines."
+  (crs-test--with-new-review crs-test--discussion-payload
+    (let ((review-window (selected-window)))
+      (re-search-forward "^\\+extra b")
+      (crs-show-discussion)
+      (should (looking-at "b\\.txt:3"))
+      ;; Stepping back, the review window follows, and the discussion
+      ;; keeps the focus.
+      (crs-discussion-previous-thread)
+      (should (looking-at "b\\.txt · on the file"))
+      (should-not (eq (selected-window) review-window))
+      (with-selected-window review-window
+        (should (string-prefix-p " first b" (crs--line-text))))
+      (crs-discussion-previous-thread)
+      (should (looking-at "a\\.txt:2"))
+      (with-selected-window review-window
+        (should (string-prefix-p "+two" (crs--line-text))))
+      (crs-discussion-previous-thread)
+      (should (looking-at "a\\.txt:2"))
+      (crs-discussion-next-thread)
+      (crs-discussion-next-thread)
+      (should (looking-at "b\\.txt:3"))
+      ;; RET from anywhere in a thread goes to its line.
+      (re-search-forward "│ extra-nit")
+      (crs-discussion-visit-thread)
+      (should (eq (selected-window) review-window))
+      (should (string-prefix-p "+extra b" (crs--line-text))))))
+
+(ert-deftest crs-test-discussion-on-a-filtered-diff ()
+  "On a filtered diff the threads are the full diff's, and lead to their rows there."
+  (crs-test--with-new-review crs-test--discussion-payload
+    (let ((crs-diff-filters crs-test--diff-filters)
+          (sent '())
+          (review-window (selected-window)))
+      (cl-letf (((symbol-function 'crs--send-request)
+                 (lambda (method params callback)
+                   (push (list method params callback) sent))))
+        (crs-show-filtered-diff "since-last-review")
+        (funcall (nth 2 (car sent)) crs-test--filtered-reply))
+      (should (crs--filtered-diff-displayed-p))
+      (goto-char (point-min))
+      (crs-show-discussion)
+      (should (string-match-p "^a\\.txt:2\n    \\+two\n" (buffer-string)))
+      (should (string-match-p "^b\\.txt:3 · resolved\n    \\+extra b\n" (buffer-string)))
+      ;; The filtered diff doesn't show a.txt: the review stays put.
+      (let ((before (window-point review-window)))
+        (re-search-forward "^a\\.txt:2")
+        (crs-discussion-visit-thread)
+        (should-not (eq (selected-window) review-window))
+        (should (= (window-point review-window) before)))
+      ;; b.txt's row 4 is its row 3 there.
+      (re-search-forward "^b\\.txt:3")
+      (crs-discussion-visit-thread)
+      (should (eq (selected-window) review-window))
+      (should (string-prefix-p "+extra b" (crs--line-text))))))
+
+(ert-deftest crs-test-discussion-redrawn-with-the-review ()
+  "A fresh payload draws the discussion again, keeping its place; a toggle doesn't."
+  (crs-test--with-new-review crs-test--discussion-payload
+    (crs-show-discussion)
+    (let ((discussion (current-buffer))
+          (more (cons (cons 'comments
+                            (vconcat (cdr (assq 'comments crs-test--discussion-payload))
+                                     [((id . "11") (author . "frank") (body . "new-nit")
+                                       (path . "a.txt") (position . "2"))]))
+                      crs-test--discussion-payload)))
+      (re-search-forward "^b\\.txt:3")
+      (forward-line 0)
+      (with-current-buffer buffer
+        (crs-toggle-comments))
+      (should-not (string-match-p "new-nit" (buffer-string)))
+      (crs--render-and-update buffer more)
+      (with-current-buffer discussion
+        (should (string-match-p "│ two-nit\n    ├─ frank.*\n    │ new-nit\n" (buffer-string)))
+        (should (looking-at "b\\.txt:3"))))))
 
 ;; Keybindings are installed in crs-client.el, so an autoloaded command must
 ;; load crs-client, not just its own module.  A bare `;;;###autoload' cookie

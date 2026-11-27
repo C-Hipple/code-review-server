@@ -71,6 +71,35 @@ Set to nil to disable the timeout."
                  (const :tag "No timeout" nil))
   :group 'crs)
 
+(defcustom crs-review-show-comments nil
+  "Whether a new review buffer draws its comment threads in the diff.
+Nil, the default, opens it on the code: a line with comments carries a
+compact <C: author> indicator instead, which the echo area previews when
+point is on it, and the threads are read beside the code in the
+discussion buffer (`crs-show-discussion').  `crs-toggle-comments' draws
+them in a buffer already open, or takes them out again."
+  :type 'boolean
+  :group 'crs)
+
+(defcustom crs-review-collapsed-sections '("Conversation")
+  "The sections a new review buffer opens with folded, by their heading.
+Each is a heading's whole line: \"Description\", \"Conversation\",
+\"Changes\", \"Your Review Feedback\", or a file's, such as
+\"modified     main.go\".  The conversation is folded by default, since
+the discussion buffer (`crs-show-discussion') shows it beside the code.
+`crs-toggle-section' folds or unfolds a section in a buffer already
+open, which keeps it so as the buffer is drawn again."
+  :type '(repeat string)
+  :group 'crs)
+
+(defcustom crs-discussion-window-width 0.5
+  "How much of the frame's width the discussion buffer's window takes.
+`crs-show-discussion' opens it in a window to the right of the review's:
+a fraction of the frame's width, or a whole number of columns."
+  :type '(choice (float :tag "Fraction of the frame")
+                 (integer :tag "Columns"))
+  :group 'crs)
+
 (defcustom crs-comment-fill-column 80
   "Widest a comment's text is filled to inside its block, in columns.
 A narrower window fills it narrower still, so that it fits beside the
@@ -159,6 +188,10 @@ is drawn again."
   "The \"outdated\" note on a comment about code that has since changed."
   :group 'crs-faces)
 
+(defface crs-discussion-location '((t :inherit (bold font-lock-constant-face)))
+  "The file and line a review thread is about, in the discussion buffer."
+  :group 'crs-faces)
+
 (defface crs-annotation-plugin '((t :inherit bold))
   "The plugin an annotation came from."
   :group 'crs-faces)
@@ -180,8 +213,10 @@ is drawn again."
   :group 'crs-faces)
 
 (defvar crs--section-header-regexp
-  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\)$"
-  "Regexp to match section headers in the code review buffer.")
+  "^\\(?:[^[:space:]].*?[[:space:]]\\)?\\(?:\\(?:\\.\\.\\.\\)?\\(?:modified\\|deleted\\|new file\\|renamed\\)[[:space:]:]+.*\\|Commits .*\\|Description\\|Conversation\\|Changes\\|Your Review Feedback\\|Files changed .*\\|Review threads .*\\|Outdated threads .*\\)$"
+  "Regexp to match section headers in the code review and discussion buffers.
+A line drawn from a body, or a diff line, can match it too: see
+`crs--section-header-line-p'.")
 
 (defconst crs--html-placeholder-regexp
   "<CRS-HTML\\(?: prefix=\"\\(.*?\\)\"\\)?>\\(.*?\\)</CRS-HTML>"
@@ -225,8 +260,16 @@ re-enters the review buffer's major mode, which would otherwise reset it.")
   "The reviews list for the current PR.")
 (defvar-local crs--buffer-preamble nil
   "The preamble content (header + conversation) for the current PR.")
-(defvar-local crs--buffer-show-comments t
-  "Whether to show comments in the buffer. Toggle with `crs-toggle-comments'.")
+(defvar-local crs--buffer-show-comments nil
+  "Whether the review buffer draws its comment threads in the diff.
+A new buffer starts with `crs-review-show-comments'; toggle it with
+`crs-toggle-comments'.")
+(defvar-local crs--buffer-collapsed-sections nil
+  "The headings of the sections folded in the buffer, as their lines read.
+Drawing the buffer again folds them again (`crs--apply-collapsed-sections').
+A new review buffer starts with `crs-review-collapsed-sections'.  Permanent:
+rendering re-enters the review buffer's major mode.")
+(put 'crs--buffer-collapsed-sections 'permanent-local t)
 (defvar-local crs--buffer-annotations nil
   "The plugin annotations for the current PR, from the GetPR reply.")
 (defvar-local crs--buffer-show-annotations nil
@@ -261,6 +304,11 @@ While one is shown, `crs--buffer-diff' holds the filtered diff.")
 (defvar-local crs--buffer-filtered-diff nil
   "The GetFilteredDiff reply the review buffer shows, if any.")
 (put 'crs--buffer-filtered-diff 'permanent-local t)
+
+;; Buffer-local state for discussion buffers (crs-discussion.el).
+(defvar-local crs--discussion-review-buffer nil
+  "The review buffer whose PR the discussion buffer shows.")
+(put 'crs--discussion-review-buffer 'permanent-local t)
 
 ;; Buffer-local state for plugin-output buffers.
 (defvar-local crs--plugin-owner nil

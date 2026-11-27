@@ -110,7 +110,7 @@ The emacs client lives in the `client.el/` directory. It is split into
 several modules; `crs-client.el` is the entry point that loads them all
 (`crs-vars`, `crs-html`, `crs-rpc`, `crs-filtered-diff`, `crs-render`,
 `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`,
-`crs-plugins`, `crs-ai`, `crs-diagram`, `crs-chat`).
+`crs-plugins`, `crs-ai`, `crs-diagram`, `crs-chat`, `crs-discussion`).
 
 ### Installation
 
@@ -157,6 +157,44 @@ with its base (drawn in `crs-list-conflict-face`), and the
 [review-ease](ai_features.md#review-ease) rating when that feature is on.
 
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
+
+A review buffer opens on the code. The Conversation section is folded (`TAB` on
+its heading unfolds it), and the review threads in the diff are drawn as compact
+`<C: author>` indicators at the end of the lines they're about. With point on one,
+the echo area previews the thread; `H` (`crs-toggle-comments`) draws the threads in
+full, and hides them again. Whatever you fold or unfold stays so as the buffer is
+redrawn: after a sync, a new comment, or `H`. `crs-review-show-comments` and
+`crs-review-collapsed-sections` change how a review opens.
+
+#### Reading the discussion beside the code
+
+`s` in a review buffer (`crs-show-discussion`) opens the PR's discussion in a buffer
+of its own, in a window to the right of the review's (half the frame,
+`crs-discussion-window-width`). It opens on the thread about the line at point, when
+there is one. The buffer holds:
+
+- the PR's description;
+- the conversation: comments on the PR, reviews and commits, in time order;
+- every review thread, in the order the diff shows its line, under its file and
+  line (`server/retry.go:42`, with `· resolved` once GitHub says so) and the diff
+  row it's on; and
+- the outdated threads, under their file and the line they were written against.
+
+| Key | Command | |
+|-----|---------|-|
+| `RET` | `crs-discussion-visit-thread` | Go to the line the thread at point is about, in the review buffer |
+| `n` / `p` (also `]` / `[`) | `crs-discussion-next-thread` / `crs-discussion-previous-thread` | Step to the next / previous thread; the review window follows to its line, and focus stays in the discussion |
+| `TAB` | `crs-toggle-section` | Fold or unfold the section whose heading is at point |
+| `g` | `crs-discussion-sync` | Sync the PR (`crs-sync-pr`) |
+| `q` | `quit-window` | Close the discussion window |
+
+With evil, `RET`, `TAB`, `]`, `[` and `q` do the same in normal and motion state, and
+`gr` syncs. The buffer is drawn from what the review buffer already holds, so it
+costs no request, and it is drawn again, keeping its place, each time the review
+buffer gets a fresh payload: a sync, a comment added or edited, a review submitted.
+On a [filtered diff](protocol.md#filtered-diffs) it still lists every thread, and a
+thread on a line the filtered diff doesn't show says so rather than moving the
+review.
 
 Submitting (`C-c C-c`, `crs-submit-review`) runs in the background: the command
 returns as soon as the request is sent, so you can read on or move to the next
@@ -306,6 +344,35 @@ When set to a non-nil value, a `*** Comments` sub-tree is included under each PR
 This is disabled by default because rendering comment threads for every PR in the list can noticeably slow down the reviews buffer. The server always returns comment data from its local DB cache — no extra GitHub API calls are involved — but the additional org structure adds rendering overhead proportional to the total number of comments across all listed PRs. Setting this to `nil` strips the comments before handing the content to org-mode.
 
 Enable it if you want a quick overview of comment activity without opening each PR individually.
+
+#### `crs-review-show-comments`
+
+**Default:** `nil`
+
+Whether a new review buffer draws its review threads in the diff. By default it
+opens on the code, each commented line carrying a `<C: author>` indicator, and the
+threads are read in the discussion buffer (`s`). `H` toggles them in a buffer
+already open.
+
+#### `crs-review-collapsed-sections`
+
+**Default:** `("Conversation")`
+
+The sections a new review buffer opens folded, named by their heading line:
+`"Description"`, `"Conversation"`, `"Changes"`, `"Your Review Feedback"`, or a
+file's, such as `"modified     main.go"`. Set it to `nil` to open with everything
+unfolded:
+
+```elisp
+(setq crs-review-collapsed-sections '("Description" "Conversation"))
+```
+
+#### `crs-discussion-window-width`
+
+**Default:** `0.5`
+
+How much of the frame's width the discussion buffer's window takes: a fraction, or
+a number of columns.
 
 ## Chrome Extension
 

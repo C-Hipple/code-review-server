@@ -28,6 +28,7 @@
 (require 'crs-diagram)
 (require 'crs-filtered-diff)
 (require 'crs-chat)
+(require 'crs-discussion)
 
 
 ;;; Keybindings
@@ -76,6 +77,7 @@
   "M" #'crs-show-change-diagram
   "t" #'crs-chat
   "H" #'crs-toggle-comments
+  "s" #'crs-show-discussion
   "L" #'crs-copy-github-line-link
   "A" #'crs-toggle-annotations
   "F" #'crs-show-filtered-diff
@@ -92,6 +94,18 @@
 
 (define-keymap :keymap crs-outdated-comments-mode-map
   "q" #'crs-quit-outdated-comments)
+
+;; The discussion buffer is a special-mode buffer, so q quits it as usual.
+(define-keymap :keymap crs-discussion-mode-map
+  "RET" #'crs-discussion-visit-thread
+  "<return>" #'crs-discussion-visit-thread
+  "n" #'crs-discussion-next-thread
+  "p" #'crs-discussion-previous-thread
+  "]" #'crs-discussion-next-thread
+  "[" #'crs-discussion-previous-thread
+  "TAB" #'crs-toggle-section
+  "<tab>" #'crs-toggle-section
+  "g" #'crs-discussion-sync)
 
 (define-keymap :keymap comment-edit-mode-map
   "C-c C-c" #'crs-submit-comment
@@ -186,6 +200,7 @@
     "M" #'crs-show-change-diagram
     "t" #'crs-chat
     "H" #'crs-toggle-comments
+    "s" #'crs-show-discussion
     "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
     "F" #'crs-show-filtered-diff
@@ -219,6 +234,7 @@
     "M" #'crs-show-change-diagram
     "t" #'crs-chat
     "H" #'crs-toggle-comments
+    "s" #'crs-show-discussion
     "L" #'crs-copy-github-line-link
     "A" #'crs-toggle-annotations
     "F" #'crs-show-filtered-diff
@@ -236,6 +252,17 @@
   ;; crs-outdated-comments-mode
   (evil-define-key 'normal crs-outdated-comments-mode-map
     "q" #'crs-quit-outdated-comments)
+  ;; crs-discussion-mode: a special-mode buffer, which evil may open in
+  ;; motion state rather than normal.  ] / [ step between threads, as they
+  ;; step between PRs in a review buffer.
+  (evil-define-key '(normal motion) crs-discussion-mode-map
+    (kbd "RET") #'crs-discussion-visit-thread
+    (kbd "TAB") #'crs-toggle-section
+    (kbd "<tab>") #'crs-toggle-section
+    "]" #'crs-discussion-next-thread
+    "[" #'crs-discussion-previous-thread
+    "gr" #'crs-discussion-sync
+    "q" #'quit-window)
   ;; comment-edit-mode
   (evil-define-key 'normal comment-edit-mode-map
     "C-c C-c" #'crs-submit-comment

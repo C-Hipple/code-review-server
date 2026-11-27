@@ -21,6 +21,11 @@ interface AIReportModalProps {
     onOutput: (output: AIFeatureOutput) => void;
     /** Takes the reviewer to an item's thread in the diff. */
     onJumpToItem: (item: ReportItem) => void;
+    /**
+     * Moves the report out of the modal into a pane of the review, beside
+     * the code (see AIReportPane). Without it, the modal offers no such move.
+     */
+    onDock?: () => void;
 }
 
 /**
@@ -32,7 +37,9 @@ interface AIReportModalProps {
  * refreshing, until the new one lands.
  *
  * The change diagram takes most of the screen, so a large diagram stays
- * legible; every other report opens at the usual width.
+ * legible; every other report opens at the usual width. "Pin beside code"
+ * moves the report into a pane of the review instead, to read beside the
+ * diff.
  */
 export default function AIReportModal({
     feature,
@@ -43,6 +50,7 @@ export default function AIReportModal({
     onClose,
     onOutput,
     onJumpToItem,
+    onDock,
 }: AIReportModalProps) {
     const report = useAIReport({
         owner,
@@ -64,6 +72,15 @@ export default function AIReportModal({
             footer={
                 <>
                     <AIRerunButton pending={report.pending} onRerun={report.rerun} />
+                    {onDock && (
+                        <Button
+                            variant="secondary"
+                            onClick={onDock}
+                            title="Show this report in a pane beside the code"
+                        >
+                            ◫ Pin beside code
+                        </Button>
+                    )}
                     <Button variant="secondary" onClick={onClose}>
                         Close
                     </Button>

@@ -162,6 +162,8 @@ In the reviews buffer, each PR's headline carries its tags: the repository,
 with its base (drawn in `crs-list-conflict-face`), and the
 [review-ease](ai_features.md#review-ease) rating when that feature is on.
 
+![The Emacs client's reviews buffer](img/emacs-list.png)
+
 Starting a review will then load a new code-review buffer which you can read the review, make comments, and submit your review.
 
 A review buffer opens on the code. The Conversation section is folded (`TAB` on
@@ -171,6 +173,25 @@ the echo area previews the thread; `H` (`crs-toggle-comments`) draws the threads
 full, and hides them again. Whatever you fold or unfold stays so as the buffer is
 redrawn: after a sync, a new comment, or `H`. `crs-review-show-comments` and
 `crs-review-collapsed-sections` change how a review opens.
+
+![The top of an Emacs review buffer](img/emacs-review-header.png)
+
+With the threads drawn in full (`H`):
+
+![Review threads drawn in the Emacs review buffer](img/emacs-review-comments.png)
+
+Plugins show up in a review buffer two ways. `p` (`crs-get-plugin-output`) opens
+every plugin's output for the PR in a buffer beside the review (`P` picks one
+plugin, `R` re-runs one and `D` runs one that only runs on demand):
+
+![Plugin output beside an Emacs review](img/emacs-plugins.png)
+
+And the [annotations](plugins.md#plugin-response-contract) plugins attach to lines
+are marked `<A: plugin>` at the end of those lines, like the threads' `<C: …>`
+indicators. `A` (`crs-toggle-annotations`) draws them in full under their lines,
+and `a` on one (`crs-add-annotation-as-comment`) adds it as a pending comment on its line:
+
+![Plugin annotations drawn in an Emacs review buffer](img/emacs-annotations.png)
 
 #### Reading the discussion beside the code
 
@@ -216,6 +237,8 @@ review comments are still outstanding — running it first when it never ran or 
 report is stale. The report buffer updates itself as runs start and land; `r`
 refreshes it, `R` forces a re-run and `q` quits.
 
+![An AI report beside an Emacs review](img/emacs-ai.png)
+
 `F` in a review buffer (`crs-show-filtered-diff`) narrows the diff to a
 [range of commits](protocol.md#filtered-diffs): pick *Since my last review*,
 *Since my last interaction* or, to go back, *Full diff*
@@ -236,6 +259,8 @@ point: 20 lines, or as many as a numeric prefix asks for. They stop at the next
 hunk, and once they reach it the two are shown as one, under a header spanning
 both. The lines they add aren't part of the PR's diff, so they can't take a
 comment, and the comments below them stay on their lines.
+
+![A hunk expanded with `o`, down to the next hunk](img/emacs-hunk-expansion.png)
 
 `L` in a review buffer (`crs-copy-github-line-link`) copies the GitHub link to
 the diff line at point to the kill ring — the link GitHub's Files changed view
@@ -264,6 +289,8 @@ in the Mermaid live editor. Called with `M-x` anywhere else, it asks for the PR 
 a URL or `owner/repo#number`. The same `r`, `R` and `q` apply, and the header line
 says whether the diagram still describes the PR.
 
+![The change diagram's Mermaid source beside an Emacs review](img/emacs-change-diagram.png)
+
 #### Review chat
 
 `t` in a review buffer (`crs-chat`) opens the [review chat](protocol.md#review-chat):
@@ -273,6 +300,8 @@ split off the bottom of the review's, which keeps the top three quarters
 (`crs-chat-window-height`), and shows the PR's most recent session, or a new
 one. The agent gets the PR's description and diff with your first message, and can
 read the repository but not change it.
+
+![The review chat below an Emacs review](img/emacs-chat.png)
 
 The chat buffer is in `crs-chat-mode`, built on `markdown-mode`: the conversation
 is Markdown, read-only, one level-1 heading per turn (`# You`, then the agent's
@@ -312,6 +341,8 @@ one the chat shows and `●` by one whose agent is answering. `RET` opens the se
 on the line in the chat, `n` starts a new one, `f` forks the one on the line, `R`
 renames it, `d` deletes it, `g` lists them again and `q` goes back to the chat. The
 list follows `Server.ChatChanged` like the chat does.
+
+![A PR's chat sessions listed](img/emacs-chat-sessions.png)
 
 The answer streams in as the agent writes it: the server announces each step
 (`Server.ChatChanged`) and the buffer reads the chat again, redrawing only what

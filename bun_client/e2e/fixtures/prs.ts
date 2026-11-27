@@ -74,6 +74,9 @@ export interface PRFixture {
     // it serves for it (demo.ts); a stock answer and DIAGRAM_SOURCE otherwise.
     chatReply?: string;
     diagram?: string;
+    // The PR's files at its head, by path, for hunk expansion (GetHunkContext);
+    // read from repoPath when left out.
+    files?: Record<string, string>;
 }
 
 const created = (daysAgo: number) =>

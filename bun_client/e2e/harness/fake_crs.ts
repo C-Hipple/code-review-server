@@ -18,10 +18,11 @@ import {
     type PRFixture,
     type ReviewJSON,
 } from '../fixtures/prs';
-import { buildFixtures as buildDemoFixtures } from '../fixtures/demo';
+import { buildFixtures as buildDemoFixtures, orgContent } from '../fixtures/demo';
 
 // CRS_E2E_FIXTURES=demo serves the README screenshots' data (e2e/screenshots.ts).
-const fixtures = process.env.CRS_E2E_FIXTURES === 'demo' ? buildDemoFixtures : buildFixtures;
+const demo = process.env.CRS_E2E_FIXTURES === 'demo';
+const fixtures = demo ? buildDemoFixtures : buildFixtures;
 
 interface Request {
     method: string;
@@ -163,7 +164,7 @@ function freshState(): State {
         aiEnabled: true,
         reviewEaseEnabled: true,
         // The README screenshots show the diagram; the specs turn it on.
-        diagramEnabled: process.env.CRS_E2E_FIXTURES === 'demo',
+        diagramEnabled: demo,
         diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Set(),
         aiDone: new Set(),
@@ -305,9 +306,20 @@ function payload(pr: PRFixture) {
         reviews: pr.reviews,
         commits: [],
         feedback: state.feedback.get(key(pr.item.owner, pr.item.repo, pr.item.number)) ?? '',
-        annotations: [],
+        annotations: pluginAnnotations(pr),
         images: [],
     };
+}
+
+// Every plugin result's annotations, by plugin in name order, as the server's
+// collectPluginAnnotations gathers them.
+function pluginAnnotations(pr: PRFixture) {
+    return Object.keys(pr.plugins)
+        .sort()
+        .flatMap(plugin => {
+            const result = pr.plugins[plugin] as { annotations?: object[] };
+            return (result.annotations ?? []).map(a => ({ ...a, plugin, source: 'plugin' }));
+        });
 }
 
 // --- Review chat --------------------------------------------------------------
@@ -644,6 +656,7 @@ function startAIRun(pr: PRFixture, feature: string) {
 
 // Lines of a file in the fixture checkout, for GetHunkContext.
 function fileLines(pr: PRFixture, filename: string): string[] {
+    if (pr.files) return (pr.files[filename] ?? '').replace(/\n$/, '').split('\n');
     if (!pr.repoPath) return [];
     try {
         return readFileSync(join(pr.repoPath, filename), 'utf-8').replace(/\n$/, '').split('\n');
@@ -738,7 +751,8 @@ const REVIEW_STATE: Record<string, string> = {
 const handlers: Record<string, (args: any) => unknown> = {
     'RPCHandler.GetAllReviews': () => ({
         okay: true,
-        content: '',
+        // The org-mode list the Emacs client shows; the demo's only.
+        content: demo ? orgContent(state.prs) : '',
         // Counted like the server does, from the PR's GitHub comments: local
         // drafts don't count until they are submitted.
         items: state.prs.map(p => ({

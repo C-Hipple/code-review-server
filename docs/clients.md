@@ -438,3 +438,31 @@ Press the toolbar button or `Alt+Shift+R`:
 The panel follows the system's light or dark setting. It can call only a fixed list of read-and-run methods (`GetAllReviews`, `GetPR`, `SyncPR`, the plugin and AI feature RPCs, `Hello`), so it can't submit reviews, merge, comment or change the config.
 
 On a pull request's Files changed tab the content script lays the stored [file-ordering](ai_features.md#file-ordering) result over GitHub's own page, reordering the per-file diffs and the file tree to match it; files the report doesn't name stay where GitHub put them.
+
+## Other Known Clients
+
+The protocol is all a client needs, so clients live outside this repository too, and they are welcome to: a client written against [Protocol](protocol.md) keeps working as the server gains workflows, filters and AI features, and anything it wants to offer from its own side (a diff layout, an AI pass of its own) sits on top of the same JSON-RPC. These are the ones we know about. If you have built one, open an issue or a pull request against this page and it will be listed here.
+
+### crs-ai-client
+
+[crs-ai-client](https://github.com/C-Hipple/crs-ai-client) is a second web client, a SvelteKit app, built around one premise: you shouldn't have to read a pull request line by line to review it. Every PR opens with an AI briefing — a TL;DR, a risk level, a realistic review time, risk-ranked findings anchored to `file:line`, and a `needs-attention` / `skim` / `skip` verdict per changed file — with the diff underneath for when you want it.
+
+![The crs-ai-client review page: a flowchart of the changed logic, the server's plugin output and the diff in the centre column, risk-ranked findings anchored to file:line on the right, and the changed-file list with attention verdicts on the left](img/ai-client-review.png)
+
+Around that briefing it adds a few things a plain diff can't give you:
+
+- **Logic flow** — a mermaid flowchart of the control and data flow through the changed code. Hovering a step explains what it does and why it matters; under the flowchart, the code the step points at is shown in place, so reading the flow costs no trip into the diff. Clicking a step, or *Open in diff*, jumps to its line in the diff below.
+- **Code hotspots** — the regions of the diff that actually cost attention to read, ranked `critical` / `high` / `moderate` and tagged with the kind of attention they want (logic, state, concurrency, …). Separate from the findings: a hotspot need not be wrong, it is an answer to "if I have fifteen minutes, what do I read?".
+- **Server plugins** — the output of whatever the crs config runs, collapsed in the sidebar above the changed-file list, with a red dot on the header when one failed.
+- **Diff** — syntax-highlighted, with existing GitHub comment threads inline, and drafting of new inline comments and a top-level review note.
+
+It spawns `crs --server` itself and talks JSON-RPC to it over stdio, so nothing else needs to be running, and it reads your existing `~/.config/codereviewserver.toml` and `~/.crs` database. That also makes it a read-only client in practice: comments and review notes end up as the server's local drafts, and there is no `SubmitReview` path, so nothing it does can reach GitHub — *Sync*, which refetches a PR, is its only outbound call.
+
+Its briefings don't come from the server. They are generated client-side from a preference order over the credentials you have — the Gemini API with `GEMINI_API_KEY`, the Anthropic API with `ANTHROPIC_API_KEY`, else your local `claude` CLI, else nothing, in which case the panel says so and the server's own plugin output still renders — with the choice and its reason printed once at startup. Briefings are cached under `.cache/summaries/` keyed by a hash of the PR title, body and diff, so a new commit invalidates one and reopening a PR you have already generated is instant.
+
+```bash
+npm install
+npm run dev          # http://localhost:5180
+```
+
+`CRS_BIN`, `CRS_AI_MODEL`, `CRS_TIMEOUT_MS` and the per-provider timeouts are set through the environment; the README's configuration table has the full list. Worth knowing if you write your own client: its diff parser is the part that had to be got right, because comment positions are **diff positions, not line numbers** — GitHub counts from each file's first `@@` header, later headers each consume a position, the counter resets at every `diff --git`, and the server's rendered diff carries one extra space after each marker. `src/lib/diff.ts` handles both, and its unit test pins the behaviour against a real server payload.

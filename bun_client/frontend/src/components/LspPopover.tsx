@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import { shadows } from '../design';
 import type { LspHover, LspLocation } from '../lsp';
 import type { LspData } from '../hooks/useLsp';
-import { displayPath, groupLocationsByFile, splitLocationLine } from '../lsp_utils';
+import { displayPath, groupLocationsByFile, splitLocationLine, uriToPath } from '../lsp_utils';
 
 export function getHoverContent(hover: LspHover | null): string {
     if (!hover || !hover.contents) return '';
@@ -55,7 +55,7 @@ function LocationGroup({
                     marginBottom: '2px',
                     overflowWrap: 'anywhere',
                 }}
-                title={uri.replace(/^file:\/\//, '')}
+                title={uriToPath(uri)}
             >
                 {displayPath(uri, data.roots)}
             </div>
@@ -186,7 +186,12 @@ function LspSections({
     data: LspData;
     onRefClick?: (ref: LspLocation, e: React.MouseEvent) => void;
 }) {
-    const nothingYet = !data.hover && !data.definitions && !data.typeDefinitions && !data.refs;
+    const nothingYet =
+        !data.hover &&
+        !data.definitions &&
+        !data.typeDefinitions &&
+        !data.implementations &&
+        !data.refs;
     const stillLoading = Object.values(data.loading).some(Boolean);
     if (nothingYet) {
         return <div style={mutedStyle}>{stillLoading ? 'Loading…' : 'No information found.'}</div>;
@@ -204,6 +209,13 @@ function LspSections({
                 title="Type Definition"
                 locations={data.typeDefinitions}
                 loading={data.loading.typeDefinitions}
+                data={data}
+                onRefClick={onRefClick}
+            />
+            <LocationSection
+                title="Implementations"
+                locations={data.implementations}
+                loading={data.loading.implementations}
                 data={data}
                 onRefClick={onRefClick}
             />

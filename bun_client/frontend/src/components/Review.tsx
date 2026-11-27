@@ -276,7 +276,6 @@ export default function Review({
 
     // LSP Hook
     const lsp = useLsp({
-        mode: 'diff',
         repoPath: metadata?.repo_path || null,
         worktreePath: metadata?.worktree_path || '',
         repoName: repo,

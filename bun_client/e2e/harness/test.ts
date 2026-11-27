@@ -146,9 +146,11 @@ export interface PRUpdateFields {
 
 export interface LspMessage {
     jsonrpc: string;
-    id?: number;
+    id?: number | string;
     method?: string;
     params?: any;
+    result?: any;
+    error?: any;
 }
 
 export interface LspLogEntry {
@@ -185,6 +187,13 @@ export class LspLog {
 
     spawns(role: Role) {
         return this.entries(role).filter(e => e.event === 'spawn');
+    }
+
+    /** Answers the server got to requests it made, oldest first. */
+    responses(role: Role): LspMessage[] {
+        return this.entries(role)
+            .filter(e => e.event === 'recv' && e.msg && e.msg.method === undefined)
+            .map(e => e.msg!);
     }
 
     /** Messages with `method` received by the server, oldest first. */
@@ -265,7 +274,12 @@ export function modal(page: Page, title: string) {
  * wherever syntax highlighting happened to split it into spans. This is how
  * a reviewer asks for LSP info: the click position becomes the column.
  */
-export async function clickWord(container: Locator, word: string, nth = 0) {
+export async function clickWord(
+    container: Locator,
+    word: string,
+    nth = 0,
+    modifiers: ('Control' | 'Meta' | 'Alt' | 'Shift')[] = []
+) {
     await container.scrollIntoViewIfNeeded();
     const point = await container.evaluate(
         (el, { word, nth }) => {
@@ -297,5 +311,8 @@ export async function clickWord(container: Locator, word: string, nth = 0) {
         { word, nth }
     );
     if (!point) throw new Error(`"${word}" not found in ${container}`);
-    await container.page().mouse.click(point.x, point.y);
+    const { keyboard, mouse } = container.page();
+    for (const key of modifiers) await keyboard.down(key);
+    await mouse.click(point.x, point.y);
+    for (const key of modifiers) await keyboard.up(key);
 }

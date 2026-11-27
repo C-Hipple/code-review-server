@@ -29,7 +29,7 @@ interface AnnotationCardProps {
 }
 
 // The expanded form of a line's (or file's) plugin annotations, rendered
-// beneath the row it belongs to — the annotation counterpart of CommentThread.
+// beneath the row it belongs to.
 export default function AnnotationCard({
     annotations,
     showLines,

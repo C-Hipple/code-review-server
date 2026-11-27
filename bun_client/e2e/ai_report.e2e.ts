@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
-import { expect, modal, openReview, test } from './harness/test';
+import { expect, modal, openReview, test, trayThread } from './harness/test';
 
 // The fake backend enables comments-addressed and serves a canned report for
 // acme/widgets#42: bob's thread on src/greet.ts is unresolved, with alice's
@@ -77,12 +77,13 @@ test.describe('AI report', () => {
         ).toBeVisible();
         expect(await backend.calls('RunAIFeature')).toHaveLength(1);
 
-        // Jumping closes the report and reveals the thread in the diff.
+        // Jumping closes the report and opens the thread in the comment tray.
         await dialog.getByRole('button', { name: 'src/greet.ts:3' }).click();
         await expect(dialog).toHaveCount(0);
-        await expect(
-            page.locator('.hover-thread').filter({ hasText: 'Should punctuation have a default?' })
-        ).toBeVisible();
+        await expect(trayThread(page, 'Should punctuation have a default?')).toHaveAttribute(
+            'aria-current',
+            'true'
+        );
     });
 
     test('counts a run the server started on its own', async ({ page, backend }) => {

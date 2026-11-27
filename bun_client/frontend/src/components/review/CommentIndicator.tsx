@@ -1,17 +1,25 @@
 import { useState } from 'react';
 import { colors, shadows } from '../../design';
+import { displayAuthor } from '../../comment_tray_utils';
 import type { Comment } from './types';
 
 interface CommentIndicatorProps {
     thread: Comment[];
-    visible: boolean;
-    onToggle: () => void;
+    // The comment tray is open on one of this line's threads.
+    active: boolean;
+    // Preview the comments on hover; off while the tray is open beside the diff.
+    preview: boolean;
+    onOpen: () => void;
 }
 
-// Small badge shown by a commented line/file when its thread is hidden.
-// Hovering previews the thread read-only; clicking toggles the full
-// interactive thread open/closed.
-export default function CommentIndicator({ thread, visible, onToggle }: CommentIndicatorProps) {
+// Small badge by a commented line or file. Clicking it opens the comment tray
+// on the line's thread (again: closes it); hovering previews the comments.
+export default function CommentIndicator({
+    thread,
+    active,
+    preview,
+    onOpen,
+}: CommentIndicatorProps) {
     const [hovered, setHovered] = useState(false);
     return (
         <span
@@ -19,7 +27,7 @@ export default function CommentIndicator({ thread, visible, onToggle }: CommentI
             onMouseLeave={() => setHovered(false)}
             onClick={e => {
                 e.stopPropagation();
-                onToggle();
+                onOpen();
             }}
             style={{
                 position: 'relative',
@@ -31,18 +39,18 @@ export default function CommentIndicator({ thread, visible, onToggle }: CommentI
                 height: '18px',
                 padding: '0 5px',
                 borderRadius: '9px',
-                background: visible ? colors.accent : colors.bgInfoDim,
-                color: visible ? '#fff' : colors.accent,
+                background: active ? colors.accent : colors.bgInfoDim,
+                color: active ? '#fff' : colors.accent,
                 fontSize: '10px',
                 fontWeight: 600,
                 cursor: 'pointer',
                 userSelect: 'none',
             }}
-            title={visible ? 'Hide comment thread' : 'Click to show comment thread'}
+            title={active ? 'Close the comment tray' : 'Show comments in the side tray'}
         >
             <span>💬</span>
             {thread.length > 1 && <span>{thread.length}</span>}
-            {hovered && !visible && (
+            {hovered && preview && !active && (
                 <div
                     onClick={e => e.stopPropagation()}
                     style={{
@@ -52,8 +60,8 @@ export default function CommentIndicator({ thread, visible, onToggle }: CommentI
                         marginBottom: '6px',
                         background: 'var(--bg-secondary)',
                         border: '1px solid var(--border)',
-                        borderRadius: '6px',
-                        padding: '8px',
+                        borderRadius: '8px',
+                        padding: '8px 10px',
                         width: '320px',
                         maxWidth: '80vw',
                         maxHeight: '260px',
@@ -62,6 +70,7 @@ export default function CommentIndicator({ thread, visible, onToggle }: CommentI
                         zIndex: 100,
                         fontSize: '12px',
                         fontWeight: 400,
+                        fontFamily: 'var(--font-sans)',
                         color: 'var(--text-primary)',
                         cursor: 'default',
                         textAlign: 'left',
@@ -69,19 +78,27 @@ export default function CommentIndicator({ thread, visible, onToggle }: CommentI
                     }}
                 >
                     {thread.map(c => (
-                        <div key={c.id} style={{ marginBottom: '6px' }}>
+                        <div key={c.id} style={{ marginBottom: '8px' }}>
+                            <div style={{ fontWeight: 600, marginBottom: '2px' }}>
+                                {displayAuthor(c.author)}
+                            </div>
                             <div
                                 style={{
+                                    whiteSpace: 'pre-wrap',
                                     color: 'var(--text-secondary)',
-                                    fontSize: '11px',
-                                    marginBottom: '2px',
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 4,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
                                 }}
                             >
-                                {c.author}
+                                {c.body}
                             </div>
-                            <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
                         </div>
                     ))}
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                        Click to open in the comment tray
+                    </div>
                 </div>
             )}
         </span>

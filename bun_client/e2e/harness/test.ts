@@ -252,6 +252,16 @@ export function diffRow(page: Page, text: string) {
     return page.locator('.hover-line').filter({ hasText: text });
 }
 
+/** The comment tray down the review's right edge. */
+export function tray(page: Page) {
+    return page.getByRole('complementary', { name: 'Comments' });
+}
+
+/** A thread's card in the comment tray, by text it holds. */
+export function trayThread(page: Page, text: string) {
+    return tray(page).locator('article').filter({ hasText: text });
+}
+
 /**
  * The design system's Modal by its title. It renders no dialog role, so this
  * walks up from the title heading: <modal><header><h2>.

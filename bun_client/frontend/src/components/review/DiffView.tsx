@@ -12,7 +12,6 @@ import LspPopover from '../LspPopover';
 import AnnotationCard from './AnnotationCard';
 import AnnotationIndicator from './AnnotationIndicator';
 import CommentIndicator from './CommentIndicator';
-import CommentThread from './CommentThread';
 import InlineCommentForm from './InlineCommentForm';
 import {
     type Comment,
@@ -31,9 +30,10 @@ export interface DiffViewProps {
     comments: Comment[];
     outdatedComments: Comment[];
     collapsedFiles: Set<string>;
-    // Root comment ids whose full thread should render inline; threads not in
-    // this set are collapsed behind a hover/click indicator.
-    visibleThreadIds: Set<string>;
+    // Threads live in the comment tray, not the diff. The diff marks the row
+    // the tray's selected thread is on, and a row's badge opens the tray.
+    trayOpen: boolean;
+    selectedThreadId: string | null;
     // Plugin annotations bucketed by the row they anchor to.
     annotations: AnnotationIndex;
     // Annotation bucket keys whose card should render inline; buckets not in
@@ -41,16 +41,14 @@ export interface DiffViewProps {
     visibleAnnotationKeys: Set<string>;
     activeLineIndex: number | null;
     activeLspIndex: number | null;
-    replyToId: number | null;
-    editingCommentId: number | null;
     commentBody: string;
-    editingCommentBody: string;
     isAddingComment: boolean;
     isMobile: boolean;
     wrapLines: boolean;
     diffTheme: DiffTheme;
     lspData: LspData | null;
-    onToggleThreadsVisible: (rootIds: string[]) => void;
+    // Open the comment tray on a row's threads (the badge's click).
+    onOpenThreads: (rootIds: string[]) => void;
     onToggleAnnotations: (key: string) => void;
     // Adopt a plugin annotation as a local comment on the row it is anchored to.
     onAnnotationToComment: (annotation: PRAnnotation, file: string, pos: number) => void;
@@ -62,8 +60,6 @@ export interface DiffViewProps {
         originalLineIndex: number,
         col: number
     ) => void;
-    onThreadClick: (thread: Comment[], file: string, pos: number, lineIdx: number) => void;
-    onDeleteComment: (id: number) => void;
     onToggleFileCollapse: (file: string) => void;
     onShowOutdated: (file: string) => void;
     onDockDiffFile: (file: string) => void;
@@ -77,39 +73,34 @@ export interface DiffViewProps {
     onCloseLsp: () => void;
     onCancelInline: () => void;
     onChangeCommentBody: (body: string) => void;
-    onChangeEditingCommentBody: (body: string) => void;
     onSubmitInline: () => void;
 }
 
 // The main diff renderer: file headers, hunk rows, syntax-highlighted code
-// lines, inline comment threads, and the inline comment editor.
+// lines, comment badges, plugin annotations, and the inline comment editor.
 export default function DiffView({
     parsedLines,
     filterFile,
     comments,
     outdatedComments,
     collapsedFiles,
-    visibleThreadIds,
+    trayOpen,
+    selectedThreadId,
     annotations,
     visibleAnnotationKeys,
     activeLineIndex,
     activeLspIndex,
-    replyToId,
-    editingCommentId,
     commentBody,
-    editingCommentBody,
     isAddingComment,
     isMobile,
     wrapLines,
     diffTheme,
     lspData,
-    onToggleThreadsVisible,
+    onOpenThreads,
     onToggleAnnotations,
     onAnnotationToComment,
     onCommentClick,
     onCodeClick,
-    onThreadClick,
-    onDeleteComment,
     onToggleFileCollapse,
     onShowOutdated,
     onDockDiffFile,
@@ -120,7 +111,6 @@ export default function DiffView({
     onCloseLsp,
     onCancelInline,
     onChangeCommentBody,
-    onChangeEditingCommentBody,
     onSubmitInline,
 }: DiffViewProps) {
     const lines = useMemo(() => sortParsedLinesTestsLast(parsedLines), [parsedLines]);
@@ -202,6 +192,24 @@ export default function DiffView({
         return result;
     }, [lines, diffTheme]);
 
+    // Threads by the row they're on, each a root comment plus its whole reply
+    // subtree. Grouping transitively matters: replying to a thread targets its
+    // *last* comment, so a reply to a reply would otherwise be left out. A
+    // comment with no position is on its file, whose header row is position 0.
+    const threadsByRow = useMemo(() => {
+        const buckets = new Map<string, Comment[]>();
+        for (const c of comments) {
+            if (!c.path) continue;
+            const key = `${c.path}\u0000${c.position === '' ? '0' : c.position}`;
+            const bucket = buckets.get(key);
+            if (bucket) bucket.push(c);
+            else buckets.set(key, [c]);
+        }
+        const out = new Map<string, Comment[][]>();
+        for (const [key, list] of buckets) out.set(key, groupIntoThreads(list));
+        return out;
+    }, [comments]);
+
     if (lines.length === 0) return null;
 
     // Pre-compute per-file add/del counts for display in file headers.
@@ -218,49 +226,30 @@ export default function DiffView({
         }
     }
 
-    // Comments attached to a specific parsed line (file header or code line).
-    const commentsForLine = (item: ParsedLine): Comment[] =>
-        item.file
-            ? comments.filter(
-                  c =>
-                      c.path === item.file &&
-                      (c.position === item.pos?.toString() || (c.position === '' && item.pos === 0))
-              )
+    const threadsOnLine = (item: ParsedLine): Comment[][] =>
+        item.file && item.pos !== null
+            ? (threadsByRow.get(`${item.file}\u0000${item.pos}`) ?? [])
             : [];
 
-    // Threads on a line, each one a root comment plus its whole reply subtree.
-    // Grouping transitively matters: replying to a thread targets its *last*
-    // comment, so a reply to a reply would otherwise never be rendered.
-    const threadsOnLine = (item: ParsedLine): Comment[][] =>
-        groupIntoThreads(commentsForLine(item));
+    // Comments attached to a specific parsed line (file header or code line).
+    const commentsForLine = (item: ParsedLine): Comment[] => threadsOnLine(item).flat();
 
-    const threadsForLine = (item: ParsedLine, idx: number, stickyOnMobile: boolean) => {
-        return threadsOnLine(item)
-            .filter(thread => visibleThreadIds.has(thread[0].id))
-            .map(thread => {
-                const isReplyingToThread =
-                    (replyToId !== null && thread.some(c => parseInt(c.id, 10) === replyToId)) ||
-                    (editingCommentId !== null &&
-                        thread.some(c => parseInt(c.id, 10) === editingCommentId));
-                return (
-                    <CommentThread
-                        key={thread[0].id}
-                        thread={thread}
-                        isActive={isReplyingToThread}
-                        stickyOnMobile={stickyOnMobile}
-                        onClick={() => {
-                            if (item.file && item.pos !== null) {
-                                onThreadClick(thread, item.file, item.pos, idx);
-                            }
-                        }}
-                        onDeleteComment={onDeleteComment}
-                    />
-                );
-            });
+    // What a row carries for the tray: its threads' root ids, which the tray
+    // finds the row by when it scrolls the diff to a thread, and whether the
+    // tray's selected thread is one of them.
+    const threadAnchors = (item: ParsedLine) => {
+        const ids = threadsOnLine(item).map(t => t[0].id);
+        return {
+            anchors: ids.length > 0 ? ids.join(' ') : undefined,
+            selected: trayOpen && selectedThreadId !== null && ids.includes(selectedThreadId),
+        };
     };
 
-    // Indicator badge shown next to a commented line/file; toggles all of that
-    // line's threads open/closed together and previews them all on hover.
+    // The selected thread's row is tinted with an inset shadow, which paints
+    // over the row's own background (a diff tint, the header's gradient)
+    // without replacing it.
+    const SELECTED_ROW_TINT = 'inset 0 0 0 100vmax var(--accent-dim)';
+
     // A line number copies the GitHub link to its line when clicked, as on
     // GitHub: the old number links the base side (L), the new one the head (R).
     const lineNumberLink = (item: ParsedLine, side: DiffSide) => {
@@ -275,17 +264,20 @@ export default function DiffView({
         };
     };
 
+    // Badge by a commented line/file: opens the comment tray on the line's
+    // threads and previews them all on hover.
     const commentIndicatorForLine = (item: ParsedLine) => {
         const threads = threadsOnLine(item);
         if (threads.length === 0) return null;
         const rootIds = threads.map(t => t[0].id);
-        const allVisible = rootIds.every(id => visibleThreadIds.has(id));
+        const active = trayOpen && selectedThreadId !== null && rootIds.includes(selectedThreadId);
         return (
             <span onClick={e => e.stopPropagation()}>
                 <CommentIndicator
                     thread={threads.flat()}
-                    visible={allVisible}
-                    onToggle={() => onToggleThreadsVisible(rootIds)}
+                    active={active}
+                    preview={!trayOpen}
+                    onOpen={() => onOpenThreads(rootIds)}
                 />
             </span>
         );
@@ -421,6 +413,7 @@ export default function DiffView({
                 ? outdatedComments.filter(c => c.path === item.file)
                 : [];
             const hasOutdated = fileOutdatedComments.length > 0;
+            const headerThreads = threadAnchors(item);
 
             return (
                 // Fragment, not a wrapper div (same reason as hunk rows below):
@@ -430,6 +423,7 @@ export default function DiffView({
                 <Fragment key={idx}>
                     <div
                         id={item.file ? `file-${slugify(item.file)}` : undefined}
+                        data-thread-anchors={headerThreads.anchors}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -445,9 +439,11 @@ export default function DiffView({
                             borderTop: '2px solid var(--border)',
                             borderBottom: '1px solid var(--border)',
                             cursor: 'pointer',
-                            borderLeft: isInlineActive
-                                ? '3px solid var(--accent)'
-                                : '3px solid transparent',
+                            borderLeft:
+                                isInlineActive || headerThreads.selected
+                                    ? '3px solid var(--accent)'
+                                    : '3px solid transparent',
+                            boxShadow: headerThreads.selected ? SELECTED_ROW_TINT : undefined,
                             // `position` is left to .diff-file-row (sticky on
                             // desktop, static on mobile); an inline value here
                             // would override the class.
@@ -612,18 +608,13 @@ export default function DiffView({
                         )}
                     </div>
                     {annotationCardForLine(item, false)}
-                    {threadsForLine(item, idx, false)}
                     {isInlineActive && (
                         <InlineCommentForm
                             file={item.file}
                             pos={item.pos}
-                            editingCommentId={editingCommentId}
-                            replyToId={replyToId}
                             commentBody={commentBody}
-                            editingCommentBody={editingCommentBody}
                             isAddingComment={isAddingComment}
                             onChangeCommentBody={onChangeCommentBody}
-                            onChangeEditingCommentBody={onChangeEditingCommentBody}
                             onCancel={onCancelInline}
                             onSubmit={onSubmitInline}
                         >
@@ -679,6 +670,8 @@ export default function DiffView({
 
         const isInlineActive = activeLineIndex === idx;
         const isLspActive = activeLspIndex === idx;
+        const rowThreads = isCodeLine && !isHunkHeader ? threadAnchors(item) : null;
+        const isThreadSelected = rowThreads?.selected ?? false;
 
         // Determine what to render for the line content
         let lineContent: React.ReactNode;
@@ -705,13 +698,16 @@ export default function DiffView({
                         (item.clickable ? 'hover-line' : '') +
                         (isHunkHeader ? ' diff-hunk-row' : '')
                     }
+                    data-thread-anchors={rowThreads?.anchors}
                     style={{
                         ...containerStyle,
                         borderLeft:
-                            isInlineActive || isLspActive
+                            isInlineActive || isLspActive || isThreadSelected
                                 ? '3px solid var(--accent)'
                                 : '3px solid transparent',
-                        marginLeft: isInlineActive || isLspActive ? '-3px' : '0',
+                        marginLeft:
+                            isInlineActive || isLspActive || isThreadSelected ? '-3px' : '0',
+                        boxShadow: isThreadSelected ? SELECTED_ROW_TINT : undefined,
                     }}
                     title={undefined}
                 >
@@ -865,19 +861,14 @@ export default function DiffView({
                     )}
                 </div>
                 {annotationCardForLine(item, isMobile)}
-                {threadsForLine(item, idx, isMobile)}
                 {isInlineActive && (
                     <InlineCommentForm
                         file={item.file}
                         pos={item.pos}
-                        editingCommentId={editingCommentId}
-                        replyToId={replyToId}
                         commentBody={commentBody}
-                        editingCommentBody={editingCommentBody}
                         isAddingComment={isAddingComment}
                         stickyOnMobile={isMobile}
                         onChangeCommentBody={onChangeCommentBody}
-                        onChangeEditingCommentBody={onChangeEditingCommentBody}
                         onCancel={onCancelInline}
                         onSubmit={onSubmitInline}
                     />
@@ -907,9 +898,9 @@ export default function DiffView({
     // On phones, let the whole diff slide horizontally so long lines can be
     // read in full. `max-content` makes every row as wide as the longest
     // line (so add/del backgrounds extend across the full scroll width),
-    // while `minWidth: 100%` keeps short diffs filling the viewport. Inline
-    // comments are pinned back to the left edge (see their sticky styles) so
-    // they stay readable regardless of the horizontal scroll position.
+    // while `minWidth: 100%` keeps short diffs filling the viewport. The
+    // comment editor and annotation cards are pinned back to the left edge
+    // (see their sticky styles) so they stay readable however far it scrolls.
     if (isMobile) {
         return (
             <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>

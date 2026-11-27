@@ -1,4 +1,4 @@
-import { diffRow, expect, modal, openReview, PR42, test } from './harness/test';
+import { diffRow, expect, modal, openReview, PR42, test, tray, trayThread } from './harness/test';
 
 test.describe('review view', () => {
     test('renders the PR header, discussion and diff', async ({ page, backend }) => {
@@ -28,18 +28,79 @@ test.describe('review view', () => {
         expect(getPR.params).toEqual({ Owner: 'acme', Repo: 'widgets', Number: 42 });
     });
 
-    test('shows an existing comment thread on its diff line', async ({ page }) => {
+    test('opens a line’s thread in the comment tray beside the diff', async ({ page }) => {
         await openReview(page);
+        await expect(tray(page)).toHaveCount(0);
 
         const row = diffRow(page, 'punctuation: string;').first();
-        await row.getByTitle('Click to show comment thread').click();
+        await row.getByTitle('Show comments in the side tray').click();
 
-        const thread = page.locator('.hover-thread').filter({ hasText: 'bob commented' });
-        await expect(thread).toContainText('Should punctuation have a default?');
+        // The whole conversation, on a card that names the line it is on.
+        const thread = trayThread(page, 'Should punctuation have a default?');
         await expect(thread).toContainText('Callers always pass one today, so no.');
+        await expect(thread).toContainText('punctuation: string;');
+        await expect(thread).toHaveAttribute('aria-current', 'true');
+        await expect(tray(page)).toContainText('1 thread · 1 open');
 
-        await row.getByTitle('Hide comment thread').click();
-        await expect(thread).toHaveCount(0);
+        // The tray sits beside the diff rather than over it.
+        const trayBox = (await tray(page).boundingBox())!;
+        const toolbarBox = (await page.locator('.toolbar').boundingBox())!;
+        expect(toolbarBox.x + toolbarBox.width).toBeLessThanOrEqual(trayBox.x + 1);
+
+        // The badge on the row says the tray is showing its thread, and
+        // closes it again.
+        await row.getByTitle('Close the comment tray').click();
+        await expect(tray(page)).toHaveCount(0);
+    });
+
+    test('steps through every thread from the tray', async ({ page }) => {
+        await openReview(page);
+
+        // A second thread, after bob's in diff order (greet.ts, then main.ts).
+        await page.getByTitle('Add comment to src/main.ts:4').click();
+        await page.getByPlaceholder('Write a comment...').fill('Name it greeting?');
+        await page.getByRole('button', { name: 'Add Comment' }).click();
+
+        const mine = trayThread(page, 'Name it greeting?');
+        const bobs = trayThread(page, 'Should punctuation have a default?');
+        await expect(mine).toHaveAttribute('aria-current', 'true');
+        await expect(mine).toContainText('Pending');
+        await expect(tray(page)).toContainText('2/2');
+
+        // k steps back, as in a mail reader, and the diff marks its row.
+        await page.locator('body').press('k');
+        await expect(bobs).toHaveAttribute('aria-current', 'true');
+        await expect(tray(page)).toContainText('1/2');
+        await expect(
+            diffRow(page, 'punctuation: string;').first().getByTitle('Close the comment tray')
+        ).toBeVisible();
+
+        // The arrows do the same, wrapping round at either end.
+        await tray(page).getByRole('button', { name: 'Next thread' }).click();
+        await expect(mine).toHaveAttribute('aria-current', 'true');
+        await tray(page).getByRole('button', { name: 'Next thread' }).click();
+        await expect(bobs).toHaveAttribute('aria-current', 'true');
+
+        // Filters narrow the list; nothing on this PR is resolved yet.
+        await tray(page)
+            .getByRole('tab', { name: /Resolved/ })
+            .click();
+        await expect(tray(page)).toContainText('No resolved threads.');
+        await tray(page).getByRole('button', { name: 'Show all' }).click();
+        await expect(tray(page).locator('article')).toHaveCount(2);
+    });
+
+    test('opens and closes the tray from the toolbar', async ({ page }) => {
+        await openReview(page);
+
+        const toggle = page.getByRole('button', { name: /Comments \(1 open\)/ });
+        await toggle.click();
+        await expect(trayThread(page, 'Should punctuation have a default?')).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+        await tray(page).getByRole('button', { name: 'Close comments' }).click();
+        await expect(tray(page)).toHaveCount(0);
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
     });
 
     test('adds, edits and deletes a local inline comment', async ({ page, backend }) => {
@@ -62,21 +123,23 @@ test.describe('review view', () => {
             Body: 'Inline *message* here?',
         });
 
-        // New comments reveal their thread straight away, rendered as markdown.
-        const thread = page.locator('.hover-thread').filter({ hasText: 'local commented' });
+        // A new comment opens the tray on its thread, rendered as markdown.
+        const thread = trayThread(page, 'Inline message here?');
         await expect(thread.locator('em')).toHaveText('message');
+        await expect(thread).toHaveAttribute('aria-current', 'true');
+        await expect(thread).toContainText('You');
 
-        // Clicking a local thread edits it.
-        await thread.click();
-        await expect(page.getByText(/Editing local comment #9001/)).toBeVisible();
-        await page.getByPlaceholder('Edit your comment...').fill('Inline it.');
-        await page.getByRole('button', { name: 'Save Edit' }).click();
-        await expect(thread).toContainText('Inline it.');
+        // Your pending comment is edited in the tray.
+        await thread.getByRole('button', { name: 'Edit' }).click();
+        await thread.getByRole('textbox', { name: 'Edit your comment' }).fill('Inline it.');
+        await thread.getByRole('button', { name: 'Save' }).click();
+        const edited = trayThread(page, 'Inline it.');
+        await expect(edited).toBeVisible();
         const [edit] = await backend.calls('EditComment');
         expect(edit.params).toMatchObject({ ID: 9001, Body: 'Inline it.' });
 
-        await thread.getByTitle('Delete local comment').click();
-        await expect(thread).toHaveCount(0);
+        await edited.getByTitle('Delete local comment').click();
+        await expect(edited).toHaveCount(0);
         const [del] = await backend.calls('DeleteComment');
         expect(del.params).toMatchObject({ ID: 9001 });
     });
@@ -84,16 +147,16 @@ test.describe('review view', () => {
     test('replies to a GitHub comment thread', async ({ page, backend }) => {
         await openReview(page);
 
-        const row = diffRow(page, 'punctuation: string;').first();
-        await row.getByTitle('Click to show comment thread').click();
-        await page.locator('.hover-thread').filter({ hasText: 'bob commented' }).click();
+        await page.getByRole('button', { name: /Comments \(1 open\)/ }).click();
+        const thread = trayThread(page, 'Should punctuation have a default?');
+        await thread.getByRole('button', { name: 'Reply…' }).click();
+        await thread.getByRole('textbox', { name: 'Write a reply' }).fill('Fair enough.');
+        await thread.getByRole('button', { name: 'Reply', exact: true }).click();
 
+        // The reply joins the conversation, which stays one thread.
+        await expect(thread).toContainText('Fair enough.');
+        await expect(tray(page).locator('article')).toHaveCount(1);
         // Replies target the latest comment in the conversation.
-        await expect(page.getByText('Replying to comment #5002')).toBeVisible();
-        await page.getByPlaceholder('Write a reply...').fill('Fair enough.');
-        await page.getByRole('button', { name: 'Reply', exact: true }).click();
-
-        await expect(page.locator('.hover-thread')).toContainText('Fair enough.');
         const [reply] = await backend.calls('AddComment');
         expect(reply.params).toMatchObject({
             Filename: 'src/greet.ts',
@@ -145,7 +208,7 @@ test.describe('review view', () => {
         await page.getByTitle('Add comment to src/main.ts:4').click();
         await page.getByPlaceholder('Write a comment...').fill('Nice helper.');
         await page.getByRole('button', { name: 'Add Comment' }).click();
-        await expect(page.locator('.hover-thread')).toContainText('Nice helper.');
+        await expect(trayThread(page, 'Nice helper.')).toBeVisible();
 
         await page.getByRole('button', { name: 'Submit Review', exact: true }).click();
         const dialog = modal(page, 'Submit Review');
@@ -183,7 +246,8 @@ test.describe('review view', () => {
         // the comment now belongs to the reviewer rather than being local.
         await page.getByRole('button', { name: /Discussion/ }).click();
         await expect(page.getByText('LGTM')).toBeVisible();
-        await expect(page.locator('.hover-thread')).toContainText('e2e-reviewer commented');
+        await expect(trayThread(page, 'Nice helper.')).toContainText('e2e-reviewer');
+        await expect(trayThread(page, 'Nice helper.')).not.toContainText('Pending');
         await expect(page.getByTitle('Delete local comment')).toHaveCount(0);
     });
 
@@ -563,10 +627,10 @@ test.describe('filtered diffs', () => {
         expect(add.params).toMatchObject({ Filename: 'src/main.ts', Position: 4 });
 
         // It shows on the filtered diff, on the line it was left on...
-        const thread = page.locator('.hover-thread').filter({ hasText: 'Name it greeting?' });
+        const thread = trayThread(page, 'Name it greeting?');
         await expect(thread).toBeVisible();
         await expect(
-            diffRow(page, 'const message = formatGreeting(').getByTitle('Hide comment thread')
+            diffRow(page, 'const message = formatGreeting(').getByTitle('Close the comment tray')
         ).toBeVisible();
 
         // ...and on the full diff, on the same line.
@@ -574,7 +638,7 @@ test.describe('filtered diffs', () => {
         await expect(page.locator('.diff-file-row')).toHaveCount(3);
         await expect(thread).toBeVisible();
         await expect(
-            diffRow(page, 'const message = formatGreeting(').getByTitle('Hide comment thread')
+            diffRow(page, 'const message = formatGreeting(').getByTitle('Close the comment tray')
         ).toBeVisible();
     });
 
@@ -596,9 +660,9 @@ test.describe('filtered diffs', () => {
         // Bob's thread is on `punctuation`, row 3 of greet.ts in the PR's diff
         // and row 2 here.
         const row = diffRow(page, 'punctuation: string;').first();
-        await row.getByTitle('Click to show comment thread').click();
-        const thread = page.locator('.hover-thread').filter({ hasText: 'bob commented' });
-        await expect(thread).toContainText('Should punctuation have a default?');
+        await row.getByTitle('Show comments in the side tray').click();
+        const thread = trayThread(page, 'Should punctuation have a default?');
+        await expect(thread).toHaveAttribute('aria-current', 'true');
     });
 
     test('keeps the full diff when the filter has nothing to start from', async ({ page }) => {

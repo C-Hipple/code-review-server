@@ -32,11 +32,25 @@ import { usePluginOutputs } from '../hooks/usePluginOutputs';
 import { usePRUpdates } from '../hooks/usePRUpdates';
 import { changesPR, isChangeFor, prUpdateMessage, type PRUpdate } from '../server_events';
 import { annotationCommentBody, collectPRAnnotations, indexAnnotations } from '../annotation_utils';
-import { parseDiff, planHunkExpansion, type ParsedLine } from '../diff_utils';
+import {
+    parseDiff,
+    planHunkExpansion,
+    sortParsedLinesTestsLast,
+    type ParsedLine,
+} from '../diff_utils';
 import { copyText, githubDiffLink, lineLinkTarget, type DiffSide } from '../github_links';
 import { buildPendingPreviews, reviewSubmittedMessage } from '../review_preview_utils';
 import { clearReviewDraft, loadReviewDraft, saveReviewDraft } from '../review_draft_utils';
 import { groupIntoThreads, replyTargetFor } from '../discussion_utils';
+import {
+    buildTrayGroups,
+    clampTrayWidth,
+    countTrayThreads,
+    fileOrderOf,
+    loadTrayWidth,
+    saveTrayWidth,
+    type TrayThread,
+} from '../comment_tray_utils';
 import {
     dockViewer as dockViewerState,
     undockTab as undockTabState,
@@ -51,6 +65,7 @@ import AIReportModal from './AIReportModal';
 import ChatWidget from './ChatWidget';
 import CodeViewerModal from './CodeViewerModal';
 import AddCommentModal from './review/AddCommentModal';
+import CommentTray from './review/CommentTray';
 import DiffView from './review/DiffView';
 import FileIndex from './review/FileIndex';
 import FilteredDiffBanner from './review/FilteredDiffBanner';
@@ -169,20 +184,14 @@ export default function Review({
     const prRef = `${owner}/${repo}#${number}`;
     const prKey = useRef('');
     const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
-    // Comment threads are hidden by default; a thread's root comment id must be
-    // in this set for its full interactive thread to render inline.
-    const [visibleThreadIds, setVisibleThreadIds] = useState<Set<string>>(new Set());
-    const toggleThreadsVisible = (rootIds: string[]) => {
-        setVisibleThreadIds(prev => {
-            const next = new Set(prev);
-            const allVisible = rootIds.every(id => next.has(id));
-            rootIds.forEach(id => {
-                if (allVisible) next.delete(id);
-                else next.add(id);
-            });
-            return next;
-        });
-    };
+    // The comment tray: every conversation on the PR in a panel beside the
+    // diff (CommentTray). The diff shows a badge on each commented line and
+    // marks the row of the thread selected here.
+    const [trayOpen, setTrayOpen] = useState(false);
+    const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+    const [trayWidth, setTrayWidth] = useState(() =>
+        clampTrayWidth(loadTrayWidth(), window.innerWidth)
+    );
     // Plugin annotations are hidden by default too; a bucket's key (see
     // annotation_utils) must be in this set for its card to render inline.
     const [visibleAnnotationKeys, setVisibleAnnotationKeys] = useState<Set<string>>(new Set());
@@ -251,13 +260,11 @@ export default function Review({
     const isSubmittingReview = submittingPRs.has(prRef);
     const [isAddingComment, setIsAddingComment] = useState(false);
 
-    // Comment form data
+    // Comment form data (a new comment: inline under a line, or the general
+    // comment dialog). Replies and edits are written in the comment tray.
     const [filename, setFilename] = useState('');
     const [position, setPosition] = useState('');
     const [commentBody, setCommentBody] = useState('');
-    const [replyToId, setReplyToId] = useState<number | null>(null);
-    const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
-    const [editingCommentBody, setEditingCommentBody] = useState('');
 
     // Review feedback (PR-level comment body, persisted server-side)
     const [feedbackBody, setFeedbackBody] = useState('');
@@ -307,11 +314,32 @@ export default function Review({
         deferredUpdates.current = null;
         setOpenAIFeature(null);
         setAIOutputs({});
+        // The tray stays open from one PR to the next; its selection doesn't.
+        setSelectedThreadId(null);
         loadAIFeatures();
         return () => {
             prKey.current = '';
         };
     }, [owner, repo, number]);
+
+    // Make room for the comment tray beside the diff while it's open on a
+    // wide screen (index.css reads --comment-tray-space); on a phone it
+    // covers the page instead. A narrower window narrows the tray with it.
+    useEffect(() => {
+        const root = document.documentElement;
+        root.style.setProperty(
+            '--comment-tray-space',
+            trayOpen && !isMobile ? `${trayWidth}px` : '0px'
+        );
+    }, [trayOpen, isMobile, trayWidth]);
+    useEffect(() => {
+        const onResize = () => setTrayWidth(w => clampTrayWidth(w, window.innerWidth));
+        window.addEventListener('resize', onResize);
+        return () => {
+            window.removeEventListener('resize', onResize);
+            document.documentElement.style.removeProperty('--comment-tray-space');
+        };
+    }, []);
 
     // Filtered diffs are optional too: an older server has no such RPC, and
     // the toolbar then offers no choice of diff.
@@ -540,7 +568,7 @@ export default function Review({
 
     // A comment being written is anchored to a row of the diff on screen, so a
     // live refresh that brings in a new diff waits until it is done.
-    const composing = activeLineIndex !== null || editingCommentId !== null;
+    const composing = activeLineIndex !== null;
     const composingRef = useRef(composing);
     composingRef.current = composing;
     // The updates a live refresh held back for a comment being written.
@@ -696,57 +724,83 @@ export default function Review({
         setFilename('');
         setPosition('');
         setCommentBody('');
-        setReplyToId(null);
-        setEditingCommentId(null);
-        setEditingCommentBody('');
         setShowCommentModal(false);
         setActiveLineIndex(null);
         // Do not reset LSP index here as users might want to keep references open while adding a comment
+    };
+
+    // Show the thread a comment just landed in, in the tray. Threads are keyed
+    // by their root, so a reply selects the thread it joined — not the comment
+    // it answered, which is the root only for the first reply in a
+    // conversation. On a phone the tray would cover the diff just commented
+    // on, so it is only selected there, for when the tray is next opened.
+    const selectNewThread = (before: Comment[], after: Comment[]) => {
+        const prevIds = new Set(before.map(c => c.id));
+        const added = after.find(c => !prevIds.has(c.id));
+        if (!added) return;
+        let rootId = added.id;
+        for (const thread of groupIntoThreads(after)) {
+            if (thread.some(c => c.id === added.id)) rootId = thread[0].id;
+        }
+        setSelectedThreadId(rootId);
+        if (!isMobile) setTrayOpen(true);
+    };
+
+    // Post a comment, then take in the PR the server sends back. Throws when
+    // the server refuses it.
+    const postComment = async (fields: {
+        Filename: string;
+        Position: number;
+        Body: string;
+        ReplyToID?: number;
+    }) => {
+        const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [
+            { Owner: owner, Repo: repo, Number: number, ...fields },
+        ]);
+        setContent(res.content || '');
+        applyFullDiff(res.diff || '');
+        selectNewThread(comments, res.comments || []);
+        setComments(res.comments || []);
+        setOutdatedComments(res.outdated_comments || []);
+        setReviews(res.reviews || []);
     };
 
     const handleAddComment = async () => {
         if (!filename || !commentBody) return;
         setIsAddingComment(true);
         try {
-            const params: any = {
-                Owner: owner,
-                Repo: repo,
-                Number: number,
+            await postComment({
                 Filename: filename,
                 Position: parseInt(position, 10) || 0,
                 Body: commentBody,
-            };
-            if (replyToId !== null) {
-                params.ReplyToID = replyToId;
-            }
-            const res = await rpcCall<PRResponse>('RPCHandler.AddComment', [params]);
-            setContent(res.content || '');
-            applyFullDiff(res.diff || '');
-            const prevIds = new Set(comments.map(c => c.id));
-            const newComments = (res.comments || []).filter(c => !prevIds.has(c.id));
-            if (newComments.length > 0) {
-                // Threads are keyed by their root, so a reply has to reveal the
-                // thread it landed in — not the comment it answered, which is
-                // the root only for the first reply in a conversation.
-                const rootOf = new Map<string, string>();
-                for (const thread of groupIntoThreads(res.comments || [])) {
-                    for (const c of thread) rootOf.set(c.id, thread[0].id);
-                }
-                setVisibleThreadIds(prev => {
-                    const next = new Set(prev);
-                    newComments.forEach(c => {
-                        next.add(rootOf.get(c.id) ?? c.id);
-                    });
-                    return next;
-                });
-            }
-            setComments(res.comments || []);
-            setOutdatedComments(res.outdated_comments || []);
-            setReviews(res.reviews || []);
+            });
             resetCommentForm();
         } catch (e) {
             console.error(e);
             alert('Error adding comment');
+        } finally {
+            setIsAddingComment(false);
+        }
+    };
+
+    // A reply written in the tray. The thread's root holds its file and its
+    // position in the PR's full diff, whatever diff is on screen.
+    const handleTrayReply = async (thread: TrayThread, body: string): Promise<boolean> => {
+        const target = replyTargetFor(thread.comments);
+        if (!target || !thread.path) return false;
+        setIsAddingComment(true);
+        try {
+            await postComment({
+                Filename: thread.path,
+                Position: parseInt(thread.position, 10) || 0,
+                Body: body,
+                ReplyToID: parseInt(target.id, 10),
+            });
+            return true;
+        } catch (e) {
+            console.error(e);
+            showToast(`Couldn't post the reply: ${rpcErrorMessage(e)}`, 'danger');
+            return false;
         } finally {
             setIsAddingComment(false);
         }
@@ -787,15 +841,7 @@ export default function Review({
             // Only the comments changed, so the diff is left as it is — this is a
             // one-click action, and reloading the diff would throw away any hunks
             // the reviewer has expanded around the annotation they just adopted.
-            const prevIds = new Set(comments.map(c => c.id));
-            const added = (res.comments || []).filter(c => !prevIds.has(c.id));
-            if (added.length > 0) {
-                setVisibleThreadIds(prev => {
-                    const next = new Set(prev);
-                    added.forEach(c => next.add(c.id));
-                    return next;
-                });
-            }
+            selectNewThread(comments, res.comments || []);
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
@@ -822,8 +868,9 @@ export default function Review({
         }
     };
 
-    const handleEditComment = async () => {
-        if (editingCommentId === null || !editingCommentBody) return;
+    // An edit to one of your pending comments, written in the tray.
+    const handleEditComment = async (comment: Comment, body: string): Promise<boolean> => {
+        if (!body.trim()) return false;
         setIsAddingComment(true);
         try {
             const res = await rpcCall<PRResponse>('RPCHandler.EditComment', [
@@ -831,8 +878,8 @@ export default function Review({
                     Owner: owner,
                     Repo: repo,
                     Number: number,
-                    ID: editingCommentId,
-                    Body: editingCommentBody,
+                    ID: parseInt(comment.id, 10),
+                    Body: body,
                 },
             ]);
             setContent(res.content || '');
@@ -840,10 +887,11 @@ export default function Review({
             setComments(res.comments || []);
             setOutdatedComments(res.outdated_comments || []);
             setReviews(res.reviews || []);
-            resetCommentForm();
+            return true;
         } catch (e) {
             console.error(e);
-            alert('Error editing comment');
+            showToast(`Couldn't save the edit: ${rpcErrorMessage(e)}`, 'danger');
+            return false;
         } finally {
             setIsAddingComment(false);
         }
@@ -1001,7 +1049,6 @@ export default function Review({
             setActiveLineIndex(null);
             setFilename('');
             setPosition('');
-            setReplyToId(null);
         } else {
             const pos = commentPosition(file, rowPos);
             if (pos === null) return;
@@ -1010,7 +1057,6 @@ export default function Review({
             setActiveLineIndex(idx);
             setShowCommentModal(false);
             setCommentBody('');
-            setReplyToId(null);
         }
     };
 
@@ -1097,34 +1143,6 @@ export default function Review({
         }
     }, []);
 
-    // Handle clicking on a reply thread to reply to the last message, or edit if local
-    const handleThreadClick = (
-        thread: Comment[],
-        file: string,
-        rowPos: number,
-        lineIdx: number
-    ) => {
-        const rc = thread[0];
-        // A thread on a filtered diff sits on a row the full diff shows too.
-        const pos = filteredView ? (toFullPosition(filteredDiff, file, rowPos) ?? rowPos) : rowPos;
-        setFilename(file);
-        setPosition(pos.toString());
-        setActiveLineIndex(lineIdx);
-        setShowCommentModal(false);
-        if (rc.author === 'local') {
-            setEditingCommentId(parseInt(rc.id, 10));
-            setEditingCommentBody(rc.body);
-            setReplyToId(null);
-            setCommentBody('');
-        } else {
-            const target = replyTargetFor(thread);
-            setReplyToId(target ? parseInt(target.id, 10) : null);
-            setEditingCommentId(null);
-            setEditingCommentBody('');
-            setCommentBody('');
-        }
-    };
-
     // Open a floating code viewer at a file/line (from LSP reference clicks).
     const handleOpenCodeViewer = (
         filePath: string,
@@ -1197,9 +1215,6 @@ export default function Review({
 
     const handleCancelInline = () => {
         setActiveLineIndex(null);
-        setReplyToId(null);
-        setEditingCommentId(null);
-        setEditingCommentBody('');
     };
 
     const scrollToFile = (file: string) => {
@@ -1222,18 +1237,11 @@ export default function Review({
         });
     };
 
-    // Take the reviewer from an AI report item to its thread: reveal it in the
-    // diff and scroll to it, or open the outdated-comments panel for a thread
-    // whose lines are no longer in the diff.
-    const jumpToReportItem = (item: ReportItem) => {
-        setOpenAIFeature(null);
-        const file = item.path;
+    // Scroll the diff to a thread's row and flash it. A thread the diff on
+    // screen doesn't show (outdated, or off a filtered diff) goes to its file
+    // instead; a PR-level conversation comment has nowhere to go.
+    const revealThreadInDiff = (rootId: string, file: string) => {
         if (!file) return;
-        if (item.outdated) {
-            setActiveOutdatedFile(file);
-            return;
-        }
-        setVisibleThreadIds(prev => new Set(prev).add(item.root_comment_id));
         if (collapsedFiles.has(file)) {
             setCollapsedFiles(prev => {
                 const next = new Set(prev);
@@ -1241,22 +1249,69 @@ export default function Review({
                 return next;
             });
         }
-        // Two frames: one for the thread to render, one for layout.
+        // Two frames: one for the file to expand, one for layout.
         requestAnimationFrame(() =>
             requestAnimationFrame(() => {
-                const thread = document.querySelector(
-                    `[data-thread-root="${CSS.escape(item.root_comment_id)}"]`
+                const row = document.querySelector<HTMLElement>(
+                    `[data-thread-anchors~="${CSS.escape(rootId)}"]`
                 );
-                if (thread) {
-                    thread.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } else {
+                if (!row) {
                     scrollToFile(file);
+                    return;
                 }
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                row.classList.remove('thread-flash');
+                void row.offsetWidth; // re-trigger the animation
+                row.classList.add('thread-flash');
             })
         );
     };
 
+    // Select a thread in the tray; `reveal` also takes the diff to it. On a
+    // phone the tray covers the diff, so revealing closes it.
+    const selectThread = (thread: TrayThread, reveal: boolean) => {
+        setSelectedThreadId(thread.rootId);
+        if (!reveal) return;
+        if (isMobile) setTrayOpen(false);
+        revealThreadInDiff(thread.rootId, thread.path);
+    };
+
+    // A commented row's badge: open the tray on the row's first thread, or
+    // close it when it is already showing one of them.
+    const openThreadsInTray = (rootIds: string[]) => {
+        if (trayOpen && selectedThreadId !== null && rootIds.includes(selectedThreadId)) {
+            setTrayOpen(false);
+            return;
+        }
+        setSelectedThreadId(rootIds[0] ?? null);
+        setTrayOpen(true);
+    };
+
+    // Take the reviewer from an AI report item to its thread: open it in the
+    // tray and scroll the diff to its line (or file, when it's outdated).
+    const jumpToReportItem = (item: ReportItem) => {
+        setOpenAIFeature(null);
+        setSelectedThreadId(item.root_comment_id);
+        setTrayOpen(true);
+        if (!isMobile && item.path) revealThreadInDiff(item.root_comment_id, item.path);
+    };
+
     const openFeature = aiFeatures.find(f => f.id === openAIFeature);
+
+    // Every conversation on the PR, grouped for the tray. Positions count rows
+    // of the full diff, so that's where each thread's line is looked up; the
+    // files come in the order the diff view shows them.
+    const trayGroups = useMemo(
+        () =>
+            buildTrayGroups(
+                comments,
+                outdatedComments,
+                fullParsedLines ?? parsedLines,
+                fileOrderOf(sortParsedLinesTestsLast(fullParsedLines ?? parsedLines))
+            ),
+        [comments, outdatedComments, fullParsedLines, parsedLines]
+    );
+    const trayCounts = useMemo(() => countTrayThreads(trayGroups), [trayGroups]);
 
     if (loading && !content) return <div style={{ padding: '20px' }}>Loading PR...</div>;
 
@@ -1267,27 +1322,23 @@ export default function Review({
             comments={displayedComments}
             outdatedComments={outdatedComments}
             collapsedFiles={collapsedFiles}
-            visibleThreadIds={visibleThreadIds}
+            trayOpen={trayOpen}
+            selectedThreadId={selectedThreadId}
             annotations={annotationIndex}
             visibleAnnotationKeys={visibleAnnotationKeys}
             activeLineIndex={activeLineIndex}
             activeLspIndex={activeLspIndex}
-            replyToId={replyToId}
-            editingCommentId={editingCommentId}
             commentBody={commentBody}
-            editingCommentBody={editingCommentBody}
             isAddingComment={isAddingComment}
             isMobile={isMobile}
             wrapLines={wrapLines}
             diffTheme={customDiffTheme}
             lspData={lsp.lspData}
-            onToggleThreadsVisible={toggleThreadsVisible}
+            onOpenThreads={openThreadsInTray}
             onToggleAnnotations={toggleAnnotations}
             onAnnotationToComment={handleAnnotationToComment}
             onCommentClick={handleCommentClick}
             onCodeClick={handleCodeClick}
-            onThreadClick={handleThreadClick}
-            onDeleteComment={handleDeleteComment}
             onToggleFileCollapse={toggleFileCollapse}
             onShowOutdated={setActiveOutdatedFile}
             onDockDiffFile={handleDockDiffFile}
@@ -1301,8 +1352,7 @@ export default function Review({
             }}
             onCancelInline={handleCancelInline}
             onChangeCommentBody={setCommentBody}
-            onChangeEditingCommentBody={setEditingCommentBody}
-            onSubmitInline={editingCommentId !== null ? handleEditComment : handleAddComment}
+            onSubmitInline={handleAddComment}
         />
     );
 
@@ -1386,6 +1436,22 @@ export default function Review({
                         style={{ minWidth: 0, fontSize: '13px' }}
                     />
                 )}
+                <Button
+                    onClick={() => setTrayOpen(open => !open)}
+                    variant={trayOpen ? 'primary' : 'secondary'}
+                    aria-pressed={trayOpen}
+                    title={
+                        trayOpen
+                            ? 'Close the comment tray'
+                            : 'Every comment on this PR, beside the diff'
+                    }
+                >
+                    💬 Comments
+                    {trayCounts.all > 0 &&
+                        (trayCounts.open > 0
+                            ? ` (${trayCounts.open} open)`
+                            : ` (${trayCounts.all})`)}
+                </Button>
                 <Button
                     onClick={() => {
                         setFilename('');
@@ -2019,6 +2085,27 @@ export default function Review({
                         setAIOutputs(prev => ({ ...prev, [output.feature]: output }))
                     }
                     onJumpToItem={jumpToReportItem}
+                />
+            )}
+
+            {trayOpen && (
+                <CommentTray
+                    groups={trayGroups}
+                    selectedId={selectedThreadId}
+                    isMobile={isMobile}
+                    width={trayWidth}
+                    busy={isAddingComment}
+                    onResize={setTrayWidth}
+                    onResizeEnd={saveTrayWidth}
+                    onSelect={selectThread}
+                    onReply={handleTrayReply}
+                    onEdit={handleEditComment}
+                    onDelete={c => handleDeleteComment(parseInt(c.id, 10))}
+                    onJumpToFile={file => {
+                        if (isMobile) setTrayOpen(false);
+                        scrollToFile(file);
+                    }}
+                    onClose={() => setTrayOpen(false)}
                 />
             )}
 

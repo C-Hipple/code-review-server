@@ -19,12 +19,12 @@ nav:
   - Home: index.md
   - Clients: clients.md
   - Configuration: configuration.md
-  - GitHub Webhooks: webhooks.md
   - Filters: filters.md
   - Plugins: plugins.md
   - AI Features: ai_features.md
   - Reviewing Code: reviewing.md
   - Protocol: protocol.md
+  - GitHub Webhooks: webhooks.md
   - Building Clients: building_clients.md
   - Web Client Features: web_client_features.md
   - GitHub API Notes: github_api_notes.md

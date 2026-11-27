@@ -638,8 +638,8 @@ The `report` is `{"rating": "easy" | "medium" | "hard"}`.
   saying so in a toast. Once there is a result, the button opens the report
   (feature-flags renders its markdown body):
   verdict, what needs attention with who decided each item, change requests,
-  and the addressed items collapsed. An item's location jumps to its thread in
-  the diff (or the outdated-comments panel); **↻ Re-run** forces a fresh run.
+  and the addressed items collapsed. An item's location opens its thread in
+  the comment tray and scrolls the diff to it (or to its file, when outdated); **↻ Re-run** forces a fresh run.
   The review list offers the same without opening the review: each PR's **✦ AI**
   button, beside its Plugins button, opens a page with every enabled feature's
   report for that PR. The applied features get no button: their results are

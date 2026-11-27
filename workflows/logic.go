@@ -462,8 +462,6 @@ func getComments(owner string, repo string, number int) (int, []string) {
 		return 0, []string{}
 	}
 
-	comments = filterComments(comments)
-
 	// Store the result in the database
 	commentsJSON, marshalErr := json.Marshal(comments)
 	if marshalErr != nil {
@@ -480,7 +478,6 @@ func getComments(owner string, repo string, number int) (int, []string) {
 
 // formatComments formats pre-fetched PR comments into display strings
 func formatComments(comments []*github.PullRequestComment) (int, []string) {
-	comments = filterComments(comments)
 	trees := buildCommentTrees(comments)
 
 	str_comments := []string{}
@@ -716,19 +713,6 @@ func GetReleaseStatus(command, owner, repo, sha string) (string, error) {
 	stdout := outb.String()
 	return strings.Replace(stdout, "\n", "", -1), nil
 }
-func filterComments(comments []*github.PullRequestComment) []*github.PullRequestComment {
-	output := []*github.PullRequestComment{}
-	for _, comment := range comments {
-		if strings.Contains(*comment.User.Login, "advanced") {
-			// I don't care about the lint warning stuff
-			continue
-		}
-		output = append(output, comment)
-	}
-	return output
-
-}
-
 func buildCommentTrees(comments []*github.PullRequestComment) [][]*github.PullRequestComment {
 	output := [][]*github.PullRequestComment{}
 	for _, comment := range comments {

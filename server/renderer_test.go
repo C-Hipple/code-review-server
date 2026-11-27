@@ -64,67 +64,6 @@ func TestFormatComment(t *testing.T) {
 	}
 }
 
-func TestFilterComments(t *testing.T) {
-	tests := []struct {
-		name     string
-		comments []*github.PullRequestComment
-		expected int
-	}{
-		{
-			name: "filter advanced user comments",
-			comments: []*github.PullRequestComment{
-				{
-					User: &github.User{Login: github.String("advanced-bot")},
-					Body: github.String("lint warning"),
-				},
-				{
-					User: &github.User{Login: github.String("user1")},
-					Body: github.String("real comment"),
-				},
-				{
-					User: &github.User{Login: github.String("advanced-linter")},
-					Body: github.String("another lint"),
-				},
-			},
-			expected: 1,
-		},
-		{
-			name: "no filtering needed",
-			comments: []*github.PullRequestComment{
-				{
-					User: &github.User{Login: github.String("user1")},
-					Body: github.String("comment 1"),
-				},
-				{
-					User: &github.User{Login: github.String("user2")},
-					Body: github.String("comment 2"),
-				},
-			},
-			expected: 2,
-		},
-		{
-			name:     "empty comments",
-			comments: []*github.PullRequestComment{},
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := filterComments(convertToPRComments(tt.comments))
-			if len(result) != tt.expected {
-				t.Errorf("filterComments() returned %d comments, want %d", len(result), tt.expected)
-			}
-			// Verify no advanced users in result
-			for _, comment := range result {
-				if strings.Contains(comment.GetLogin(), "advanced") {
-					t.Errorf("filterComments() did not filter out advanced user: %s", comment.GetLogin())
-				}
-			}
-		})
-	}
-}
-
 func TestBuildCommentTreesFromList(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1244,7 +1183,7 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 
 	// Cached the way the workflow writes it: review comments on the code plus
 	// the conversation comments converted alongside them, under the short repo
-	// name. The lint bot's comment is hidden in the review, so it isn't counted.
+	// name. A bot's comment counts like anyone's: the review shows every author.
 	comments := []*github.PullRequestComment{
 		{
 			ID:       github.Ptr(int64(1)),
@@ -1285,15 +1224,15 @@ func TestReviewItemsCarryCommentCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllReviewItems: %v", err)
 	}
-	if items[0].CommentCount != 3 {
-		t.Errorf("comment count = %d, want 3 (two review comments and one conversation comment)", items[0].CommentCount)
+	if items[0].CommentCount != 4 {
+		t.Errorf("comment count = %d, want 4 (three review comments, the bot's among them, and one conversation comment)", items[0].CommentCount)
 	}
 
 	encoded, err := json.Marshal(items[0])
 	if err != nil {
 		t.Fatalf("marshal review item: %v", err)
 	}
-	if !strings.Contains(string(encoded), `"comment_count":3`) {
+	if !strings.Contains(string(encoded), `"comment_count":4`) {
 		t.Errorf("review item JSON %s is missing comment_count", encoded)
 	}
 }

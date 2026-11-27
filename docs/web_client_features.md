@@ -385,8 +385,8 @@ misplaces comments:
   [filtered one](protocol.md#filtered-diffs) (*Since my last review*, *Since my last
   interaction*) from `GetFilteredDiff`, with a banner above the diff naming the range
   and a way back. A filtered diff's positions aren't the PR's, so comments go
-  through the reply's `positions`. Threads on lines it shows render on their rows
-  there (`commentsOnFilteredDiff`). Clicking a row opens the comment form for the
+  through the reply's `positions`. Threads on lines it shows get their badges on
+  their rows there (`commentsOnFilteredDiff`). Clicking a row opens the comment form for the
   same line's full-diff position (`toFullPosition`), or toasts for a row that has
   none, such as a removed line. The submit preview keeps anchoring local comments
   to the full diff (kept in `fullDiff`). A result with no diff (`no-baseline`,
@@ -394,8 +394,9 @@ misplaces comments:
   banner saying why. Sync and submit re-request the filter, since either can move
   its baseline.
 - **Mobile layout** — the whole diff becomes a horizontally scrollable
-  `width: max-content` block so long lines can be read; inline cards are pinned to
-  the left edge with `position: sticky` so they stay readable while scrolled.
+  `width: max-content` block so long lines can be read; the comment form and
+  annotation cards are pinned to the left edge with `position: sticky` so they stay
+  readable while scrolled.
 
 ### 3.6 Comments
 
@@ -407,19 +408,39 @@ client treats `author === 'local'` as "mine, still editable".
 - **Free-form comment modal** — the toolbar's `+ Comment` opens a modal where file
   and position are typed manually.
 - **Threading** — comments are grouped into threads by walking `in_reply_to` up to
-  the root, and rendered as a tree with each reply indented under the comment it
-  answered. Grouping must be **transitive**: replying to a thread targets its *last*
+  the root. Grouping must be **transitive**: replying to a thread targets its *last*
   comment, so a "root plus its direct children" grouping silently drops replies to
   replies. A reply whose parent is missing starts its own thread instead of
-  vanishing. See `groupIntoThreads` / `buildReplyTree` in `discussion_utils.ts`.
-  Clicking a thread replies to its last comment; clicking a local thread edits it.
-- **Resolved threads** are faded and badged from the `resolved` / `resolved_by`
-  fields. Absence of the field means "unknown", so no *Unresolved* badge is ever
-  rendered — only a *Resolved* one.
-- **Collapsed by default** — threads render as a small indicator badge next to the
-  line, in a fixed-width gutter left of the line numbers so the diff never shifts.
-  Hovering previews the thread; clicking expands every thread on that row.
-- **Edit / delete** local comments; newly added comments auto-expand their thread.
+  vanishing. See `groupIntoThreads` in `discussion_utils.ts`.
+- **Every author is shown.** The server used to drop comments from any login
+  containing `advanced` (GitHub Advanced Security's bot); it no longer filters by
+  author, in the review or in the list's comment counts.
+- **Comment tray** (`CommentTray.tsx`, `comment_tray_utils.ts`) — threads live in a
+  panel down the right edge, not inside the diff, opened from the toolbar's
+  **💬 Comments** button (which counts the open threads). On a wide screen it sits
+  *beside* the diff — `Review.tsx` sets `--comment-tray-space` to its width and the
+  app pads itself by that much — so the code stays readable while a conversation is
+  open; its left edge drags to resize (remembered in `localStorage`). On a phone it
+  takes the screen. It lists the PR-level conversation first, then each file in the
+  order the diff shows them (`buildTrayGroups`), each thread on a card with the line
+  it is on (from the full diff's rows, or the tail of `diff_hunk` for an outdated
+  thread), its comments in order with an avatar, author and relative time, and
+  *Pending* / *Outdated* / *Resolved* chips. **All / Open / Resolved** tabs filter
+  it; resolved threads fold to one line until opened.
+- **Moving between threads** — selecting a card scrolls the diff to its row
+  (`data-thread-anchors` on each commented row), tints that row and flashes it;
+  ↑/↓ in the tray's header, or `j`/`k` anywhere but a text field, step to the
+  previous/next thread, wrapping round. A row's gutter badge opens the tray on that
+  row's thread (and closes it when it's already showing it); with the tray closed,
+  hovering the badge previews the comments.
+- **Resolved threads** are badged from the `resolved` / `resolved_by` fields.
+  Absence of the field means "unknown", so no *Unresolved* badge is ever rendered —
+  only a *Resolved* one.
+- **Reply / edit / delete in the tray** — *Reply…* on a card opens a composer that
+  answers the thread's last comment GitHub knows about (`replyTargetFor`), with the
+  root's file and full-diff position; your pending (local) comments carry *Edit* and
+  *Delete*. A new comment, typed under a line or adopted from an annotation, opens
+  the tray on its thread (on desktop).
 - **Outdated comments** — surfaced per file via a warning button on the file header,
   which opens a right-hand drawer listing each outdated comment with its stored
   `diff_hunk` as syntax-highlighted context.
@@ -642,8 +663,9 @@ Client-side only, persisted in `localStorage`:
 
 `useMediaQuery` / `useIsMobile` drive real behavioral changes, not just CSS: line
 wrapping defaults on, the diff becomes horizontally scrollable, line-number gutters
-are hidden, split view is disabled, the code viewer goes full-screen, inline cards
-stick to the left edge, and the bottom review action bar appears (the review chat's
+are hidden, split view is disabled, the code viewer goes full-screen, the comment
+tray takes the whole screen (revealing a thread in the diff closes it), the comment
+form and annotation cards stick to the left edge, and the bottom review action bar appears (the review chat's
 button moves up above it). The review list
 restacks in CSS alone: the sidebar becomes a header, its state buckets a horizontally
 scrolling strip, and row actions stay visible instead of waiting for a hover.
@@ -651,7 +673,9 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 ### 3.16 Miscellaneous
 
 - **Escape** closes the plugins drawer, comment modal, submit modal, inline comment
-  form, LSP popover, and outdated-comments drawer.
+  form, LSP popover, and outdated-comments drawer, and cancels a reply or edit being
+  written in the comment tray. The tray itself stays open until its × or the
+  toolbar button closes it, so stepping through threads survives an Escape.
 - Transient toasts for sync results; `alert()` for errors (a gap worth improving in a
   new client).
 - Loading states on every async button.
@@ -676,8 +700,8 @@ enabled by default, and an older server without the AI RPCs just shows neither.
 
 - **Review toolbar** — a button per feature, opening its report in a modal, which
   **◫ Pin beside code** turns into a pane of the review's split view, to read the
-  report beside the diff: jumping to a thread from the pane reveals it in the diff and
-  leaves the pane open, **↗** puts it back into the modal, and the toolbar button
+  report beside the diff: jumping to a thread from the pane opens it in the comment
+  tray, scrolls the diff to it and leaves the pane open, **↗** puts it back into the modal, and the toolbar button
   brings a pinned report to the front rather than opening the modal. On a phone,
   where the view never splits, it is a tab of the single panel. The
   review view loads `GetAIOutput` for the enabled features on open (and after a sync
@@ -710,9 +734,9 @@ Both run and render a report the same way (`useAIReport`, `AIReportView`):
   unclear) with each item's status and whether GitHub or the model decided it,
   the code an open thread was left on (its `code_context`, with the commented
   line marked), active change requests, and the addressed items collapsed. In the
-  review's modal, clicking an item's location closes the modal, reveals the thread
-  in the diff and scrolls to it (threads carry `data-thread-root`), or opens the outdated-comments
-  panel for a thread no longer in the diff.
+  review's modal, clicking an item's location closes the modal, opens the thread
+  in the comment tray and scrolls the diff to its row (or its file, for a thread no
+  longer in the diff).
 - **change-diagram** draws the raw Mermaid source in its `report.mermaid` with the
   [mermaid](https://mermaid.js.org) library (`MermaidDiagram.tsx`, `mermaid_utils.ts`),
   loaded as a separate chunk the first time a diagram is drawn and run at
@@ -753,11 +777,10 @@ since whatever was sent meanwhile is lost.
 - **Review** (`Review.tsx`, `refreshLive`): an update for the open PR, other than one
   that only touched the list's rows (`sections`), re-calls `GetPR` — served from the
   caches the delivery just wrote — and takes in the comments, reviews, metadata and,
-  when it changed, the diff, without the loading state a sync shows. Open threads,
-  the comment being written and the feedback being typed are left alone, and
+  when it changed, the diff, without the loading state a sync shows. The comment
+  tray and its selection, the comment being written and the feedback being typed are left alone, and
   expanded hunk context stays unless the diff itself changed. A new diff while an
-  inline comment is open or a comment is being edited would move the row it is
-  anchored to, so it waits: a toast says the PR changed and will refresh once the
+  inline comment is open would move the row it is anchored to, so it waits: a toast says the PR changed and will refresh once the
   comment is done, and closing the form brings it in. With a filtered diff on
   screen the new full diff is kept for comment positions, and the filtered one is
   asked for again after a push or the user's own review or comment (either can

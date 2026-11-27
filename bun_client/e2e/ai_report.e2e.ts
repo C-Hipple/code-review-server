@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
-import { expect, modal, openReview, test } from './harness/test';
+import { expect, modal, openReview, test, trayThread } from './harness/test';
 
 // The fake backend enables comments-addressed and serves a canned report for
 // acme/widgets#42: bob's thread on src/greet.ts is unresolved, with alice's
@@ -77,12 +77,13 @@ test.describe('AI report', () => {
         ).toBeVisible();
         expect(await backend.calls('RunAIFeature')).toHaveLength(1);
 
-        // Jumping closes the report and reveals the thread in the diff.
+        // Jumping closes the report and opens the thread in the comment tray.
         await dialog.getByRole('button', { name: 'src/greet.ts:3' }).click();
         await expect(dialog).toHaveCount(0);
-        await expect(
-            page.locator('.hover-thread').filter({ hasText: 'Should punctuation have a default?' })
-        ).toBeVisible();
+        await expect(trayThread(page, 'Should punctuation have a default?')).toHaveAttribute(
+            'aria-current',
+            'true'
+        );
     });
 
     test('counts a run the server started on its own', async ({ page, backend }) => {
@@ -183,12 +184,14 @@ test.describe('AI report beside the code', () => {
         await expect(modal(page, 'Comments addressed?')).toHaveCount(0);
         await expect(pane).toBeVisible();
 
-        // Jumping reveals the thread in the diff, and the report stays put.
+        // Jumping opens the thread in the comment tray, and the report stays put.
         await pane.getByRole('button', { name: 'src/greet.ts:3' }).click();
-        await expect(
-            page.locator('.hover-thread').filter({ hasText: 'Should punctuation have a default?' })
-        ).toBeVisible();
+        await expect(trayThread(page, 'Should punctuation have a default?')).toHaveAttribute(
+            'aria-current',
+            'true'
+        );
         await expect(pane).toBeVisible();
+        await page.getByRole('button', { name: 'Close comments' }).click();
 
         // Re-run works from the pane too.
         await pane.getByRole('button', { name: '↻ Re-run' }).click();
@@ -236,10 +239,12 @@ test.describe('AI report beside the code', () => {
         // No split on a phone: the report takes the panel, the review a tab away.
         await expect(page.locator('.diff-section')).toHaveCount(0);
 
+        // Jumping brings the review forward and opens the thread in the
+        // comment tray, which takes the screen on a phone.
         await pane.getByRole('button', { name: 'src/greet.ts:3' }).click();
-        await expect(
-            page.locator('.hover-thread').filter({ hasText: 'Should punctuation have a default?' })
-        ).toBeVisible();
+        const thread = trayThread(page, 'Should punctuation have a default?');
+        await expect(thread).toBeVisible();
+        await expect(thread).toHaveAttribute('aria-current', 'true');
         await expect(pane).toBeHidden();
     });
 });

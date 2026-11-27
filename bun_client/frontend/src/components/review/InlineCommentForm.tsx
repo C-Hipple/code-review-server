@@ -5,41 +5,32 @@ interface InlineCommentFormProps {
     // Context label parts
     file: string | null;
     pos: number | null;
-    editingCommentId: number | null;
-    replyToId: number | null;
     // Form state
     commentBody: string;
-    editingCommentBody: string;
     isAddingComment: boolean;
     // Pin the editor to the visible left edge while the code scrolls horizontally on mobile.
     stickyOnMobile?: boolean;
     // Optional content rendered between the label and the textarea (e.g. an LSP popover).
     children?: ReactNode;
     onChangeCommentBody: (body: string) => void;
-    onChangeEditingCommentBody: (body: string) => void;
     onCancel: () => void;
     onSubmit: () => void;
 }
 
 // The inline comment editor shown under a diff line or file header when the
-// user is adding, replying to, or editing a comment.
+// user starts a comment there. Replies and edits are written in the comment
+// tray (CommentTray), beside the thread they belong to.
 export default function InlineCommentForm({
     file,
     pos,
-    editingCommentId,
-    replyToId,
     commentBody,
-    editingCommentBody,
     isAddingComment,
     stickyOnMobile,
     children,
     onChangeCommentBody,
-    onChangeEditingCommentBody,
     onCancel,
     onSubmit,
 }: InlineCommentFormProps) {
-    const isEditing = editingCommentId !== null;
-
     return (
         <div
             style={{
@@ -66,28 +57,14 @@ export default function InlineCommentForm({
                     color: 'var(--text-secondary)',
                 }}
             >
-                {isEditing
-                    ? `Editing local comment #${editingCommentId}`
-                    : replyToId !== null
-                      ? `Replying to comment #${replyToId}`
-                      : `Commenting on ${file}:${pos}`}
+                {`Commenting on ${file}:${pos}`}
             </div>
             {children}
             <textarea
                 autoFocus
-                placeholder={
-                    isEditing
-                        ? 'Edit your comment...'
-                        : replyToId !== null
-                          ? 'Write a reply...'
-                          : 'Write a comment...'
-                }
-                value={isEditing ? editingCommentBody : commentBody}
-                onChange={e =>
-                    isEditing
-                        ? onChangeEditingCommentBody(e.target.value)
-                        : onChangeCommentBody(e.target.value)
-                }
+                placeholder="Write a comment..."
+                value={commentBody}
+                onChange={e => onChangeCommentBody(e.target.value)}
                 disabled={isAddingComment}
                 style={{
                     width: '100%',
@@ -113,7 +90,7 @@ export default function InlineCommentForm({
                     Cancel
                 </Button>
                 <Button onClick={onSubmit} size="sm" loading={isAddingComment}>
-                    {isEditing ? 'Save Edit' : replyToId !== null ? 'Reply' : 'Add Comment'}
+                    Add Comment
                 </Button>
             </div>
         </div>

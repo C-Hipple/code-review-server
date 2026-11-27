@@ -1538,11 +1538,6 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
-.hover-thread:hover {
-    border-color: var(--accent) !important;
-    box-shadow: var(--shadow-glow);
-}
-
 /* Diff line-number gutters.
    Sized in `em` so the gutter tracks the Review Diff Font Size preference
    (--diff-font-size, set on the diff container). The gutter keeps its 44px
@@ -2567,5 +2562,647 @@ canvas {
     .crs-chat-sessions-toggle {
         max-width: none;
         flex: 1;
+    }
+}
+
+/* ── Comment tray ─────────────────────────────────────────────────────────
+   Every conversation on the PR in a panel down the right edge
+   (components/review/CommentTray.tsx). On a wide screen it sits beside the
+   diff: Review.tsx sets --comment-tray-space to the tray's width while it is
+   open, and the app makes room for it, so nothing is covered. On a phone it
+   takes the screen. */
+.app-container {
+    padding-right: var(--comment-tray-space, 0px);
+}
+
+.comment-tray {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    color: var(--text-primary);
+    animation: ctSlideIn 0.18s ease-out;
+}
+
+.comment-tray.is-mobile {
+    left: 0;
+    width: 100vw;
+    z-index: 95;
+    border-left: none;
+}
+
+@keyframes ctSlideIn {
+    from {
+        transform: translateX(24px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.ct-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    width: 6px;
+    cursor: col-resize;
+    z-index: 2;
+}
+
+.ct-resize:hover,
+.ct-resize:active {
+    background: var(--accent-dim);
+}
+
+.ct-head {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.ct-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.ct-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.ct-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.ct-head-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ct-position {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    margin-right: 4px;
+}
+
+.ct-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.ct-icon-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    border-color: var(--border);
+    color: var(--text-primary);
+}
+
+.ct-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.ct-filters {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    align-self: flex-start;
+}
+
+.ct-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.ct-filter:hover {
+    color: var(--text-primary);
+}
+
+.ct-filter.is-active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+}
+
+.ct-filter-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.ct-list {
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 0 16px;
+}
+
+.ct-empty {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.ct-group-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 16px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    text-align: left;
+    font-size: 12px;
+}
+
+.ct-group-file {
+    cursor: pointer;
+}
+
+.ct-group-file:hover .ct-group-base {
+    color: var(--accent);
+}
+
+.ct-group-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+}
+
+.ct-group-head:not(.ct-group-file) .ct-group-name {
+    font-family: var(--font-sans);
+    font-weight: 600;
+}
+
+.ct-group-dir {
+    color: var(--text-secondary);
+}
+
+.ct-group-base {
+    font-weight: 600;
+}
+
+.ct-group-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-radius: 999px;
+    padding: 0 7px;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+.ct-group-threads {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 6px;
+}
+
+.ct-thread {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.ct-thread:hover {
+    border-color: var(--text-tertiary);
+}
+
+.ct-thread:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.ct-thread.is-selected {
+    border-color: var(--accent);
+    box-shadow:
+        0 0 0 1px var(--accent),
+        var(--shadow-md);
+}
+
+.ct-thread.is-resolved:not(.is-selected) .ct-comments,
+.ct-thread.is-folded {
+    opacity: 0.78;
+}
+
+.ct-thread-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: -2px -4px 8px 0;
+}
+
+.ct-line {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.ct-line-addition {
+    background: var(--diff-add-bg);
+    border-left-color: var(--text-success);
+}
+
+.ct-line-deletion {
+    background: var(--diff-del-bg);
+    border-left-color: var(--text-danger);
+}
+
+.ct-line-no {
+    color: var(--diff-line-no-color);
+    font-size: 11px;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.ct-line-sign {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.ct-line-code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre;
+    color: var(--text-primary);
+    background: none;
+    padding: 0;
+    font-size: inherit;
+}
+
+.ct-line-file .ct-line-code {
+    font-family: var(--font-sans);
+    color: var(--text-secondary);
+}
+
+.ct-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.ct-chip {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 1px 7px;
+    border-radius: 999px;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+}
+
+.ct-chip-pending {
+    color: var(--accent);
+    background: var(--bg-info-dim);
+    border-color: var(--border-info-dim);
+}
+
+.ct-chip-outdated {
+    color: var(--text-warning);
+    background: var(--bg-warning-dim);
+    border-color: var(--border-warning-dim);
+}
+
+.ct-chip-resolved {
+    color: var(--text-success);
+    background: var(--bg-success-dim);
+    border-color: var(--border-success-dim);
+}
+
+.ct-comments {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ct-comment {
+    display: flex;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* A thin rail joins each reply's avatar to the one above it. */
+.ct-comment + .ct-comment {
+    position: relative;
+}
+
+.ct-comment + .ct-comment::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: -12px;
+    height: 12px;
+    width: 2px;
+    background: var(--border);
+}
+
+.ct-avatar {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    background: hsl(var(--ct-hue, 210) 50% 45%);
+    user-select: none;
+}
+
+.ct-avatar.is-you {
+    font-size: 8px;
+    background: var(--accent);
+}
+
+.ct-comment-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.ct-comment-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 24px;
+    min-width: 0;
+}
+
+.ct-author {
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ct-time {
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.ct-comment-actions {
+    margin-left: auto;
+    display: inline-flex;
+    gap: 8px;
+}
+
+.ct-comment-body {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text-primary);
+}
+
+.ct-comment-body > :first-child {
+    margin-top: 0;
+}
+
+.ct-comment-body > :last-child {
+    margin-bottom: 0;
+}
+
+.ct-link-btn {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ct-link-btn:hover:not(:disabled) {
+    text-decoration: underline;
+}
+
+.ct-link-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.ct-link-btn.ct-danger {
+    color: var(--text-danger);
+}
+
+.ct-fold-btn {
+    margin-top: 8px;
+}
+
+.ct-folded {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.ct-folded .ct-chips {
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+.ct-folded-who {
+    flex-shrink: 0;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.ct-folded-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ct-reply-prompt {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-align: left;
+    cursor: text;
+}
+
+.ct-reply-prompt:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.ct-composer {
+    margin-top: 10px;
+    cursor: default;
+}
+
+.ct-composer textarea {
+    display: block;
+    width: 100%;
+    min-height: 84px;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.ct-composer textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.ct-composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.ct-hint {
+    margin-right: auto;
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.ct-foot {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.ct-foot kbd {
+    display: inline-block;
+    min-width: 16px;
+    margin-right: 3px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 16px;
+    text-align: center;
+}
+
+/* A diff row the tray has just scrolled to. Outline rather than box-shadow:
+   the selected thread's row is tinted with an inset shadow (DiffView). */
+@keyframes threadFlash {
+    0% {
+        outline-color: var(--accent);
+    }
+
+    100% {
+        outline-color: transparent;
+    }
+}
+
+.thread-flash {
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+    animation: threadFlash 1.2s ease-out;
+}
+
+@media (max-width: 768px) {
+    .app-container {
+        padding-right: 0;
+    }
+
+    .ct-icon-btn {
+        width: 36px;
+        height: 36px;
+    }
+
+    .ct-filter {
+        padding: 6px 12px;
     }
 }

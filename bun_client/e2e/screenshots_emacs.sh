@@ -1,7 +1,7 @@
 #!/bin/sh
 # Takes the Emacs client screenshots in docs/img (see screenshots.el): a
 # graphical Emacs under Xvfb, talking to the fake backend over the demo
-# fixtures. Needs emacs, markdown-mode, xvfb-run, ImageMagick's `import`,
+# fixtures. Needs emacs, markdown-mode, git-delta (`delta`), xvfb-run, ImageMagick's `import`,
 # the DejaVu fonts and bun.
 set -eu
 

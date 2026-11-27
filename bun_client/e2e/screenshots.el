@@ -27,13 +27,24 @@
 (setq frame-resize-pixelwise t)
 (set-frame-size (selected-frame) 1600 1000 t)
 
-;; Colour the diff the way a delta washer (`delta-wash') would.
-(add-hook 'my-code-review-mode-hook
-          (lambda ()
-            (font-lock-add-keywords nil '(("^\\+.*$" 0 'diff-added prepend)
-                                          ("^-.*$" 0 'diff-removed prepend)
-                                          ("^@@.*$" 0 'diff-hunk-header prepend)))
-            (font-lock-flush)))
+;; Wash the diff through git-delta, as the renderer's `delta-wash' does with
+;; magit-delta installed.  This stands in for magit-delta's washer (from MELPA) with the
+;; same two steps: run the buffer through `delta', then turn its colour
+;; escapes into overlays (`ansi-color' here, `xterm-color' there).  Line
+;; numbers and kept +/- markers give the gutter crs-render.el parses.
+(require 'ansi-color)
+(defun magit-delta-call-delta-and-convert-ansi-escape-sequences ()
+  "Wash the current buffer through git-delta."
+  (let ((inhibit-read-only t))
+    (call-process-region (point-min) (point-max) "delta" t t nil
+                         "--dark" "--line-numbers" "--keep-plus-minus-markers"
+                         ;; Raw headers: `crs--simplify-diff-headers' rewrites
+                         ;; `diff --git' lines into "modified <file>".
+                         "--file-style" "raw" "--file-decoration-style" "none"
+                         "--hunk-header-style" "raw" "--hunk-header-decoration-style" "none"
+                         "--max-line-distance" "0.6"
+                         "--true-color" "always" "--paging" "never")
+    (ansi-color-apply-on-region (point-min) (point-max))))
 
 (defconst crs-shot-review "* CRS: #315 - code-review-server - acme *")
 
@@ -51,7 +62,7 @@
   (goto-char (point-min))
   (re-search-forward "^modified")
   (recenter 1)
-  (re-search-forward "^\\+\\s-*if pr.GetState")
+  (re-search-forward "│\\+\\s-*if pr.GetState")
   (beginning-of-line))
 
 (defun crs-shot-select-chat ()

@@ -80,7 +80,7 @@ bun e2e/screenshots.ts               # the web client's; or name some: list revi
 e2e/screenshots_emacs.sh             # the Emacs client's (screenshots.el)
 ```
 
-The Emacs ones need a graphical Emacs, `markdown-mode`, `xvfb-run`, ImageMagick's
+The Emacs ones need a graphical Emacs, `markdown-mode`, git-delta (`delta`: `screenshots.el` stands in for magit-delta's washer, so the diff is washed as `delta-wash` washes it), `xvfb-run`, ImageMagick's
 `import` and the DejaVu fonts. Set `CHROMIUM_PATH` to take the web ones with a
 Chromium other than the one Playwright downloads.
 

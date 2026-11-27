@@ -137,10 +137,11 @@ browser cannot. Reproduce them if you want the corresponding features.
 | `POST /api/read-file` | Read a file from disk. Accepts an absolute `filePath`, or `repoPath` + relative `filePath` (rejects paths that escape `repoPath`). Powers the code viewer. |
 | `POST /api/list-files` | Recursive file listing under `repoPath`, skipping `node_modules`, `.git`, `.next`, `dist`. Powers the code viewer's file tree. |
 | `GET /api/check-lsp` | Whether the `diff-lsp` binary is on `PATH`. |
-| `GET /api/check-lsp-file?lang=` | Whether a per-language server is on `PATH`. |
+| `GET /api/check-lsp-file?lang=` | Whether a per-language server is on `PATH` (`go`, `rust`, `python`, `typescript`; `javascript`, `tsx` and `jsx` name the TypeScript one). |
+| `POST /api/lsp-workspace` | For `{ checkout, file }`: which language server the code viewer uses for the file (`lang`, `server`, whether it's installed), the `languageId` its `didOpen` names, where it's rooted (`root`), and whether the file is `outside` the checkout. See `lsp_languages.ts`. |
 | `POST /api/prepare-diff-lsp` | Writes the diff plus a `Project/Root/Worktree/Buffer/Type` header to a temp file and returns its path; `diff-lsp` consumes that file. |
 | `WS /api/lsp?tempfile=` | Connects to a `diff-lsp` for the tempfile's workspace. |
-| `WS /api/lsp-file?lang=&root=` | Connects to a plain language server (`gopls`, `typescript-language-server`, `rust-analyzer`, `pyright-langserver`, resolved at startup) for `root`. |
+| `WS /api/lsp-file?lang=&root=` | Connects to a plain language server for `root`, started there: the first installed of `gopls`; `rust-analyzer`; `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server`; `typescript-language-server`, `vtsls`. Looked up on `PATH` when first asked for, and again after 30 s while a language has none. |
 | `GET /api/events` | Server-Sent Events: each server notification as an event named after its method (`Server.Heartbeat`, `Server.PluginOutputChanged`, `Server.AIOutputChanged`, `Server.PRUpdated`), data its params. A new stream opens with the latest heartbeat if the next isn't overdue yet. The connection has no idle timeout. |
 | `POST /api/lsp-lines` | The text on each line a list of LSP locations points at, read from disk, so the popover can show what each reference is. |
 
@@ -155,7 +156,13 @@ code-viewer file change re-indexed the workspace from scratch; the emacs client
 has always reused its `diff-lsp`. To share a server the pool replays the first
 `initialize` answer to later sockets, forwards `initialized` once, rewrites
 request ids (including in `$/cancelRequest`), and sends `didClose` for a
-socket's documents when it disconnects.
+socket's documents when it disconnects. It answers the server's own requests
+itself (`workspace/configuration` with default settings,
+`window/workDoneProgress/create`, registrations and refreshes acknowledged,
+edits refused) rather than forwarding them: a shared server may have several
+sockets or none, and pyright and rust-analyzer wait on those answers. Work the
+server reports with `$/progress` (rust-analyzer's indexing, gopls loading
+packages) is remembered, and replayed to a socket that joins while it runs.
 
 ---
 
@@ -528,8 +535,17 @@ Optional, and degrades cleanly when the binaries or the local clone aren't there
   time and references is the slow one. Coordinates are offset for the
   five-line context header and the diff's `+`/`-` prefix column; the clicked column
   is computed from the click's pixel position.
-- **File mode** — inside the code viewer, connects to a real language server for that
-  file's language via `/api/lsp-file?lang=`.
+- **File mode** (`useFileLsp.ts`) — inside the code viewer, the file's own language
+  server, as an editor would start it: `/api/lsp-workspace` names the server and its
+  root (the checkout when it has the language's project marker — `go.mod`,
+  `Cargo.toml`, `pyproject.toml`, `package.json`, ... — else the nearest one above
+  the file), and the viewer connects via `/api/lsp-file?lang=&root=`, telling the
+  server its workspace folder and that it can report progress. One connection per
+  language and root: moving to another file of the project closes the old document
+  and opens the new one; a file outside the checkout (the standard library, a
+  dependency) stays on the server it was reached from. Asks hover, definition, type
+  definition, implementation and references, retrying a request the server answers
+  with "content modified" while it indexes.
 - **Popover** — inline (inside the comment form) or floating, listing hover text,
   definitions, type definitions and references. It opens on the first answer and
   fills in the rest as they arrive (or after 300ms with a loading state), and a
@@ -546,11 +562,25 @@ Optional, and degrades cleanly when the binaries or the local clone aren't there
   syntax highlighting, virtualized rendering (`VirtualizedCodeBlock`) for large files,
   jump-to-line, a browsable/expandable file tree from `/api/list-files`, and its own
   LSP session. Full-screen and non-draggable on phones.
+- **Code navigation** — the viewer moves through the checkout like an editor. A click
+  on a symbol opens the LSP popover (now with **Implementations**); a location in it
+  opens there. **Ctrl/⌘+click** goes straight to the definition (a popover to pick
+  from when there are several, a note when there's none). **Back / Forward** (the ←/→
+  buttons, or Alt+←/→ while the viewer has focus) walk a jump history that remembers
+  the line each jump was made from. **Symbols** opens a side panel with the file's
+  outline (`textDocument/documentSymbol`), filtered as you type, and past two letters
+  matching declarations anywhere in the workspace (`workspace/symbol`). The header's
+  badge names the server and what it's busy with ("Indexing 40%").
 - **Docking** — drag a floating viewer onto the dock zone, or click ⊞ on a file header
   to open that file's diff as a tab. Tabs live beside a permanent "Review" tab.
 - **Split view** — two side-by-side panels; tabs can be dragged between them
   (`application/x-tab` drag payload). Turning split off merges the right panel into
   the left. Split is force-disabled on phones.
+- **AI reports** dock too: an AI report's **◫ Pin beside code** moves it out of its
+  modal into a tab (`AIReportPane.tsx`), in the right panel with the view split, so
+  it stays beside the diff the left panel scrolls (see 3.17). A split that pinning
+  opened closes again with the right panel's last tab, unless the reviewer has
+  rearranged the tabs since.
 - The docking state machine is pure and separately unit-tested (`dock_utils.test.ts`)
   — worth reading if you implement something similar.
 
@@ -637,14 +667,19 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ---
 
-### 3.17 AI reports (`AIReportModal.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
+### 3.17 AI reports (`AIReportModal.tsx`, `AIReportPane.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
 
 The server's [AI features](ai_features.md) — comments-addressed, feature-flags and
 change-diagram — have two
 surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
 enabled by default, and an older server without the AI RPCs just shows neither.
 
-- **Review toolbar** — a button per feature, opening its report in a modal. The
+- **Review toolbar** — a button per feature, opening its report in a modal, which
+  **◫ Pin beside code** turns into a pane of the review's split view, to read the
+  report beside the diff: jumping to a thread from the pane reveals it in the diff and
+  leaves the pane open, **↗** puts it back into the modal, and the toolbar button
+  brings a pinned report to the front rather than opening the modal. On a phone,
+  where the view never splits, it is a tab of the single panel. The
   review view loads `GetAIOutput` for the enabled features on open (and after a sync
   or a submit), and each button counts the items needing attention, or shows ✓ when
   none do. comments-addressed counts its outstanding and unclear items; any other
@@ -657,10 +692,10 @@ enabled by default, and an older server without the AI RPCs just shows neither.
 
 Both run and render a report the same way (`useAIReport`, `AIReportView`):
 
-- **Run on open** — opening a report (the modal, or each card of the AI view) loads
-  the feature's output and calls `RunAIFeature` (not forced) when the feature never
-  ran for the PR (`not-run`) or its result is `stale`; the server answers from its
-  cache when nothing changed. **↻ Re-run** forces a run.
+- **Run on open** — opening a report (the modal, a pinned pane, or each card of the
+  AI view) loads the feature's output and calls `RunAIFeature` (not forced) when the
+  feature never ran for the PR (`not-run`) or its result is `stale`; the server
+  answers from its cache when nothing changed. **↻ Re-run** forces a run.
 - **Following runs** — nothing is polled. The server sends a
   [`Server.AIOutputChanged`](protocol.md#serveraioutputchanged) as a run of the
   feature starts and as it lands, whoever asked for it, and the report reads
@@ -744,7 +779,7 @@ since whatever was sent meanwhile is lost.
 A round chat button sits in the review's bottom-left corner (above the bottom bar
 on mobile). Resting the pointer on it opens a chat panel above it: a conversation
 with a local coding agent about the PR — the one the server's config picks (Claude
-Code, or any ACP agent), run by the server (see [Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
+Code, Antigravity, or any ACP agent), run by the server (see [Review chat](protocol.md#review-chat)). The panel closes when the pointer leaves
 unless the reviewer is working in it: focus inside it, a message half written, or
 pinned open (📌, or clicking the button, which also focuses the message box). Escape
 or × closes it. On a touch screen the button toggles it.

@@ -46,8 +46,10 @@ interface VirtualizedCodeBlockProps {
     targetLine?: number | null;
     /** 1-based line to scroll into view (centered) when it or the content changes. */
     scrollToLine?: number | null;
+    /** Scrolls to scrollToLine again when it changes, even if the line hasn't. */
+    scrollKey?: unknown;
     /** Fires with a 1-based line and 0-based column on click. */
-    onLineClick?: (line: number, column: number) => void;
+    onLineClick?: (line: number, column: number, event: React.MouseEvent) => void;
     clickable?: boolean;
     /** Rendered inside the scrolled content area (e.g. an LSP popover). */
     children?: React.ReactNode;
@@ -122,6 +124,7 @@ export default function VirtualizedCodeBlock({
     activeLine,
     targetLine,
     scrollToLine,
+    scrollKey,
     onLineClick,
     clickable = false,
     children,
@@ -195,7 +198,7 @@ export default function VirtualizedCodeBlock({
             clearTimeout(id);
             if (raf !== null) cancelAnimationFrame(raf);
         };
-    }, [scrollToLine, content]);
+    }, [scrollToLine, scrollKey, content]);
 
     const fullRenderer = useCallback(
         (args: RendererArgs) => renderRows(args, 0, gutterWidth),
@@ -282,7 +285,7 @@ export default function VirtualizedCodeBlock({
             if (!line) return;
             const codeEl = lineEl.querySelector('.vcb-code') as HTMLElement | null;
             const column = codeEl ? getClickColumn(e, codeEl) : 0;
-            onLineClick(line, column);
+            onLineClick(line, column, e);
         },
         [clickable, onLineClick]
     );

@@ -56,6 +56,23 @@ backend and fake language servers, so it needs no GitHub token.
   the Go server (which holds `CRS_GITHUB_TOKEN`) for the copy it downloaded.
 - **Add Comments**: Add inline comments by specifying filename and position.
 - **Submit Review**: Approve, Comment, or Request Changes.
+- **Code navigation**: click a symbol in the diff (with
+  [diff-lsp](https://github.com/C-Hipple/diff-lsp) installed) and open a
+  definition or reference, and the code viewer shows that file with its own
+  language server: click for hover, definitions and references, Ctrl/⌘+click to
+  jump to a definition, Back/Forward (Alt+←/→) to retrace, and **Symbols** for
+  the file's outline and a workspace-wide symbol search. The bridge starts the
+  first of these it finds on `PATH`:
+
+    | Language                | Language server                                                                  |
+    | ----------------------- | -------------------------------------------------------------------------------- |
+    | Go                      | `gopls`                                                                          |
+    | Rust                    | `rust-analyzer` (`rustup component add rust-analyzer`)                           |
+    | Python                  | `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server` |
+    | TypeScript / JavaScript | `typescript-language-server` (with the `typescript` package), `vtsls`            |
+
+    More languages are one entry in `LANGUAGE_SERVERS` (`lsp_languages.ts`).
+
 - **PR list for other tools**: `GET /api/prs` answers with the review list as
   `{ "items": [...] }` (the `GetAllReviews` items, see `docs/protocol.md`), so a
   script or status bar on this machine can read it from the running bridge

@@ -8,6 +8,7 @@ import { getClickColumn } from '../../utils/dom';
 import type { DiffSide } from '../../github_links';
 import type { PRAnnotation } from '../../plugin_utils';
 import type { LspData } from '../../hooks/useLsp';
+import { uriToPath } from '../../lsp_utils';
 import LspPopover from '../LspPopover';
 import AnnotationCard from './AnnotationCard';
 import AnnotationIndicator from './AnnotationIndicator';
@@ -632,7 +633,7 @@ export default function DiffView({
                                     data={lspData}
                                     variant="inline"
                                     onRefClick={(r, e) => {
-                                        const filePath = r.uri.replace('file://', '');
+                                        const filePath = uriToPath(r.uri);
                                         onOpenCodeViewer(filePath, r.range.start.line + 1, {
                                             x: e.clientX + 20,
                                             y: e.clientY - 50,
@@ -854,7 +855,7 @@ export default function DiffView({
                             data={lspData}
                             variant="floating"
                             onRefClick={(r, e) => {
-                                const filePath = r.uri.replace('file://', '');
+                                const filePath = uriToPath(r.uri);
                                 onOpenCodeViewer(filePath, r.range.start.line + 1, {
                                     x: e.clientX + 20,
                                     y: e.clientY - 50,

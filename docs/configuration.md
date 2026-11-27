@@ -453,7 +453,7 @@ See [Receiving Deliveries from Pub/Sub](webhooks.md#receiving-deliveries-from-pu
 
 The review chat (in the web client, and the Emacs client's `crs-chat`) lets a reviewer talk to a coding agent on this machine about the PR they're reviewing; the server runs the agent and keeps the conversations (see [Review chat](protocol.md#review-chat)). **Which agent is the config's choice**, not the client's: `[Chat] Agent` names it, and every new chat talks to it. Nothing needs configuring: without a `[Chat]` table the agent is Claude Code, offered whenever `claude` is on the server's `PATH`, and it costs nothing until someone starts a chat.
 
-The agent can be Claude Code's own CLI, or **any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP)**: Gemini CLI, `claude-code-acp`, opencode, goose, Hermes and the rest. Each agent has a table of its own — the built-in Claude Code one is `[Chat.Claude]`, any other is `[Chat.Agents.<id>]` — so adding one is adding a table:
+The agent can be Claude Code's own CLI, Google's **Antigravity** CLI (`agy`, [below](#antigravity)), or **any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP)**: Gemini CLI, `claude-code-acp`, opencode, goose, Hermes and the rest. Each agent has a table of its own — the built-in ones are `[Chat.Claude]` and `[Chat.Antigravity]`, any other is `[Chat.Agents.<id>]` — so adding one is adding a table:
 
 ```toml
 [Chat]
@@ -463,7 +463,7 @@ Agent = "gemini"                       # the agent new chats talk to: "claude" (
 Name = "Gemini CLI"                    # what the clients call it; default: its ID
 Command = "gemini --experimental-acp"  # starts the agent speaking ACP on stdio (words split like a shell would)
 Env = { GEMINI_API_KEY = "..." }       # added to the server's environment for the agent
-Models = ["gemini-2.5-pro", "gemini-2.5-flash"]  # the models to offer, as the agent names them; default: only its own
+Models = ["gemini-2.5-pro", "gemini-2.5-flash"]  # the models to offer, as the agent names them; default: those it offered its last session
 DefaultModel = "gemini-2.5-flash"      # preselected for a new chat; default: the agent's own default
 # Mode = "plan"                        # a session mode to switch each conversation to; default: the agent's
 # AuthMethod = "gemini-api-key"        # sign in with this method when the agent says it needs signing in
@@ -472,11 +472,11 @@ DefaultModel = "gemini-2.5-flash"      # preselected for a new chat; default: th
 
 | Key | Meaning |
 |-----|---------|
-| `Agent` (in `[Chat]`) | The ID of the agent new chats talk to: `claude`, or a key of `[Chat.Agents]`. Chats started with another agent carry on with it while it is still defined. |
-| `Protocol` | How the server talks to the agent: `acp` (the default for `[Chat.Agents]`) or `claude-code` (the Claude Code CLI, say a wrapper around it). `[Chat.Claude]` is always `claude-code`. |
-| `Command` | The program and its arguments. Required for an ACP agent; for Claude Code it defaults to `claude`. |
-| `Name`, `Env`, `Models`, `DefaultModel`, `Disabled` | As in the example. For Claude Code, `Models` defaults to its aliases `opus`, `sonnet` and `haiku`. |
-| `Mode`, `AuthMethod` | ACP only: a session mode the agent lists, and an authentication method it lists, both by ID. |
+| `Agent` (in `[Chat]`) | The ID of the agent new chats talk to: `claude`, `antigravity`, or a key of `[Chat.Agents]`. Chats started with another agent carry on with it while it is still defined. |
+| `Protocol` | How the server talks to the agent: `acp` (the default for `[Chat.Agents]`), `antigravity` (the Antigravity CLI, a second account's say) or `claude-code` (the Claude Code CLI, say a wrapper around it). `[Chat.Claude]` is always `claude-code`, `[Chat.Antigravity]` always `antigravity`. |
+| `Command` | The program and its arguments. Required for a plain ACP agent; for Claude Code it defaults to `claude`, for Antigravity to `agy acp`. |
+| `Name`, `Env`, `Models`, `DefaultModel`, `Disabled` | As in the example. For Claude Code, `Models` defaults to its aliases `opus`, `sonnet` and `haiku`; for an ACP agent (Antigravity too), to the models it offered when a session of the server's last opened — until one has, only its own default. |
+| `Mode`, `AuthMethod` | ACP and Antigravity: a session mode the agent lists, and an authentication method it lists, both by ID. |
 
 Some ACP agents:
 
@@ -503,6 +503,30 @@ Command = "goose acp"
 **Read-only.** Claude Code runs with only its read and search tools. An ACP agent is held to the same as far as the protocol lets a client: the server offers it file reads (of the chat's working directory and the PR's checkout only) but no writing and no terminals, and answers its permission requests itself — yes to reading, searching and thinking, no to anything else. A client can only refuse what an agent asks about, though, so **an agent that makes any other call — edits a file, runs a command, fetches a URL, or uses a tool whose kind it reports as `other` or not at all — without asking, or after it was refused, has its turn stopped** with a message saying so. Configure such an agent to ask first, or to deny those tools: opencode, for one, runs commands without asking by default, which the `OPENCODE_CONFIG_CONTENT` above turns off. Don't give an agent a mode that skips its permission requests.
 
 `UpdateConfig` doesn't model the `[Chat]` table; a save carries it over untouched.
+
+### Antigravity
+
+Google's [Antigravity CLI](https://antigravity.google/docs/cli/acp) speaks ACP as `agy acp`, and is built in: with `agy` installed and signed in, one line makes it the chat's agent.
+
+```toml
+[Chat]
+Agent = "antigravity"
+
+[Chat.Antigravity]                       # all optional
+# Command = "/home/me/.local/bin/agy acp"  # when agy isn't on the server's PATH; default "agy acp"
+# Models = ["<model ID>", ...]            # the models to offer; default: those it offered its last session
+# DefaultModel = "<model ID>"
+# Env = { GEMINI_API_KEY = "..." }       # with AuthMethod = "gemini-api-key", to use an API key instead of your Google sign-in
+# AuthMethod = "gemini-api-key"
+```
+
+- **Sign in once by running `agy` in a terminal** (Google sign-in); `agy acp` uses the credentials it keeps. If it isn't signed in, a chat says so rather than waiting on a browser. `AuthMethod` signs it in from the server instead: `oauth-personal` opens a browser on the server's machine, `gemini-api-key` uses the `GEMINI_API_KEY` in `Env`.
+- **It uses its own sign-in, not the server's keys**: the server's `GEMINI_API_KEY` (which the [AI features](#ai-features) read), `GOOGLE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` (Pub/Sub's) and the other Google Cloud variables aren't passed to it, so they don't decide which account it bills. Set one in `Env` to give it one.
+- **Models** are your account's, Claude and GPT ones included where your plan has them (with `agy` 1.5.1 or newer; older releases offer models other than Gemini only to the editors they know). Once a chat has started, the clients offer the models Antigravity listed for it; `Models` names the IDs to offer instead.
+- **Read-only**: each conversation is switched to Antigravity's `default` mode, where it asks before it edits a file, runs a command or calls an MCP tool — which the server refuses — unless `Mode` names another. Its own tools that only read, plan or hand a task to a subagent (`list_dir`, `update_steps`, `invoke_subagent`, ...) run; one that acts without asking (`schedule`, say) has its turn stopped, as for any ACP agent.
+- **Questions**: when Antigravity asks you to pick an answer, the question and its choices end its reply; answer in your next message.
+- When its quota is used up, the chat says so: try again once it resets, or start a session with another model.
+- It unpacks itself (about 1 GB) into a temporary directory each time it starts; the server gives each of its processes one of its own and removes it once the process has exited, however it ended.
 
 ## Example Config
 

@@ -1,6 +1,7 @@
 // LSP integration: the bridge's WebSocket <-> stdio relay, the diff-lsp
 // tempfile handshake, and the review UI's use of both language server modes
-// (diff-lsp for the diff, a per-language server for the code viewer).
+// (diff-lsp for the diff, a per-language server for the code viewer, which
+// navigates the checkout like an editor would).
 
 import { readFileSync } from 'node:fs';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
@@ -120,16 +121,118 @@ function locationRow(sec: Locator, code: string) {
 test.describe('LSP bridge', () => {
     test('reports which language servers are on PATH', async ({ request }) => {
         expect(await (await request.get('/api/check-lsp')).json()).toEqual({ available: true });
-        for (const lang of ['typescript', 'tsx', 'javascript']) {
+        for (const lang of ['typescript', 'tsx', 'javascript', 'go']) {
             const res = await request.get(`/api/check-lsp-file?lang=${lang}`);
             expect(await res.json(), lang).toEqual({ available: true });
         }
-        for (const lang of ['go', 'rust', 'python', '']) {
+        for (const lang of ['rust', 'python', 'toString', '']) {
             const res = await request.get(`/api/check-lsp-file?lang=${lang}`);
             expect(await res.json(), lang).toEqual({ available: false });
         }
-        const refused = await request.get('/api/lsp-file?lang=go');
+        const refused = await request.get('/api/lsp-file?lang=rust');
         expect(refused.status()).toBe(404);
+    });
+
+    test('tells the code viewer which server a file gets, and where it is rooted', async ({
+        request,
+    }) => {
+        const workspace = async (file: string) => {
+            const res = await request.post('/api/lsp-workspace', {
+                data: { checkout: FIXTURE_REPO, file },
+            });
+            expect(res.ok(), file).toBe(true);
+            return res.json();
+        };
+        // The fixture repo has no package.json or go.mod, so its servers are
+        // rooted at the checkout.
+        expect(await workspace('src/greet.ts')).toEqual({
+            available: true,
+            lang: 'typescript',
+            languageId: 'typescript',
+            root: FIXTURE_REPO,
+            server: 'typescript-language-server',
+            outside: false,
+        });
+        expect(await workspace('web/App.tsx')).toMatchObject({
+            lang: 'typescript',
+            languageId: 'typescriptreact',
+        });
+        expect(await workspace(`${FIXTURE_REPO}/cmd/tool/main.go`)).toMatchObject({
+            available: true,
+            lang: 'go',
+            server: 'gopls',
+            root: FIXTURE_REPO,
+        });
+        // The standard library, reached through a definition.
+        expect(await workspace('/usr/lib/go/src/fmt/print.go')).toMatchObject({
+            available: true,
+            lang: 'go',
+            outside: true,
+        });
+        expect(await workspace('src/lib.rs')).toMatchObject({
+            available: false,
+            lang: 'rust',
+            server: 'rust-analyzer',
+        });
+        expect(await workspace('app/main.py')).toMatchObject({
+            available: false,
+            lang: 'python',
+            server: 'pyright-langserver',
+        });
+        expect(await workspace('README.md')).toMatchObject({ available: false, lang: '' });
+        const missing = await request.post('/api/lsp-workspace', { data: { file: 'a.go' } });
+        expect(missing.status()).toBe(400);
+    });
+
+    test('starts the Go server for a Go workspace', async ({ lsp, baseURL }) => {
+        // A root of its own, so no server an earlier run left idle answers.
+        const root = `/nonexistent/${crypto.randomUUID()}`;
+        const client = await connect(
+            wsUrl(baseURL!, `/api/lsp-file?lang=go&root=${encodeURIComponent(root)}`)
+        );
+        await client.request('initialize', { processId: null, rootUri: `file://${root}` });
+        // gopls is started as `gopls serve`.
+        expect(lsp.spawns('file').map(s => s.argv)).toEqual([['file', 'serve']]);
+        client.close();
+    });
+
+    test("answers the server's own requests, and relays its progress", async ({ lsp, baseURL }) => {
+        const root = `/nonexistent/${crypto.randomUUID()}`;
+        const client = await connect(
+            wsUrl(baseURL!, `/api/lsp-file?lang=typescript&root=${encodeURIComponent(root)}`)
+        );
+        await client.request('initialize', { processId: null, rootUri: `file://${root}` });
+        client.notify('initialized');
+
+        // The fake asks for its configuration once initialized, as pyright
+        // does, under an id the client's initialize also used.
+        await expect
+            .poll(() => lsp.responses('file'))
+            .toContainEqual({
+                jsonrpc: '2.0',
+                id: 1,
+                result: [null],
+            });
+
+        await client.request('e2e/progress', {
+            token: 'job',
+            value: { kind: 'begin', title: 'Indexing', percentage: 10 },
+        });
+        await expect
+            .poll(() => lsp.responses('file'))
+            .toContainEqual({
+                jsonrpc: '2.0',
+                id: 'create-job',
+                result: null,
+            });
+        await expect
+            .poll(() => client.notifications.filter(n => n.method === '$/progress'))
+            .toHaveLength(1);
+        // The client heard the progress, never the requests the bridge answered.
+        expect(client.notifications.filter(n => n.id !== undefined)).toEqual([]);
+
+        await client.request('e2e/progress', { token: 'job', value: { kind: 'end' } });
+        client.close();
     });
 
     test('writes the 5-line tempfile header diff-lsp parses', async ({ request }) => {
@@ -554,5 +657,159 @@ test.describe('LSP disabled', () => {
             expect(diff.status()).toBe(404);
             expect((await request.get('/api/lsp-file?lang=typescript')).status()).toBe(404);
         });
+    });
+});
+
+test.describe('Code viewer navigation', () => {
+    /** Opens formatGreeting's declaration (src/greet.ts:8) from the diff, as a reviewer would. */
+    async function openViewer(page: Page, lsp: LspLog) {
+        await openReview(page);
+        await lsp.waitForDidOpen('diff');
+        await clickWord(diffRow(page, 'const message = formatGreeting('), 'formatGreeting');
+        await locationRow(section(popover(page), 'Definition'), 'export function').click();
+        await expect(page.getByText('(line 8)')).toBeVisible();
+        await expect(page.getByTitle('Language server connected')).toBeVisible();
+        await lsp.waitForDidOpen('file');
+    }
+
+    const line = (page: Page, n: number) => page.locator(`[data-line="${n}"]`);
+    const back = (page: Page) => page.getByRole('button', { name: 'Back', exact: true });
+    const forward = (page: Page) => page.getByRole('button', { name: 'Forward', exact: true });
+
+    test('Ctrl+click goes straight to a definition; Back and Forward retrace it', async ({
+        page,
+        lsp,
+    }) => {
+        await openViewer(page, lsp);
+        await expect(back(page)).toBeDisabled();
+
+        // The `Greeting` type annotation, declared at line 3 of the same file.
+        await clickWord(line(page, 8), 'Greeting', 1, ['Control']);
+        await expect(page.getByText('(line 3)')).toBeVisible();
+        expect(lsp.received('file', 'textDocument/hover')).toHaveLength(0);
+        const definition = lsp.received('file', 'textDocument/definition').at(-1)!;
+        expect(definition.params.position.line).toBe(7);
+
+        await back(page).click();
+        await expect(page.getByText('(line 8)')).toBeVisible();
+        await forward(page).click();
+        await expect(page.getByText('(line 3)')).toBeVisible();
+        await expect(forward(page)).toBeDisabled();
+
+        // Alt+← does what Back does while the viewer has focus.
+        await line(page, 3).click({ position: { x: 2, y: 5 } });
+        await page.keyboard.press('Alt+ArrowLeft');
+        await expect(page.getByText('(line 8)')).toBeVisible();
+    });
+
+    test('a word with no definition says so and stays put', async ({ page, lsp }) => {
+        await openViewer(page, lsp);
+        await clickWord(line(page, 9), 'Hello', 0, ['Control']);
+        await expect(page.getByText('No definition found', { exact: true })).toBeVisible();
+        await expect(page.getByText('(line 8)')).toBeVisible();
+        await expect(back(page)).toBeDisabled();
+    });
+
+    test("lists an interface's implementations", async ({ page, lsp }) => {
+        await openViewer(page, lsp);
+        await clickWord(line(page, 3), 'Greeting');
+        const viewerPopover = popover(page).filter({ hasText: 'Implementations' });
+        await expect(
+            locationRow(section(viewerPopover, 'Implementations'), 'export function formatGreeting')
+        ).toBeVisible();
+    });
+
+    test("Symbols lists the file's declarations and searches the workspace", async ({
+        page,
+        lsp,
+    }) => {
+        await openViewer(page, lsp);
+        await page.getByRole('button', { name: 'Symbols', exact: true }).click();
+
+        const inFile = page.getByRole('list', { name: 'Symbols in this file' });
+        await expect(inFile.getByRole('listitem')).toHaveText([
+            /^Greeting\s*interface$/,
+            /^formatGreeting\s*function$/,
+        ]);
+        await inFile
+            .getByRole('listitem')
+            .filter({ hasText: /^Greeting/ })
+            .click();
+        await expect(page.getByText('(line 3)')).toBeVisible();
+
+        // Typing filters this file's list and, past two letters, asks the
+        // server for matches anywhere in the workspace.
+        await page.getByRole('searchbox', { name: 'Search symbols' }).fill('message');
+        await expect(page.getByText('No matches.')).toBeVisible();
+        const inWorkspace = page.getByRole('list', { name: 'Symbols in the workspace' });
+        await expect(inWorkspace.getByRole('listitem')).toHaveCount(1);
+        await expect(inWorkspace.getByRole('listitem')).toContainText('src/main.ts:3');
+        expect(lsp.received('file', 'workspace/symbol').at(-1)!.params).toEqual({
+            query: 'message',
+        });
+
+        await inWorkspace.getByRole('listitem').click();
+        await expect(line(page, 3)).toContainText(
+            "const message = formatGreeting({ name: 'world', punctuation: '!' });"
+        );
+        await expect
+            .poll(() =>
+                lsp
+                    .received('file', 'textDocument/didOpen')
+                    .map(m => m.params.textDocument.uri as string)
+            )
+            .toContain(`file://${FIXTURE_REPO}/src/main.ts`);
+        // The same server reads the new file: the viewer closed the old one on it.
+        expect(
+            lsp
+                .received('file', 'textDocument/didClose')
+                .map(m => m.params.textDocument.uri as string)
+        ).toContain(`file://${FIXTURE_REPO}/src/greet.ts`);
+
+        // And from there, Ctrl+click follows the call back into greet.ts.
+        await clickWord(line(page, 3), 'formatGreeting', 0, ['Control']);
+        await expect(line(page, 8)).toContainText('export function formatGreeting');
+        await back(page).click();
+        await expect(line(page, 3)).toContainText('const message');
+        await back(page).click();
+        await back(page).click();
+        await expect(page.getByText('(line 8)')).toBeVisible();
+    });
+
+    test("shows the server's progress, also to a viewer opened while it runs", async ({
+        page,
+        lsp,
+        baseURL,
+    }) => {
+        await openViewer(page, lsp);
+        const badge = page.getByTitle('Language server connected');
+        await expect(badge).toHaveText('typescript-language-server');
+
+        // Another client of the viewer's server, to make it report work: the
+        // bridge shares one server per workspace root.
+        const client = await connect(
+            wsUrl(
+                baseURL!,
+                `/api/lsp-file?lang=typescript&root=${encodeURIComponent(FIXTURE_REPO)}`
+            )
+        );
+        await client.request('initialize', { processId: null, rootUri: `file://${FIXTURE_REPO}` });
+        const progress = (value: object) =>
+            client.request('e2e/progress', { token: 'e2e-index', value });
+        try {
+            await progress({ kind: 'begin', title: 'Indexing', percentage: 10 });
+            await progress({ kind: 'report', percentage: 40 });
+            await expect(badge).toHaveText('typescript-language-server · Indexing 40%');
+
+            // A viewer opened now hears that the server is still at it.
+            await page.getByRole('button', { name: 'Close viewer' }).click();
+            await expect(badge).toHaveCount(0);
+            await locationRow(section(popover(page), 'Definition'), 'export function').click();
+            await expect(badge).toHaveText('typescript-language-server · Indexing 40%');
+        } finally {
+            await progress({ kind: 'end' });
+        }
+        await expect(badge).toHaveText('typescript-language-server');
+        client.close();
     });
 });

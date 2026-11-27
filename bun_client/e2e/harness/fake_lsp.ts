@@ -11,9 +11,14 @@
 //           (+/- prefix included). A client that gets the header offset or
 //           the prefix column wrong resolves the wrong word, which the tests
 //           catch.
-//   file  — stands in for a per-language server (typescript-language-server)
-//           used by the code viewer: plain 0-indexed positions into the
-//           document sent with textDocument/didOpen.
+//   file  — stands in for a per-language server (typescript-language-server,
+//           gopls) used by the code viewer: plain 0-indexed positions into
+//           the document sent with textDocument/didOpen. Like pyright, it
+//           asks its client for configuration once initialized, and on an
+//           `e2e/progress` request it reports work in progress the way
+//           rust-analyzer does while indexing (window/workDoneProgress/create,
+//           then $/progress), so the specs can check the bridge answers a
+//           server's requests and relays its progress.
 //
 // Symbols come from scanning the project root's source files for
 // declarations, so hover/definition/references/typeDefinition answers point
@@ -69,6 +74,7 @@ interface Loc {
 
 interface Symbol {
     name: string;
+    kind: number;
     decl: Loc;
     declText: string;
 }
@@ -95,7 +101,18 @@ function sourceFiles(dir: string): string[] {
     return out;
 }
 
-const DECL = /\b(?:function|interface|const|let|class|type|func)\s+([A-Za-z_]\w*)/g;
+const DECL = /\b(function|interface|const|let|class|type|func)\s+([A-Za-z_]\w*)/g;
+
+// LSP SymbolKind for each declaring keyword.
+const SYMBOL_KIND: Record<string, number> = {
+    function: 12,
+    func: 12,
+    interface: 11,
+    class: 5,
+    type: 26,
+    const: 14,
+    let: 13,
+};
 
 function buildIndex(dir: string) {
     const symbols = new Map<string, Symbol>();
@@ -105,10 +122,11 @@ function buildIndex(dir: string) {
         files.set(file, lines);
         lines.forEach((text, line) => {
             for (const m of text.matchAll(DECL)) {
-                if (symbols.has(m[1])) continue;
-                symbols.set(m[1], {
-                    name: m[1],
-                    decl: { file, line, character: m.index! + m[0].length - m[1].length },
+                if (symbols.has(m[2])) continue;
+                symbols.set(m[2], {
+                    name: m[2],
+                    kind: SYMBOL_KIND[m[1]],
+                    decl: { file, line, character: m.index! + m[0].length - m[2].length },
                     declText: text.trim().replace(/\s*[{=].*$/, ''),
                 });
             }
@@ -221,6 +239,9 @@ const handlers: Record<string, (params: any) => unknown> = {
                 definitionProvider: true,
                 referencesProvider: true,
                 typeDefinitionProvider: true,
+                implementationProvider: true,
+                documentSymbolProvider: true,
+                workspaceSymbolProvider: true,
                 textDocumentSync: 1,
             },
             serverInfo: { name: `crs-e2e-fake-${role}` },
@@ -262,6 +283,59 @@ const handlers: Record<string, (params: any) => unknown> = {
         }
         return null;
     },
+    // Implementations of an interface: the declarations that take one, e.g.
+    // formatGreeting(greeting: Greeting) for Greeting. Nothing for other
+    // symbols, so the section only shows when there's something in it.
+    'textDocument/implementation': (params: Params) => {
+        const { word } = resolve(params);
+        const sym = word ? index.symbols.get(word) : undefined;
+        if (!sym || sym.kind !== SYMBOL_KIND.interface) return null;
+        const found = [...index.symbols.values()].filter(
+            s => s !== sym && new RegExp(`:\\s*${sym.name}\\b`).test(s.declText)
+        );
+        return found.length ? found.map(s => toLocation(s.decl, s.name.length)) : null;
+    },
+    // The document's declarations, as hierarchical symbols (no nesting).
+    'textDocument/documentSymbol': (params: { textDocument: { uri: string } }) => {
+        const file = params.textDocument.uri.replace('file://', '');
+        return [...index.symbols.values()]
+            .filter(s => s.decl.file === file)
+            .map(s => {
+                const at = toLocation(s.decl, s.name.length).range;
+                return {
+                    name: s.name,
+                    kind: s.kind,
+                    detail: s.declText,
+                    range: at,
+                    selectionRange: at,
+                };
+            });
+    },
+    'workspace/symbol': (params: { query: string }) => {
+        const q = params.query.toLowerCase();
+        return [...index.symbols.values()]
+            .filter(s => s.name.toLowerCase().includes(q))
+            .map(s => ({
+                name: s.name,
+                kind: s.kind,
+                location: toLocation(s.decl, s.name.length),
+            }));
+    },
+    // Work in progress, the way a server reports indexing: it asks the
+    // client to create the token (the bridge answers), then sends the
+    // progress. `value` is the $/progress value to send.
+    'e2e/progress': (params: { token: string; value: { kind: string } }) => {
+        if (params.value.kind === 'begin') {
+            send({
+                jsonrpc: '2.0',
+                id: `create-${params.token}`,
+                method: 'window/workDoneProgress/create',
+                params: { token: params.token },
+            });
+        }
+        send({ jsonrpc: '2.0', method: '$/progress', params });
+        return null;
+    },
     // Echoes params back, written in two chunks split inside a multi-byte
     // character, to exercise the bridge's Content-Length reassembly.
     'e2e/echo': (params: unknown) => ({ echo: params, split: true }),
@@ -274,9 +348,22 @@ const notifications: Record<string, (params: any) => void> = {
             method: 'window/logMessage',
             params: { type: 3, message: `crs-e2e fake ${role} server ready` },
         });
+        // pyright asks for its settings before it does anything; the bridge
+        // answers (lsp_pool.ts), with ids that can clash with a client's.
+        if (role === 'file') {
+            send({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'workspace/configuration',
+                params: { items: [{ section: 'python' }] },
+            });
+        }
     },
     'textDocument/didOpen': (params: { textDocument: { uri: string; text: string } }) => {
         documents.set(params.textDocument.uri, params.textDocument.text);
+    },
+    'textDocument/didClose': (params: { textDocument: { uri: string } }) => {
+        documents.delete(params.textDocument.uri);
     },
     exit: () => process.exit(0),
 };

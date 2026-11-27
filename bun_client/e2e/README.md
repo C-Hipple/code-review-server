@@ -8,7 +8,8 @@ no GitHub token, network, or SQLite database:
 | ------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `crs --server` (Go backend)                | `harness/fake_crs.ts` | Newline-delimited JSON-RPC over stdio, serving the PRs in `fixtures/prs.ts`, with in-memory comments, reviews and feedback. Enables the comments-addressed AI feature, whose runs read `pending` for a moment; change-diagram is off unless a spec calls `backend.setDiagram`. Review-ease is on, rating three of the four PRs, unless a spec calls `backend.setReviewEase(false)`. Offers one chat agent (a stand-in for Claude Code), named as the one the config picks for new chats, unless a spec calls `backend.setChatAvailable(false)`. |
 | `diff-lsp`                                 | `harness/fake_lsp.ts` | Reads the bridge's tempfile like the real diff-lsp and resolves positions the same way (1-indexed tempfile line, raw diff column).                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `typescript-language-server` (code viewer) | `harness/fake_lsp.ts` | Plain 0-indexed positions into the document from `didOpen`. Also answers implementation, documentSymbol and workspace/symbol; asks for `workspace/configuration` once initialized, as pyright does; and on an `e2e/progress` request reports work in progress (`window/workDoneProgress/create`, then `$/progress`).                                                                                                                                                                                                                            |
+| `gopls` (code viewer)                      | `harness/fake_lsp.ts` | The same fake, so specs can check the bridge picks a server per language. No `rust-analyzer` or `pyright-langserver`, which read as missing.                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 The fake `crs` also answers `Subscribe`: it sends a `Server.Heartbeat` every
 second (the launcher sets `CRS_HEARTBEAT_SECONDS=1`) until a spec calls
@@ -65,9 +66,10 @@ and `lsp.received()` (see `harness/test.ts`).
 
 ## Real language servers (opt-in)
 
-`lsp_real.e2e.ts` runs the diff and code-viewer LSP flows against the real
-`diff-lsp` and `typescript-language-server` on a third bridge (`:5192`), which
-checks the fake's position contract against the real one:
+`lsp_real.e2e.ts` runs the diff and code-viewer LSP flows (the viewer's
+navigation included) against the real `diff-lsp` and
+`typescript-language-server` on a third bridge (`:5192`), which checks the
+fake's position contract against the real one:
 
 ```bash
 cargo install --git https://github.com/C-Hipple/diff-lsp

@@ -3,9 +3,23 @@ import { colors, shadows } from '../design';
 import { getSyntaxTheme } from './review/diff_theme';
 import { readFile, listFiles } from '../api';
 import type { Theme } from '../design';
-import { useLsp } from '../hooks/useLsp';
+import { useFileLsp } from '../hooks/useFileLsp';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import type { LspLocation } from '../lsp';
+import {
+    canGoBack,
+    canGoForward,
+    currentEntry,
+    goBack,
+    goForward,
+    type NavEntry,
+    navigate,
+    pathInCheckout,
+    startHistory,
+    uriToPath,
+} from '../lsp_utils';
 import LspPopover from './LspPopover';
+import SymbolsPanel from './SymbolsPanel';
 import VirtualizedCodeBlock, { CODE_LINE_HEIGHT } from './VirtualizedCodeBlock';
 
 interface CodeViewerModalProps {
@@ -133,6 +147,32 @@ const getIconFromFilename = (filename: string, isDirectory: boolean): string => 
     return iconMap[ext] || '📄';
 };
 
+const navButtonStyle = (enabled: boolean): React.CSSProperties => ({
+    background: 'transparent',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    padding: '2px 7px',
+    color: enabled ? 'var(--text-primary)' : 'var(--text-tertiary)',
+    fontSize: '13px',
+    cursor: enabled ? 'pointer' : 'default',
+    opacity: enabled ? 1 : 0.5,
+    lineHeight: 1.3,
+});
+
+const toggleButtonStyle = (active: boolean): React.CSSProperties => ({
+    background: active ? 'var(--bg-tertiary)' : 'var(--bg-secondary)',
+    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+    borderRadius: '4px',
+    padding: '4px 8px',
+    color: 'var(--text-primary)',
+    fontSize: '12px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    whiteSpace: 'nowrap',
+});
+
 const buildFileTree = (files: string[]): FileNode[] => {
     const root: FileNode[] = [];
     files.forEach(path => {
@@ -183,14 +223,28 @@ export default function CodeViewerModal({
     onUndock,
     docked = false,
 }: CodeViewerModalProps) {
-    const [currentFilePath, setCurrentFilePath] = useState(filePath);
-    const [content, setContent] = useState<string>('');
+    // Where the viewer is, and where it has been: Back and Forward walk
+    // this like an editor's jump list. Paths in the checkout are kept
+    // relative to it, whichever way they came (the diff hands over absolute
+    // ones), so one file is one path.
+    const [history, setHistory] = useState(() =>
+        startHistory({ path: pathInCheckout(repoPath, filePath), line: initialLine || null })
+    );
+    // Bumped on every jump, so going back to a line already on show still
+    // scrolls to it.
+    const [jumps, setJumps] = useState(0);
+    const here = currentEntry(history);
+    const currentFilePath = here.path;
+    // The file's text, with the path it was read from: while the next file
+    // loads, the last one's text mustn't pass for it.
+    const [loaded, setLoaded] = useState<{ path: string; content: string } | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [scrollToLine, setScrollToLine] = useState<number | null>(null);
+    // A note in the header, e.g. that a Ctrl+click found no definition.
+    const [notice, setNotice] = useState<string | null>(null);
 
     const [allFiles, setAllFiles] = useState<string[]>([]);
-    const [showFileTree, setShowFileTree] = useState(false);
+    const [sidebar, setSidebar] = useState<'files' | 'symbols' | null>(null);
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
     // On phones the floating/draggable layout can't fit, so we render the
@@ -212,13 +266,18 @@ export default function CodeViewerModal({
         return getLanguageFromFilename(displayFn);
     }, [currentFilePath]);
 
-    const lsp = useLsp({
-        mode: 'file',
-        repoPath,
-        filePath: currentFilePath,
-        fileContent: content,
-        languageId: language,
-        enabled: isOpen && !!content,
+    const content = loaded && loaded.path === currentFilePath ? loaded.content : null;
+    const absolutePath = currentFilePath.startsWith('/')
+        ? currentFilePath
+        : `${repoPath.replace(/\/$/, '')}/${currentFilePath}`;
+
+    // The file's own language server (gopls, rust-analyzer, pyright,
+    // typescript-language-server), rooted at its project.
+    const lsp = useFileLsp({
+        checkout: repoPath,
+        filePath: absolutePath,
+        text: content,
+        enabled: isOpen,
     });
 
     // Clear LSP state on file change
@@ -226,6 +285,44 @@ export default function CodeViewerModal({
         setActiveLspLine(null);
         lsp.clearData();
     }, [currentFilePath]);
+
+    useEffect(() => {
+        if (!notice) return;
+        const timer = setTimeout(() => setNotice(null), 2500);
+        return () => clearTimeout(timer);
+    }, [notice]);
+
+    /** Moves to a file and line, remembering where the jump was made from. */
+    const jumpTo = useCallback(
+        (to: NavEntry, fromLine?: number | null) => {
+            setHistory(h =>
+                navigate(h, { ...to, path: pathInCheckout(repoPath, to.path) }, fromLine)
+            );
+            setJumps(n => n + 1);
+            setActiveLspLine(null);
+            lsp.clearData();
+        },
+        [lsp.clearData, repoPath]
+    );
+
+    const jumpToLocation = useCallback(
+        (location: LspLocation, fromLine?: number | null) =>
+            jumpTo(
+                { path: uriToPath(location.uri), line: location.range.start.line + 1 },
+                fromLine
+            ),
+        [jumpTo]
+    );
+
+    const walkHistory = useCallback(
+        (step: typeof goBack) => {
+            setHistory(step);
+            setJumps(n => n + 1);
+            setActiveLspLine(null);
+            lsp.clearData();
+        },
+        [lsp.clearData]
+    );
 
     const modalRef = useRef<HTMLDivElement>(null);
     const animationFrameId = useRef<number | null>(null);
@@ -270,10 +367,14 @@ export default function CodeViewerModal({
         }
     }, [isOpen]);
 
-    // Sync currentFilePath when prop changes (if user clicks another file link in Review.tsx)
+    // Another file handed in by the review (a link clicked there) is a jump too.
+    const firstRender = useRef(true);
     useEffect(() => {
-        setScrollToLine(null);
-        setCurrentFilePath(filePath);
+        if (firstRender.current) {
+            firstRender.current = false;
+            return;
+        }
+        jumpTo({ path: filePath, line: initialLine || null });
     }, [filePath]);
 
     // Fetch file list
@@ -287,25 +388,34 @@ export default function CodeViewerModal({
     // Fetch file content
     useEffect(() => {
         if (!isOpen || !currentFilePath) return;
+        if (loaded?.path === currentFilePath) {
+            // Back to the file already loaded, before another one arrived.
+            setLoading(false);
+            setError(null);
+            return;
+        }
+        let cancelled = false;
 
         const fetchContent = async () => {
             setLoading(true);
             setError(null);
             try {
-                // If currentFilePath is relative, it might need to be resolved
-                // but if it's from the tree, it's relative to repoPath.
-                // If it's absolute, readFile handles it.
-                // Our server.ts expects absolute or relative to repoPath.
+                // Relative to repoPath from the tree and the checkout; absolute
+                // for a definition outside it (a dependency, the standard
+                // library), which server.ts reads as is.
                 const text = await readFile(repoPath, currentFilePath);
-                setContent(text);
+                if (!cancelled) setLoaded({ path: currentFilePath, content: text });
             } catch (e) {
-                setError(e instanceof Error ? e.message : 'Failed to load file');
+                if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load file');
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         };
 
         fetchContent();
+        return () => {
+            cancelled = true;
+        };
     }, [isOpen, currentFilePath, repoPath]);
 
     // Handle ESC key
@@ -477,10 +587,33 @@ export default function CodeViewerModal({
         [expandedDirs]
     );
 
+    // Ctrl/Cmd+click: straight to the definition, as in an editor. Several
+    // (an overloaded or re-declared name) open the popover to pick from.
+    const goToDefinition = useCallback(
+        async (line: number, column: number) => {
+            const definitions = await lsp.definitionAt(line - 1, column);
+            if (!definitions) {
+                setNotice('No definition found');
+                return;
+            }
+            if (definitions.length === 1) {
+                jumpToLocation(definitions[0], line);
+                return;
+            }
+            setActiveLspLine(line);
+            lsp.query(line - 1, column);
+        },
+        [lsp.definitionAt, lsp.query, jumpToLocation]
+    );
+
     // Toggle an LSP query for the clicked line/column.
     const handleLspLineClick = useCallback(
-        (line: number, column: number) => {
-            if (!lsp.available) return;
+        (line: number, column: number, e?: React.MouseEvent) => {
+            if (!lsp.connected) return;
+            if (e && (e.metaKey || e.ctrlKey)) {
+                goToDefinition(line, column);
+                return;
+            }
             if (activeLspLine === line) {
                 setActiveLspLine(null);
                 lsp.clearData();
@@ -492,15 +625,31 @@ export default function CodeViewerModal({
                 if (result === 'empty') setActiveLspLine(cur => (cur === line ? null : cur));
             });
         },
-        [lsp, activeLspLine]
+        [lsp, activeLspLine, goToDefinition]
     );
 
-    const targetLine = scrollToLine ?? (currentFilePath === filePath ? initialLine : null);
+    // Alt+← / Alt+→ walk the history while the viewer has focus (a click in
+    // it gives it focus), as Back and Forward do in an editor.
+    const handleKeyDown = useCallback(
+        (e: React.KeyboardEvent) => {
+            if (!e.altKey || (e.target as HTMLElement).closest('input, textarea')) return;
+            if (e.key === 'ArrowLeft' && canGoBack(history)) {
+                e.preventDefault();
+                walkHistory(goBack);
+            } else if (e.key === 'ArrowRight' && canGoForward(history)) {
+                e.preventDefault();
+                walkHistory(goForward);
+            }
+        },
+        [history, walkHistory]
+    );
+
+    const targetLine = here.line;
 
     // Single highlighted, virtualization-aware file view shared by both the
     // docked and floating layouts.
     const codeViewer =
-        !loading && !error && content ? (
+        !error && content !== null ? (
             <VirtualizedCodeBlock
                 content={content}
                 language={language}
@@ -508,7 +657,8 @@ export default function CodeViewerModal({
                 activeLine={activeLspLine}
                 targetLine={targetLine}
                 scrollToLine={targetLine}
-                clickable={!!lsp.available}
+                scrollKey={jumps}
+                clickable={lsp.connected}
                 onLineClick={handleLspLineClick}
             >
                 {activeLspLine !== null && lsp.lspData && (
@@ -523,16 +673,7 @@ export default function CodeViewerModal({
                         <LspPopover
                             data={lsp.lspData}
                             variant="floating"
-                            onRefClick={r => {
-                                const refPath = r.uri.replace('file://', '');
-                                const relativePath = refPath.startsWith(repoPath + '/')
-                                    ? refPath.slice(repoPath.length + 1)
-                                    : refPath;
-                                setCurrentFilePath(relativePath);
-                                setScrollToLine(r.range.start.line + 1);
-                                setActiveLspLine(null);
-                                lsp.clearData();
-                            }}
+                            onRefClick={r => jumpToLocation(r, activeLspLine)}
                             onClose={() => {
                                 setActiveLspLine(null);
                                 lsp.clearData();
@@ -573,8 +714,7 @@ export default function CodeViewerModal({
                             if (node.isDirectory) {
                                 toggleDir(node.path);
                             } else {
-                                setScrollToLine(null);
-                                setCurrentFilePath(node.path);
+                                jumpTo({ path: node.path, line: null });
                             }
                         }}
                         onMouseEnter={e =>
@@ -610,12 +750,86 @@ export default function CodeViewerModal({
                 </div>
             ));
         },
-        [expandedDirs, currentFilePath, toggleDir]
+        [expandedDirs, currentFilePath, toggleDir, jumpTo]
     );
 
     if (!isOpen) return null;
 
     const displayFilename = currentFilePath.split('/').pop() || currentFilePath;
+
+    const sidebarContent = sidebar && (
+        <div
+            className="custom-scrollbar"
+            style={{
+                width: '250px',
+                minWidth: '150px',
+                borderRight: '1px solid var(--border)',
+                background: 'var(--bg-secondary)',
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                animation: 'slideIn 0.2s ease-out',
+            }}
+        >
+            <style>{`
+                    @keyframes slideIn {
+                        from { width: 0; opacity: 0; }
+                        to { width: 250px; opacity: 1; }
+                    }
+                    .custom-scrollbar::-webkit-scrollbar {
+                        width: 10px;
+                        height: 10px;
+                    }
+                    .custom-scrollbar::-webkit-scrollbar-track {
+                        background: var(--bg-secondary);
+                    }
+                    .custom-scrollbar::-webkit-scrollbar-thumb {
+                        background: var(--border);
+                        border-radius: 5px;
+                        border: 2px solid var(--bg-secondary);
+                    }
+                    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+                        background: var(--text-tertiary);
+                    }
+                    /* Firefox */
+                    .custom-scrollbar {
+                        scrollbar-width: thin;
+                        scrollbar-color: var(--border) var(--bg-secondary);
+                    }
+                `}</style>
+            <div
+                style={{
+                    padding: '10px 12px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: 'var(--text-tertiary)',
+                    borderBottom: '1px solid var(--border)',
+                    background: 'var(--bg-tertiary)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                }}
+            >
+                {sidebar === 'files' ? 'Project Explorer' : 'Symbols'}
+            </div>
+            {sidebar === 'files' ? (
+                <div
+                    className="custom-scrollbar"
+                    style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+                >
+                    {renderFileTree(fileTree)}
+                </div>
+            ) : (
+                <SymbolsPanel
+                    available={lsp.available}
+                    symbols={lsp.symbols}
+                    roots={[repoPath, lsp.root]}
+                    searchWorkspace={lsp.searchWorkspace}
+                    onPickLine={line => jumpTo({ path: currentFilePath, line })}
+                    onPickLocation={location => jumpToLocation(location)}
+                />
+            )}
+        </div>
+    );
 
     const headerContent = (
         <>
@@ -642,21 +856,37 @@ export default function CodeViewerModal({
                     }}
                 >
                     <button
-                        onClick={() => setShowFileTree(!showFileTree)}
-                        style={{
-                            background: 'var(--bg-secondary)',
-                            border: '1px solid var(--border)',
-                            borderRadius: '4px',
-                            padding: '4px 8px',
-                            color: 'var(--text-primary)',
-                            fontSize: '12px',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                        }}
+                        onClick={() => walkHistory(goBack)}
+                        disabled={!canGoBack(history)}
+                        title="Back (Alt+←)"
+                        aria-label="Back"
+                        style={navButtonStyle(canGoBack(history))}
                     >
-                        {showFileTree ? '◀ Hide Tree' : '▶ Files'}
+                        ←
+                    </button>
+                    <button
+                        onClick={() => walkHistory(goForward)}
+                        disabled={!canGoForward(history)}
+                        title="Forward (Alt+→)"
+                        aria-label="Forward"
+                        style={navButtonStyle(canGoForward(history))}
+                    >
+                        →
+                    </button>
+                    <button
+                        onClick={() => setSidebar(sidebar === 'files' ? null : 'files')}
+                        aria-pressed={sidebar === 'files'}
+                        style={toggleButtonStyle(sidebar === 'files')}
+                    >
+                        {sidebar === 'files' ? '◀ Hide Tree' : '▶ Files'}
+                    </button>
+                    <button
+                        onClick={() => setSidebar(sidebar === 'symbols' ? null : 'symbols')}
+                        aria-pressed={sidebar === 'symbols'}
+                        title="This file's declarations, and a search across the workspace"
+                        style={toggleButtonStyle(sidebar === 'symbols')}
+                    >
+                        Symbols
                     </button>
                     <span style={{ fontSize: '16px', marginLeft: '8px' }}>
                         {getIconFromFilename(displayFilename, false)}
@@ -674,9 +904,9 @@ export default function CodeViewerModal({
                     >
                         {displayFilename}
                     </span>
-                    {currentFilePath === filePath && initialLine && (
+                    {here.line && (
                         <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            (line {initialLine})
+                            (line {here.line})
                         </span>
                     )}
                     {lsp.connected && (
@@ -685,13 +915,30 @@ export default function CodeViewerModal({
                                 fontSize: '10px',
                                 padding: '2px 6px',
                                 borderRadius: '4px',
-                                background: colors.bgSuccessDim,
-                                color: colors.success,
+                                background: lsp.progress
+                                    ? colors.bgWarningDim
+                                    : colors.bgSuccessDim,
+                                color: lsp.progress ? colors.warning : colors.success,
                                 fontWeight: 600,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                maxWidth: '260px',
                             }}
-                            title="Language server connected"
+                            title={`Language server connected: ${lsp.server}, rooted at ${lsp.root}${
+                                lsp.progress ? ` (${lsp.progress})` : ''
+                            }. Click a symbol for its details, Ctrl/⌘+click to go to its definition.`}
                         >
-                            LSP
+                            {lsp.server || 'LSP'}
+                            {lsp.progress ? ` · ${lsp.progress}` : ''}
+                        </span>
+                    )}
+                    {notice && (
+                        <span
+                            role="status"
+                            style={{ fontSize: '12px', color: 'var(--text-secondary)' }}
+                        >
+                            {notice}
                         </span>
                     )}
                 </div>
@@ -734,6 +981,8 @@ export default function CodeViewerModal({
                     )}
                     <button
                         onClick={onClose}
+                        aria-label="Close viewer"
+                        title="Close"
                         style={{
                             background: 'transparent',
                             border: 'none',
@@ -756,81 +1005,22 @@ export default function CodeViewerModal({
         return (
             <div
                 ref={modalRef}
+                tabIndex={-1}
+                onKeyDown={handleKeyDown}
                 style={{
                     display: 'flex',
                     flexDirection: 'column',
                     height: '100%',
                     background: 'var(--bg-secondary)',
                     overflow: 'hidden',
+                    outline: 'none',
                 }}
             >
                 {headerContent}
 
                 {/* Sidebar and Content Container */}
                 <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-                    {/* Sidebar */}
-                    {showFileTree && (
-                        <div
-                            className="custom-scrollbar"
-                            style={{
-                                width: '250px',
-                                minWidth: '150px',
-                                borderRight: '1px solid var(--border)',
-                                background: 'var(--bg-secondary)',
-                                overflowY: 'auto',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                animation: 'slideIn 0.2s ease-out',
-                            }}
-                        >
-                            <style>{`
-                                @keyframes slideIn {
-                                    from { width: 0; opacity: 0; }
-                                    to { width: 250px; opacity: 1; }
-                                }
-                                .custom-scrollbar::-webkit-scrollbar {
-                                    width: 10px;
-                                    height: 10px;
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-track {
-                                    background: var(--bg-secondary);
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb {
-                                    background: var(--border);
-                                    border-radius: 5px;
-                                    border: 2px solid var(--bg-secondary);
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                                    background: var(--text-tertiary);
-                                }
-                                /* Firefox */
-                                .custom-scrollbar {
-                                    scrollbar-width: thin;
-                                    scrollbar-color: var(--border) var(--bg-secondary);
-                                }
-                            `}</style>
-                            <div
-                                style={{
-                                    padding: '10px 12px',
-                                    fontSize: '11px',
-                                    fontWeight: 700,
-                                    color: 'var(--text-tertiary)',
-                                    borderBottom: '1px solid var(--border)',
-                                    background: 'var(--bg-tertiary)',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.5px',
-                                }}
-                            >
-                                Project Explorer
-                            </div>
-                            <div
-                                className="custom-scrollbar"
-                                style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
-                            >
-                                {renderFileTree(fileTree)}
-                            </div>
-                        </div>
-                    )}
+                    {sidebarContent}
 
                     {/* Main Content */}
                     <div
@@ -872,7 +1062,10 @@ export default function CodeViewerModal({
         >
             <div
                 ref={modalRef}
+                tabIndex={-1}
+                onKeyDown={handleKeyDown}
                 style={{
+                    outline: 'none',
                     position: 'absolute',
                     top: 0,
                     left: 0,
@@ -896,43 +1089,7 @@ export default function CodeViewerModal({
 
                 {/* Sidebar and Content Container */}
                 <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-                    {/* Sidebar */}
-                    {showFileTree && (
-                        <div
-                            className="custom-scrollbar"
-                            style={{
-                                width: '250px',
-                                minWidth: '150px',
-                                borderRight: '1px solid var(--border)',
-                                background: 'var(--bg-secondary)',
-                                overflowY: 'auto',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                animation: 'slideIn 0.2s ease-out',
-                            }}
-                        >
-                            <div
-                                style={{
-                                    padding: '10px 12px',
-                                    fontSize: '11px',
-                                    fontWeight: 700,
-                                    color: 'var(--text-tertiary)',
-                                    borderBottom: '1px solid var(--border)',
-                                    background: 'var(--bg-tertiary)',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.5px',
-                                }}
-                            >
-                                Project Explorer
-                            </div>
-                            <div
-                                className="custom-scrollbar"
-                                style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
-                            >
-                                {renderFileTree(fileTree)}
-                            </div>
-                        </div>
-                    )}
+                    {sidebarContent}
 
                     {/* Main Content */}
                     <div

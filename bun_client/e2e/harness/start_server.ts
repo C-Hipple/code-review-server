@@ -56,6 +56,9 @@ shim('crs', 'fake_crs.ts');
 if (lsp === 'fake') {
     shim('diff-lsp', 'fake_lsp.ts', 'diff');
     shim('typescript-language-server', 'fake_lsp.ts', 'file');
+    // gopls too, so the specs can tell the bridge picks a server per
+    // language; no rust-analyzer or pyright, so those read as missing.
+    shim('gopls', 'fake_lsp.ts', 'file');
 }
 
 const extraEnv: Record<string, string> = {};

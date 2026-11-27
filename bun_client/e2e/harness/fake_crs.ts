@@ -18,6 +18,10 @@ import {
     type PRFixture,
     type ReviewJSON,
 } from '../fixtures/prs';
+import { buildFixtures as buildDemoFixtures } from '../fixtures/demo';
+
+// CRS_E2E_FIXTURES=demo serves the README screenshots' data (e2e/screenshots.ts).
+const fixtures = process.env.CRS_E2E_FIXTURES === 'demo' ? buildDemoFixtures : buildFixtures;
 
 interface Request {
     method: string;
@@ -145,7 +149,7 @@ function freshConfig(): Record<string, unknown> {
 
 function freshState(): State {
     return {
-        prs: buildFixtures(),
+        prs: fixtures(),
         localComments: new Map(),
         feedback: new Map(),
         calls: [],
@@ -158,7 +162,8 @@ function freshState(): State {
         nextReviewId: 800,
         aiEnabled: true,
         reviewEaseEnabled: true,
-        diagramEnabled: false,
+        // The README screenshots show the diagram; the specs turn it on.
+        diagramEnabled: process.env.CRS_E2E_FIXTURES === 'demo',
         diagramSource: DIAGRAM_SOURCE,
         aiRuns: new Set(),
         aiDone: new Set(),
@@ -274,7 +279,7 @@ function payload(pr: PRFixture) {
             head_ref: pr.headRef,
             state: pr.item.status === 'DONE' ? 'closed' : 'open',
             milestone: '',
-            labels: ['e2e'],
+            labels: pr.labels ?? ['e2e'],
             assignees: [],
             reviewers: [],
             requested_teams: [],
@@ -400,8 +405,17 @@ function chatTurn(chat: FakeChat, message: string, attach: boolean) {
             () => {
                 if (!live()) return;
                 chat.draft = '';
+                const pr = state.prs.find(
+                    p =>
+                        p.item.owner === chat.owner &&
+                        p.item.repo === chat.repo &&
+                        p.item.number === chat.number
+                );
                 chat.messages.push(
-                    chatMessage({ role: 'assistant', content: `**Fake answer** to: ${message}` })
+                    chatMessage({
+                        role: 'assistant',
+                        content: pr?.chatReply ?? `**Fake answer** to: ${message}`,
+                    })
                 );
                 chat.status = 'idle';
                 chat.started_at = undefined;
@@ -454,7 +468,7 @@ const APPLIED_AI_FEATURES = [
     },
 ];
 
-// change-diagram: off unless a test turns it on (E2E.SetDiagram), so the
+// change-diagram: off unless a test turns it on (E2E.SetDiagram) or the demo fixtures are served, so the
 // other specs see only comments-addressed.
 const DIAGRAM_FEATURE = {
     id: 'change-diagram',
@@ -524,9 +538,10 @@ function reportFeatures() {
 // A feature's canned result, once its run has landed.
 function aiResult(pr: PRFixture, feature: string) {
     if (feature === DIAGRAM_FEATURE.id) {
+        const mermaid = pr.diagram ?? state.diagramSource;
         return {
-            body: '```mermaid\n' + state.diagramSource + '\n```\n',
-            report: { mermaid: state.diagramSource, diagram_type: 'flowchart' },
+            body: '```mermaid\n' + mermaid + '\n```\n',
+            report: { mermaid, diagram_type: 'flowchart' },
             outstanding: null,
         };
     }

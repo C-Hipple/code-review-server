@@ -64,6 +64,26 @@ Set `CRS_E2E_PORT` to move them. Each test resets the fake backend
 (`E2E.Reset`), and specs assert on what the UI sent through `backend.calls()`
 and `lsp.received()` (see `harness/test.ts`).
 
+## Documentation screenshots
+
+The screenshots in `docs/img` are taken against the same fakes, with
+`CRS_E2E_FIXTURES=demo` swapping `fixtures/prs.ts` for `fixtures/demo.ts`: a
+review list that looks like a working day, and PR `acme/code-review-server#315`,
+whose diff (`fixtures/demo/merged_state.diff`) is a real change from this
+repository, with review threads, two plugin results, a chat answer
+(`chatReply`) and a change diagram (`diagram`) of its own.
+
+```bash
+cd bun_client
+bun --filter frontend build
+bun e2e/screenshots.ts               # the web client's; or name some: list review plugins ai diagram chat
+e2e/screenshots_emacs.sh             # the Emacs client's (screenshots.el)
+```
+
+The Emacs ones need a graphical Emacs, `markdown-mode`, git-delta (`delta`: `screenshots.el` stands in for magit-delta's washer, so the diff is washed as `delta-wash` washes it), `xvfb-run`, ImageMagick's
+`import` and the DejaVu fonts. Set `CHROMIUM_PATH` to take the web ones with a
+Chromium other than the one Playwright downloads.
+
 ## Real language servers (opt-in)
 
 `lsp_real.e2e.ts` runs the diff and code-viewer LSP flows (the viewer's

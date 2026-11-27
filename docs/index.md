@@ -1,8 +1,10 @@
 # code-review-server
 
-![Bun Client](img/bun-client-list.png)
+![Web client pull request list](img/bun-client-list.png)
 
-![Emacs Client](img/emacs-client.png)
+![Web client review](img/bun-review.png)
+
+![Emacs client review](img/emacs-review.png)
 
 code-review-server is a service which runs highly configurable workflows to load code reviews which you are interested into easily managed customizable interfaces.
 

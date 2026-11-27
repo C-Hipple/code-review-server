@@ -6,11 +6,16 @@ It also supports doing local code reviews via your preferred client, allowing yo
 
 It is designed to be client-agnostic, communicating via JSON-RPC. It ships with a web client (bun/react), an emacs client, a TUI client (rust), and a Chrome extension that brings the AI features and plugins to the GitHub pull request you are on.
 
-web client review list
-![Bun Client](docs/img/bun-client-list.png)
+The web client's pull request list
+![Web client pull request list](docs/img/bun-client-list.png)
 
-Emacs client review list
-![Emacs Client](docs/img/emacs-client.png)
+A review in the web client, with a thread open in the comment tray
+![Web client review](docs/img/bun-review.png)
+
+A review in the Emacs client, with the PR's discussion beside it
+![Emacs client review](docs/img/emacs-review.png)
+
+More screenshots — plugins, AI features, the review chat — are in the [documentation](https://code-review-server.readthedocs.io/en/latest/).
 
 ## Documentation
 

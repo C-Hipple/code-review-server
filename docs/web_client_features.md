@@ -170,6 +170,8 @@ packages) is remembered, and replayed to a socket that joins while it runs.
 
 ### 3.1 Review list (`PRList.tsx`)
 
+![The review list](img/bun-client-list.png)
+
 The landing view. Backed by a single `GetAllReviews` call; the client uses the
 structured `items` array (not the org-mode `content` string).
 
@@ -400,6 +402,8 @@ misplaces comments:
 
 ### 3.6 Comments
 
+![A thread open in the comment tray](img/bun-review.png)
+
 Local (pending) comments are stored server-side until the review is submitted; the
 client treats `author === 'local'` as "mine, still editable".
 
@@ -492,6 +496,8 @@ With [webhooks](webhooks.md) on, a review usually needn't be synced: changes arr
 themselves (§3.18).
 
 ### 3.9 Plugins
+
+![The plugins view](img/bun-plugins.png)
 
 Two surfaces, both reading `GetPluginOutput` (a `{pluginName: PluginOutput}` map):
 
@@ -693,6 +699,8 @@ scrolling strip, and row actions stay visible instead of waiting for a hover.
 
 ### 3.17 AI reports (`AIReportModal.tsx`, `AIReportPane.tsx`, `AIOutput.tsx`, `ai_utils.ts`, `MermaidDiagram.tsx`)
 
+![A report pinned beside the code](img/bun-ai-pinned.png)
+
 The server's [AI features](ai_features.md) — comments-addressed, feature-flags and
 change-diagram — have two
 surfaces, both limited to the features `ListAIFeatures` reports as enabled. None are
@@ -798,6 +806,8 @@ since whatever was sent meanwhile is lost.
   the list says nothing about PRs it doesn't show.
 
 ### 3.19 Review chat (`ChatWidget.tsx`, `useChat.ts`, `chat_utils.ts`)
+
+![The review chat](img/bun-review-chat.png)
 
 A round chat button sits in the review's bottom-left corner (above the bottom bar
 on mobile). Resting the pointer on it opens a chat panel above it: a conversation

@@ -3,9 +3,12 @@
 Plugins are external projects which are expected to be discoverable on your `$PATH`, and are called per PR.
 You can install external plugins to process PR data asynchronously. Plugins receive data via CLI flags and their output is stored in the database.
 
-![Plugin Web Interface](img/plugin_web.png)
+![Plugin output in the web client](img/bun-plugins.png)
 
-This image shows the plugin output in the bun_client when reviewing a PR in this repository.
+The web client shows every plugin's output for a PR on one page (Plugins in the
+review toolbar); the Emacs client shows it in a buffer beside the review.
+
+![Plugin output in the Emacs client](img/emacs-plugins.png)
 
 Plugins are separate from the server's built-in [AI features](ai_features.md), which
 have their own config (`[[AIFeatures]]`), storage and RPCs. The two share only the

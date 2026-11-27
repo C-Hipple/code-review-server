@@ -6,6 +6,10 @@ Code Review Server ships with a web client, an Emacs client, a TUI client, and a
 
 The web client is packaged with bun, and has a bun backend with a react frontend. If you build and run the bun backend, you'll get a working webserver on `localhost:3000` which lists all of your PRs.
 
+![Web client pull request list](img/bun-client-list.png)
+
+![Web client review](img/bun-review.png)
+
 For a full inventory of what this client does — architecture, HTTP surface, every feature, and the protocol details a reimplementation needs to get right — see [Web Client Features](web_client_features.md).
 
 ### Installation
@@ -111,6 +115,8 @@ several modules; `crs-client.el` is the entry point that loads them all
 (`crs-vars`, `crs-html`, `crs-rpc`, `crs-filtered-diff`, `crs-render`,
 `crs-list-mode`, `crs-review`, `crs-comments`, `crs-review-actions`,
 `crs-plugins`, `crs-ai`, `crs-diagram`, `crs-chat`, `crs-discussion`).
+
+![Emacs client review with the discussion buffer](img/emacs-review.png)
 
 ### Installation
 

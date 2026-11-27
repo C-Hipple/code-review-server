@@ -268,6 +268,15 @@ makes it stale nor costs a model call.
 
 ## comments-addressed
 
+![The comments-addressed report in the web client](img/bun-ai-comments-addressed.png)
+
+A report can be pinned beside the code, and the Emacs client shows the same
+report in a buffer of its own:
+
+![The comments-addressed report pinned beside the code](img/bun-ai-pinned.png)
+
+![The comments-addressed report in the Emacs client](img/emacs-ai.png)
+
 ### How it decides
 
 Deterministically first: GitHub's own thread state decides whatever it can,
@@ -518,6 +527,8 @@ Draws what a PR changes as a [Mermaid](https://mermaid.js.org) flowchart, so a
 reviewer can see how the pieces fit together before reading the diff: the
 packages, files, functions, types, endpoints or components the PR adds, changes
 or removes, and how they connect — calls, data flow, reads and writes.
+
+![The change diagram in the web client](img/bun-change-diagram.png)
 
 ```toml
 [[AIFeatures]]

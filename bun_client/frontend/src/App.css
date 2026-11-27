@@ -8,7 +8,8 @@
     outline: 1px solid var(--border);
 }
 
-.lsp-location-row:hover {
+.lsp-location-row:hover,
+.lsp-symbol-row:hover {
     background: var(--bg-tertiary);
 }
 

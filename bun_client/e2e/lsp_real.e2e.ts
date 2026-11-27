@@ -83,3 +83,31 @@ test('the code viewer talks to typescript-language-server directly', async ({ pa
     );
     await expect(info.getByText(/^References( \(\d+\))?$/)).toBeVisible();
 });
+
+test('the code viewer navigates the checkout through typescript-language-server', async ({
+    page,
+}) => {
+    await openReview(page);
+
+    const declaration = declarationRow(page);
+    await clickUntil(
+        () => clickWord(diffRow(page, 'const message = formatGreeting('), 'formatGreeting'),
+        declaration
+    );
+    await declaration.first().click();
+    await expect(page.getByTitle('Language server connected')).toBeVisible();
+    const line8 = page.locator('[data-line="8"]');
+    await expect(line8).toContainText('export function formatGreeting');
+
+    // Ctrl+click the `Greeting` annotation: straight to the interface, line 3.
+    const atInterface = page.getByText('(line 3)', { exact: true });
+    await clickUntil(() => clickWord(line8, 'Greeting', 1, ['Control']), atInterface);
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(page.getByText('(line 8)', { exact: true })).toBeVisible();
+
+    // tsserver's outline of the file, nested: the interface's fields under it.
+    await page.getByRole('button', { name: 'Symbols', exact: true }).click();
+    const inFile = page.getByRole('list', { name: 'Symbols in this file' });
+    await expect(inFile.getByRole('listitem').filter({ hasText: /^formatGreeting/ })).toBeVisible();
+    await expect(inFile.getByRole('listitem').filter({ hasText: /^punctuation/ })).toBeVisible();
+});

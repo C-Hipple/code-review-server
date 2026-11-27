@@ -11,6 +11,32 @@ export interface LspLocation {
     };
 }
 
+/** A definition-style answer from a server that links source and target ranges. */
+export interface LspLocationLink {
+    targetUri: string;
+    targetRange: LspLocation['range'];
+    targetSelectionRange?: LspLocation['range'];
+    originSelectionRange?: LspLocation['range'];
+}
+
+/** textDocument/documentSymbol's hierarchical answer. */
+export interface LspDocumentSymbol {
+    name: string;
+    detail?: string;
+    kind: number;
+    range: LspLocation['range'];
+    selectionRange: LspLocation['range'];
+    children?: LspDocumentSymbol[];
+}
+
+/** textDocument/documentSymbol's flat answer, and workspace/symbol's. */
+export interface LspSymbolInformation {
+    name: string;
+    kind: number;
+    containerName?: string;
+    location: LspLocation;
+}
+
 export interface LspHover {
     contents:
         | string
@@ -48,6 +74,11 @@ export class LspClient {
 
     constructor(private onReady?: () => void) {}
 
+    /** Receives the server's notifications, e.g. `$/progress`. */
+    setNotificationHandler(handler: ((method: string, params: any) => void) | null) {
+        this.onNotification = handler;
+    }
+
     async prepareContext(
         project: string,
         root: string,
@@ -79,7 +110,14 @@ export class LspClient {
 
         this.ws.onmessage = event => {
             const msg = JSON.parse(event.data);
-            if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
+            // A response has no method. A request the server makes numbers
+            // its own ids, which can match one of ours; the bridge answers
+            // those (lsp_pool.ts), so they never reach here.
+            if (
+                msg.method === undefined &&
+                msg.id !== undefined &&
+                this.pendingRequests.has(msg.id)
+            ) {
                 const { resolve, reject } = this.pendingRequests.get(msg.id)!;
                 this.pendingRequests.delete(msg.id);
                 if (msg.error) reject(msg.error);
@@ -164,16 +202,40 @@ export class LspClient {
         }
     }
 
-    async initialize(rootPath: string) {
+    /**
+     * `workspace` is for a plain language server rooted at a project (the
+     * code viewer's): it's told the workspace folder, which pyright needs to
+     * resolve imports, and that the bridge answers its configuration and
+     * progress requests. diff-lsp gets the bare handshake it always has.
+     */
+    async initialize(rootPath: string, workspace = false) {
+        const rootUri = `file://${rootPath}`;
+        const textDocument = {
+            hover: { contentFormat: ['markdown', 'plaintext'] },
+            references: {},
+            definition: {},
+            typeDefinition: {},
+        };
+        if (!workspace) {
+            return this.request('initialize', {
+                processId: null,
+                rootUri,
+                capabilities: { textDocument },
+            });
+        }
         return this.request('initialize', {
             processId: null,
-            rootUri: `file://${rootPath}`,
+            rootUri,
+            rootPath,
+            workspaceFolders: [{ uri: rootUri, name: rootPath.split('/').pop() || rootPath }],
             capabilities: {
+                general: { positionEncodings: ['utf-16'] },
+                window: { workDoneProgress: true },
+                workspace: { configuration: true, workspaceFolders: true, symbol: {} },
                 textDocument: {
-                    hover: { contentFormat: ['markdown', 'plaintext'] },
-                    references: {},
-                    definition: {},
-                    typeDefinition: {},
+                    ...textDocument,
+                    implementation: {},
+                    documentSymbol: { hierarchicalDocumentSymbolSupport: true },
                 },
             },
         });
@@ -190,6 +252,10 @@ export class LspClient {
         this.notify('textDocument/didOpen', {
             textDocument: { uri, languageId, version, text },
         });
+    }
+
+    didClose(uri: string) {
+        this.notify('textDocument/didClose', { textDocument: { uri } });
     }
 
     async hover(
@@ -227,7 +293,7 @@ export class LspClient {
         line: number,
         character: number,
         signal?: AbortSignal
-    ): Promise<LspLocation | LspLocation[] | null> {
+    ): Promise<LspLocation | LspLocation[] | LspLocationLink[] | null> {
         return this.request(
             'textDocument/definition',
             { textDocument: { uri }, position: { line, character } },
@@ -240,11 +306,38 @@ export class LspClient {
         line: number,
         character: number,
         signal?: AbortSignal
-    ): Promise<LspLocation | LspLocation[] | null> {
+    ): Promise<LspLocation | LspLocation[] | LspLocationLink[] | null> {
         return this.request(
             'textDocument/typeDefinition',
             { textDocument: { uri }, position: { line, character } },
             signal
         );
+    }
+
+    async implementation(
+        uri: string,
+        line: number,
+        character: number,
+        signal?: AbortSignal
+    ): Promise<LspLocation | LspLocation[] | LspLocationLink[] | null> {
+        return this.request(
+            'textDocument/implementation',
+            { textDocument: { uri }, position: { line, character } },
+            signal
+        );
+    }
+
+    async documentSymbol(
+        uri: string,
+        signal?: AbortSignal
+    ): Promise<LspDocumentSymbol[] | LspSymbolInformation[] | null> {
+        return this.request('textDocument/documentSymbol', { textDocument: { uri } }, signal);
+    }
+
+    async workspaceSymbol(
+        query: string,
+        signal?: AbortSignal
+    ): Promise<LspSymbolInformation[] | null> {
+        return this.request('workspace/symbol', { query }, signal);
     }
 }

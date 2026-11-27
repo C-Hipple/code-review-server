@@ -18,9 +18,16 @@
 //     replayed to every later client (and `initialized` forwarded once).
 //   - Request ids are rewritten, since every client numbers its own from 1.
 //   - A client's open documents are closed for it when it detaches.
+//   - The server's own requests (`workspace/configuration`,
+//     `window/workDoneProgress/create`, ...) are answered here rather than by
+//     a client: there may be several clients or none, and pyright and
+//     rust-analyzer wait on the answers before they do anything else.
+//   - Work in progress (`$/progress`, e.g. rust-analyzer indexing) is
+//     remembered, so a client that attaches halfway through still hears it's
+//     running.
 
 import { stat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { spawn } from 'bun';
 
 type JsonRpcId = number | string;
@@ -39,6 +46,55 @@ interface JsonRpcMessage {
 export interface LspPeer {
     send(body: string): void;
     close(code?: number, reason?: string): void;
+}
+
+interface WorkspaceFolder {
+    uri: string;
+    name: string;
+}
+
+/** A work-done progress the server has begun and not yet ended. */
+interface ActiveProgress {
+    title: string;
+    message?: string;
+    percentage?: number;
+}
+
+/**
+ * The answer to a request a language server sends its client. The pool's
+ * clients only read code, so nothing is configured (null settings mean the
+ * server's defaults), registrations and refreshes are acknowledged, and
+ * edits are refused.
+ */
+export function answerServerRequest(
+    method: string,
+    // biome-ignore lint/suspicious/noExplicitAny: arbitrary LSP params
+    params: any,
+    folders: WorkspaceFolder[] | null
+): { result: unknown } | { error: { code: number; message: string } } {
+    switch (method) {
+        case 'workspace/configuration':
+            return { result: Array.isArray(params?.items) ? params.items.map(() => null) : [] };
+        case 'workspace/workspaceFolders':
+            return { result: folders };
+        case 'window/workDoneProgress/create':
+        case 'client/registerCapability':
+        case 'client/unregisterCapability':
+        case 'window/showMessageRequest':
+        case 'workspace/codeLens/refresh':
+        case 'workspace/diagnostic/refresh':
+        case 'workspace/foldingRange/refresh':
+        case 'workspace/inlayHint/refresh':
+        case 'workspace/inlineValue/refresh':
+        case 'workspace/semanticTokens/refresh':
+            return { result: null };
+        case 'window/showDocument':
+            return { result: { success: false } };
+        case 'workspace/applyEdit':
+            return { result: { applied: false, failureReason: 'The code viewer is read-only' } };
+        default:
+            return { error: { code: -32601, message: `Unhandled method ${method}` } };
+    }
 }
 
 /** The pool's view of a running language server. */
@@ -180,6 +236,14 @@ export async function diffLspCheckout(root: string, worktree: string): Promise<s
     return `${dir}\0${head}`;
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: initialize params
+function workspaceFoldersOf(params: any): WorkspaceFolder[] | null {
+    if (Array.isArray(params?.workspaceFolders)) return params.workspaceFolders;
+    const uri = typeof params?.rootUri === 'string' ? params.rootUri : null;
+    if (!uri) return null;
+    return [{ uri, name: basename(uri.replace(/^file:\/\//, '')) || uri }];
+}
+
 let nextPeerId = 1;
 
 /** One language server and the WebSockets attached to it. */
@@ -193,6 +257,8 @@ export class LspSession {
     private initWaiters: { peer: number; id: JsonRpcId }[] = [];
     private initializedSent = false;
     private openDocs = new Map<number, Set<string>>();
+    private workspaceFolders: WorkspaceFolder[] | null = null;
+    private progress = new Map<JsonRpcId, ActiveProgress>();
     /** When the last peer detached; null while any peer is attached. */
     idleSince: number | null = null;
     closed = false;
@@ -255,11 +321,13 @@ export class LspSession {
                 if (!isRequest) return;
                 if (this.initReply) {
                     peer.send(JSON.stringify({ ...this.initReply, id: msg.id }));
+                    this.replayProgress(peer);
                     return;
                 }
                 this.initWaiters.push({ peer: peerId, id: msg.id as JsonRpcId });
                 if (this.initServerId === null) {
                     this.initServerId = this.nextServerId++;
+                    this.workspaceFolders = workspaceFoldersOf(msg.params);
                     this.send({ ...msg, id: this.initServerId });
                 }
                 return;
@@ -310,7 +378,16 @@ export class LspSession {
         }
 
         if (msg.method !== undefined) {
-            // A notification or a server-to-client request: every client sees it.
+            if (msg.id !== undefined && msg.id !== null) {
+                this.send({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    ...answerServerRequest(msg.method, msg.params, this.workspaceFolders),
+                });
+                return;
+            }
+            if (msg.method === '$/progress') this.trackProgress(msg.params);
+            // A notification: every client sees it.
             for (const peer of this.peers.values()) peer.send(body);
             return;
         }
@@ -347,6 +424,40 @@ export class LspSession {
         for (const peer of peers) peer.close(1011, reason);
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: $/progress params
+    private trackProgress(params: any) {
+        const token = params?.token;
+        const value = params?.value;
+        if (token === undefined || !value) return;
+        if (value.kind === 'begin') {
+            this.progress.set(token, {
+                title: String(value.title ?? ''),
+                message: value.message,
+                percentage: value.percentage,
+            });
+        } else if (value.kind === 'report') {
+            const active = this.progress.get(token);
+            if (!active) return;
+            if (value.message !== undefined) active.message = value.message;
+            if (value.percentage !== undefined) active.percentage = value.percentage;
+        } else if (value.kind === 'end') {
+            this.progress.delete(token);
+        }
+    }
+
+    /** Tells a peer that joined late about the work still running, as it stands. */
+    private replayProgress(peer: LspPeer) {
+        for (const [token, active] of this.progress) {
+            peer.send(
+                JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: '$/progress',
+                    params: { token, value: { kind: 'begin', ...active } },
+                })
+            );
+        }
+    }
+
     private serverIdFor(peerId: number, id: JsonRpcId | undefined): number | null {
         for (const [serverId, origin] of this.pending) {
             if (origin.peer === peerId && origin.id === id) return serverId;
@@ -365,7 +476,12 @@ export interface LspPoolOptions {
     /** Most sessions kept with no peers; the longest idle go first. */
     maxIdle: number;
     /** Starts a language server; onExit fires once, when it stops for any reason. */
-    start(argv: string[], onMessage: (body: string) => void, onExit: () => void): LspServer;
+    start(
+        argv: string[],
+        onMessage: (body: string) => void,
+        onExit: () => void,
+        cwd?: string
+    ): LspServer;
 }
 
 export class LspSessionPool {
@@ -379,9 +495,10 @@ export class LspSessionPool {
 
     /**
      * A running session for `key` that covers `langs`, or a new one started
-     * with `argv`. The caller attaches to it and hands it back via release().
+     * with `argv` (in `cwd`, when given). The caller attaches to it and hands
+     * it back via release().
      */
-    acquire(key: string, langs: string[], argv: string[]): LspSession {
+    acquire(key: string, langs: string[], argv: string[], cwd?: string): LspSession {
         const running = this.sessions.find(
             s => !s.closed && s.key === key && langs.every(l => s.langs.includes(l))
         );
@@ -393,7 +510,8 @@ export class LspSessionPool {
             body => session?.fromServer(body),
             () => {
                 if (session) this.drop(session, 'language server exited');
-            }
+            },
+            cwd
         );
         session = new LspSession(key, langs, server);
         this.sessions.push(session);
@@ -429,9 +547,11 @@ export class LspSessionPool {
 export function startLspServer(
     argv: string[],
     onMessage: (body: string) => void,
-    onExit: () => void
+    onExit: () => void,
+    cwd?: string
 ): LspServer {
     const proc = spawn(argv, {
+        cwd,
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'inherit',

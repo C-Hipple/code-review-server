@@ -1,8 +1,15 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { spawn } from 'bun';
 import { type GetImageReply, parseGitHubImageUrl } from './github_images';
+import {
+    commandRuns,
+    LANGUAGE_SERVERS,
+    LanguageServerResolver,
+    lspWorkspaceFor,
+    serverLanguage,
+} from './lsp_languages';
 import { readLocationLines } from './lsp_lines';
 import {
     diffLspCheckout,
@@ -27,27 +34,19 @@ try {
 const SERVER_PATH = Bun.which('crs') || 'crs';
 const DIFF_LSP_PATH = Bun.which('diff-lsp');
 
-// Language server configurations for file-mode LSP
-const LANGUAGE_SERVER_CONFIG: Record<string, { cmd: string; args: string[] }> = {
-    typescript: { cmd: 'typescript-language-server', args: ['--stdio'] },
-    javascript: { cmd: 'typescript-language-server', args: ['--stdio'] },
-    tsx: { cmd: 'typescript-language-server', args: ['--stdio'] },
-    jsx: { cmd: 'typescript-language-server', args: ['--stdio'] },
-    go: { cmd: 'gopls', args: ['serve'] },
-    rust: { cmd: 'rust-analyzer', args: [] },
-    python: { cmd: 'pyright-langserver', args: ['--stdio'] },
-};
-
-// Resolve which language servers are available at startup
-const AVAILABLE_LANGUAGE_SERVERS: Record<string, { cmd: string; args: string[] }> = {};
-for (const [lang, config] of Object.entries(LANGUAGE_SERVER_CONFIG)) {
-    const resolved = Bun.which(config.cmd);
-    if (resolved) {
-        AVAILABLE_LANGUAGE_SERVERS[lang] = { cmd: resolved, args: config.args };
+// The code viewer's language servers (lsp_languages.ts), looked up on PATH
+// the first time a language is asked for.
+const languageServers = new LanguageServerResolver({
+    which: cmd => Bun.which(cmd),
+    runs: argv => commandRuns(argv),
+    now: () => Date.now(),
+    retryMissingMs: 30_000,
+});
+Promise.all(Object.keys(LANGUAGE_SERVERS).map(lang => languageServers.resolve(lang))).then(
+    found => {
+        const names = found.filter(Boolean).map(s => `${s?.lang} (${s?.name})`);
+        console.log(`[LSP] Available language servers: ${names.join(', ') || 'none'}`);
     }
-}
-console.log(
-    `[LSP] Available language servers: ${Object.keys(AVAILABLE_LANGUAGE_SERVERS).join(', ') || 'none'}`
 );
 
 // Resolve the project root.
@@ -198,6 +197,8 @@ Bun.serve<{
     key: string;
     langs: string[];
     argv: string[];
+    /** Where a new server starts; its workspace root. */
+    cwd?: string;
     session?: LspSession;
     peerId?: number;
 }>({
@@ -239,22 +240,27 @@ Bun.serve<{
         }
 
         if (url.pathname === '/api/lsp-file') {
-            const lang = url.searchParams.get('lang');
-            if (!lang || !AVAILABLE_LANGUAGE_SERVERS[lang]) {
+            const lang = serverLanguage(url.searchParams.get('lang'));
+            const languageServer = lang ? await languageServers.resolve(lang) : null;
+            if (!languageServer) {
                 return new Response('Language server not available', { status: 404 });
             }
 
-            const serverConfig = AVAILABLE_LANGUAGE_SERVERS[lang];
-            const argv = [serverConfig.cmd, ...serverConfig.args];
-            // One server per command and workspace root: typescript and tsx
-            // files in a repo share a typescript-language-server. Without a
-            // root there's no telling which workspace it is, so don't share.
+            // One server per command and workspace root (see
+            // /api/lsp-workspace): typescript and tsx files in a project
+            // share a typescript-language-server. Without a root there's no
+            // telling which workspace it is, so don't share.
             const root = url.searchParams.get('root');
+            const argv = languageServer.argv;
             const key = root ? `${argv.join(' ')}\0${root}` : crypto.randomUUID();
+            let cwd: string | undefined;
+            try {
+                if (root && (await stat(root)).isDirectory()) cwd = root;
+            } catch {
+                // Not on disk: start it wherever the bridge runs.
+            }
 
-            const success = server.upgrade(req, {
-                data: { key, langs: [], argv },
-            });
+            const success = server.upgrade(req, { data: { key, langs: [], argv, cwd } });
             if (success) return undefined;
             return new Response('Upgrade failed', { status: 500 });
         }
@@ -474,13 +480,29 @@ Bun.serve<{
         }
 
         if (url.pathname === '/api/check-lsp-file' && req.method === 'GET') {
-            const lang = url.searchParams.get('lang');
-            return new Response(
-                JSON.stringify({ available: !!lang && !!AVAILABLE_LANGUAGE_SERVERS[lang] }),
-                {
+            const lang = serverLanguage(url.searchParams.get('lang'));
+            const available = !!lang && !!(await languageServers.resolve(lang));
+            return new Response(JSON.stringify({ available }), {
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+            });
+        }
+
+        // Which language server the code viewer talks to for a file, and
+        // where it's rooted (lsp_languages.ts): the project the file belongs
+        // to, inside the PR's checkout.
+        if (url.pathname === '/api/lsp-workspace' && req.method === 'POST') {
+            const body = (await req.json()) as { checkout?: unknown; file?: unknown };
+            const { checkout, file } = body ?? {};
+            if (typeof checkout !== 'string' || !checkout || typeof file !== 'string' || !file) {
+                return new Response(JSON.stringify({ error: 'checkout and file are required' }), {
+                    status: 400,
                     headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-                }
-            );
+                });
+            }
+            const workspace = await lspWorkspaceFor(languageServers, checkout, file);
+            return new Response(JSON.stringify(workspace), {
+                headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+            });
         }
 
         // Serve a GitHub-hosted image embedded in a comment or review. The Go
@@ -721,10 +743,10 @@ Type: ${type}
     },
     websocket: {
         open(ws) {
-            const { key, langs, argv } = ws.data;
+            const { key, langs, argv, cwd } = ws.data;
             let session: LspSession;
             try {
-                session = lspPool.acquire(key, langs, argv);
+                session = lspPool.acquire(key, langs, argv, cwd);
             } catch (e) {
                 console.error(`[LSP] Could not start ${argv.join(' ')}:`, e);
                 ws.close(1011, 'Could not start the language server');
